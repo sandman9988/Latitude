@@ -66,8 +66,12 @@ class PerformanceTracker:
             self.peak_equity = self.current_equity
             self.current_drawdown = 0.0
         else:
-            self.current_drawdown = (self.peak_equity - self.current_equity) / self.peak_equity
-            self.max_drawdown = max(self.max_drawdown, self.current_drawdown)
+            # Defensive: protect against zero peak_equity
+            if self.peak_equity > 0:
+                self.current_drawdown = (self.peak_equity - self.current_equity) / self.peak_equity
+                self.max_drawdown = max(self.max_drawdown, self.current_drawdown)
+            else:
+                self.current_drawdown = 0.0
         
         # Store trade record
         trade_record = {
@@ -112,8 +116,9 @@ class PerformanceTracker:
         # Sharpe ratio (simplified - assuming returns are trade PnLs)
         sharpe_ratio = self._calculate_sharpe()
         
-        # Return on capital
-        total_return = (self.current_equity - self.initial_equity) / self.initial_equity
+        # Return on capital (defensive: protect against zero initial equity)
+        total_return = ((self.current_equity - self.initial_equity) / self.initial_equity 
+                       if self.initial_equity > 0 else 0.0)
         
         # Winner-to-loser count
         wtl_count = sum(1 for t in self.trades if t.get('winner_to_loser', False))

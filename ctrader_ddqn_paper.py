@@ -185,11 +185,14 @@ class Policy:
 
         c = np.array(closes, dtype=np.float64)
 
+        # Defensive: calculate returns with div-by-zero protection
         ret1 = np.zeros_like(c)
-        ret1[1:] = (c[1:] / c[:-1]) - 1.0
+        if len(c) >= 2:
+            ret1[1:] = np.divide(c[1:], c[:-1], out=np.ones_like(c[1:]), where=c[:-1]!=0) - 1.0
 
         ret5 = np.zeros_like(c)
-        ret5[5:] = (c[5:] / c[:-5]) - 1.0
+        if len(c) >= 6:
+            ret5[5:] = np.divide(c[5:], c[:-5], out=np.ones_like(c[5:]), where=c[:-5]!=0) - 1.0
 
         def rolling_mean(x, n):
             out = np.full_like(x, np.nan, dtype=np.float64)
@@ -208,10 +211,16 @@ class Policy:
 
         ma_fast = rolling_mean(c, 10)
         ma_slow = rolling_mean(c, 30)
-        ma_diff = (ma_fast / ma_slow) - 1.0
+        ma_diff = np.divide(ma_fast, ma_slow, out=np.ones_like(ma_fast), where=ma_slow!=0) - 1.0
         vol = rolling_std(ret1, 20)
 
-        feats = np.vstack([ret1, ret5, np.nan_to_num(ma_diff), np.nan_to_num(vol)]).T
+        # Defensive: clean all features for NaN/Inf
+        feats = np.vstack([
+            np.nan_to_num(ret1, nan=0.0, posinf=0.0, neginf=0.0),
+            np.nan_to_num(ret5, nan=0.0, posinf=0.0, neginf=0.0),
+            np.nan_to_num(ma_diff, nan=0.0, posinf=0.0, neginf=0.0),
+            np.nan_to_num(vol, nan=0.0, posinf=0.0, neginf=0.0)
+        ]).T
         feats = feats[-self.window :].astype(np.float32)
 
         mu = feats.mean(axis=0, keepdims=True)
@@ -219,6 +228,9 @@ class Policy:
         x = (feats - mu) / sd
 
         if not self.use_torch:
+            # Defensive: validate array shape before access
+            if x.shape[0] == 0 or x.shape[1] < 3:
+                return 1  # Default to HOLD if insufficient data
             md = float(x[-1, 2])
             if md > 0.2:
                 return 2
