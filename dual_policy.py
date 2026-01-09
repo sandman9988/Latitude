@@ -38,7 +38,7 @@ class DualPolicy:
     - If DDQN_DUAL_AGENT=1: Uses dual-agent architecture
     """
     
-    def __init__(self, window: int = 64, enable_regime_detection: bool = True, path_geometry=None, enable_training: bool = False):
+    def __init__(self, window: int = 64, enable_regime_detection: bool = True, path_geometry=None, enable_training: bool = False, enable_event_features: bool = True):
         """
         Initialize DualPolicy with trigger and harvester agents.
         
@@ -47,14 +47,24 @@ class DualPolicy:
             enable_regime_detection: Enable Phase 3.4 regime detection (default True)
             path_geometry: PathGeometry instance for entry features (optional)
             enable_training: Enable online learning with PER buffer (default False)
+            enable_event_features: Enable Phase 3 event-relative time features (default True)
         """
         self.window = window
         self.enable_training = enable_training
-        # Updated to 12 features: 7 base + 5 geometry (efficiency, gamma, jerk, runway, feasibility)
-        n_features = 12 if path_geometry else 7
+        self.enable_event_features = enable_event_features
+        
+        # Calculate feature dimension: 7 base + 5 geometry (if enabled) + 6 event (if enabled)
+        n_features = 7
+        if path_geometry:
+            n_features += 5
+        if enable_event_features:
+            n_features += 6
+            
         self.trigger = TriggerAgent(window=window, n_features=n_features, enable_training=enable_training)
         self.harvester = HarvesterAgent(window=window, n_features=10, enable_training=enable_training)
         
+        LOG.info("[DUAL_POLICY] TriggerAgent: %d features (7 base + %d geometry + %d event)", 
+                 n_features, 5 if path_geometry else 0, 6 if enable_event_features else 0)
         LOG.info("[DUAL_POLICY] Online learning: %s", "ENABLED" if enable_training else "DISABLED")
         
         # Path geometry for entry features
@@ -90,7 +100,8 @@ class DualPolicy:
         imbalance: float = 0.0,
         vpin_z: float = 0.0,
         depth_ratio: float = 1.0,
-        realized_vol: float = 0.005  # For economics calculations
+        realized_vol: float = 0.005,  # For economics calculations
+        event_features: dict = None  # Phase 3: Event-relative time features
     ) -> Tuple[int, float, float]:
         """
         Decide entry action using TriggerAgent.
@@ -101,6 +112,7 @@ class DualPolicy:
             vpin_z: VPIN z-score
             depth_ratio: Depth ratio
             realized_vol: Rogers-Satchell volatility for economics calculations
+            event_features: Dict of event-relative time features (30+ features)
         
         Returns:
             (action, confidence, predicted_runway)
@@ -114,8 +126,8 @@ class DualPolicy:
             _, _, _, _, close_price = latest_bar
             self.current_regime, self.current_zeta = self.regime_detector.add_price(close_price)
         
-        # Build state (includes path geometry if available)
-        state = self._build_state(bars, imbalance, vpin_z, depth_ratio, realized_vol)
+        # Build state (includes path geometry and event features if available)
+        state = self._build_state(bars, imbalance, vpin_z, depth_ratio, realized_vol, event_features)
         
         # Phase 3.4: Get regime threshold adjustment for trigger
         regime_threshold_adj = 0.0
@@ -287,12 +299,13 @@ class DualPolicy:
         imbalance: float,
         vpin_z: float,
         depth_ratio: float,
-        realized_vol: float = 0.005  # Provide RS volatility for geometry calculation
+        realized_vol: float = 0.005,  # Provide RS volatility for geometry calculation
+        event_features: dict = None  # Phase 3: Event-relative time features
     ) -> np.ndarray:
         """
         Build normalized state features.
         
-        Features (12-dim if path_geometry enabled, else 7-dim):
+        Features (expandable based on enabled modules):
         Base (7):
             - ret1: 1-bar return
             - ret5: 5-bar return  
@@ -309,10 +322,24 @@ class DualPolicy:
             - runway: Inverse volatility pressure
             - feasibility: Composite entry quality score
         
+        Event Time (6) - key session features:
+            - london_active: London session active [0, 1]
+            - ny_active: New York session active [0, 1]
+            - tokyo_active: Tokyo session active [0, 1]
+            - london_ny_overlap: High liquidity overlap [0, 1]
+            - rollover_proximity: Proximity to 22:00 UTC rollover [-1, 1]
+            - week_progress: Week progress [0, 1]
+        
         Returns:
             State array (window, n_features) with features normalized
         """
-        n_features = 12 if self.path_geometry else 7
+        # Calculate expected feature dimension
+        n_features = 7  # Base
+        if self.path_geometry:
+            n_features += 5  # Geometry
+        if event_features and self.enable_event_features:
+            n_features += 6  # Event time
+            
         if len(bars) < 70:
             return np.zeros((self.window, n_features), dtype=np.float32)
         
@@ -391,7 +418,27 @@ class DualPolicy:
                 np.nan_to_num(feasibility, nan=0.5, posinf=0.5, neginf=0.5)
             ])
         
-        # Stack features (7 or 12-dim)
+        # Add event time features if available (6 key features)
+        if event_features:
+            # Select key temporal features (already normalized in event_time_features.py)
+            london_active = event_features.get('london_active', 0.0)
+            ny_active = event_features.get('ny_active', 0.0)
+            tokyo_active = event_features.get('tokyo_active', 0.0)
+            london_ny_overlap = event_features.get('london_ny_overlap', 0.0)
+            rollover_proximity = event_features.get('rollover_proximity_norm', 0.0)
+            week_progress = event_features.get('week_progress', 0.5)
+            
+            # Broadcast event features to window length
+            base_feats.extend([
+                np.full(len(c), london_active, dtype=np.float64),
+                np.full(len(c), ny_active, dtype=np.float64),
+                np.full(len(c), tokyo_active, dtype=np.float64),
+                np.full(len(c), london_ny_overlap, dtype=np.float64),
+                np.full(len(c), rollover_proximity, dtype=np.float64),
+                np.full(len(c), week_progress, dtype=np.float64)
+            ])
+        
+        # Stack features (7, 12, 13, or 18-dim depending on modules enabled)
         feats = np.vstack(base_feats).T
         
         # Take last window bars
