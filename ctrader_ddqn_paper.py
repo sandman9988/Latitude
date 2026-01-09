@@ -30,6 +30,7 @@ import quickfix44 as fix44
 import quickfix as fix
 
 from performance_tracker import PerformanceTracker
+from trade_exporter import TradeExporter
 
 
 # ----------------------------
@@ -403,6 +404,7 @@ class CTraderFixApp(fix.Application):
         self.mfe_mae_tracker = MFEMAETracker()
         self.path_recorder = PathRecorder()
         self.performance = PerformanceTracker()
+        self.trade_exporter = TradeExporter()
 
         self.best_bid = None
         self.best_ask = None
@@ -716,6 +718,14 @@ class CTraderFixApp(fix.Application):
                             metrics['sharpe_ratio'],
                             metrics['max_drawdown'] * 100
                         )
+                    
+                    # Auto-export CSV every 10 trades
+                    if self.performance.total_trades % 10 == 0:
+                        try:
+                            files = self.trade_exporter.export_all(self.performance, prefix="bot")
+                            LOG.info("[EXPORT] CSV files saved: %s", ", ".join(files.values()))
+                        except Exception as e:
+                            LOG.error("[EXPORT] Failed to export CSV: %s", e)
                 
             self.mfe_mae_tracker.reset()
             self.trade_entry_time = None
