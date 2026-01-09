@@ -10,3 +10,4 @@ numpy>=1.24.0
 # QuickFIX Python bindings
 # Install manually from ../quickfix directory:
 # cd ../quickfix && pip install -e .
+scipy
