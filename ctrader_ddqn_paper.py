@@ -33,6 +33,7 @@ from performance_tracker import PerformanceTracker
 from trade_exporter import TradeExporter
 from reward_shaper import RewardShaper
 from learned_parameters import LearnedParametersManager
+from friction_costs import FrictionCalculator
 
 
 # ----------------------------
@@ -437,6 +438,9 @@ class CTraderFixApp(fix.Application):
         self.performance = PerformanceTracker()
         self.trade_exporter = TradeExporter()
         
+        # Friction calculator (source of truth: cTrader SymbolInfo)
+        self.friction_calculator = FrictionCalculator(symbol="BTCUSD", symbol_id=symbol_id)
+        
         # Pass param_manager to reward_shaper for DRY
         self.reward_shaper = RewardShaper(instrument=self.instrument, param_manager=self.param_manager)
         
@@ -474,6 +478,7 @@ class CTraderFixApp(fix.Application):
             self.send_md_subscribe_spot()
         elif qual == "TRADE":
             self.trade_sid = sessionID
+            self.request_security_definition()  # Get symbol info (source of truth)
             self.request_positions()
         else:
             LOG.warning(
@@ -536,6 +541,8 @@ class CTraderFixApp(fix.Application):
             self.on_exec_report(message)
         elif t == "AP":
             self.on_position_report(message)
+        elif t == "d":
+            self.on_security_definition(message)  # Symbol info response
         elif t == "j":
             self.on_biz_reject(message)
         elif t == "Y":
@@ -570,6 +577,134 @@ class CTraderFixApp(fix.Application):
 
         fix.Session.sendToTarget(req, self.quote_sid)
         LOG.info("[QUOTE] Subscribed spot for symbolId=%s", self.symbol_id)
+
+    # ----------------------------
+    # TRADE: SecurityDefinition (Symbol Info)
+    # ----------------------------
+    def request_security_definition(self):
+        """Request symbol information from cTrader (source of truth for all trading parameters)."""
+        if not self.trade_sid:
+            return
+
+        req = fix44.SecurityDefinitionRequest()
+        req.setField(fix.SecurityReqID(f"SYMINFO_{self.symbol_id}"))
+        req.setField(fix.SecurityRequestType(fix.SecurityRequestType_REQUEST_SECURITY_IDENTITY_AND_SPECIFICATIONS))
+        req.setField(fix.Symbol(str(self.symbol_id)))
+
+        fix.Session.sendToTarget(req, self.trade_sid)
+        LOG.info("[TRADE] Requested SecurityDefinition for symbolId=%s", self.symbol_id)
+
+    def on_security_definition(self, msg: fix.Message):
+        """
+        Parse SecurityDefinition response from cTrader.
+        
+        This is the SOURCE OF TRUTH for all symbol parameters:
+        - Min/max/step volume (lot sizes)
+        - Pip size and value
+        - Commission structure
+        - Swap rates
+        - Contract size
+        - Price precision
+        """
+        try:
+            symbol = fix.Symbol()
+            if msg.isSetField(symbol):
+                msg.getField(symbol)
+                LOG.info("[TRADE] ═══ SecurityDefinition for symbol=%s ═══", symbol.getValue())
+            
+            # Extract all available symbol parameters
+            params = {}
+            
+            # Security description
+            sec_desc = fix.SecurityDesc()
+            if msg.isSetField(sec_desc):
+                msg.getField(sec_desc)
+                LOG.info("  Description: %s", sec_desc.getValue())
+            
+            # Security type (SPOT, CFD, etc.)
+            sec_type = fix.SecurityType()
+            if msg.isSetField(sec_type):
+                msg.getField(sec_type)
+                LOG.info("  SecurityType: %s", sec_type.getValue())
+            
+            # Product type
+            product = fix.Product()
+            if msg.isSetField(product):
+                msg.getField(product)
+                LOG.info("  Product: %s", product.getValue())
+            
+            # Contract size (e.g., 100,000 for standard lot)
+            contract_mult = fix.ContractMultiplier()
+            if msg.isSetField(contract_mult):
+                msg.getField(contract_mult)
+                params['contract_size'] = float(contract_mult.getValue())
+                LOG.info("  ✓ ContractMultiplier: %.0f", params['contract_size'])
+            
+            # Round lot (standard lot size)
+            round_lot = fix.RoundLot()
+            if msg.isSetField(round_lot):
+                msg.getField(round_lot)
+                params['volume_step'] = float(round_lot.getValue())
+                LOG.info("  ✓ RoundLot (step): %.4f", params['volume_step'])
+            
+            # Min trade volume
+            min_vol = fix.MinTradeVol()
+            if msg.isSetField(min_vol):
+                msg.getField(min_vol)
+                params['min_volume'] = float(min_vol.getValue())
+                LOG.info("  ✓ MinTradeVol: %.4f lots", params['min_volume'])
+            
+            # Max trade volume
+            max_vol = fix.MaxTradeVol()
+            if msg.isSetField(max_vol):
+                msg.getField(max_vol)
+                params['max_volume'] = float(max_vol.getValue())
+                LOG.info("  ✓ MaxTradeVol: %.4f lots", params['max_volume'])
+            
+            # Fallback: try MinQty if MinTradeVol not present
+            if 'min_volume' not in params:
+                min_qty = fix.MinQty()
+                if msg.isSetField(min_qty):
+                    msg.getField(min_qty)
+                    params['min_volume'] = float(min_qty.getValue())
+                    LOG.info("  ✓ MinQty: %.4f lots", params['min_volume'])
+            
+            # Price precision (number of decimals)
+            price_method = fix.PriceQuoteMethod()
+            if msg.isSetField(price_method):
+                msg.getField(price_method)
+                params['digits'] = int(price_method.getValue())
+                LOG.info("  ✓ PriceQuoteMethod (digits): %d", params['digits'])
+            
+            # Currency (base currency)
+            currency = fix.Currency()
+            if msg.isSetField(currency):
+                msg.getField(currency)
+                params['currency'] = currency.getValue()
+                LOG.info("  ✓ Currency: %s", params['currency'])
+            
+            # Trading session hours
+            trading_session = fix.TradingSessionID()
+            if msg.isSetField(trading_session):
+                msg.getField(trading_session)
+                LOG.info("  TradingSessionID: %s", trading_session.getValue())
+            
+            # Update friction calculator with actual cTrader parameters
+            if params:
+                self.friction_calculator.update_symbol_costs(**params)
+                LOG.info("[TRADE] ✓ FrictionCalculator updated with %d cTrader parameters", len(params))
+                
+                # Log summary
+                stats = self.friction_calculator.get_statistics()
+                LOG.info("[TRADE] Friction summary: min=%.4f max=%.4f step=%.4f", 
+                        params.get('min_volume', 0), 
+                        params.get('max_volume', 0),
+                        params.get('volume_step', 0))
+            else:
+                LOG.warning("[TRADE] SecurityDefinition had no extractable parameters")
+                
+        except Exception as e:
+            LOG.error("[TRADE] Error parsing SecurityDefinition: %s", e, exc_info=True)
 
     def on_md_snapshot(self, msg: fix.Message):
         try:
@@ -606,6 +741,10 @@ class CTraderFixApp(fix.Application):
             self.best_bid = bid
         if ask is not None:
             self.best_ask = ask
+            
+        # Track spread for friction calculations (real-time cost monitoring)
+        if bid is not None and ask is not None:
+            self.friction_calculator.update_spread(bid, ask)
 
         self.try_bar_update()
 
@@ -654,6 +793,10 @@ class CTraderFixApp(fix.Application):
                     self.best_bid = None
                 if et.getValue() == "1":
                     self.best_ask = None
+        
+        # Track spread for friction calculations
+        if self.best_bid is not None and self.best_ask is not None:
+            self.friction_calculator.update_spread(self.best_bid, self.best_ask)
 
         self.try_bar_update()
 
