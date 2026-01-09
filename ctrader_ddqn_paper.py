@@ -32,6 +32,7 @@ import quickfix as fix
 from performance_tracker import PerformanceTracker
 from trade_exporter import TradeExporter
 from reward_shaper import RewardShaper
+from learned_parameters import LearnedParametersManager
 
 
 # ----------------------------
@@ -409,7 +410,20 @@ class CTraderFixApp(fix.Application):
     def __init__(self, symbol_id: int, qty: float, timeframe_minutes: int = 15):
         super().__init__()
         self.symbol_id = symbol_id
-        self.qty = qty
+        
+        # Initialize learned parameters manager (single source of truth)
+        self.param_manager = LearnedParametersManager()
+        self.param_manager.load()
+        
+        # Construct instrument key: BTCUSD_M{timeframe}_default
+        self.instrument = f"BTCUSD_M{timeframe_minutes}_default"
+        
+        # Use adaptive position sizing from learned parameters
+        # Fall back to env var or default only if not in manager
+        base_pos = self.param_manager.get(self.instrument, 'base_position_size')
+        self.qty = base_pos if base_pos is not None else qty
+        LOG.info("Position size: %.4f (adaptive from LearnedParametersManager)", self.qty)
+        
         self.timeframe_minutes = timeframe_minutes
 
         self.quote_sid = None
@@ -422,7 +436,9 @@ class CTraderFixApp(fix.Application):
         self.path_recorder = PathRecorder()
         self.performance = PerformanceTracker()
         self.trade_exporter = TradeExporter()
-        self.reward_shaper = RewardShaper(instrument="BTCUSD")
+        
+        # Pass param_manager to reward_shaper for DRY
+        self.reward_shaper = RewardShaper(instrument=self.instrument, param_manager=self.param_manager)
         
         self.previous_sharpe = 0.0  # Track for adaptive weight updates
 
