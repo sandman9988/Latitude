@@ -29,6 +29,8 @@ import quickfix44 as fix44
 
 import quickfix as fix
 
+from performance_tracker import PerformanceTracker
+
 
 # ----------------------------
 # Logging
@@ -400,6 +402,7 @@ class CTraderFixApp(fix.Application):
         self.builder = BarBuilder(timeframe_minutes)
         self.mfe_mae_tracker = MFEMAETracker()
         self.path_recorder = PathRecorder()
+        self.performance = PerformanceTracker()
 
         self.best_bid = None
         self.best_ask = None
@@ -407,6 +410,7 @@ class CTraderFixApp(fix.Application):
         self.cur_pos = 0
         self.pos_req_id = None
         self.clord_counter = 0
+        self.trade_entry_time = None  # Track entry time for performance metrics
 
     # ---- helpers ----
     @staticmethod
@@ -674,15 +678,47 @@ class CTraderFixApp(fix.Application):
                 summary["best_profit"], summary["worst_loss"],
                 summary["winner_to_loser"]
             )
-            self.mfe_mae_tracker.reset()
             
             # Stop path recording and save trade
             if self.best_bid and self.best_ask:
                 exit_price = (self.best_bid + self.best_ask) / 2.0
-                # Calculate PnL (simplified - using direction from summary)
+                exit_time = utc_now()
                 direction_sign = 1 if summary["direction"] == "LONG" else -1
                 pnl = (exit_price - summary["entry_price"]) * direction_sign
-                self.path_recorder.stop_recording(utc_now(), exit_price, pnl)
+                
+                # Save path
+                self.path_recorder.stop_recording(exit_time, exit_price, pnl)
+                
+                # Add to performance tracker
+                if self.trade_entry_time:
+                    self.performance.add_trade(
+                        pnl=pnl,
+                        entry_time=self.trade_entry_time,
+                        exit_time=exit_time,
+                        direction=summary["direction"],
+                        entry_price=summary["entry_price"],
+                        exit_price=exit_price,
+                        mfe=summary["mfe"],
+                        mae=summary["mae"],
+                        winner_to_loser=summary["winner_to_loser"]
+                    )
+                    
+                    # Log performance dashboard every 5 trades
+                    if self.performance.total_trades % 5 == 0:
+                        LOG.info("\n" + self.performance.print_dashboard())
+                    else:
+                        metrics = self.performance.get_metrics()
+                        LOG.info(
+                            "[PERF] Trades: %d | Win Rate: %.1f%% | Total PnL: $%.2f | Sharpe: %.3f | Max DD: %.1f%%",
+                            metrics['total_trades'],
+                            metrics['win_rate'] * 100,
+                            metrics['total_pnl'],
+                            metrics['sharpe_ratio'],
+                            metrics['max_drawdown'] * 100
+                        )
+                
+            self.mfe_mae_tracker.reset()
+            self.trade_entry_time = None
 
     def on_exec_report(self, msg: fix.Message):
         ex = fix.ExecType()
@@ -771,8 +807,9 @@ class CTraderFixApp(fix.Application):
         if self.best_bid and self.best_ask:
             entry_price = (self.best_bid + self.best_ask) / 2.0
             direction = 1 if side == "1" else -1
+            self.trade_entry_time = utc_now()  # Store for performance tracker
             self.mfe_mae_tracker.start_tracking(entry_price, direction)
-            self.path_recorder.start_recording(utc_now(), entry_price, direction)
+            self.path_recorder.start_recording(self.trade_entry_time, entry_price, direction)
 
         fix.Session.sendToTarget(order, self.trade_sid)
         LOG.info(
