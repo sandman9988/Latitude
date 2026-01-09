@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Logs
+logs/
+*.log
+
+# FIX Session Data
+data/sessions/store*/
+*.body
+*.header
+*.seqnums
+*.session
+
+# Credentials (NEVER commit these!)
+config/cTraderAppTokens
+.env
+*.key
+*.pem
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files (optional - include if you want to version them)
+*.pth
+*.pt
+models/
+
+# Temporary files
+*.tmp
+*.bak

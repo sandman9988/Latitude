@@ -1,0 +1,12 @@
+# cTrader DDQN Trading Bot Requirements
+
+# Core dependencies
+numpy>=1.24.0
+
+# Optional: For DDQN model support
+# Uncomment if you want to use trained models
+# torch>=2.0.0
+
+# QuickFIX Python bindings
+# Install manually from ../quickfix directory:
+# cd ../quickfix && pip install -e .

@@ -1,0 +1,67 @@
+╔════════════════════════════════════════════════════════════════╗
+║           cTrader DDQN Trading Bot - QUICK START              ║
+╚════════════════════════════════════════════════════════════════╝
+
+📍 STEP 1: Navigate to Project
+   cd ~/Documents/ctrader_trading_bot
+
+📍 STEP 2: Set Environment Variables
+   export CTRADER_USERNAME="5179095"
+   export CTRADER_PASSWORD_QUOTE="your_password_here"
+   export CTRADER_PASSWORD_TRADE="your_password_here"
+
+📍 STEP 3: Run the Bot
+   ./run.sh
+
+   Or manually:
+   source ../.venv/bin/activate
+   python3 ctrader_ddqn_paper.py
+
+────────────────────────────────────────────────────────────────
+
+📊 MONITORING
+
+   View logs:
+   tail -f logs/python/ctrader_*.log
+
+   Watch for:
+   • [LOGON] - Successful FIX connection
+   • [QUOTE] - Market data subscription
+   • [BAR] - M15 bar close + trading decision
+   • [TRADE] - Order execution
+
+────────────────────────────────────────────────────────────────
+
+⚙️  CONFIGURATION
+
+   Default Settings:
+   • Symbol: BTC/USD (ID: 10028)
+   • Quantity: 0.10
+   • Timeframe: M15 bars
+   • Strategy: MA Crossover (or DDQN if model provided)
+
+   Customize:
+   export CTRADER_BTC_SYMBOL_ID=10028
+   export CTRADER_QTY=0.10
+   export DDQN_MODEL_PATH=/path/to/model.pth
+
+────────────────────────────────────────────────────────────────
+
+✅ STATUS: All bugs fixed, ready to run!
+
+   ✓ TargetSubID configured (QUOTE & TRADE)
+   ✓ FIX configs validated
+   ✓ Python imports working
+   ✓ Logs organized
+   ✓ Virtual environment ready
+
+────────────────────────────────────────────────────────────────
+
+📚 DOCUMENTATION
+
+   • README.md - Full documentation
+   • PROJECT_SUMMARY.md - Organization details
+   • This file - Quick reference
+
+🛑 Press Ctrl+C to stop the bot
+
