@@ -441,7 +441,8 @@ class CTraderFixApp(fix.Application):
         try:
             q = sessionID.getSessionQualifier()
             return (q or "").upper()
-        except Exception:
+        except Exception as e:
+            LOG.warning("[SESSION] Unable to get qualifier: %s", e)
             return ""
 
     # ---- session events ----
@@ -559,7 +560,11 @@ class CTraderFixApp(fix.Application):
             no = fix.NoMDEntries()
             msg.getField(no)
             n = int(no.getValue())
-        except Exception:
+        except (ValueError, AttributeError) as e:
+            LOG.warning("[QUOTE] Invalid NoMDEntries field: %s", e)
+            return
+        except Exception as e:
+            LOG.error("[QUOTE] Error parsing market data snapshot: %s", e)
             return
 
         bid = ask = None
@@ -572,10 +577,14 @@ class CTraderFixApp(fix.Application):
             if g.isSetField(et) and g.isSetField(px):
                 g.getField(et)
                 g.getField(px)
-                if et.getValue() == "0":
-                    bid = float(px.getValue())
-                if et.getValue() == "1":
-                    ask = float(px.getValue())
+                try:
+                    if et.getValue() == "0":
+                        bid = float(px.getValue())
+                    if et.getValue() == "1":
+                        ask = float(px.getValue())
+                except (ValueError, TypeError) as e:
+                    LOG.warning("[QUOTE] Invalid price value in entry %d: %s", i, e)
+                    continue
 
         if bid is not None:
             self.best_bid = bid
@@ -589,7 +598,11 @@ class CTraderFixApp(fix.Application):
             no = fix.NoMDEntries()
             msg.getField(no)
             n = int(no.getValue())
-        except Exception:
+        except (ValueError, AttributeError) as e:
+            LOG.warning("[QUOTE] Invalid NoMDEntries in incremental: %s", e)
+            return
+        except Exception as e:
+            LOG.error("[QUOTE] Error parsing incremental refresh: %s", e)
             return
 
         for i in range(1, n + 1):
@@ -663,7 +676,8 @@ class CTraderFixApp(fix.Application):
                 msg.getField(sym)
                 if sym.getValue() != str(self.symbol_id):
                     return
-        except Exception:
+        except Exception as e:
+            LOG.error("[TRADE] Error parsing position report symbol: %s", e)
             return
 
         long_qty = 0.0
@@ -672,12 +686,16 @@ class CTraderFixApp(fix.Application):
         f704 = fix.StringField(704)  # LongQty
         f705 = fix.StringField(705)  # ShortQty
 
-        if msg.isSetField(f704):
-            msg.getField(f704)
-            long_qty = float(f704.getValue())
-        if msg.isSetField(f705):
-            msg.getField(f705)
-            short_qty = float(f705.getValue())
+        try:
+            if msg.isSetField(f704):
+                msg.getField(f704)
+                long_qty = float(f704.getValue())
+            if msg.isSetField(f705):
+                msg.getField(f705)
+                short_qty = float(f705.getValue())
+        except (ValueError, TypeError) as e:
+            LOG.error("[TRADE] Invalid position quantity: %s. Using 0.", e)
+            # Keep default values (0.0) on error
 
         net = long_qty - short_qty
         old_pos = self.cur_pos
@@ -906,14 +924,41 @@ def main():
     _ = require_env("CTRADER_PASSWORD_QUOTE")
     _ = require_env("CTRADER_PASSWORD_TRADE")
 
-    symbol_id = int(os.environ.get("CTRADER_BTC_SYMBOL_ID", "10028"))
-    qty = float(os.environ.get("CTRADER_QTY", "0.10"))
-    timeframe_minutes = int(os.environ.get("CTRADER_TIMEFRAME_MIN", "15"))
+    # Parse configuration with type safety
+    try:
+        symbol_id = int(os.environ.get("CTRADER_BTC_SYMBOL_ID", "10028"))
+        qty = float(os.environ.get("CTRADER_QTY", "0.10"))
+        timeframe_minutes = int(os.environ.get("CTRADER_TIMEFRAME_MIN", "15"))
+    except (ValueError, TypeError) as e:
+        LOG.error("Invalid configuration value: %s", e)
+        raise SystemExit(1)
+
+    # CRITICAL: Validate configuration to prevent financial losses
+    if qty <= 0:
+        LOG.error("CTRADER_QTY must be positive, got: %s", qty)
+        raise SystemExit(1)
+    if qty > 100:  # Sanity check: prevent absurdly large orders
+        LOG.error("CTRADER_QTY suspiciously large (>100 BTC), got: %s. Aborting for safety.", qty)
+        raise SystemExit(1)
+    if timeframe_minutes <= 0:
+        LOG.error("CTRADER_TIMEFRAME_MIN must be positive, got: %s", timeframe_minutes)
+        raise SystemExit(1)
+    if symbol_id <= 0:
+        LOG.error("CTRADER_BTC_SYMBOL_ID must be positive, got: %s", symbol_id)
+        raise SystemExit(1)
 
     cfg_quote = os.environ.get("CTRADER_CFG_QUOTE", "ctrader_quote.cfg")
     cfg_trade = os.environ.get("CTRADER_CFG_TRADE", "ctrader_trade.cfg")
 
-    LOG.info("symbol_id=%s qty=%s timeframe=M%d", symbol_id, qty, timeframe_minutes)
+    # Validate config files exist
+    if not os.path.exists(cfg_quote):
+        LOG.error("Quote config file not found: %s", cfg_quote)
+        raise SystemExit(1)
+    if not os.path.exists(cfg_trade):
+        LOG.error("Trade config file not found: %s", cfg_trade)
+        raise SystemExit(1)
+
+    LOG.info("✓ Configuration validated: symbol_id=%s qty=%s timeframe=M%d", symbol_id, qty, timeframe_minutes)
     LOG.info("cfg_quote=%s", cfg_quote)
     LOG.info("cfg_trade=%s", cfg_trade)
     LOG.info("CTRADER_USERNAME=%s", user)
