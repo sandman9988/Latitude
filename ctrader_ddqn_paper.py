@@ -229,6 +229,88 @@ class Policy:
 
 
 # ----------------------------
+# Path Recorder
+# ----------------------------
+class PathRecorder:
+    """Record M1 OHLC path during entire trade lifecycle."""
+    def __init__(self):
+        self.recording = False
+        self.entry_time = None
+        self.entry_price = None
+        self.direction = None
+        self.path = []  # List of (timestamp, o, h, l, c) tuples
+        self.trade_counter = 0
+
+    def start_recording(self, entry_time: dt.datetime, entry_price: float, direction: int):
+        """Start recording path for a new trade."""
+        self.recording = True
+        self.entry_time = entry_time
+        self.entry_price = entry_price
+        self.direction = direction
+        self.path = []
+        LOG.info("[PATH] Started recording for %s trade at %.2f",
+                 "LONG" if direction == 1 else "SHORT", entry_price)
+
+    def add_bar(self, bar):
+        """Add a bar to the path. bar is tuple: (timestamp, o, h, l, c)"""
+        if not self.recording:
+            return
+        self.path.append(bar)
+
+    def stop_recording(self, exit_time: dt.datetime, exit_price: float, pnl: float) -> dict:
+        """Stop recording and return trade summary with path."""
+        if not self.recording:
+            return None
+
+        self.recording = False
+        self.trade_counter += 1
+
+        # Calculate trade duration
+        duration_seconds = (exit_time - self.entry_time).total_seconds() if self.entry_time else 0
+
+        trade_record = {
+            "trade_id": self.trade_counter,
+            "entry_time": self.entry_time.isoformat() if self.entry_time else None,
+            "exit_time": exit_time.isoformat(),
+            "entry_price": self.entry_price,
+            "exit_price": exit_price,
+            "direction": "LONG" if self.direction == 1 else "SHORT",
+            "pnl": pnl,
+            "duration_seconds": duration_seconds,
+            "bars_count": len(self.path),
+            "path": [
+                {"timestamp": t.isoformat(), "open": o, "high": h, "low": l, "close": c}
+                for t, o, h, l, c in self.path
+            ]
+        }
+
+        # Save to JSON file
+        self._save_to_file(trade_record)
+
+        LOG.info("[PATH] Stopped recording. Trade #%d: %d bars, %.2f seconds, PnL=%.2f",
+                 self.trade_counter, len(self.path), duration_seconds, pnl)
+
+        return trade_record
+
+    def _save_to_file(self, trade_record: dict):
+        """Save trade record to JSON file."""
+        import json
+        from pathlib import Path
+
+        trades_dir = Path("trades")
+        trades_dir.mkdir(exist_ok=True)
+
+        filename = trades_dir / f"trade_{trade_record['trade_id']:04d}_{trade_record['direction'].lower()}.json"
+
+        try:
+            with open(filename, 'w') as f:
+                json.dump(trade_record, f, indent=2)
+            LOG.info("[PATH] Saved to %s", filename)
+        except Exception as e:
+            LOG.error("[PATH] Failed to save: %s", e)
+
+
+# ----------------------------
 # MFE/MAE Tracker
 # ----------------------------
 class MFEMAETracker:
@@ -317,6 +399,7 @@ class CTraderFixApp(fix.Application):
         self.bars = deque(maxlen=2000)
         self.builder = BarBuilder(timeframe_minutes)
         self.mfe_mae_tracker = MFEMAETracker()
+        self.path_recorder = PathRecorder()
 
         self.best_bid = None
         self.best_ask = None
@@ -581,7 +664,7 @@ class CTraderFixApp(fix.Application):
 
         LOG.info("[TRADE] PositionReport net=%0.6f -> cur_pos=%s", net, self.cur_pos)
         
-        # Log MFE/MAE summary when position closes
+        # Log MFE/MAE summary and save path when position closes
         if old_pos != 0 and self.cur_pos == 0:
             summary = self.mfe_mae_tracker.get_summary()
             LOG.info(
@@ -592,6 +675,14 @@ class CTraderFixApp(fix.Application):
                 summary["winner_to_loser"]
             )
             self.mfe_mae_tracker.reset()
+            
+            # Stop path recording and save trade
+            if self.best_bid and self.best_ask:
+                exit_price = (self.best_bid + self.best_ask) / 2.0
+                # Calculate PnL (simplified - using direction from summary)
+                direction_sign = 1 if summary["direction"] == "LONG" else -1
+                pnl = (exit_price - summary["entry_price"]) * direction_sign
+                self.path_recorder.stop_recording(utc_now(), exit_price, pnl)
 
     def on_exec_report(self, msg: fix.Message):
         ex = fix.ExecType()
@@ -634,6 +725,11 @@ class CTraderFixApp(fix.Application):
     # ----------------------------
     def on_bar_close(self, bar):
         t, o, h, l, c = bar
+        
+        # Record bar if position is open
+        if self.cur_pos != 0:
+            self.path_recorder.add_bar(bar)
+        
         action = self.policy.decide(self.bars)
         desired = -1 if action == 0 else (0 if action == 1 else 1)
 
@@ -671,11 +767,12 @@ class CTraderFixApp(fix.Application):
         order.setField(fix.OrdType("1"))
         order.setField(fix.OrderQty(qty))
         
-        # Start MFE/MAE tracking
+        # Start MFE/MAE tracking and path recording
         if self.best_bid and self.best_ask:
             entry_price = (self.best_bid + self.best_ask) / 2.0
             direction = 1 if side == "1" else -1
             self.mfe_mae_tracker.start_tracking(entry_price, direction)
+            self.path_recorder.start_recording(utc_now(), entry_price, direction)
 
         fix.Session.sendToTarget(order, self.trade_sid)
         LOG.info(
