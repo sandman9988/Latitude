@@ -1,8 +1,10 @@
 # Development Roadmap - Incremental Enhancement Strategy
 
-**Project:** cTrader Python FIX Trading Bot
+**Project:** cTrader Python FIX Trading Bot  
+**Original Design:** MQL5 Adaptive Trading System (see MASTER_HANDBOOK.md)
+**Platform Migration:** MQL5 → Python + QuickFIX for cTrader
 **Date:** 2026-01-09
-**Approach:** Test-driven incremental development
+**Approach:** Test-driven incremental development following handbook priorities
 
 ---
 
@@ -61,90 +63,130 @@ Make the invisible visible - track everything
 
 ---
 
-### **PHASE 2: Reward Shaping (Week 2)**
+### **PHASE 2: Reward Shaping (Week 2)** ⏳
 Teach the bot what "good" looks like
+*Handbook Reference: Section 4.6 - Reward Shaping + Section 2.3 - Path-Centric Design*
 
 #### Update 2.1: Detect Winner-to-Loser (WTL) ⏳
-**Goal:** Flag trades that had profit but closed at loss
+**Goal:** Flag trades that had MFE > 0 but closed at loss (Omega % concept)
 **Files:** `ctrader_ddqn_paper.py`
-**Test:** Manually close profitable trade at loss, check flag
-**Success:** WTL flag appears in trade record
+**Handbook Formula:** `if MFE > 0 and final_pnl < 0: WTL = True`
+**Test:** Manually close profitable trade at loss, check flag in logs + JSON
+**Success:** WTL flag appears in trade record and path JSON
 
-#### Update 2.2: Implement WTL Penalty ⏳
-**Goal:** Punish giving back profits in reward calculation
-**Files:** Create `reward_shaper.py`
-**Test:** Compare rewards with/without WTL penalty
-**Success:** WTL trades have negative reward component
+#### Update 2.2: Implement Asymmetric Reward Shaper ⏳
+**Goal:** Create reward_shaper.py with component-based rewards
+**Files:** Create `reward_shaper.py` (Python port of RewardShaping.mqh)
+**Components:**
+  - Capture efficiency: `(exit_pnl / MFE) - target_capture`
+  - WTL penalty: `-(mfe_normalized × giveback_ratio × time_penalty)`
+  - Opportunity cost: `-(potential_mfe × signal_strength × 0.3)`
+**Test:** Compare rewards with/without components
+**Success:** Asymmetric rewards calculated correctly
 
-#### Update 2.3: Add Capture Efficiency Reward ⏳
-**Goal:** Reward based on (exit_pnl / MFE) ratio
+#### Update 2.3: Add Self-Optimizing Reward Parameters ⏳
+**Goal:** Make reward weights adaptive per instrument (learned not hardcoded)
 **Files:** `reward_shaper.py`
-**Test:** High capture ratio = higher reward
-**Success:** Reward correlates with capture ratio
+**Handbook Principle:** "NO MAGIC NUMBERS - Every parameter is learned"
+**Test:** Track reward weight evolution over time
+**Success:** Reward weights adapt based on performance feedback
 
-#### Update 2.4: Integrate Shaped Rewards ⏳
-**Goal:** Use shaped rewards in DDQN training
+#### Update 2.4: Integrate Shaped Rewards into DDQN ⏳
+**Goal:** Use shaped rewards in training loop with replay buffer
 **Files:** `ctrader_ddqn_paper.py`
-**Test:** Train for 100 episodes, check reward evolution
-**Success:** Shaped rewards influence policy
+**Test:** Train for 100 episodes, verify reward components logged
+**Success:** Shaped rewards influence policy, check correlation with performance
 
 ---
 
-### **PHASE 3: Enhanced Features (Week 3)**
+### **PHASE 3: Advanced Features (Week 3)** ⏳
 Add market intelligence
+*Handbook Reference: Section 4.7 - Feature Engineering + Section 3.3 - Regime Detection*
 
 #### Update 3.1: Add Event-Relative Time Features ⏳
-**Goal:** Minutes to session close, rollover, etc.
-**Files:** Create `time_features.py`
-**Test:** Check features at known times (e.g., 4:59 PM EST)
-**Success:** Features accurate within 1 minute
+**Goal:** Minutes to session close, rollover, news events (not wall-clock time)
+**Files:** Create `time_features.py` (Python port of MarketCalendar.mqh)
+**Handbook Insight:** Event-relative > absolute time (handles holidays, DST)
+**Test:** Check features at known times (e.g., 4:59 PM EST Friday)
+**Success:** Features accurate within 1 minute, handle DST transitions
 
-#### Update 3.2: Add Volatility Regime Detection ⏳
-**Goal:** Simple fast/slow volatility ratio
-**Files:** Create `regime_detector.py`
-**Test:** Test on trending vs ranging data
-**Success:** Correctly identifies regime type
+#### Update 3.2: Add Physics-Based Regime Detection ⏳
+**Goal:** Damping ratio (ζ) via DSP to detect trending vs mean-reverting
+**Files:** Create `regime_detector.py` (Python port of DSPPipeline.mqh + RegimeDetector.mqh)
+**Handbook Formula:**
+  - Detrend → Bandpass → Hilbert → Envelope → Decay fit: `A(t) = A₀ × e^(-ζωt)`
+  - ζ < 0.3: Trending (underdamped)
+  - 0.3 ≤ ζ < 0.7: Transitional (critical)
+  - ζ ≥ 0.7: Mean-reverting (overdamped)
+**Test:** Test on synthetic trending vs ranging data
+**Success:** 80%+ regime classification accuracy
 
-#### Update 3.3: Expand Feature Set ⏳
-**Goal:** Add 10 more features (RSI, ATR, VWAP, etc.)
+#### Update 3.3: Expand Feature Set with Physics + Volatility ⏳
+**Goal:** Add advanced features (Roger-Satchell vol, Omega %, physics-based)
 **Files:** Create `feature_engine.py`
-**Test:** Verify all features calculate without NaN
-**Success:** 20 total features, no errors
+**Features to add:**
+  - Roger-Satchell volatility (handles trending better than Garman-Klass)
+  - Omega % (upside potential / downside risk ratio)
+  - ATR (Average True Range)
+  - RSI (Relative Strength Index)
+  - VWAP (Volume-Weighted Average Price)
+  - Physics: momentum, acceleration, jerk
+**Handbook Principle:** "Instrument-agnostic normalization (log-returns, BPS)"
+**Test:** Verify all features calculate without NaN, check normalization
+**Success:** 20+ features normalized correctly (mean≈0, std≈1)
 
-#### Update 3.4: Feature Normalization ⏳
-**Goal:** Z-score normalize all features
-**Files:** `feature_engine.py`
-**Test:** Check mean=0, std=1 for all features
-**Success:** Normalized feature distribution correct
+#### Update 3.4: Add Feature Tournament Selection ⏳
+**Goal:** Survival tournament to eliminate low-IC features
+**Files:** `feature_engine.py` (Python port of FeatureTournament.mqh)
+**Handbook Method:** Information Coefficient = `correlation(feature[t], returns[t+horizon])`
+**Test:** Run tournament on 50 features, keep top 20
+**Success:** IC-ranked features, bottom performers eliminated
 
 ---
 
-### **PHASE 4: Risk Management (Week 4)**
+### **PHASE 4: Risk Management (Week 4)** ⏳
 Don't lose the account
+*Handbook Reference: Section 4.9 - Risk Management + Section 3.2 - VaR Adjustment*
 
-#### Update 4.1: Add Position Sizing ⏳
-**Goal:** Size positions based on volatility
-**Files:** Create `position_sizer.py`
-**Test:** Compare sizes in high vs low vol
-**Success:** Size inversely proportional to volatility
+#### Update 4.1: Add VaR-Based Position Sizing ⏳
+**Goal:** Dynamic position sizing with multi-factor VaR adjustment
+**Files:** Create `position_sizer.py` (Python port of VaREstimator.mqh)
+**Handbook Formula:**
+```
+Adjusted_VaR = Base_VaR × regime_factor × vpin_factor × kurtosis_factor
+Position_Size = (Risk_Budget × Equity) / Adjusted_VaR
+```
+**Test:** Compare sizes in high vs low volatility regimes
+**Success:** Position size inversely proportional to adjusted VaR
 
-#### Update 4.2: Add Circuit Breakers ⏳
-**Goal:** Stop trading on drawdown/loss streak
-**Files:** Create `circuit_breaker.py`
-**Test:** Trigger drawdown threshold, verify halt
-**Success:** Trading stops when breaker triggers
+#### Update 4.2: Add Multi-Signal Circuit Breakers ⏳
+**Goal:** Stop trading on Sortino degradation, kurtosis, VPIN thresholds
+**Files:** Create `circuit_breaker.py` (Python port of CircuitBreakers.mqh)
+**Handbook Breakers:**
+  - Sortino ratio < threshold (downside risk spike)
+  - Kurtosis > threshold (fat tails detected)
+  - VPIN > threshold (toxic order flow)
+  - Max consecutive losses
+**Test:** Trigger each breaker independently, verify halt
+**Success:** Trading stops when any breaker triggers, logs reason
 
-#### Update 4.3: Add Daily Loss Limit ⏳
-**Goal:** Maximum % loss per day
+#### Update 4.3: Add Dynamic Risk Budget ⏳
+**Goal:** Adaptive daily/weekly loss limits based on account health
 **Files:** `circuit_breaker.py`
-**Test:** Lose X%, verify no new trades
-**Success:** No trades after daily limit hit
+**Handbook Principle:** Efficiency over avoidance - don't reward not trading
+**Features:**
+  - Graduated loss limits (tighter when struggling)
+  - Recovery mode with reduced sizing
+  - Automatic reset on performance improvement
+**Test:** Simulate drawdown scenarios
+**Success:** Risk budget adapts correctly, prevents catastrophic loss
 
-#### Update 4.4: Add Correlation Monitor ⏳
-**Goal:** Track correlation with other assets (if multi-asset)
-**Files:** Create `correlation_monitor.py`
-**Test:** Add second symbol, check correlation
-**Success:** Correlation calculated correctly
+#### Update 4.4: Add Crisis Correlation Adjustment ⏳
+**Goal:** Detect correlation spikes during stress (multi-asset)
+**Files:** Create `correlation_monitor.py` (Python port of DynamicCorrelation.mqh)
+**Handbook Warning:** "Correlations spike in crises"
+**Test:** Simulate crisis scenario with correlated moves
+**Success:** Position sizing reduced when correlation exceeds normal range
 
 ---
 
