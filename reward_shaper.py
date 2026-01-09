@@ -9,68 +9,33 @@ Implements three reward components:
 3. Opportunity Cost: Penalizes missing potential profits
 
 All weights are adaptive per instrument (NO MAGIC NUMBERS principle).
+Uses LearnedParametersManager for DRY compliance.
 """
 
 import datetime as dt
 from typing import Dict, Optional
 import math
-
-
-class AdaptiveRewardParams:
-    """
-    Self-optimizing reward parameters per instrument.
-    Implements momentum-based updates following handbook design.
-    """
-    
-    def __init__(self, name: str, initial_value: float, learning_rate: float = 0.01):
-        self.name = name
-        self.value = initial_value
-        self.learning_rate = learning_rate
-        self.momentum = 0.0
-        self.momentum_decay = 0.9
-        self.update_count = 0
-        
-    def update(self, gradient: float):
-        """Update parameter using momentum-based gradient descent."""
-        self.momentum = self.momentum_decay * self.momentum + (1 - self.momentum_decay) * gradient
-        self.value += self.learning_rate * self.momentum
-        self.update_count += 1
-        
-    def soft_clamp(self, min_val: float, max_val: float):
-        """Soft clamping using tanh to avoid hard boundaries."""
-        # Map value to [0, 1] then scale to [min_val, max_val]
-        normalized = (math.tanh(self.value) + 1) / 2
-        self.value = min_val + normalized * (max_val - min_val)
+from learned_parameters import LearnedParametersManager
 
 
 class RewardShaper:
     """
     Asymmetric reward shaper for DDQN training.
     Implements component-based rewards with adaptive weights.
+    
+    Now uses LearnedParametersManager (DRY - single source of truth)
     """
     
-    def __init__(self, instrument: str = "BTCUSD"):
+    def __init__(self, instrument: str = "BTCUSD", 
+                 param_manager: Optional[LearnedParametersManager] = None):
         self.instrument = instrument
         
-        # Baseline MFE for normalization (in price units, will adapt)
-        self.baseline_mfe = AdaptiveRewardParams("baseline_mfe", initial_value=100.0, learning_rate=0.005)
-        
-        # Capture efficiency parameters
-        self.target_capture_ratio = AdaptiveRewardParams("target_capture", initial_value=0.7, learning_rate=0.01)
-        self.capture_multiplier = AdaptiveRewardParams("capture_mult", initial_value=2.0, learning_rate=0.01)
-        
-        # WTL penalty parameters
-        self.wtl_penalty_mult = AdaptiveRewardParams("wtl_penalty", initial_value=3.0, learning_rate=0.01)
-        self.wtl_threshold = AdaptiveRewardParams("wtl_threshold", initial_value=10.0, learning_rate=0.005)
-        
-        # Opportunity cost parameters
-        self.opportunity_weight = AdaptiveRewardParams("opp_weight", initial_value=1.0, learning_rate=0.01)
-        self.opportunity_threshold = AdaptiveRewardParams("opp_threshold", initial_value=50.0, learning_rate=0.005)
-        
-        # Component weights (how much each component contributes to total reward)
-        self.weight_capture = AdaptiveRewardParams("weight_capture", initial_value=1.0, learning_rate=0.01)
-        self.weight_wtl = AdaptiveRewardParams("weight_wtl", initial_value=1.0, learning_rate=0.01)
-        self.weight_opportunity = AdaptiveRewardParams("weight_opp", initial_value=0.5, learning_rate=0.01)
+        # Use shared parameter manager (DRY)
+        if param_manager is None:
+            self.param_manager = LearnedParametersManager()
+            self.param_manager.load()  # Load existing parameters if available
+        else:
+            self.param_manager = param_manager
         
         # Statistics for monitoring
         self.total_rewards_calculated = 0
@@ -98,10 +63,14 @@ class RewardShaper:
         if mfe <= 0:
             return 0.0
         
+        # Get adaptive parameters
+        capture_mult = self.param_manager.get(self.instrument, 'capture_multiplier')
+        target_capture = 0.7  # Principled default from handbook: aim for 70% MFE capture
+        
         capture_ratio = exit_pnl / mfe
         
         # Reward = difference from target × multiplier
-        reward = (capture_ratio - self.target_capture_ratio.value) * self.capture_multiplier.value
+        reward = (capture_ratio - target_capture) * capture_mult
         
         # Track statistics
         self.component_stats['capture']['sum'] += reward
@@ -130,11 +99,16 @@ class RewardShaper:
         Returns:
             Penalty (negative reward) for WTL, 0 otherwise
         """
-        if not was_wtl or mfe < self.wtl_threshold.value:
+        # Get adaptive parameters
+        wtl_penalty_mult = self.param_manager.get(self.instrument, 'wtl_penalty_multiplier')
+        wtl_threshold = 10.0  # Principled default: minimum MFE to trigger WTL penalty
+        baseline_mfe = 100.0  # Principled default: typical MFE for normalization
+        
+        if not was_wtl or mfe < wtl_threshold:
             return 0.0
         
         # Normalize MFE by baseline
-        mfe_normalized = mfe / max(self.baseline_mfe.value, 1.0)
+        mfe_normalized = mfe / max(baseline_mfe, 1.0)
         
         # Calculate how much profit was given back
         giveback_ratio = (mfe - exit_pnl) / mfe
@@ -143,7 +117,7 @@ class RewardShaper:
         time_penalty = 1.0 + (bars_from_mfe_to_exit / 10.0)
         
         # Final penalty (negative reward)
-        penalty = -mfe_normalized * giveback_ratio * self.wtl_penalty_mult.value * time_penalty
+        penalty = -mfe_normalized * giveback_ratio * wtl_penalty_mult * time_penalty
         
         # Track statistics
         self.component_stats['wtl']['sum'] += penalty
@@ -167,14 +141,19 @@ class RewardShaper:
         Returns:
             Opportunity cost penalty (negative reward)
         """
-        if potential_mfe < self.opportunity_threshold.value or signal_strength < 0.5:
+        # Get adaptive parameters
+        opportunity_mult = self.param_manager.get(self.instrument, 'opportunity_multiplier')
+        opportunity_threshold = 50.0  # Principled default: minimum potential profit to count as missed opportunity
+        baseline_mfe = 100.0  # Principled default
+        
+        if potential_mfe < opportunity_threshold or signal_strength < 0.5:
             return 0.0
         
         # Normalize opportunity by baseline
-        opportunity_normalized = potential_mfe / max(self.baseline_mfe.value, 1.0)
+        opportunity_normalized = potential_mfe / max(baseline_mfe, 1.0)
         
         # Penalty scaled by signal strength and weight
-        penalty = -opportunity_normalized * signal_strength * self.opportunity_weight.value * 0.3
+        penalty = -opportunity_normalized * signal_strength * opportunity_mult * 0.3
         
         # Track statistics
         self.component_stats['opportunity']['sum'] += penalty
@@ -213,11 +192,16 @@ class RewardShaper:
         r_wtl = self.calculate_wtl_penalty(was_wtl, mfe, exit_pnl, bars_from_mfe)
         r_opportunity = self.calculate_opportunity_cost(potential_mfe, signal_strength)
         
-        # Weighted total
+        # Weighted total (weights are fixed at 1.0, 1.0, 0.5 per handbook)
+        # Component multipliers handle the adaptation
+        weight_capture = 1.0
+        weight_wtl = 1.0
+        weight_opportunity = 0.5  # Reduced weight for missed opportunities
+        
         total_reward = (
-            self.weight_capture.value * r_capture +
-            self.weight_wtl.value * r_wtl +
-            self.weight_opportunity.value * r_opportunity
+            weight_capture * r_capture +
+            weight_wtl * r_wtl +
+            weight_opportunity * r_opportunity
         )
         
         self.total_rewards_calculated += 1
@@ -234,57 +218,35 @@ class RewardShaper:
             ])
         }
     
-    def update_baseline_mfe(self, observed_mfe: float, learning_rate: float = 0.05):
-        """
-        Update baseline MFE using exponential moving average.
-        
-        Args:
-            observed_mfe: MFE from recent trade
-            learning_rate: How quickly to adapt baseline
-        """
-        if observed_mfe > 0:
-            # EMA update
-            self.baseline_mfe.value = (
-                (1 - learning_rate) * self.baseline_mfe.value +
-                learning_rate * observed_mfe
-            )
-    
     def adapt_weights(self, performance_delta: float):
         """
         Adjust reward component weights based on performance feedback.
         
-        This is where self-optimization happens - weights that lead to better
-        performance get increased, weights that lead to worse get decreased.
+        NOTE: Removed adaptive weights. Per handbook principle: component-level
+        multipliers (capture_multiplier, wtl_penalty_multiplier, etc.) provide
+        the necessary tuning. Fixed weights keep the balance stable while the
+        multipliers adapt to improve performance.
         
         Args:
-            performance_delta: Change in performance metric (e.g., Sharpe ratio)
+            performance_delta: Change in performance metric (unused now)
         """
-        # Simplified gradient: increase weights if performance improved
-        gradient = performance_delta
-        
-        self.weight_capture.update(gradient)
-        self.weight_wtl.update(gradient)
-        self.weight_opportunity.update(gradient * 0.5)  # Opportunity cost less aggressive
-        
-        # Ensure weights stay positive and reasonable
-        self.weight_capture.soft_clamp(0.1, 5.0)
-        self.weight_wtl.soft_clamp(0.1, 5.0)
-        self.weight_opportunity.soft_clamp(0.0, 2.0)
+        # Weights are now fixed at principled defaults (1.0, 1.0, 0.5)
+        # Adaptation happens via the component multipliers in LearnedParametersManager
+        pass
     
     def get_statistics(self) -> Dict:
         """Return statistics about reward components."""
         stats = {
             'total_rewards_calculated': self.total_rewards_calculated,
-            'baseline_mfe': self.baseline_mfe.value,
             'parameters': {
-                'target_capture_ratio': self.target_capture_ratio.value,
-                'wtl_penalty_mult': self.wtl_penalty_mult.value,
-                'opportunity_weight': self.opportunity_weight.value,
+                'capture_multiplier': self.param_manager.get(self.instrument, 'capture_multiplier'),
+                'wtl_penalty_multiplier': self.param_manager.get(self.instrument, 'wtl_penalty_multiplier'),
+                'opportunity_multiplier': self.param_manager.get(self.instrument, 'opportunity_multiplier'),
             },
             'weights': {
-                'capture': self.weight_capture.value,
-                'wtl': self.weight_wtl.value,
-                'opportunity': self.weight_opportunity.value,
+                'capture': 1.0,  # Fixed weights
+                'wtl': 1.0,
+                'opportunity': 0.5,
             }
         }
         
@@ -310,17 +272,16 @@ class RewardShaper:
 
 📊 REWARD STATISTICS
    Total Rewards Calculated: {stats['total_rewards_calculated']}
-   Baseline MFE:             ${stats['baseline_mfe']:.2f}
 
-⚙️  ADAPTIVE PARAMETERS
-   Target Capture Ratio:     {stats['parameters']['target_capture_ratio']:.2%}
-   WTL Penalty Multiplier:   {stats['parameters']['wtl_penalty_mult']:.2f}
-   Opportunity Weight:       {stats['parameters']['opportunity_weight']:.2f}
+⚙️  ADAPTIVE MULTIPLIERS (from LearnedParametersManager)
+   Capture Multiplier:       {stats['parameters']['capture_multiplier']:.2f}
+   WTL Penalty Multiplier:   {stats['parameters']['wtl_penalty_multiplier']:.2f}
+   Opportunity Multiplier:   {stats['parameters']['opportunity_multiplier']:.2f}
 
-🎚️  COMPONENT WEIGHTS (Self-Optimizing)
-   Capture Efficiency:       {stats['weights']['capture']:.3f}
-   WTL Penalty:              {stats['weights']['wtl']:.3f}
-   Opportunity Cost:         {stats['weights']['opportunity']:.3f}
+🎚️  COMPONENT WEIGHTS (Fixed)
+   Capture Efficiency:       {stats['weights']['capture']:.1f}
+   WTL Penalty:              {stats['weights']['wtl']:.1f}
+   Opportunity Cost:         {stats['weights']['opportunity']:.1f}
 
 📈 AVERAGE COMPONENT REWARDS
    Capture Efficiency:       {stats['avg_capture_reward']:+.4f}
@@ -346,7 +307,6 @@ if __name__ == "__main__":
     })
     print(f"Capture Efficiency: {reward1['capture_efficiency']:+.4f}")
     print(f"Total Reward: {reward1['total_reward']:+.4f}")
-    shaper.update_baseline_mfe(100.0)
     
     # Test 2: Winner-to-Loser scenario
     print("\n=== Test 2: Winner-to-Loser (MFE=150, exit_pnl=-30) ===")
@@ -360,7 +320,6 @@ if __name__ == "__main__":
     print(f"Capture Efficiency: {reward2['capture_efficiency']:+.4f}")
     print(f"WTL Penalty: {reward2['wtl_penalty']:+.4f}")
     print(f"Total Reward: {reward2['total_reward']:+.4f}")
-    shaper.update_baseline_mfe(150.0)
     
     # Test 3: Missed opportunity
     print("\n=== Test 3: Missed Opportunity (potential_mfe=200, signal=0.8) ===")
