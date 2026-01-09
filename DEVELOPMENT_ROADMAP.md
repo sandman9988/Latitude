@@ -29,32 +29,35 @@
 
 ## Enhancement Phases
 
-### **PHASE 1: Observability & Metrics (Week 1)**
+### **PHASE 1: Observability & Metrics (Week 1)** ✅ COMPLETE
 Make the invisible visible - track everything
 
-#### Update 1.1: Add MFE/MAE Tracking ⏳
+#### Update 1.1: Add MFE/MAE Tracking ✅ COMPLETE (commit 24496c5)
 **Goal:** Track maximum favorable/adverse excursion during trades
 **Files:** `ctrader_ddqn_paper.py`
 **Test:** Open trade, verify MFE/MAE updates in logs
-**Success:** Log shows MFE/MAE values on position updates
+**Success:** ✅ MFEMAETracker class implemented, updates every tick
+**Bonus:** ✅ Configurable timeframe (M1 for 15x faster testing)
 
-#### Update 1.2: Add Path Recording ⏳
+#### Update 1.2: Add Path Recording ✅ COMPLETE (commit b86edc3)
 **Goal:** Record M1 OHLC path during entire trade lifecycle
 **Files:** `ctrader_ddqn_paper.py`
 **Test:** Open/close trade, verify full path saved to JSON
-**Success:** JSON file with complete price path exists
+**Success:** ✅ PathRecorder class saves complete trade journey to trades/
 
-#### Update 1.3: Add Performance Dashboard ⏳
+#### Update 1.3: Add Performance Dashboard ✅ COMPLETE (commit 5f090b3)
 **Goal:** Real-time performance metrics (Sharpe, win rate, etc.)
 **Files:** Create `performance_tracker.py`
 **Test:** Run for 10 trades, check metrics
-**Success:** Accurate Sharpe ratio, win/loss ratio calculated
+**Success:** ✅ PerformanceTracker calculates 15+ metrics in real-time
+**Bonus:** ✅ Dashboard prints every 5 trades
 
-#### Update 1.4: Add Trade Export ⏳
+#### Update 1.4: Add Trade Export ✅ COMPLETE (commit 8b584c9)
 **Goal:** Export trades to CSV for offline analysis
 **Files:** Create `trade_exporter.py`
 **Test:** Generate CSV, load in Excel/pandas
-**Success:** CSV readable, all fields present
+**Success:** ✅ TradeExporter with 18-column CSV format
+**Bonus:** ✅ Auto-exports every 10 trades
 
 ---
 
@@ -288,10 +291,17 @@ git merge fix-broken-feature
 - ✅ Automatic recovery works
 
 ---
+4 (Phase 1 Complete)
+**Branch:** update-1.1-mfe-mae-tracking-v2
+**Next Update:** 2.1 - Detect Winner-to-Loser (WTL) Trades
+**Target Date:** 2026-01-10
+**Estimated Time:** 1-2 hours
 
-## Current Status
-
-**Version:** 0.1.0 (Baseline)
+**Recent Achievements:**
+- ✅ Phase 1 (4 updates) completed 2026-01-09
+- ✅ 1,303 total lines of code (877 main + 228 perf + 198 export)
+- ✅ M1 timeframe enabled (15x faster testing)
+- ✅ Complete observability stack operationale)
 **Next Update:** 1.1 - Add MFE/MAE Tracking
 **Target Date:** 2026-01-09 (Today)
 **Estimated Time:** 2 hours
