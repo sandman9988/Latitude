@@ -31,6 +31,7 @@ import quickfix as fix
 
 from performance_tracker import PerformanceTracker
 from trade_exporter import TradeExporter
+from reward_shaper import RewardShaper
 
 
 # ----------------------------
@@ -409,6 +410,9 @@ class CTraderFixApp(fix.Application):
         self.path_recorder = PathRecorder()
         self.performance = PerformanceTracker()
         self.trade_exporter = TradeExporter()
+        self.reward_shaper = RewardShaper(instrument="BTCUSD")
+        
+        self.previous_sharpe = 0.0  # Track for adaptive weight updates
 
         self.best_bid = None
         self.best_ask = None
@@ -713,6 +717,41 @@ class CTraderFixApp(fix.Application):
                         mae=summary["mae"],
                         winner_to_loser=summary["winner_to_loser"]
                     )
+                    
+                    # Calculate shaped rewards for DDQN training
+                    reward_data = {
+                        'exit_pnl': pnl,
+                        'mfe': summary["mfe"],
+                        'mae': summary["mae"],
+                        'winner_to_loser': summary["winner_to_loser"]
+                    }
+                    shaped_rewards = self.reward_shaper.calculate_total_reward(reward_data)
+                    
+                    # Update baseline MFE for normalization
+                    if summary["mfe"] > 0:
+                        self.reward_shaper.update_baseline_mfe(summary["mfe"])
+                    
+                    # Log shaped reward components
+                    LOG.info(
+                        "[REWARD] Capture: %+.4f | WTL Penalty: %+.4f | Opportunity: %+.4f | Total: %+.4f | Active: %d",
+                        shaped_rewards['capture_efficiency'],
+                        shaped_rewards['wtl_penalty'],
+                        shaped_rewards['opportunity_cost'],
+                        shaped_rewards['total_reward'],
+                        shaped_rewards['components_active']
+                    )
+                    
+                    # Adapt reward weights based on performance improvement
+                    metrics = self.performance.get_metrics()
+                    current_sharpe = metrics['sharpe_ratio']
+                    sharpe_delta = current_sharpe - self.previous_sharpe
+                    
+                    if self.performance.total_trades % 5 == 0 and self.performance.total_trades > 5:
+                        self.reward_shaper.adapt_weights(sharpe_delta)
+                        LOG.info("[REWARD] Adapted weights based on Sharpe delta: %+.4f", sharpe_delta)
+                        LOG.info(self.reward_shaper.print_summary())
+                    
+                    self.previous_sharpe = current_sharpe
                     
                     # Log performance dashboard every 5 trades
                     if self.performance.total_trades % 5 == 0:
