@@ -8,6 +8,9 @@ import csv
 import datetime as dt
 from pathlib import Path
 from typing import List, Dict, Optional
+import logging
+
+LOG = logging.getLogger(__name__)
 
 
 class TradeExporter:
@@ -38,7 +41,7 @@ class TradeExporter:
         
         filepath = self.output_dir / filename
         
-        # Define CSV columns
+        # Define CSV columns (Phase 3.3: Added dual-agent attribution metrics)
         fieldnames = [
             'trade_num',
             'entry_time',
@@ -57,7 +60,16 @@ class TradeExporter:
             'capture_efficiency',
             'winner_to_loser',
             'equity_after',
-            'result'
+            'result',
+            # Phase 3.3: Dual-agent attribution
+            'predicted_runway',
+            'runway_utilization',
+            'runway_error_pct',
+            'trigger_quality',
+            'harvester_quality',
+            'mfe_bar_offset',
+            'mae_bar_offset',
+            'bars_from_mfe_to_exit'
         ]
         
         # Write CSV
@@ -66,42 +78,81 @@ class TradeExporter:
             writer.writeheader()
             
             for trade in trades:
+                
+                # Defensive: Validate required fields
+                if 'entry_time' not in trade or 'exit_time' not in trade:
+                    LOG.warning("Trade %d missing timestamps. Skipping.", trade.get('trade_num', -1))
+                    continue
+                
+                # Defensive: Calculate duration with error handling
+                try:
+                    entry_time = trade['entry_time']
+                    exit_time = trade['exit_time']
+                    duration = (exit_time - entry_time).total_seconds()
+                except (TypeError, AttributeError) as e:
+                    LOG.warning("Trade %d invalid timestamp format: %s", trade.get('trade_num', -1), e)
+                    duration = 0.0
+                
+                # Defensive: Validate numeric fields
+                entry_price = trade.get('entry_price', 0.0)
+                exit_price = trade.get('exit_price', 0.0)
+                pnl = trade.get('pnl', 0.0)
+                mfe = trade.get('mfe', 0.0)
+                mae = trade.get('mae', 0.0)
+                
+                # Prevent division by zero
+                if entry_price == 0:
+                    LOG.warning("Trade %d has zero entry_price. Using exit_price.", trade.get('trade_num', -1))
+                    entry_price = exit_price if exit_price != 0 else 1.0  # Fallback
+                
                 # Calculate derived metrics
-                duration = (trade['exit_time'] - trade['entry_time']).total_seconds()
-                price_change = trade['exit_price'] - trade['entry_price']
-                pnl_percent = (trade['pnl'] / trade['entry_price']) * 100 if trade['entry_price'] > 0 else 0
-                mfe_percent = (trade['mfe'] / trade['entry_price']) * 100 if trade['entry_price'] > 0 else 0
-                mae_percent = (trade['mae'] / trade['entry_price']) * 100 if trade['entry_price'] > 0 else 0
+                price_change = exit_price - entry_price
+                pnl_percent = (price_change / entry_price) * 100 if entry_price != 0 else 0.0
+                mfe_percent = (mfe / entry_price) * 100 if entry_price != 0 else 0.0
+                mae_percent = (mae / entry_price) * 100 if entry_price != 0 else 0.0
+                capture_efficiency = (pnl / mfe) if mfe > 0 else 0.0
                 
-                # Capture efficiency: how much of MFE was captured as PnL
-                capture_efficiency = (trade['pnl'] / trade['mfe']) if trade['mfe'] > 0 else 0
+                # Defensive: Clamp extreme values for display
+                pnl_percent = max(-1000, min(1000, pnl_percent))  # ±1000%
+                capture_efficiency = max(-2.0, min(2.0, capture_efficiency))  # ±200%
                 
-                # Trade result
-                result = 'WIN' if trade['pnl'] > 0 else 'LOSS' if trade['pnl'] < 0 else 'BREAKEVEN'
+                result = "WIN" if pnl > 0 else "LOSS"
                 
-                # Format row
-                row = {
-                    'trade_num': trade['trade_num'],
-                    'entry_time': trade['entry_time'].isoformat(),
-                    'exit_time': trade['exit_time'].isoformat(),
-                    'duration_seconds': f"{duration:.1f}",
-                    'direction': trade['direction'],
-                    'entry_price': f"{trade['entry_price']:.2f}",
-                    'exit_price': f"{trade['exit_price']:.2f}",
-                    'price_change': f"{price_change:.2f}",
-                    'pnl': f"{trade['pnl']:.2f}",
-                    'pnl_percent': f"{pnl_percent:.4f}",
-                    'mfe': f"{trade['mfe']:.2f}",
-                    'mae': f"{trade['mae']:.2f}",
-                    'mfe_percent': f"{mfe_percent:.4f}",
-                    'mae_percent': f"{mae_percent:.4f}",
-                    'capture_efficiency': f"{capture_efficiency:.4f}",
-                    'winner_to_loser': 'TRUE' if trade.get('winner_to_loser', False) else 'FALSE',
-                    'equity_after': f"{trade['equity_after']:.2f}",
-                    'result': result
-                }
-                
-                writer.writerow(row)
+                # Format row with safe conversions
+                try:
+                    row = {
+                        'trade_num': trade.get('trade_num', -1),
+                        'entry_time': entry_time.isoformat() if hasattr(entry_time, 'isoformat') else str(entry_time),
+                        'exit_time': exit_time.isoformat() if hasattr(exit_time, 'isoformat') else str(exit_time),
+                        'duration_seconds': f"{duration:.1f}",
+                        'direction': trade.get('direction', 'UNKNOWN'),
+                        'entry_price': f"{entry_price:.2f}",
+                        'exit_price': f"{exit_price:.2f}",
+                        'price_change': f"{price_change:.2f}",
+                        'pnl': f"{pnl:.2f}",
+                        'pnl_percent': f"{pnl_percent:.4f}",
+                        'mfe': f"{mfe:.2f}",
+                        'mae': f"{mae:.2f}",
+                        'mfe_percent': f"{mfe_percent:.4f}",
+                        'mae_percent': f"{mae_percent:.4f}",
+                        'capture_efficiency': f"{capture_efficiency:.4f}",
+                        'winner_to_loser': 'TRUE' if trade.get('winner_to_loser', False) else 'FALSE',
+                        'equity_after': f"{trade.get('equity_after', 0.0):.2f}",
+                        'result': result,
+                        # Phase 3.3: Dual-agent attribution (optional fields with safe defaults)
+                        'predicted_runway': f"{trade.get('predicted_runway', 0.0):.6f}",
+                        'runway_utilization': f"{trade.get('runway_utilization', 0.0):.4f}",
+                        'runway_error_pct': f"{trade.get('runway_error_pct', 0.0):.2f}",
+                        'trigger_quality': trade.get('trigger_quality', 'N/A'),
+                        'harvester_quality': trade.get('harvester_quality', 'N/A'),
+                        'mfe_bar_offset': trade.get('mfe_bar_offset', -1),
+                        'mae_bar_offset': trade.get('mae_bar_offset', -1),
+                        'bars_from_mfe_to_exit': trade.get('bars_from_mfe_to_exit', -1)
+                    }
+                    
+                    writer.writerow(row)
+                except (ValueError, TypeError) as e:
+                    LOG.error("Trade %d formatting error: %s", trade.get('trade_num', -1), e)
         
         return str(filepath)
     

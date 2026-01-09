@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""
+Real-Time Trading HUD (Heads-Up Display)
+========================================
+Terminal-based live dashboard for monitoring trading bot performance.
+
+Features:
+- Live position tracking (entry, MFE, MAE, PnL)
+- Performance metrics (win rate, Sharpe, drawdown)
+- Agent training stats (buffer sizes, TD-errors)
+- Risk metrics (VaR, kurtosis, circuit breakers)
+- Market microstructure (VPIN, spread, depth)
+"""
+
+import os
+import sys
+import time
+import threading
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+import json
+from pathlib import Path
+
+
+class TradingHUD:
+    """Real-time HUD for trading bot monitoring"""
+    
+    def __init__(self, refresh_rate: float = 1.0):
+        """
+        Initialize HUD
+        
+        Args:
+            refresh_rate: Update frequency in seconds
+        """
+        self.refresh_rate = refresh_rate
+        self.running = False
+        self.thread = None
+        
+        # Data sources
+        self.data_dir = Path("data")
+        self.log_dir = Path("logs/python")
+        
+        # State
+        self.position = None
+        self.metrics = {}
+        self.training_stats = {}
+        self.risk_stats = {}
+        self.market_stats = {}
+        self.last_update = None
+        
+        # Heartbeat
+        self.heartbeat_char_index = 0
+        self.heartbeat_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+        
+        # Time-based metrics
+        self.daily_metrics = {}
+        self.weekly_metrics = {}
+        self.monthly_metrics = {}
+        self.lifetime_metrics = {}
+        
+    def start(self):
+        """Start HUD update thread"""
+        self.running = True
+        self.thread = threading.Thread(target=self._update_loop, daemon=True)
+        self.thread.start()
+        
+    def stop(self):
+        """Stop HUD updates"""
+        self.running = False
+        if self.thread:
+            self.thread.join()
+    
+    def _update_loop(self):
+        """Main update loop"""
+        while self.running:
+            try:
+                self._refresh_data()
+                self._render()
+                time.sleep(self.refresh_rate)
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"HUD Error: {e}")
+                time.sleep(5)
+    
+    def _refresh_data(self):
+        """Refresh data from bot outputs"""
+        # This would read from shared memory, files, or Redis in production
+        # For now, simulate with placeholder data
+        self.last_update = datetime.now()
+        
+        # Update heartbeat
+        self.heartbeat_char_index = (self.heartbeat_char_index + 1) % len(self.heartbeat_chars)
+        
+        # Read performance data if available
+        perf_file = self.data_dir / "performance_snapshot.json"
+        if perf_file.exists():
+            try:
+                with open(perf_file) as f:
+                    data = json.load(f)
+                    self.metrics = data.get('overall', {})
+                    self.daily_metrics = data.get('daily', {})
+                    self.weekly_metrics = data.get('weekly', {})
+                    self.monthly_metrics = data.get('monthly', {})
+                    self.lifetime_metrics = data.get('lifetime', {})
+            except:
+                pass
+        
+        # Read position data
+        pos_file = self.data_dir / "current_position.json"
+        if pos_file.exists():
+            try:
+                with open(pos_file) as f:
+                    self.position = json.load(f)
+            except:
+                pass
+    
+    def _render(self):
+        """Render HUD to terminal"""
+        # Clear screen
+        os.system('clear' if os.name != 'nt' else 'cls')
+        
+        # Header with heartbeat
+        heartbeat = self.heartbeat_chars[self.heartbeat_char_index]
+        print("╔" + "═" * 78 + "╗")
+        print("║" + " " * 20 + "ADAPTIVE RL TRADING BOT - LIVE HUD" + " " * 24 + "║")
+        print("╚" + "═" * 78 + "╝")
+        
+        # Timestamp with heartbeat
+        now = self.last_update or datetime.now()
+        print(f"\n{heartbeat} {now.strftime('%Y-%m-%d %H:%M:%S')} UTC (Live)")
+        
+        # Position Section
+        print("\n" + "─" * 80)
+        print("📊 CURRENT POSITION")
+        print("─" * 80)
+        
+        if self.position:
+            direction = self.position.get('direction', 'FLAT')
+            entry_price = self.position.get('entry_price', 0)
+            current_price = self.position.get('current_price', 0)
+            mfe = self.position.get('mfe', 0)
+            mae = self.position.get('mae', 0)
+            unrealized_pnl = self.position.get('unrealized_pnl', 0)
+            bars_held = self.position.get('bars_held', 0)
+            
+            pnl_color = self._color_pnl(unrealized_pnl)
+            
+            print(f"  Direction:     {direction}")
+            print(f"  Entry Price:   {entry_price:.2f}")
+            print(f"  Current Price: {current_price:.2f}")
+            print(f"  MFE:           {mfe:+.4f} ({mfe/entry_price*100:+.2f}%)" if entry_price > 0 else "  MFE:           N/A")
+            print(f"  MAE:           {mae:+.4f} ({mae/entry_price*100:+.2f}%)" if entry_price > 0 else "  MAE:           N/A")
+            print(f"  Unrealized PnL: {pnl_color}{unrealized_pnl:+.2f}\033[0m USD")
+            print(f"  Bars Held:     {bars_held}")
+        else:
+            print("  Status: FLAT (no open position)")
+        
+        # Performance Section - Time-based
+        print("\n" + "─" * 80)
+        print("📈 PERFORMANCE METRICS")
+        print("─" * 80)
+        
+        # Display all time periods
+        self._render_timeframe("Daily", self.daily_metrics)
+        print()
+        self._render_timeframe("Weekly", self.weekly_metrics)
+        print()
+        self._render_timeframe("Monthly", self.monthly_metrics)
+        print()
+        self._render_timeframe("Lifetime", self.lifetime_metrics)
+        
+        # Training Stats Section
+        print("\n" + "─" * 80)
+        print("🧠 AGENT TRAINING STATUS")
+        print("─" * 80)
+        
+        trigger_buffer = self.training_stats.get('trigger_buffer_size', 0)
+        harvester_buffer = self.training_stats.get('harvester_buffer_size', 0)
+        trigger_loss = self.training_stats.get('trigger_loss', 0.0)
+        harvester_loss = self.training_stats.get('harvester_loss', 0.0)
+        trigger_td_error = self.training_stats.get('trigger_td_error', 0.0)
+        harvester_td_error = self.training_stats.get('harvester_td_error', 0.0)
+        last_training = self.training_stats.get('last_training_time', 'Never')
+        
+        print(f"  TriggerAgent:")
+        print(f"    Buffer:    {trigger_buffer:,} experiences")
+        print(f"    Loss:      {trigger_loss:.4f}")
+        print(f"    TD-Error:  {trigger_td_error:.4f}")
+        
+        print(f"  HarvesterAgent:")
+        print(f"    Buffer:    {harvester_buffer:,} experiences")
+        print(f"    Loss:      {harvester_loss:.4f}")
+        print(f"    TD-Error:  {harvester_td_error:.4f}")
+        
+        print(f"  Last Training: {last_training}")
+        
+        # Risk Section
+        print("\n" + "─" * 80)
+        print("⚠️  RISK MANAGEMENT")
+        print("─" * 80)
+        
+        var = self.risk_stats.get('var', 0.0)
+        kurtosis = self.risk_stats.get('kurtosis', 0.0)
+        kurtosis_breaker = self.risk_stats.get('kurtosis_breaker', False)
+        vol = self.risk_stats.get('volatility', 0.0)
+        
+        breaker_status = "\033[91m●\033[0m ACTIVE" if kurtosis_breaker else "\033[92m●\033[0m INACTIVE"
+        
+        print(f"  VaR (95%):         {var:.6f}")
+        print(f"  Kurtosis:          {kurtosis:.2f}")
+        print(f"  Circuit Breaker:   {breaker_status}")
+        print(f"  Realized Vol:      {vol*100:.2f}%")
+        
+        # Market Microstructure
+        print("\n" + "─" * 80)
+        print("🔬 MARKET MICROSTRUCTURE")
+        print("─" * 80)
+        
+        spread = self.market_stats.get('spread', 0.0)
+        vpin = self.market_stats.get('vpin', 0.0)
+        vpin_z = self.market_stats.get('vpin_z', 0.0)
+        imbalance = self.market_stats.get('imbalance', 0.0)
+        depth_bid = self.market_stats.get('depth_bid', 0.0)
+        depth_ask = self.market_stats.get('depth_ask', 0.0)
+        
+        vpin_status = "🔴 HIGH" if abs(vpin_z) > 2.0 else "🟢 NORMAL"
+        
+        print(f"  Spread:       {spread:.5f}")
+        print(f"  VPIN:         {vpin:.4f} (z={vpin_z:+.2f}) {vpin_status}")
+        print(f"  Imbalance:    {imbalance:+.4f}")
+        print(f"  Depth (bid):  {depth_bid:.2f}")
+        print(f"  Depth (ask):  {depth_ask:.2f}")
+        
+        # Footer
+        print("\n" + "─" * 80)
+        print("Press Ctrl+C to exit")
+        print("─" * 80)
+    
+    def _color_pnl(self, pnl: float) -> str:
+        """Return color code for PnL"""
+        if pnl > 0:
+            return "\033[92m"  # Green
+        elif pnl < 0:
+            return "\033[91m"  # Red
+        return "\033[93m"  # Yellow
+    
+    def _color_sharpe(self, sharpe: float) -> str:
+        """Return color code for Sharpe ratio"""
+        if sharpe > 2.0:
+            return "\033[92m"  # Green
+        elif sharpe > 1.0:
+            return "\033[93m"  # Yellow
+        return "\033[91m"  # Red
+
+
+def main():
+    """Run HUD in standalone mode with simulated data"""
+    print("Starting Trading HUD (simulated data)...\n")
+    
+    hud = TradingHUD(refresh_rate=2.0)
+    
+    # Simulate some data
+    
+    def _render_timeframe(self, label: str, metrics: Dict[str, Any]):
+        """Render performance metrics for a specific timeframe"""
+        if not metrics:
+            # Use simulated data if no real data
+            metrics = self.metrics
+        1.0)
+    
+    # Simulate some data
+    hud.position = {
+        'direction': 'LONG',
+        'entry_price': 100000.0,
+        'current_price': 100150.0,
+        'mfe': 200.0,
+        'mae': 50.0,
+        'unrealized_pnl': 150.0,
+        'bars_held': 12
+    }
+    
+    # Daily metrics
+    hud.daily_metrics = {
+        'total_trades': 8,
+        'win_rate': 0.625,
+        'total_pnl': 450.30,
+        'sharpe_ratio': 2.14,
+        'max_drawdown': 0.023
+    }
+    
+    # Weekly metrics
+    hud.weekly_metrics = {
+        'total_trades': 32,
+        'win_rate': 0.656,
+        'total_pnl': 1850.75,
+        'sharpe_ratio': 1.98,
+        'max_drawdown': 0.054
+    }
+    
+    # Monthly metrics
+    hud.monthly_metrics = {
+        'total_trades': 124,
+        'win_rate': 0.645,
+        'total_pnl': 5234.20,
+        'sharpe_ratio': 1.87,
+        'max_drawdown': 0.089
+    }
+    
+    # Lifetime metrics
+    hud.lifetime_metrics = {
+        'total_trades': 1247,
+        'win_rate': 0.638,
+        'total_pnl': 34567.80,
+        'sharpe_ratio': 1.845,
+        'max_drawdown': 0.134
+    }
+    
+    # Keep for backward compatibility
+    hud.metrics = hud.daily_metrics
+    
+    hud.position = {
+        'direction': 'LONG',
+        'entry_price': 100000.0,
+        'current_price': 100150.0,
+        'mfe': 200.0,
+        'mae': 50.0,
+        'unrealized_pnl': 150.0,
+        'bars_held': 12
+    }
+    
+    hud.metrics = {
+        'total_trades': 47,
+        'win_rate': 0.638,
+        'total_pnl': 2340.50,
+        'sharpe_ratio': 1.845,
+        'max_drawdown': 0.087,
+        'avg_win': 125.30,
+        'avg_loss': -78.20
+    }
+    
+    hud.training_stats = {
+        'trigger_buffer_size': 1247,
+        'harvester_buffer_size': 1289,
+        'trigger_loss': 0.0234,
+        'harvester_loss': 0.0187,
+        'trigger_td_error': 0.0512,
+        'harvester_td_error': 0.0398,
+        'last_training_time': '2 minutes ago'
+    }
+    
+    hud.risk_stats = {
+        'var': 0.002340,
+        'kurtosis': 2.34,
+        'kurtosis_breaker': False,
+        'volatility': 0.0145
+    }
+    
+    hud.market_stats = {
+        'spread': 0.00012,
+        'vpin': 0.145,
+        'vpin_z': 0.87,
+        'imbalance': 0.034,
+        'depth_bid': 245.50,
+        'depth_ask': 238.20
+    }
+    
+    try:
+        hud.start()
+        # Keep main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n\nStopping HUD...")
+        hud.stop()
+
+
+if __name__ == "__main__":
+    main()

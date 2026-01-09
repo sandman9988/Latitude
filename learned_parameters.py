@@ -18,13 +18,14 @@ Date: 2026-01-09
 Version: 1.0.0
 """
 
-import json
 import logging
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, Optional, Any
 import numpy as np
+
+from atomic_persistence import AtomicPersistence
 
 # Configure logging
 logging.basicConfig(
@@ -232,10 +233,16 @@ class LearnedParametersManager:
         self.persistence_path = persistence_path or Path("data/learned_parameters.json")
         self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # Atomic persistence (with CRC32 and backups)
+        self.atomic_persist = AtomicPersistence(base_dir=str(self.persistence_path.parent))
+        
         # Default parameter specifications
         self.param_specs = self._get_default_specs()
         
         logger.info(f"LearnedParametersManager initialized (persistence: {self.persistence_path})")
+        
+        # Load saved parameters if they exist
+        self.load()
     
     def _get_default_specs(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -369,6 +376,88 @@ class LearnedParametersManager:
                 'momentum': 0.8,
                 'description': 'Max consecutive losses before halt'
             },
+            
+            # Market data parameters
+            'depth_levels': {
+                'default': 5,
+                'min': 1,
+                'max': 10,
+                'learning_rate': 0.5,
+                'momentum': 0.8,
+                'description': 'Order book depth levels to analyze'
+            },
+            'depth_buffer': {
+                'default': 0.10,
+                'min': 0.0,
+                'max': 1.0,
+                'learning_rate': 0.01,
+                'momentum': 0.9,
+                'description': 'Depth buffer for market making'
+            },
+            'spread_relax': {
+                'default': 0.50,
+                'min': 0.0,
+                'max': 2.0,
+                'learning_rate': 0.01,
+                'momentum': 0.9,
+                'description': 'Spread relaxation factor'
+            },
+            'vpin_z_threshold': {
+                'default': 2.5,
+                'min': 0.5,
+                'max': 5.0,
+                'learning_rate': 0.1,
+                'momentum': 0.9,
+                'description': 'VPIN z-score threshold'
+            },
+            'vpin_z_limit': {
+                'default': 2.5,
+                'min': 0.5,
+                'max': 5.0,
+                'learning_rate': 0.1,
+                'momentum': 0.9,
+                'description': 'VPIN z-score limit (alias for compatibility)'
+            },
+            'volatility_reference': {
+                'default': 0.005,
+                'min': 0.001,
+                'max': 0.10,
+                'learning_rate': 0.001,
+                'momentum': 0.95,
+                'description': 'Reference volatility for normalization'
+            },
+            'vol_ref': {
+                'default': 0.005,
+                'min': 0.001,
+                'max': 0.10,
+                'learning_rate': 0.001,
+                'momentum': 0.95,
+                'description': 'Reference volatility (alias for compatibility)'
+            },
+            'volatility_cap': {
+                'default': 0.05,
+                'min': 0.01,
+                'max': 0.20,
+                'learning_rate': 0.005,
+                'momentum': 0.9,
+                'description': 'Maximum volatility cap'
+            },
+            'vol_cap': {
+                'default': 0.05,
+                'min': 0.01,
+                'max': 0.20,
+                'learning_rate': 0.005,
+                'momentum': 0.9,
+                'description': 'Volatility cap (alias for compatibility)'
+            },
+            'risk_budget_usd': {
+                'default': 100.0,
+                'min': 10.0,
+                'max': 10000.0,
+                'learning_rate': 10.0,
+                'momentum': 0.9,
+                'description': 'Risk budget in USD'
+            },
         }
     
     def get_instrument(self, symbol: str, timeframe: str = "M1", 
@@ -424,7 +513,7 @@ class LearnedParametersManager:
         return new_value
     
     def save(self):
-        """Save all parameters to disk"""
+        """Save all parameters to disk using atomic persistence with CRC32"""
         try:
             data = {
                 'version': '1.0',
@@ -435,22 +524,25 @@ class LearnedParametersManager:
                 }
             }
             
-            # Atomic write (write to temp, then rename)
-            temp_path = self.persistence_path.with_suffix('.tmp')
-            with open(temp_path, 'w') as f:
-                json.dump(data, f, indent=2)
+            # Use atomic persistence with CRC32 and backup
+            success = self.atomic_persist.save_json(
+                data, 
+                self.persistence_path.name,
+                create_backup=True
+            )
             
-            temp_path.replace(self.persistence_path)
-            
-            logger.info(f"Saved {len(self.instruments)} instrument parameter sets "
-                       f"to {self.persistence_path}")
+            if success:
+                logger.info(f"Saved {len(self.instruments)} instrument parameter sets "
+                           f"to {self.persistence_path} (atomic + CRC32)")
+            else:
+                logger.error(f"Failed to save parameters atomically")
             
         except Exception as e:
             logger.error(f"Failed to save parameters: {e}", exc_info=True)
     
     def load(self) -> bool:
         """
-        Load parameters from disk
+        Load parameters from disk using atomic persistence with CRC32 verification
         
         Returns:
             True if loaded successfully
@@ -460,8 +552,15 @@ class LearnedParametersManager:
                 logger.info("No saved parameters found, using defaults")
                 return False
             
-            with open(self.persistence_path, 'r') as f:
-                data = json.load(f)
+            # Use atomic persistence with CRC32 verification
+            data = self.atomic_persist.load_json(
+                self.persistence_path.name,
+                verify_crc=True
+            )
+            
+            if data is None:
+                logger.warning("Failed to load parameters (CRC error or corrupt), using defaults")
+                return False
             
             # Validate version
             if data.get('version') != '1.0':
@@ -469,12 +568,12 @@ class LearnedParametersManager:
                 return False
             
             # Load instruments
-            for key, instrument_data in data['instruments'].items():
+            for key, instrument_data in data.get('instruments', {}).items():
                 instrument = InstrumentParameters.from_dict(instrument_data)
                 self.instruments[key] = instrument
             
             logger.info(f"Loaded {len(self.instruments)} instrument parameter sets "
-                       f"from {self.persistence_path}")
+                       f"from {self.persistence_path} (CRC32 verified)")
             
             return True
             

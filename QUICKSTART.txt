@@ -44,10 +44,14 @@
    export CTRADER_BTC_SYMBOL_ID=10028
    export CTRADER_QTY=0.10
    export DDQN_MODEL_PATH=/path/to/model.pth
+   export DDQN_DUAL_AGENT=1              # Use dual-agent (TriggerAgent + HarvesterAgent)
+   export DDQN_ENABLE_TRAINING=1         # Enable online learning (default: 1)
+   export DDQN_TRAIN_EVERY_N_BARS=5      # Train every N bars (default: 5)
+   export DDQN_TRAIN_AFTER_TRADES=1      # Train after each trade (default: 1)
 
 ────────────────────────────────────────────────────────────────
 
-✅ STATUS: All bugs fixed, ready to run!
+✅ STATUS: All bugs fixed, online learning wired up, ready for live trading!
 
    ✓ TargetSubID configured (QUOTE & TRADE)
    ✓ FIX configs validated

@@ -16,7 +16,7 @@ real-time friction estimates for position sizing and reward calculations.
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from collections import deque
 from datetime import datetime, timezone
 import statistics
@@ -35,6 +35,7 @@ class SymbolCosts:
     pip_size: float = 1.0  # Size of 1 pip in price units (e.g., $1 for BTCUSD)
     tick_size: float = 0.01  # Minimum price movement
     pip_value_per_lot: float = 10.0  # USD value of 1 pip for 1 standard lot
+    contract_size: float = 100000.0  # Contract size (100k for standard forex lot, 1 for index CFD)
     
     # Commission structure
     commission_per_lot: float = 0.0  # Fixed commission per lot
@@ -84,13 +85,38 @@ class SpreadTracker:
         self.hourly_spreads: Dict[int, deque] = {h: deque(maxlen=100) for h in range(24)}
         
     def update(self, bid: float, ask: float, pip_size: float = 1.0):
-        """Record a new bid/ask spread."""
-        if bid <= 0 or ask <= 0 or ask <= bid:
-            LOG.warning("Invalid bid/ask: bid=%.2f ask=%.2f", bid, ask)
+        """Record a new bid/ask spread with defensive validation."""
+        import math
+        
+        # Defensive: Validate inputs
+        if not all(isinstance(x, (int, float)) for x in (bid, ask, pip_size)):
+            return
+        if not all(math.isfinite(x) for x in (bid, ask, pip_size)):
+            return
+        if bid <= 0 or ask <= 0 or pip_size <= 0:
+            LOG.warning("Invalid values: bid=%.2f ask=%.2f pip_size=%.6f", bid, ask, pip_size)
+            return
+        
+        # Defensive: Check for crossed book
+        if ask <= bid:
+            LOG.warning("Crossed book: bid=%.2f >= ask=%.2f", bid, ask)
             return
             
-        # Calculate spread in pips (for BTCUSD, $1 = 1 pip)
+        # Calculate spread in pips
         spread_pips = (ask - bid) / pip_size
+        
+        # Defensive: Cap extreme spreads (likely data error)
+        # For BTC ~$100k, spread should be $1-$50 typically
+        # Cap at 1000 pips (0.1% for BTC) as safety limit
+        if spread_pips > 1000.0:
+            LOG.warning("Extreme spread detected: %.2f pips, capping to 1000", spread_pips)
+            spread_pips = 1000.0
+        
+        # Defensive: Validate final value
+        if not math.isfinite(spread_pips) or spread_pips < 0:
+            LOG.warning("Invalid spread_pips: %.2f", spread_pips)
+            return
+        
         now = datetime.now(timezone.utc)
         hour = now.hour
         
@@ -105,22 +131,40 @@ class SpreadTracker:
         return self.spreads[-1]
         
     def get_avg_spread(self) -> float:
-        """Get average spread over window."""
+        """Get average spread over window with defensive validation."""
         if not self.spreads:
             return 0.0
-        return statistics.mean(self.spreads)
+        try:
+            avg = statistics.mean(self.spreads)
+            # Defensive: Validate result
+            import math
+            if not math.isfinite(avg) or avg < 0:
+                return 0.0
+            return avg
+        except (statistics.StatisticsError, ValueError):
+            return 0.0
         
     def get_min_spread(self) -> float:
-        """Get tightest spread observed."""
+        """Get tightest spread observed with defensive validation."""
         if not self.spreads:
             return 0.0
-        return min(self.spreads)
+        try:
+            min_spread = min(self.spreads)
+            # Defensive: Ensure non-negative
+            return max(0.0, min_spread)
+        except (ValueError, TypeError):
+            return 0.0
         
     def get_max_spread(self) -> float:
-        """Get widest spread observed."""
+        """Get widest spread observed with defensive validation."""
         if not self.spreads:
             return 0.0
-        return max(self.spreads)
+        try:
+            max_spread = max(self.spreads)
+            # Defensive: Cap at reasonable limit
+            return min(1000.0, max_spread)
+        except (ValueError, TypeError):
+            return 0.0
         
     def get_hourly_avg_spread(self, hour: int) -> float:
         """Get average spread for specific hour (0-23 UTC)."""
@@ -132,6 +176,47 @@ class SpreadTracker:
         """Get average spread for current hour."""
         now = datetime.now(timezone.utc)
         return self.get_hourly_avg_spread(now.hour)
+    
+    def get_learned_max_spread(self, multiplier: float = 2.0) -> float:
+        """
+        Calculate learned maximum acceptable spread.
+        
+        Uses historical minimum spread * multiplier to determine
+        what spread should be considered "acceptable" for trading.
+        This adapts to market conditions rather than using hardcoded thresholds.
+        
+        Args:
+            multiplier: How many times minimum spread is acceptable
+                       2.0 = allow up to 2x the tightest observed spread
+                       3.0 = allow up to 3x the tightest observed spread
+        
+        Returns:
+            Maximum acceptable spread in pips based on learned behavior
+        """
+        import math
+        
+        min_spread = self.get_min_spread()
+        
+        # Defensive: Need enough data points
+        if len(self.spreads) < 100:
+            # Insufficient data - return current spread as acceptable
+            # (allows trading during warmup phase)
+            current = self.get_current_spread()
+            return current if current > 0 else float('inf')
+        
+        # Defensive: Validate minimum spread
+        if min_spread <= 0 or not math.isfinite(min_spread):
+            # No valid minimum - use average as baseline
+            min_spread = self.get_avg_spread()
+        
+        # Calculate learned threshold
+        max_acceptable = min_spread * multiplier
+        
+        # Defensive: Ensure reasonable bounds
+        if not math.isfinite(max_acceptable) or max_acceptable <= 0:
+            return float('inf')  # Don't block trades if calculation fails
+        
+        return max_acceptable
 
 
 class SlippageModel:
@@ -169,7 +254,7 @@ class SlippageModel:
                          side: str = "BUY",
                          volatility_factor: float = 1.0) -> float:
         """
-        Estimate slippage in pips for a given order.
+        Estimate slippage in pips with defensive validation.
         
         Args:
             quantity: Position size in lots
@@ -179,8 +264,30 @@ class SlippageModel:
         Returns:
             Expected slippage in pips
         """
+        import math
+        
+        # Defensive: Validate inputs
+        if not isinstance(quantity, (int, float)):
+            return 0.0
+        if not math.isfinite(quantity) or quantity <= 0:
+            return 0.0
+        
+        # Cap extreme quantities
+        quantity = min(quantity, 1000.0)
+        
+        # Defensive: Validate volatility_factor
+        if not math.isfinite(volatility_factor) or volatility_factor < 0:
+            volatility_factor = 1.0
+        
+        # Cap extreme volatility (10x = extreme market stress)
+        volatility_factor = min(volatility_factor, 10.0)
+        
         # Base slippage increases with size (square root to avoid extreme scaling)
         size_factor = 1.0 + self.size_scale * (quantity ** 0.5 - 1.0)
+        
+        # Defensive: Validate size_factor
+        if not math.isfinite(size_factor):
+            size_factor = 1.0
         
         # Apply asymmetry
         side_mult = self.buy_multiplier if side.upper() == "BUY" else self.sell_multiplier
@@ -188,7 +295,12 @@ class SlippageModel:
         # Total slippage
         slippage = self.base_slippage_pips * size_factor * side_mult * volatility_factor
         
-        return max(0.0, slippage)
+        # Defensive: Validate result
+        if not math.isfinite(slippage):
+            return 0.0
+        
+        # Cap at reasonable maximum (100 pips = extreme slippage)
+        return max(0.0, min(slippage, 100.0))
 
 
 class FrictionCalculator:
@@ -236,7 +348,24 @@ class FrictionCalculator:
                 setattr(self.costs, key, value)
                 
         self.costs.last_updated = datetime.now(timezone.utc)
+        self._refresh_derived_costs()
         LOG.info("Updated symbol costs for %s: %s", self.symbol, kwargs)
+
+    def _refresh_derived_costs(self) -> None:
+        """Derive tick/pip relationships from provided symbol info to avoid hardcoded values."""
+        # Derive tick size from digits if provided
+        if self.costs.digits is not None:
+            try:
+                self.costs.tick_size = 10 ** (-int(self.costs.digits))
+                # For FX/CFD style quoting, pip is often the minimum tick
+                self.costs.pip_size = self.costs.tick_size
+            except Exception:
+                pass
+
+        # Derive pip value from contract size when available
+        contract_size = getattr(self.costs, "contract_size", 0)
+        if contract_size and contract_size > 0 and self.costs.pip_size > 0:
+            self.costs.pip_value_per_lot = contract_size * self.costs.pip_size
         
     def update_spread(self, bid: float, ask: float):
         """Update current spread observation."""
@@ -249,7 +378,7 @@ class FrictionCalculator:
         
     def calculate_spread_cost(self, quantity: float) -> float:
         """
-        Calculate spread cost in USD.
+        Calculate spread cost in USD with defensive validation.
         
         Args:
             quantity: Position size in lots
@@ -257,19 +386,44 @@ class FrictionCalculator:
         Returns:
             Spread cost in USD
         """
+        import math
+        
+        # Defensive: Validate inputs
+        if not isinstance(quantity, (int, float)):
+            return 0.0
+        if not math.isfinite(quantity) or quantity <= 0:
+            return 0.0
+        
+        # Cap extreme positions (safety limit)
+        quantity = min(quantity, 1000.0)  # Max 1000 lots
+        
         current_spread = self.spread_tracker.get_current_spread()
         if current_spread <= 0:
             current_spread = self.costs.avg_spread_pips or 2.0  # Fallback to 2 pips
             
+        # Defensive: Validate spread value
+        if not math.isfinite(current_spread) or current_spread < 0:
+            current_spread = 2.0
+        
+        # Defensive: Validate pip_value_per_lot
+        pip_value = self.costs.pip_value_per_lot
+        if not math.isfinite(pip_value) or pip_value <= 0:
+            pip_value = 10.0  # Default for BTCUSD
+        
         # For BTCUSD: 1 pip per standard lot = $10
         # spread_cost = spread_pips * pip_value_per_lot * quantity
-        spread_cost = current_spread * self.costs.pip_value_per_lot * quantity
+        spread_cost = current_spread * pip_value * quantity
         
-        return spread_cost
+        # Defensive: Validate result
+        if not math.isfinite(spread_cost) or spread_cost < 0:
+            return 0.0
+        
+        # Cap at reasonable limit (prevent extreme costs)
+        return min(spread_cost, 1_000_000.0)
         
     def calculate_commission(self, quantity: float, price: float) -> float:
         """
-        Calculate commission in USD.
+        Calculate commission in USD with defensive validation.
         
         Args:
             quantity: Position size in lots
@@ -278,18 +432,55 @@ class FrictionCalculator:
         Returns:
             Commission in USD
         """
+        import math
+        
+        # Defensive: Validate inputs
+        if not all(isinstance(x, (int, float)) for x in (quantity, price)):
+            return 0.0
+        if not all(math.isfinite(x) for x in (quantity, price)):
+            return 0.0
+        if quantity <= 0 or price <= 0:
+            return 0.0
+        
+        # Cap extreme values
+        quantity = min(quantity, 1000.0)
+        price = min(price, 10_000_000.0)  # $10M max price
+        
         if self.costs.commission_type == "PERCENTAGE":
             # Percentage of notional
             notional = quantity * price * 100000  # 1 lot = 100,000 units
-            commission = notional * self.costs.commission_percentage
+            
+            # Defensive: Validate commission_percentage
+            comm_pct = self.costs.commission_percentage
+            if not math.isfinite(comm_pct) or comm_pct < 0:
+                comm_pct = 0.0007  # Default 0.07%
+            
+            # Cap commission percentage (prevent extreme rates)
+            comm_pct = min(comm_pct, 0.01)  # Max 1%
+            
+            commission = notional * comm_pct
         else:
             # Fixed per lot
-            commission = quantity * self.costs.commission_per_lot
+            comm_per_lot = self.costs.commission_per_lot
+            
+            # Defensive: Validate commission_per_lot
+            if not math.isfinite(comm_per_lot) or comm_per_lot < 0:
+                comm_per_lot = 7.0  # Default $7 per lot
+            
+            commission = quantity * comm_per_lot
             
         # Apply min commission
-        commission = max(commission, self.costs.min_commission)
+        min_comm = self.costs.min_commission
+        if not math.isfinite(min_comm) or min_comm < 0:
+            min_comm = 0.0
+        commission = max(commission, min_comm)
         
-        return commission
+        # Defensive: Validate result
+        if not math.isfinite(commission) or commission < 0:
+            return 0.0
+        
+        # Cap at reasonable limit
+        return min(commission, 100_000.0)
         
     def calculate_swap(self, quantity: float, side: str, holding_days: float = 1.0) -> float:
         """
@@ -436,6 +627,51 @@ class FrictionCalculator:
             'swap_short': self.costs.swap_short,
             'base_slippage': self.slippage_model.base_slippage_pips,
             'last_updated': self.costs.last_updated,
+        }
+    
+    def is_spread_acceptable(self, multiplier: float = 2.0) -> Tuple[bool, float, float]:
+        """
+        Check if current spread is acceptable for trading.
+        
+        Uses learned minimum spread * multiplier as the threshold.
+        This adapts to market conditions rather than hardcoded values.
+        
+        Args:
+            multiplier: How many times minimum spread is acceptable (default 2x)
+            
+        Returns:
+            Tuple of (is_acceptable, current_spread, max_acceptable)
+        """
+        import math
+        
+        current_spread = self.spread_tracker.get_current_spread()
+        max_acceptable = self.spread_tracker.get_learned_max_spread(multiplier)
+        
+        # Defensive: If either is invalid, allow trading (don't block on calculation error)
+        if not math.isfinite(current_spread) or current_spread <= 0:
+            return (True, 0.0, max_acceptable)
+        
+        if not math.isfinite(max_acceptable) or max_acceptable <= 0:
+            return (True, current_spread, float('inf'))
+        
+        is_acceptable = current_spread <= max_acceptable
+        
+        return (is_acceptable, current_spread, max_acceptable)
+    
+    def get_spread_stats_for_logging(self) -> Dict:
+        """Get spread statistics for logging/monitoring."""
+        current = self.spread_tracker.get_current_spread()
+        min_spread = self.spread_tracker.get_min_spread()
+        avg_spread = self.spread_tracker.get_avg_spread()
+        max_acceptable = self.spread_tracker.get_learned_max_spread(multiplier=2.0)
+        sample_count = len(self.spread_tracker.spreads)
+        
+        return {
+            'current': current,
+            'min_observed': min_spread,
+            'avg': avg_spread,
+            'max_acceptable_2x': max_acceptable,
+            'samples': sample_count,
         }
 
 

@@ -2,12 +2,18 @@
 
 # Core dependencies
 numpy>=1.24.0
-
-# Optional: For DDQN model support
-# Uncomment if you want to use trained models
-# torch>=2.0.0
+scipy
 
 # QuickFIX Python bindings
 # Install manually from ../quickfix directory:
 # cd ../quickfix && pip install -e .
-scipy
+
+# Monitoring & Analysis (optional but recommended)
+jupyter>=1.1.0
+plotly>=6.5.0
+pandas>=2.3.0
+prometheus-client>=0.23.0
+
+# Optional: For DDQN model support
+# Uncomment if you want to use trained models
+# torch>=2.0.0

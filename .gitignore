@@ -14,21 +14,18 @@ venv/
 ENV/
 
 # Logs
-logs/
 *.log
+*.out
+logs/
+log/
+ctrader_py_logs/
 
-# FIX Session Data
-data/sessions/store*/
-*.body
-*.header
-*.seqnums
-*.session
-
-# Credentials (NEVER commit these!)
-config/cTraderAppTokens
-.env
-*.key
-*.pem
+# Data & Exports
+data/
+exports/
+test_exports/
+trades/
+store/
 
 # IDE
 .vscode/
@@ -36,16 +33,16 @@ config/cTraderAppTokens
 *.swp
 *.swo
 *~
+.ipynb_checkpoints/
 
-# OS
-.DS_Store
-Thumbs.db
+# Environment
+.env
 
-# Model files (optional - include if you want to version them)
-*.pth
-*.pt
-models/
+# Archives
+archive/
 
-# Temporary files
+# Temporary
+cmd
+To
 *.tmp
 *.bak
