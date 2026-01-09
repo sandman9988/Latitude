@@ -505,12 +505,16 @@ class CTraderFixApp(fix.Application):
         
         # Handbook Phase 1: Circuit Breakers (safety shutdown system)
         self.circuit_breakers = CircuitBreakerManager(
-            sortino_threshold=self.param_manager.get(symbol, 'sortino_threshold'),
-            kurtosis_threshold=self.param_manager.get(symbol, 'kurtosis_threshold'),
-            max_drawdown=self.param_manager.get(symbol, 'max_drawdown_pct'),
-            max_consecutive_losses=int(self.param_manager.get(symbol, 'max_consecutive_losses'))
+            sortino_threshold=self.param_manager.get(symbol, 'sortino_threshold') or 0.5,
+            kurtosis_threshold=self.param_manager.get(symbol, 'kurtosis_threshold') or 5.0,
+            max_drawdown=self.param_manager.get(symbol, 'max_drawdown_pct') or 0.20,
+            max_consecutive_losses=int(self.param_manager.get(symbol, 'max_consecutive_losses') or 5)
         )
-        LOG.info("[CIRCUIT-BREAKERS] Safety shutdown system initialized")
+        LOG.info("[CIRCUIT-BREAKERS] Safety shutdown system initialized (Sortino>=%.2f, Kurtosis<=%.1f, DD<=%.0f%%, MaxLoss=%d)",
+                 self.circuit_breakers.sortino.threshold if hasattr(self.circuit_breakers, 'sortino') else 0.5,
+                 self.circuit_breakers.kurtosis.threshold if hasattr(self.circuit_breakers, 'kurtosis') else 5.0,
+                 (self.circuit_breakers.drawdown.thresholds[0.20] if hasattr(self.circuit_breakers, 'drawdown') else 20) * 100,
+                 self.circuit_breakers.consecutive_losses.max_losses if hasattr(self.circuit_breakers, 'consecutive_losses') else 5)
         
         # Handbook Phase 1: Event-relative time features
         self.event_time_engine = EventTimeFeatureEngine()
@@ -1310,7 +1314,7 @@ class CTraderFixApp(fix.Application):
                     
                     # Auto-reset breakers after cooldown
                     self.circuit_breakers.reset_if_cooldown_elapsed()
-                        self.entry_action = None
+                    self.entry_action = None
                     
                     # Adapt reward weights based on performance improvement
                     metrics = self.performance.get_metrics()
@@ -1414,16 +1418,16 @@ class CTraderFixApp(fix.Application):
             if o <= 0 or h <= 0 or l <= 0 or c <= 0:
                 continue
             
-            # RS formula
+            # RS formula with safe math operations
             try:
-                log_hc = math.log(h / c)
-                log_ho = math.log(h / o)
-                log_lc = math.log(l / c)
-                log_lo = math.log(l / o)
+                log_hc = SafeMath.safe_log(SafeMath.safe_div(h, c, 1.0))
+                log_ho = SafeMath.safe_log(SafeMath.safe_div(h, o, 1.0))
+                log_lc = SafeMath.safe_log(SafeMath.safe_div(l, c, 1.0))
+                log_lo = SafeMath.safe_log(SafeMath.safe_div(l, o, 1.0))
                 
                 rs_bar = log_hc * log_ho + log_lc * log_lo
                 
-                if math.isfinite(rs_bar):
+                if SafeMath.is_valid(rs_bar):
                     rs_sum += rs_bar
                     valid_bars += 1
             except (ValueError, ZeroDivisionError):
@@ -1438,7 +1442,7 @@ class CTraderFixApp(fix.Application):
         # RS variance is already in (return)^2 units per bar
         # Take sqrt to get volatility per bar
         if rs_variance > 0:
-            vol_per_bar = math.sqrt(rs_variance)
+            vol_per_bar = SafeMath.safe_sqrt(rs_variance)
         else:
             vol_per_bar = 0.005
         
@@ -1465,7 +1469,7 @@ class CTraderFixApp(fix.Application):
         # Phase 3.5: Update VaR with bar return
         if len(self.bars) >= 2:
             prev_close = self.bars[-2][4] if len(self.bars) >= 2 else c
-            bar_return = (c - prev_close) / prev_close if prev_close > 0 else 0.0
+            bar_return = SafeMath.safe_div(c - prev_close, prev_close, 0.0)
             self.var_estimator.update_return(bar_return)
         
         # Record bar if position is open
@@ -1532,10 +1536,10 @@ class CTraderFixApp(fix.Application):
                     LOG.debug("[EVENT-TIME] Sessions: %s | High liquidity: %s", 
                              ','.join(active_sessions) if active_sessions else 'None', is_high_liq)
                 
-                # FLAT: Check for entry
+                # FLAT: Check for entry (pass event features if policy accepts them)
                 action, confidence, runway = self.policy.decide_entry(
                     self.bars, imbalance=imbalance, vpin_z=0.0, depth_ratio=1.0, 
-                    realized_vol=realized_vol
+                    realized_vol=realized_vol, event_features=event_features
                 )
                 # action: 0=NO_ENTRY, 1=LONG, 2=SHORT
                 desired = 1 if action == 1 else (-1 if action == 2 else 0)
@@ -1618,7 +1622,15 @@ class CTraderFixApp(fix.Application):
         
         delta = desired - self.cur_pos
         side = "1" if delta > 0 else "2"
-        order_qty = abs(delta) * self.qty
+        
+        # Handbook: Apply circuit breaker position size multiplier (reduces size during high risk)
+        size_multiplier = self.circuit_breakers.get_position_size_multiplier()
+        order_qty = abs(delta) * self.qty * size_multiplier
+        
+        if size_multiplier < 1.0:
+            LOG.warning("[CIRCUIT-BREAKER] Position size reduced: %.2f%% (multiplier=%.2f)",
+                       size_multiplier * 100, size_multiplier)
+        
         self.send_market_order(side=side, qty=order_qty)
 
     def send_market_order(self, side: str, qty: float):
