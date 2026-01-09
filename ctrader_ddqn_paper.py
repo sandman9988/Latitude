@@ -86,16 +86,16 @@ def utc_now() -> dt.datetime:
 
 
 # ----------------------------
-# M15 bar builder from mid
+# Bar builder (configurable timeframe)
 # ----------------------------
-class M15BarBuilder:
-    def __init__(self):
+class BarBuilder:
+    def __init__(self, timeframe_minutes: int = 15):
+        self.timeframe_minutes = timeframe_minutes
         self.bucket = None
         self.o = self.h = self.l = self.c = None
 
-    @staticmethod
-    def bucket_start(t: dt.datetime) -> dt.datetime:
-        m = (t.minute // 15) * 15
+    def bucket_start(self, t: dt.datetime) -> dt.datetime:
+        m = (t.minute // self.timeframe_minutes) * self.timeframe_minutes
         return t.replace(minute=m, second=0, microsecond=0)
 
     def update(self, t: dt.datetime, mid: float):
@@ -229,20 +229,94 @@ class Policy:
 
 
 # ----------------------------
+# MFE/MAE Tracker
+# ----------------------------
+class MFEMAETracker:
+    """Track Maximum Favorable Excursion (MFE) and Maximum Adverse Excursion (MAE) per position."""
+    def __init__(self):
+        self.entry_price = None
+        self.direction = None  # 1=long, -1=short
+        self.mfe = 0.0  # max favorable move in $ (profit)
+        self.mae = 0.0  # max adverse move in $ (loss, stored as positive)
+        self.best_profit = 0.0
+        self.worst_loss = 0.0
+        self.winner_to_loser = False
+
+    def start_tracking(self, entry_price: float, direction: int):
+        """direction: 1=long, -1=short"""
+        self.entry_price = entry_price
+        self.direction = direction
+        self.mfe = 0.0
+        self.mae = 0.0
+        self.best_profit = 0.0
+        self.worst_loss = 0.0
+        self.winner_to_loser = False
+
+    def update(self, current_price: float):
+        """Update with current market price during open position."""
+        if self.entry_price is None:
+            return
+
+        # Calculate P&L
+        if self.direction == 1:  # long
+            pnl = current_price - self.entry_price
+        else:  # short
+            pnl = self.entry_price - current_price
+
+        # Track best profit (MFE)
+        if pnl > self.best_profit:
+            self.best_profit = pnl
+            self.mfe = pnl
+
+        # Track worst loss (MAE)
+        if pnl < self.worst_loss:
+            self.worst_loss = pnl
+            self.mae = abs(pnl)
+
+        # Detect winner-to-loser (was profitable, now losing)
+        if self.best_profit > 0 and pnl < 0:
+            self.winner_to_loser = True
+
+    def get_summary(self) -> dict:
+        """Return summary of MFE/MAE metrics."""
+        return {
+            "entry_price": self.entry_price,
+            "direction": "LONG" if self.direction == 1 else "SHORT",
+            "mfe": self.mfe,
+            "mae": self.mae,
+            "best_profit": self.best_profit,
+            "worst_loss": self.worst_loss,
+            "winner_to_loser": self.winner_to_loser
+        }
+
+    def reset(self):
+        """Reset tracker for next position."""
+        self.entry_price = None
+        self.direction = None
+        self.mfe = 0.0
+        self.mae = 0.0
+        self.best_profit = 0.0
+        self.worst_loss = 0.0
+        self.winner_to_loser = False
+
+
+# ----------------------------
 # FIX application
 # ----------------------------
 class CTraderFixApp(fix.Application):
-    def __init__(self, symbol_id: int, qty: float):
+    def __init__(self, symbol_id: int, qty: float, timeframe_minutes: int = 15):
         super().__init__()
         self.symbol_id = symbol_id
         self.qty = qty
+        self.timeframe_minutes = timeframe_minutes
 
         self.quote_sid = None
         self.trade_sid = None
 
         self.policy = Policy()
         self.bars = deque(maxlen=2000)
-        self.builder = M15BarBuilder()
+        self.builder = BarBuilder(timeframe_minutes)
+        self.mfe_mae_tracker = MFEMAETracker()
 
         self.best_bid = None
         self.best_ask = None
@@ -450,6 +524,11 @@ class CTraderFixApp(fix.Application):
             return
 
         mid = (self.best_bid + self.best_ask) / 2.0
+        
+        # Update MFE/MAE if we have an open position
+        if self.cur_pos != 0:
+            self.mfe_mae_tracker.update(mid)
+        
         closed = self.builder.update(utc_now(), mid)
         if closed:
             self.bars.append(closed)
@@ -492,6 +571,7 @@ class CTraderFixApp(fix.Application):
             short_qty = float(f705.getValue())
 
         net = long_qty - short_qty
+        old_pos = self.cur_pos
         if abs(net) < self.qty * 0.5:
             self.cur_pos = 0
         elif net > 0:
@@ -500,6 +580,18 @@ class CTraderFixApp(fix.Application):
             self.cur_pos = -1
 
         LOG.info("[TRADE] PositionReport net=%0.6f -> cur_pos=%s", net, self.cur_pos)
+        
+        # Log MFE/MAE summary when position closes
+        if old_pos != 0 and self.cur_pos == 0:
+            summary = self.mfe_mae_tracker.get_summary()
+            LOG.info(
+                "[MFE/MAE] Entry=%.5f %s | MFE=%.5f MAE=%.5f | Best=%.5f Worst=%.5f | WTL=%s",
+                summary["entry_price"], summary["direction"],
+                summary["mfe"], summary["mae"],
+                summary["best_profit"], summary["worst_loss"],
+                summary["winner_to_loser"]
+            )
+            self.mfe_mae_tracker.reset()
 
     def on_exec_report(self, msg: fix.Message):
         ex = fix.ExecType()
@@ -546,7 +638,8 @@ class CTraderFixApp(fix.Application):
         desired = -1 if action == 0 else (0 if action == 1 else 1)
 
         LOG.info(
-            "[BAR] %s O=%.2f H=%.2f L=%.2f C=%.2f | desired=%s cur=%s",
+            "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f | desired=%s cur=%s",
+            self.timeframe_minutes,
             t.isoformat(),
             o,
             h,
@@ -577,6 +670,12 @@ class CTraderFixApp(fix.Application):
         order.setField(fix.TransactTime(utc_ts_ms()))
         order.setField(fix.OrdType("1"))
         order.setField(fix.OrderQty(qty))
+        
+        # Start MFE/MAE tracking
+        if self.best_bid and self.best_ask:
+            entry_price = (self.best_bid + self.best_ask) / 2.0
+            direction = 1 if side == "1" else -1
+            self.mfe_mae_tracker.start_tracking(entry_price, direction)
 
         fix.Session.sendToTarget(order, self.trade_sid)
         LOG.info(
@@ -605,16 +704,17 @@ def main():
 
     symbol_id = int(os.environ.get("CTRADER_BTC_SYMBOL_ID", "10028"))
     qty = float(os.environ.get("CTRADER_QTY", "0.10"))
+    timeframe_minutes = int(os.environ.get("CTRADER_TIMEFRAME_MIN", "15"))
 
     cfg_quote = os.environ.get("CTRADER_CFG_QUOTE", "ctrader_quote.cfg")
     cfg_trade = os.environ.get("CTRADER_CFG_TRADE", "ctrader_trade.cfg")
 
-    LOG.info("symbol_id=%s qty=%s", symbol_id, qty)
+    LOG.info("symbol_id=%s qty=%s timeframe=M%d", symbol_id, qty, timeframe_minutes)
     LOG.info("cfg_quote=%s", cfg_quote)
     LOG.info("cfg_trade=%s", cfg_trade)
     LOG.info("CTRADER_USERNAME=%s", user)
 
-    app = CTraderFixApp(symbol_id=symbol_id, qty=qty)
+    app = CTraderFixApp(symbol_id=symbol_id, qty=qty, timeframe_minutes=timeframe_minutes)
 
     settings_q = fix.SessionSettings(cfg_quote)
     store_q = fix.FileStoreFactory(settings_q)
