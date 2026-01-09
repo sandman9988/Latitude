@@ -260,7 +260,8 @@ class PathRecorder:
             return
         self.path.append(bar)
 
-    def stop_recording(self, exit_time: dt.datetime, exit_price: float, pnl: float) -> dict:
+    def stop_recording(self, exit_time: dt.datetime, exit_price: float, pnl: float, 
+                      mfe: float = 0.0, mae: float = 0.0, winner_to_loser: bool = False) -> dict:
         """Stop recording and return trade summary with path."""
         if not self.recording:
             return None
@@ -279,6 +280,9 @@ class PathRecorder:
             "exit_price": exit_price,
             "direction": "LONG" if self.direction == 1 else "SHORT",
             "pnl": pnl,
+            "mfe": mfe,
+            "mae": mae,
+            "winner_to_loser": winner_to_loser,
             "duration_seconds": duration_seconds,
             "bars_count": len(self.path),
             "path": [
@@ -290,8 +294,8 @@ class PathRecorder:
         # Save to JSON file
         self._save_to_file(trade_record)
 
-        LOG.info("[PATH] Stopped recording. Trade #%d: %d bars, %.2f seconds, PnL=%.2f",
-                 self.trade_counter, len(self.path), duration_seconds, pnl)
+        LOG.info("[PATH] Stopped recording. Trade #%d: %d bars, %.2f seconds, PnL=%.2f | MFE=%.2f MAE=%.2f WTL=%s",
+                 self.trade_counter, len(self.path), duration_seconds, pnl, mfe, mae, winner_to_loser)
 
         return trade_record
 
@@ -688,8 +692,13 @@ class CTraderFixApp(fix.Application):
                 direction_sign = 1 if summary["direction"] == "LONG" else -1
                 pnl = (exit_price - summary["entry_price"]) * direction_sign
                 
-                # Save path
-                self.path_recorder.stop_recording(exit_time, exit_price, pnl)
+                # Save path with MFE/MAE/WTL metrics
+                self.path_recorder.stop_recording(
+                    exit_time, exit_price, pnl,
+                    mfe=summary["mfe"],
+                    mae=summary["mae"],
+                    winner_to_loser=summary["winner_to_loser"]
+                )
                 
                 # Add to performance tracker
                 if self.trade_entry_time:
