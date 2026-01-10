@@ -28,6 +28,7 @@ import signal
 import math
 from collections import deque
 from pathlib import Path
+from typing import Optional
 
 import quickfix44 as fix44
 
@@ -40,14 +41,17 @@ from learned_parameters import LearnedParametersManager
 from friction_costs import FrictionCalculator
 from dual_policy import DualPolicy
 from path_geometry import PathGeometry
-from var_estimator import VaREstimator, KurtosisMonitor, RegimeType
+from var_estimator import VaREstimator, KurtosisMonitor, RegimeType, position_size_from_var
 from activity_monitor import ActivityMonitor
 from adaptive_regularization import AdaptiveRegularization
+from non_repaint_guards import NonRepaintBarAccess
+from ring_buffer import RollingStats
 
 # Handbook components - Phase 1
 from safe_math import SafeMath, RunningStats
 from circuit_breakers import CircuitBreakerManager
 from event_time_features import EventTimeFeatureEngine
+from order_book import OrderBook, VPINCalculator
 
 
 # ----------------------------
@@ -152,6 +156,13 @@ class Policy:
         self.use_torch = False
         self.model = None
         self.window = 64
+        self.ensemble_enabled = os.environ.get("DDQN_MODEL_ENSEMBLE", "0") == "1"
+        self.ensemble_weights = []
+        self._ensemble_stats = {
+            "updates": 0,
+            "last_weight": 0.0,
+            "max_disagreement": 0.0,
+        }
 
         model_path = os.environ.get("DDQN_MODEL_PATH", "").strip()
         if model_path:
@@ -192,7 +203,7 @@ class Policy:
                 )
                 self.use_torch = False
 
-    def decide(self, bars: deque) -> int:
+    def decide(self, bars: deque, **_kwargs) -> int:
         if len(bars) < 70:
             return 1  # FLAT
 
@@ -258,6 +269,33 @@ class Policy:
             t = self.torch.from_numpy(x).unsqueeze(0)
             q = self.model(t).squeeze(0).numpy()
             return int(q.argmax())
+
+    def update_ensemble_weights(self, disagreement: float, reward: float = 0.0) -> float:
+        """Lightweight placeholder for Phase 2 ensemble tracking hooks."""
+        disagreement = max(0.0, float(disagreement))
+        normalized = min(disagreement, 1.0)
+        weight = 1.0 - normalized
+        if reward < 0:
+            weight *= 0.9  # penalty for losses when disagreement was high
+        self.ensemble_weights.append(weight)
+        if len(self.ensemble_weights) > 500:
+            self.ensemble_weights.pop(0)
+        self._ensemble_stats["updates"] += 1
+        self._ensemble_stats["last_weight"] = weight
+        self._ensemble_stats["max_disagreement"] = max(
+            self._ensemble_stats["max_disagreement"], disagreement
+        )
+        return weight
+
+    def get_ensemble_stats(self) -> dict:
+        """Return diagnostic metrics for ensemble hooks."""
+        return {
+            "enabled": self.ensemble_enabled,
+            "updates": self._ensemble_stats["updates"],
+            "last_weight": self._ensemble_stats["last_weight"],
+            "max_disagreement": self._ensemble_stats["max_disagreement"],
+            "weights_tracked": len(self.ensemble_weights),
+        }
 
 
 # ----------------------------
@@ -431,16 +469,36 @@ class CTraderFixApp(fix.Application):
         self.param_manager = LearnedParametersManager()
         self.param_manager.load()
         
-        # Construct instrument key: {SYMBOL}_M{timeframe}_default (instrument-agnostic)
-        self.instrument = f"{symbol}_M{timeframe_minutes}_default"
-        
-        # Use adaptive position sizing from learned parameters
-        # Fall back to env var or default only if not in manager
-        base_pos = self.param_manager.get(self.instrument, 'base_position_size')
-        self.qty = base_pos if base_pos is not None else qty
-        LOG.info("Position size: %.4f (adaptive from LearnedParametersManager)", self.qty)
-        
         self.timeframe_minutes = timeframe_minutes
+        self.timeframe_label = f"M{timeframe_minutes}"
+        self.broker = "default"
+        
+        # Risk scaffolding defaults + env overrides
+        self.starting_equity = float(os.environ.get("CTRADER_STARTING_EQUITY", "10000"))
+        self.max_leverage = float(os.environ.get("CTRADER_MAX_LEVERAGE", "10"))
+        self.contract_size = float(os.environ.get("CTRADER_CONTRACT_SIZE", "100000"))
+        self.last_estimated_var = 0.0
+        self.last_risk_cap_qty = 0.0
+        self.last_base_qty = 0.0
+        self.last_final_qty = 0.0
+        
+        # Learned parameters (primary control plane)
+        self.qty = self._resolve_param("CTRADER_BASE_POSITION_SIZE", 'base_position_size', qty)
+        self.risk_budget_usd = self._resolve_param("CTRADER_RISK_BUDGET_USD", 'risk_budget_usd', 100.0)
+        self.vol_ref = self._resolve_param("CTRADER_VOL_REF", 'volatility_reference', 0.005)
+        self.vol_cap = self._resolve_param("CTRADER_VOL_CAP", 'volatility_cap', 0.05)
+        self.vpin_z_threshold = self._resolve_param("CTRADER_VPIN_Z", 'vpin_z_threshold', 2.5)
+        self.vpin_bucket_volume = self._resolve_param("CTRADER_VPIN_BUCKET", 'vpin_bucket_volume', 25.0)
+        LOG.info("Position size: %.4f (adaptive from LearnedParametersManager)", self.qty)
+        LOG.info(
+            "[PARAM] base=%.4f risk_budget=$%.2f vol_ref=%.4f vol_cap=%.4f vpin_z=%.2f",
+            self.qty,
+            self.risk_budget_usd,
+            self.vol_ref,
+            self.vol_cap,
+            self.vpin_z_threshold
+        )
+        LOG.info("[VPIN] bucket_volume=%.2f", self.vpin_bucket_volume)
 
         self.quote_sid = None
         self.trade_sid = None
@@ -457,7 +515,11 @@ class CTraderFixApp(fix.Application):
                 window=64,
                 enable_regime_detection=True,
                 path_geometry=self.path_geometry,
-                enable_training=enable_online_learning
+                enable_training=enable_online_learning,
+                param_manager=self.param_manager,
+                symbol=symbol,
+                timeframe=self.timeframe_label,
+                broker="default"
             )
             LOG.info("[POLICY] Using DualPolicy with TriggerAgent + HarvesterAgent + PathGeometry (training=%s)", enable_online_learning)
         else:
@@ -466,25 +528,50 @@ class CTraderFixApp(fix.Application):
         
         self.bars = deque(maxlen=2000)
         self.builder = BarBuilder(timeframe_minutes)
+        
+        # Phase 2: Non-repaint discipline + O(1) rolling stats
+        self.close_series = NonRepaintBarAccess("close", max_lookback=2000)
+        self.high_series = NonRepaintBarAccess("high", max_lookback=2000)
+        self.low_series = NonRepaintBarAccess("low", max_lookback=2000)
+        self.volume_series = NonRepaintBarAccess("volume", max_lookback=2000)
+        self.non_repaint_series = [
+            self.close_series,
+            self.high_series,
+            self.low_series,
+            self.volume_series
+        ]
+        self.close_stats = RollingStats(period=100)
+        self.current_bar_tick_count = 0
         self.mfe_mae_tracker = MFEMAETracker()
         self.path_recorder = PathRecorder()
         self.performance = PerformanceTracker()
-        self.trade_exporter = TradeExporter()
+        self.trade_exporter = TradeExporter(output_dir="trades")  # Save to trades/ directory
+        self.last_export_count = 0  # Track last export to avoid duplicates
+        self.bar_count = 0  # Track total bars processed
+        self.last_autosave_bar = 0  # Track last auto-save bar count
+        self.bar_count = 0  # Track bars for periodic auto-save
+        self.last_autosave_bar = 0  # Last bar when auto-save occurred
         
         # Friction calculator (source of truth: cTrader SymbolInfo)
-        self.friction_calculator = FrictionCalculator(symbol=symbol, symbol_id=symbol_id)
-        
-        # Pass param_manager to reward_shaper for DRY
-        self.reward_shaper = RewardShaper(instrument=self.instrument, param_manager=self.param_manager)
-        
-        # Phase 3.5: Risk management - VaR estimator with kurtosis circuit breaker
-        self.kurtosis_monitor = KurtosisMonitor(window=100, threshold=3.0)
-        self.var_estimator = VaREstimator(
-            window=500, 
-            confidence=0.95,
-            kurtosis_monitor=self.kurtosis_monitor
+        self.friction_calculator = FrictionCalculator(
+            symbol=symbol,
+            symbol_id=symbol_id,
+            timeframe=self.timeframe_label,
+            broker="default",
+            param_manager=self.param_manager
         )
-        LOG.info("[RISK] VaREstimator initialized with kurtosis circuit breaker")
+        if os.environ.get("CTRADER_CONTRACT_SIZE") is None:
+            self.contract_size = max(self.friction_calculator.costs.contract_size or 1.0, 1.0)
+        LOG.info(
+            "[PARAM] depth_levels=%d depth_buffer=%.2f spread_relax=%.2f vpin_z=%.2f vol_ref=%.4f vol_cap=%.4f risk_budget_usd=%.2f",
+            self.friction_calculator.depth_levels,
+            self.friction_calculator.depth_buffer,
+            self.friction_calculator.spread_multiplier,
+            self.vpin_z_threshold,
+            self.vol_ref,
+            self.vol_cap,
+            self.risk_budget_usd
+        )
         
         # Phase 3.5: Activity monitor - prevent learned helplessness
         self.activity_monitor = ActivityMonitor(
@@ -493,6 +580,25 @@ class CTraderFixApp(fix.Application):
             exploration_boost=0.1
         )
         LOG.info("[ACTIVITY] ActivityMonitor initialized - anti-stagnation protection")
+        
+        # Pass param_manager to reward_shaper for DRY and align instrumentation context
+        self.reward_shaper = RewardShaper(
+            symbol=symbol,
+            timeframe=self.timeframe_label,
+            broker="default",
+            param_manager=self.param_manager,
+            activity_monitor=self.activity_monitor
+        )
+        
+        # Phase 3.5: Risk management - VaR estimator with kurtosis circuit breaker
+        self.kurtosis_monitor = KurtosisMonitor(window=100, threshold=3.0)
+        self.var_estimator = VaREstimator(
+            window=500, 
+            confidence=0.95,
+            kurtosis_monitor=self.kurtosis_monitor
+        )
+        self.var_estimator.set_reference_vol(self.vol_ref)
+        LOG.info("[RISK] VaREstimator initialized with kurtosis circuit breaker")
         
         # Phase 3.5: Adaptive regularization for online learning
         self.adaptive_reg = AdaptiveRegularization(
@@ -505,16 +611,18 @@ class CTraderFixApp(fix.Application):
         
         # Handbook Phase 1: Circuit Breakers (safety shutdown system)
         self.circuit_breakers = CircuitBreakerManager(
-            sortino_threshold=self.param_manager.get(symbol, 'sortino_threshold') or 0.5,
-            kurtosis_threshold=self.param_manager.get(symbol, 'kurtosis_threshold') or 5.0,
-            max_drawdown=self.param_manager.get(symbol, 'max_drawdown_pct') or 0.20,
-            max_consecutive_losses=int(self.param_manager.get(symbol, 'max_consecutive_losses') or 5)
+            symbol=symbol,
+            timeframe=self.timeframe_label,
+            broker="default",
+            param_manager=self.param_manager
         )
-        LOG.info("[CIRCUIT-BREAKERS] Safety shutdown system initialized (Sortino>=%.2f, Kurtosis<=%.1f, DD<=%.0f%%, MaxLoss=%d)",
-                 self.circuit_breakers.sortino.threshold if hasattr(self.circuit_breakers, 'sortino') else 0.5,
-                 self.circuit_breakers.kurtosis.threshold if hasattr(self.circuit_breakers, 'kurtosis') else 5.0,
-                 (self.circuit_breakers.drawdown.thresholds[0.20] if hasattr(self.circuit_breakers, 'drawdown') else 20) * 100,
-                 self.circuit_breakers.consecutive_losses.max_losses if hasattr(self.circuit_breakers, 'consecutive_losses') else 5)
+        LOG.info(
+            "[CIRCUIT-BREAKERS] Safety shutdown system initialized (Sortino>=%.2f, Kurtosis<=%.1f, DD<=%.0f%%, MaxLoss=%d)",
+            self.circuit_breakers.sortino_breaker.threshold,
+            self.circuit_breakers.kurtosis_breaker.threshold,
+            self.circuit_breakers.max_drawdown * 100,
+            self.circuit_breakers.max_consecutive_losses
+        )
         
         # Handbook Phase 1: Event-relative time features
         self.event_time_engine = EventTimeFeatureEngine()
@@ -525,6 +633,22 @@ class CTraderFixApp(fix.Application):
         self.bars_since_training = 0
         
         self.previous_sharpe = 0.0  # Track for adaptive weight updates
+
+        depth_env = os.environ.get("CTRADER_ORDERBOOK_DEPTH", "").strip()
+        try:
+            learned_depth = max(1, int(round(self.friction_calculator.depth_levels)))
+            order_book_depth = int(depth_env) if depth_env else learned_depth
+        except ValueError:
+            LOG.warning("[ORDERBOOK] Invalid CTRADER_ORDERBOOK_DEPTH=%s, defaulting to 10", depth_env)
+            order_book_depth = 10
+        self.order_book = OrderBook(depth=order_book_depth)
+        LOG.info("[ORDERBOOK] L2 book initialized (depth=%d)", order_book_depth)
+        self.vpin_calculator = VPINCalculator(bucket_volume=max(self.vpin_bucket_volume, 1e-6), window=50)
+        self.last_vpin_stats = {"vpin": 0.0, "mean": 0.0, "std": 0.0, "zscore": 0.0}
+        self.last_vpin_mid = None
+        self.last_depth_metrics = {"bid": 0.0, "ask": 0.0, "ratio": 1.0, "levels": order_book_depth}
+        self.last_depth_gate = False
+        self.last_depth_floor = self.friction_calculator.depth_buffer
 
         self.best_bid = None
         self.best_ask = None
@@ -538,20 +662,33 @@ class CTraderFixApp(fix.Application):
         self.entry_state = None  # State at entry decision time (for experience)
         self.entry_action = None  # Action taken at entry (0=NO, 1=LONG, 2=SHORT)
         
-        # Connection health monitoring
+        # Connection health monitoring - ROCK SOLID for financial trading
         self.last_quote_heartbeat = None
         self.last_trade_heartbeat = None
-        self.heartbeat_timeout = 60  # seconds
+        self.heartbeat_timeout = 45  # seconds (3x heartbeat interval)
         self.connection_healthy = True
         self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10
+        self.max_reconnect_attempts = 100  # Increased - keep trying with failover hosts
         self._shutdown_requested = False
         self._shutdown_complete = False
         
-        # Reconnection backoff (exponential)
-        self.reconnect_base_delay = 5  # seconds
-        self.reconnect_max_delay = 300  # 5 minutes max
+        # Connection statistics for monitoring
+        self.total_reconnects = 0
+        self.successful_reconnects = 0
+        self.connection_uptime_start = None
+        self.longest_uptime = 0
+        self.last_disconnect_reason = None
+        
+        # Reconnection backoff (exponential with jitter)
+        self.reconnect_base_delay = 2  # seconds (faster initial retry)
+        self.reconnect_max_delay = 60  # 1 minute max (failover hosts handle longer outages)
         self.last_reconnect_time = None
+        restart_cooldown = float(os.environ.get("CTRADER_FORCE_RESTART_COOLDOWN", "120"))
+        self.force_restart_cooldown = max(restart_cooldown, 30.0)
+        self.last_forced_restart = {"QUOTE": None, "TRADE": None}
+        
+        # Stale data protection - block trading if data too old
+        self.max_quote_age_for_trading = 30  # seconds - don't trade on stale prices
         
         # Systemd watchdog support
         self.watchdog_enabled = os.environ.get('WATCHDOG_USEC') is not None
@@ -572,6 +709,11 @@ class CTraderFixApp(fix.Application):
         self.bar_count = 0
         self.hud_data_dir = Path("data")
         self.hud_data_dir.mkdir(exist_ok=True)
+        # Seed HUD files immediately so the dashboard reflects the active symbol/timeframe
+        try:
+            self._export_hud_data()
+        except Exception as hud_init_err:
+            LOG.warning("[HUD] Initial export failed: %s", hud_init_err)
 
     # ---- connection health monitoring ----
     def _monitor_connection_health(self):
@@ -603,6 +745,8 @@ class CTraderFixApp(fix.Application):
                     if quote_age > self.heartbeat_timeout:
                         issues.append(f"QUOTE stale ({quote_age:.0f}s)")
                         self._try_send_test_request(self.quote_sid, "QUOTE")
+                        if quote_age > self.heartbeat_timeout * 2:
+                            self._force_session_restart(self.quote_sid, "QUOTE", f"heartbeat stale {quote_age:.0f}s")
                 elif self.quote_sid is None and self.last_quote_heartbeat is not None:
                     # Session was lost
                     issues.append("QUOTE disconnected")
@@ -613,6 +757,8 @@ class CTraderFixApp(fix.Application):
                     if trade_age > self.heartbeat_timeout:
                         issues.append(f"TRADE stale ({trade_age:.0f}s)")
                         self._try_send_test_request(self.trade_sid, "TRADE")
+                        if trade_age > self.heartbeat_timeout * 2:
+                            self._force_session_restart(self.trade_sid, "TRADE", f"heartbeat stale {trade_age:.0f}s")
                 elif self.trade_sid is None and self.last_trade_heartbeat is not None:
                     # Session was lost
                     issues.append("TRADE disconnected")
@@ -642,8 +788,17 @@ class CTraderFixApp(fix.Application):
                 if health_log_counter % 6 == 0:  # Every ~60s
                     quote_status = "OK" if self.quote_sid else "DOWN"
                     trade_status = "OK" if self.trade_sid else "DOWN"
-                    LOG.info("[HEALTH] Status: QUOTE=%s TRADE=%s healthy=%s reconnects=%d",
-                            quote_status, trade_status, self.connection_healthy, self.reconnect_attempts)
+                    
+                    # Calculate current uptime
+                    if self.connection_uptime_start:
+                        current_uptime = time.time() - self.connection_uptime_start
+                        uptime_str = f"{current_uptime/60:.1f}min"
+                    else:
+                        uptime_str = "N/A"
+                    
+                    LOG.info("[HEALTH] Status: QUOTE=%s TRADE=%s healthy=%s uptime=%s reconnects=%d/%d",
+                            quote_status, trade_status, self.connection_healthy, uptime_str,
+                            self.successful_reconnects, self.total_reconnects)
                 
             except Exception as e:
                 LOG.error("[HEALTH] Monitor error: %s", e, exc_info=True)
@@ -670,6 +825,31 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[HEALTH] Failed to send TestRequest to %s: %s", qual, e)
             return False
+
+    def _force_session_restart(self, session_id, qual: str, reason: str = "manual") -> bool:
+        """Force a FIX session reconnect when heartbeats stall."""
+        if not session_id:
+            return False
+
+        last_restart = self.last_forced_restart.get(qual)
+        now_ts = time.time()
+        if last_restart and now_ts - last_restart < self.force_restart_cooldown:
+            remaining = self.force_restart_cooldown - (now_ts - last_restart)
+            LOG.debug("[RECONNECT] %s restart skipped (cooldown %.1fs left)", qual, remaining)
+            return False
+
+        try:
+            session = fix.Session.lookupSession(session_id)
+            if session:
+                LOG.warning("[RECONNECT] Forcing %s session restart (%s)", qual, reason)
+                session.disconnect(reason, False)
+                self.last_forced_restart[qual] = now_ts
+                self.last_disconnect_reason = reason
+                return True
+            LOG.error("[RECONNECT] lookupSession failed for %s", qual)
+        except Exception as e:
+            LOG.error("[RECONNECT] Error forcing %s restart: %s", qual, e, exc_info=True)
+        return False
     
     def stop_health_monitor(self):
         """Gracefully stop the health monitor thread."""
@@ -695,7 +875,21 @@ class CTraderFixApp(fix.Application):
             elif hasattr(self, 'cur_pos'):
                 LOG.info("[SHUTDOWN] No open positions")
             
-            # 2. Save current state
+            # 2. EMERGENCY EXPORT ALL TRADES
+            if hasattr(self, 'trade_exporter') and hasattr(self, 'performance'):
+                LOG.info("[SHUTDOWN] Exporting all trades (emergency save)...")
+                try:
+                    trades = self.performance.get_trade_history()
+                    if trades:
+                        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                        files = self.trade_exporter.export_all(self.performance, prefix=f"shutdown_{timestamp}")
+                        LOG.info("[SHUTDOWN] ✓ Exported %d trades to: %s", len(trades), ", ".join(files.values()))
+                    else:
+                        LOG.info("[SHUTDOWN] No trades to export")
+                except Exception as e:
+                    LOG.error("[SHUTDOWN] ✗ Failed to export trades: %s", e, exc_info=True)
+            
+            # 3. Save model state
             if hasattr(self, 'policy') and self.policy:
                 LOG.info("[SHUTDOWN] Saving model state...")
                 try:
@@ -769,9 +963,19 @@ class CTraderFixApp(fix.Application):
         qual = self._qual(sessionID)
         LOG.info("[LOGON] %s qual=%s", sessionID.toString(), qual)
         
+        # Track reconnection success
+        if self.reconnect_attempts > 0:
+            self.successful_reconnects += 1
+            LOG.info("[RECONNECT] ✓ Successfully reconnected %s after %d attempts", 
+                    qual, self.reconnect_attempts)
+        
         # Reset reconnect counter on successful logon
         self.reconnect_attempts = 0
         self.connection_healthy = True
+        
+        # Track uptime
+        if self.connection_uptime_start is None:
+            self.connection_uptime_start = time.time()
 
         try:
             if qual == "QUOTE":
@@ -792,7 +996,16 @@ class CTraderFixApp(fix.Application):
 
     def onLogout(self, sessionID):
         qual = self._qual(sessionID)
-        LOG.warning("[LOGOUT] %s qual=%s", sessionID.toString(), qual)
+        
+        # Track uptime before disconnect
+        if self.connection_uptime_start:
+            uptime = time.time() - self.connection_uptime_start
+            if uptime > self.longest_uptime:
+                self.longest_uptime = uptime
+            LOG.warning("[LOGOUT] %s qual=%s (uptime was %.1f min)", 
+                       sessionID.toString(), qual, uptime / 60)
+        else:
+            LOG.warning("[LOGOUT] %s qual=%s", sessionID.toString(), qual)
         
         # Mark session as down
         if qual == "QUOTE":
@@ -801,19 +1014,27 @@ class CTraderFixApp(fix.Application):
             self.trade_sid = None
         
         self.connection_healthy = False
+        self.total_reconnects += 1
         self.reconnect_attempts += 1
         self.last_reconnect_time = time.time()
+        self.connection_uptime_start = None  # Reset uptime tracking
+        self.last_disconnect_reason = f"{qual} session logout"
         
-        # Calculate exponential backoff delay
+        # Calculate exponential backoff with jitter for distributed retries
+        import random
+        jitter = random.uniform(0.5, 1.5)  # 50-150% of base delay
         backoff_delay = min(
-            self.reconnect_base_delay * math.pow(2, self.reconnect_attempts - 1),
+            self.reconnect_base_delay * math.pow(2, min(self.reconnect_attempts - 1, 6)) * jitter,
             self.reconnect_max_delay
         )
         
         if self.reconnect_attempts <= self.max_reconnect_attempts:
-            LOG.info("[RECONNECT] Will attempt reconnect (attempt %d/%d, backoff: %.1fs)", 
+            LOG.info("[RECONNECT] Will attempt reconnect via failover hosts (attempt %d/%d, backoff: %.1fs)", 
                     self.reconnect_attempts, self.max_reconnect_attempts, backoff_delay)
+            LOG.info("[RECONNECT] Total reconnects this session: %d (successful: %d)", 
+                    self.total_reconnects, self.successful_reconnects)
             # QuickFIX will handle the reconnect automatically with ReconnectInterval from .cfg
+            # Failover hosts will be tried in order: SocketConnectHost, SocketConnectHost1, SocketConnectHost2
         else:
             LOG.error("[RECONNECT] Max attempts reached (%d). Manual intervention required.",
                      self.max_reconnect_attempts)
@@ -1070,33 +1291,46 @@ class CTraderFixApp(fix.Application):
             LOG.error("[QUOTE] Error parsing market data snapshot: %s", e)
             return
 
-        bid = ask = None
+        self.order_book.reset()
         for i in range(1, n + 1):
             g = fix44.MarketDataSnapshotFullRefresh().NoMDEntries()
             msg.getGroup(i, g)
 
             et = fix.MDEntryType()
             px = fix.MDEntryPx()
-            if g.isSetField(et) and g.isSetField(px):
-                g.getField(et)
-                g.getField(px)
-                try:
-                    if et.getValue() == "0":
-                        bid = float(px.getValue())
-                    if et.getValue() == "1":
-                        ask = float(px.getValue())
-                except (ValueError, TypeError) as e:
-                    LOG.warning("[QUOTE] Invalid price value in entry %d: %s", i, e)
-                    continue
+            qty = fix.MDEntrySize()
+            if not (g.isSetField(et) and g.isSetField(px)):
+                continue
 
-        if bid is not None:
-            self.best_bid = bid
-        if ask is not None:
-            self.best_ask = ask
-            
-        # Track spread for friction calculations (real-time cost monitoring)
-        if bid is not None and ask is not None:
-            self.friction_calculator.update_spread(bid, ask)
+            g.getField(et)
+            g.getField(px)
+
+            try:
+                price_f = float(px.getValue())
+                size = 0.0
+                if g.isSetField(qty):
+                    g.getField(qty)
+                    size = float(qty.getValue())
+                if size <= 0:
+                    size = 1.0  # cTrader omits size at top-of-book
+            except (ValueError, TypeError) as e:
+                LOG.warning("[QUOTE] Invalid entry %d: %s", i, e)
+                continue
+
+            entry_type = et.getValue()
+            if entry_type == "0":
+                self.order_book.update_level("BID", price_f, size)
+            elif entry_type == "1":
+                self.order_book.update_level("ASK", price_f, size)
+
+        best_bid, best_ask = self.order_book.best_bid_ask()
+        if best_bid is not None:
+            self.best_bid = best_bid
+        if best_ask is not None:
+            self.best_ask = best_ask
+
+        if best_bid is not None and best_ask is not None:
+            self.friction_calculator.update_spread(best_bid, best_ask)
 
         self.try_bar_update()
 
@@ -1122,6 +1356,8 @@ class CTraderFixApp(fix.Application):
 
             et = fix.MDEntryType()
             sym = fix.Symbol()
+            px = fix.MDEntryPx()
+            qty = fix.MDEntrySize()
 
             if g.isSetField(et):
                 g.getField(et)
@@ -1131,32 +1367,95 @@ class CTraderFixApp(fix.Application):
             if sym.getValue() and sym.getValue() != str(self.symbol_id):
                 continue
 
-            if action == "0":
-                px = fix.MDEntryPx()
-                if g.isSetField(px):
-                    g.getField(px)
-                    p = float(px.getValue())
-                    if et.getValue() == "0":
-                        self.best_bid = p
-                    if et.getValue() == "1":
-                        self.best_ask = p
-            elif action == "2":
-                if et.getValue() == "0":
-                    self.best_bid = None
-                if et.getValue() == "1":
-                    self.best_ask = None
-        
-        # Track spread for friction calculations
-        if self.best_bid is not None and self.best_ask is not None:
-            self.friction_calculator.update_spread(self.best_bid, self.best_ask)
+            entry_type = et.getValue()
+            if action in ("0", "1"):  # new or change
+                if not g.isSetField(px):
+                    continue
+                g.getField(px)
+                try:
+                    price_f = float(px.getValue())
+                    size = 0.0
+                    if g.isSetField(qty):
+                        g.getField(qty)
+                        size = float(qty.getValue())
+                    if size <= 0:
+                        size = 1.0
+                except (ValueError, TypeError):
+                    continue
+
+                if entry_type == "0":
+                    self.order_book.update_level("BID", price_f, size)
+                elif entry_type == "1":
+                    self.order_book.update_level("ASK", price_f, size)
+            elif action == "2":  # delete
+                if entry_type == "0":
+                    self.order_book.update_level("BID", 0.0, 0.0)
+                elif entry_type == "1":
+                    self.order_book.update_level("ASK", 0.0, 0.0)
+
+        best_bid, best_ask = self.order_book.best_bid_ask()
+        if best_bid is not None and best_ask is not None:
+            self.best_bid, self.best_ask = best_bid, best_ask
+            self.friction_calculator.update_spread(best_bid, best_ask)
 
         self.try_bar_update()
+
+    def _update_non_repaint_series(self, bar, tick_count: int):
+        """Append closed bar data into the non-repaint guard series."""
+        _, o, h, l, c = bar
+        self.close_series.append(c)
+        self.high_series.append(h)
+        self.low_series.append(l)
+        # Approximate volume by tick count within the bar (better than zero volume)
+        volume_value = float(max(tick_count, 1))
+        self.volume_series.append(volume_value)
+
+    def _mark_non_repaint_closed(self):
+        """Allow bar[0] access after bar close."""
+        for series in self.non_repaint_series:
+            series.mark_bar_closed()
+
+    def _update_vpin(self, mid_price: float) -> None:
+        """Update VPIN calculator using mid-price changes as trade proxies."""
+        calc = getattr(self, 'vpin_calculator', None)
+        if calc is None or mid_price is None or mid_price <= 0:
+            return
+        if self.last_vpin_mid is None:
+            self.last_vpin_mid = mid_price
+            return
+        price_delta = mid_price - self.last_vpin_mid
+        costs = getattr(self, 'friction_calculator', None)
+        tick_size = getattr(costs.costs, 'tick_size', 0.01) if costs and getattr(costs, 'costs', None) else 0.01
+        tick_size = max(tick_size, 1e-6)
+        if abs(price_delta) < tick_size * 0.1:
+            return
+        side = "BUY" if price_delta > 0 else "SELL"
+        volume = max(1.0, SafeMath.safe_div(abs(price_delta), tick_size, 1.0))
+        calc.update(volume=volume, side=side)
+        self.last_vpin_stats = calc.get_stats()
+        self.last_vpin_mid = mid_price
+
+    @staticmethod
+    def _depth_is_too_thin(depth_bid: float, depth_ask: float, depth_floor: float) -> bool:
+        """Return True when either side of the book breaches the learned depth floor."""
+        if depth_floor <= 0:
+            return False
+        if depth_bid <= 0 or depth_ask <= 0:
+            return True
+        return min(depth_bid, depth_ask) < depth_floor
+
+    def _mark_non_repaint_opened(self):
+        """Reset non-repaint guards for the next bar."""
+        for series in self.non_repaint_series:
+            series.mark_bar_opened()
 
     def try_bar_update(self):
         if self.best_bid is None or self.best_ask is None:
             return
 
         mid = (self.best_bid + self.best_ask) / 2.0
+        self.current_bar_tick_count += 1
+        self._update_vpin(mid)
         
         # Update MFE/MAE if we have an open position
         if self.cur_pos != 0:
@@ -1164,8 +1463,14 @@ class CTraderFixApp(fix.Application):
         
         closed = self.builder.update(utc_now(), mid)
         if closed:
+            tick_count = self.current_bar_tick_count
+            self.current_bar_tick_count = 0
+            self._update_non_repaint_series(closed, tick_count)
+            self._mark_non_repaint_closed()
+            self.close_stats.update(closed[4])
             self.bars.append(closed)
             self.on_bar_close(closed)
+            self._mark_non_repaint_opened()
 
     # ----------------------------
     # TRADE: positions + orders
@@ -1342,13 +1647,15 @@ class CTraderFixApp(fix.Application):
                             metrics['max_drawdown'] * 100
                         )
                     
-                    # Auto-export CSV every 10 trades
-                    if self.performance.total_trades % 10 == 0:
+                    # Auto-export CSV every 5 trades (more frequent for safety)
+                    if self.performance.total_trades % 5 == 0 and self.performance.total_trades != self.last_export_count:
                         try:
-                            files = self.trade_exporter.export_all(self.performance, prefix="bot")
-                            LOG.info("[EXPORT] CSV files saved: %s", ", ".join(files.values()))
+                            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                            files = self.trade_exporter.export_all(self.performance, prefix=f"live_t{self.performance.total_trades}")
+                            self.last_export_count = self.performance.total_trades
+                            LOG.info("[EXPORT] ✓ Saved %d trades to: %s", self.performance.total_trades, ", ".join(files.values()))
                         except Exception as e:
-                            LOG.error("[EXPORT] Failed to export CSV: %s", e)
+                            LOG.error("[EXPORT] ✗ Failed to export CSV: %s", e, exc_info=True)
                 
             self.mfe_mae_tracker.reset()
             self.trade_entry_time = None
@@ -1462,6 +1769,28 @@ class CTraderFixApp(fix.Application):
         
         # Increment bar counter for HUD
         self.bar_count += 1
+
+        if self.bar_count % 10 == 0 and self.close_stats.is_ready():
+            LOG.info(
+                "[ROLLING] period=%d mean=%.2f std=%.4f min=%.2f max=%.2f",
+                self.close_stats.period,
+                self.close_stats.mean,
+                self.close_stats.std,
+                self.close_stats.min,
+                self.close_stats.max
+            )
+        
+        # PERIODIC AUTO-SAVE: Save every 50 bars to prevent data loss
+        if self.bar_count - self.last_autosave_bar >= 50:
+            if self.performance.total_trades > 0:
+                try:
+                    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                    files = self.trade_exporter.export_all(self.performance, prefix=f"autosave_b{self.bar_count}")
+                    self.last_autosave_bar = self.bar_count
+                    LOG.info("[AUTOSAVE] ✓ Bar %d: Saved %d trades to: %s", 
+                            self.bar_count, self.performance.total_trades, ", ".join(files.values()))
+                except Exception as e:
+                    LOG.error("[AUTOSAVE] ✗ Failed at bar %d: %s", self.bar_count, e)
         
         # Phase 3.5: Update activity monitor
         self.activity_monitor.on_bar_close()
@@ -1476,15 +1805,32 @@ class CTraderFixApp(fix.Application):
         if self.cur_pos != 0:
             self.path_recorder.add_bar(bar)
         
-        # Calculate order book imbalance
+        # Calculate depth-aware imbalance metrics
+        ob_depth = max(1, getattr(self.order_book, 'depth', 1))
+        learned_levels = getattr(self.friction_calculator, 'depth_levels', ob_depth)
+        depth_levels = max(1, min(ob_depth, learned_levels))
+        depth_bid, depth_ask = self.order_book.depth_sum(levels=depth_levels)
+        depth_total = depth_bid + depth_ask
+        depth_ratio = 1.0
+        if depth_ask > 0:
+            depth_ratio = SafeMath.safe_div(depth_bid, depth_ask, 1.0)
         imbalance = 0.0
-        if self.best_bid and self.best_ask:
+        if depth_total > 0:
+            imbalance = SafeMath.safe_div(depth_bid - depth_ask, depth_total, 0.0)
+        elif self.best_bid and self.best_ask:
             mid = (self.best_bid + self.best_ask) / 2.0
             spread = self.best_ask - self.best_bid
-            # Simple imbalance approximation from spread skew
             if mid > 0:
                 imbalance = (self.best_bid - mid) / (spread + 1e-10)
                 imbalance = max(-1.0, min(1.0, imbalance))
+        self.last_depth_metrics = {
+            "bid": depth_bid,
+            "ask": depth_ask,
+            "ratio": depth_ratio,
+            "levels": depth_levels
+        }
+        self.last_depth_floor = getattr(self.friction_calculator, 'depth_buffer', 0.0)
+        self.last_depth_gate = False
         
         # Phase 3.5: Get exploration bonus from activity monitor
         exploration_bonus = self.activity_monitor.get_exploration_bonus() if hasattr(self.activity_monitor, 'get_exploration_bonus') else 0.0
@@ -1495,6 +1841,14 @@ class CTraderFixApp(fix.Application):
         # Debug: Log RS volatility every bar
         if len(self.bars) >= 20:
             LOG.debug("[RS_VOL] bars=%d realized_vol=%.6f", len(self.bars), realized_vol)
+
+        # Phase 3: Event-relative time features every bar for both agents
+        event_features = {}
+        is_high_liq = False
+        if hasattr(self, 'event_time_engine') and self.event_time_engine:
+            event_features = self.event_time_engine.calculate_features()
+            is_high_liq = self.event_time_engine.is_high_liquidity_period()
+        vpin_zscore = self.last_vpin_stats.get('zscore', 0.0) if hasattr(self, 'last_vpin_stats') else 0.0
         
         # Phase 3.5: Periodic training step
         self.bars_since_training += 1
@@ -1526,19 +1880,30 @@ class CTraderFixApp(fix.Application):
                     self._export_hud_data()
                     return
                 
-                # Handbook: Get event-relative time features
-                event_features = self.event_time_engine.calculate_features()
-                is_high_liq = self.event_time_engine.is_high_liquidity_period()
-                
                 # Log key time features
                 if len(self.bars) % 10 == 0:  # Every 10 bars
                     active_sessions = self.event_time_engine.get_active_sessions()
                     LOG.debug("[EVENT-TIME] Sessions: %s | High liquidity: %s", 
                              ','.join(active_sessions) if active_sessions else 'None', is_high_liq)
+                depth_floor = max(self.last_depth_floor, 0.0)
+                if self._depth_is_too_thin(depth_bid, depth_ask, depth_floor):
+                    self.last_depth_gate = True
+                    min_depth = min(depth_bid, depth_ask) if depth_bid > 0 and depth_ask > 0 else 0.0
+                    LOG.warning(
+                        "[DEPTH] Order book thin: bid=%.3f ask=%.3f min=%.3f < buffer=%.3f (levels=%d)",
+                        depth_bid,
+                        depth_ask,
+                        min_depth,
+                        depth_floor,
+                        depth_levels
+                    )
+                    self._export_hud_data()
+                    return
+                self.last_depth_gate = False
                 
                 # FLAT: Check for entry (pass event features if policy accepts them)
                 action, confidence, runway = self.policy.decide_entry(
-                    self.bars, imbalance=imbalance, vpin_z=0.0, depth_ratio=1.0, 
+                    self.bars, imbalance=imbalance, vpin_z=vpin_zscore, depth_ratio=depth_ratio, 
                     realized_vol=realized_vol, event_features=event_features
                 )
                 # action: 0=NO_ENTRY, 1=LONG, 2=SHORT
@@ -1563,7 +1928,12 @@ class CTraderFixApp(fix.Application):
             else:
                 # IN POSITION: Check for exit
                 exit_action, exit_conf = self.policy.decide_exit(
-                    self.bars, current_price=c, imbalance=imbalance
+                    self.bars,
+                    current_price=c,
+                    imbalance=imbalance,
+                    vpin_z=vpin_zscore,
+                    depth_ratio=depth_ratio,
+                    event_features=event_features
                 )
                 # exit_action: 0=HOLD, 1=CLOSE
                 desired = 0 if exit_action == 1 else self.cur_pos
@@ -1599,21 +1969,46 @@ class CTraderFixApp(fix.Application):
                 self._export_hud_data()  # Export even on circuit breaker
                 return
             
-            # Calculate current VaR
-            current_var = self.var_estimator.estimate_var()
-            max_var_threshold = 0.05  # 5% max VaR threshold
+            # Calculate current VaR with regime-aware multiplier
+            current_var = self.var_estimator.estimate_var(
+                regime=self._current_var_regime(),
+                vpin_z=vpin_zscore,
+                current_vol=realized_vol
+            )
+            self.last_estimated_var = current_var
+            max_var_threshold = self.vol_cap
             if current_var > max_var_threshold:
                 LOG.warning("[CIRCUIT_BREAKER] VaR=%.4f exceeds threshold=%.4f - skipping entry",
                            current_var, max_var_threshold)
                 self._export_hud_data()  # Export even on VaR filter
                 return
+            if self.vpin_z_threshold > 0 and vpin_zscore > self.vpin_z_threshold:
+                LOG.warning(
+                    "[VPIN] z-score %.2f exceeds threshold %.2f - skipping entry",
+                    vpin_zscore,
+                    self.vpin_z_threshold
+                )
+                self._export_hud_data()
+                return
             
             # Phase 3.5: Learned spread threshold check (2x minimum observed spread)
-            spread_multiplier = self.param_manager.get("spread_relax", 2.0) if hasattr(self, 'param_manager') else 2.0
-            is_acceptable, current_spread, max_spread = self.friction_calculator.is_spread_acceptable(spread_multiplier)
+            env_multiplier = None
+            spread_override = os.environ.get("SPREAD_RELAX_MULTIPLIER")
+            if spread_override:
+                try:
+                    env_multiplier = float(spread_override)
+                except ValueError:
+                    LOG.warning(
+                        "[SPREAD_FILTER] Invalid SPREAD_RELAX_MULTIPLIER=%s - ignoring",
+                        spread_override
+                    )
+            is_acceptable, current_spread, max_spread = self.friction_calculator.is_spread_acceptable(env_multiplier)
+            effective_multiplier = (
+                env_multiplier if env_multiplier is not None else self.friction_calculator.spread_multiplier
+            )
             if not is_acceptable:
                 LOG.warning("[SPREAD_FILTER] Current=%.2f pips > Learned max=%.2f pips (%.1fx min) - skipping entry",
-                           current_spread, max_spread, spread_multiplier)
+                           current_spread, max_spread, effective_multiplier)
                 self._export_hud_data()  # Export even on filtered entries
                 return
 
@@ -1625,15 +2020,35 @@ class CTraderFixApp(fix.Application):
         
         # Handbook: Apply circuit breaker position size multiplier (reduces size during high risk)
         size_multiplier = self.circuit_breakers.get_position_size_multiplier()
-        order_qty = abs(delta) * self.qty * size_multiplier
+        order_qty = self._compute_order_qty(abs(delta), size_multiplier, self.cur_pos == 0 and desired != 0)
         
         if size_multiplier < 1.0:
             LOG.warning("[CIRCUIT-BREAKER] Position size reduced: %.2f%% (multiplier=%.2f)",
                        size_multiplier * 100, size_multiplier)
+        if order_qty <= 0:
+            LOG.warning("[RISK] Order blocked - zero qty after constraints")
+            self._export_hud_data()
+            return
         
         self.send_market_order(side=side, qty=order_qty)
 
     def send_market_order(self, side: str, qty: float):
+        # ROCK SOLID: Block trading on stale prices or unhealthy connection
+        if not self.connection_healthy:
+            LOG.warning("[SAFETY] ✗ Order blocked - connection unhealthy")
+            return
+        
+        if self.last_quote_heartbeat:
+            quote_age = (utc_now() - self.last_quote_heartbeat).total_seconds()
+            if quote_age > self.max_quote_age_for_trading:
+                LOG.warning("[SAFETY] ✗ Order blocked - quote data stale (%.1fs old, max=%ds)", 
+                           quote_age, self.max_quote_age_for_trading)
+                return
+        
+        if not self.trade_sid:
+            LOG.warning("[SAFETY] ✗ Order blocked - TRADE session not connected")
+            return
+        
         self.clord_counter += 1
         clid = f"cl_{int(time.time())}_{self.clord_counter}"
 
@@ -1798,12 +2213,22 @@ class CTraderFixApp(fix.Application):
             
             # 5. Risk Metrics
             # VaR and kurtosis
-            current_var = self.var_estimator.estimate_var() if hasattr(self.var_estimator, 'estimate_var') else 0.0
+            realized_vol = self._calculate_rs_volatility() if len(self.bars) >= 2 else 0.0
+            vpin_stats = self.last_vpin_stats if hasattr(self, 'last_vpin_stats') else {"vpin": 0.0, "zscore": 0.0}
+            vpin_value = vpin_stats.get('vpin', 0.0)
+            vpin_zscore = vpin_stats.get('zscore', 0.0)
+            current_var = (
+                self.var_estimator.estimate_var(
+                    regime=self._current_var_regime(),
+                    vpin_z=vpin_zscore,
+                    current_vol=realized_vol
+                )
+                if hasattr(self.var_estimator, 'estimate_var')
+                else 0.0
+            )
+            self.last_estimated_var = current_var
             current_kurtosis = self.kurtosis_monitor.current_kurtosis if hasattr(self.kurtosis_monitor, 'current_kurtosis') else 0.0
             circuit_breaker = "ACTIVE" if self.kurtosis_monitor.is_breaker_active else "INACTIVE"
-            
-            # Realized volatility (Rogers-Satchell)
-            realized_vol = self._calculate_rs_volatility() if len(self.bars) >= 2 else 0.0
             
             # Regime from dual policy
             regime = "UNKNOWN"
@@ -1823,11 +2248,14 @@ class CTraderFixApp(fix.Application):
             
             # Market microstructure
             spread = self.best_ask - self.best_bid if self.best_bid and self.best_ask else 0.0
-            vpin = 0.0  # TODO: wire up VPIN if available
-            vpin_zscore = 0.0
-            imbalance = 0.0
-            depth_bid = 1.0
-            depth_ask = 1.0
+            depth_metrics = getattr(self, 'last_depth_metrics', {}) or {}
+            depth_bid = depth_metrics.get('bid', 0.0)
+            depth_ask = depth_metrics.get('ask', 0.0)
+            depth_ratio = depth_metrics.get('ratio', 1.0)
+            depth_levels = depth_metrics.get('levels', 0)
+            imbalance = SafeMath.safe_div(depth_bid - depth_ask, depth_bid + depth_ask, 0.0) if (depth_bid + depth_ask) > 0 else 0.0
+            depth_buffer = getattr(getattr(self, 'friction_calculator', None), 'depth_buffer', 0.0)
+            depth_gate_active = getattr(self, 'last_depth_gate', False)
             
             risk_metrics = {
                 "var": current_var,
@@ -1836,8 +2264,9 @@ class CTraderFixApp(fix.Application):
                 "realized_vol": realized_vol,
                 "regime": regime,
                 "regime_zeta": regime_zeta,
-                "vpin": vpin,
+                "vpin": vpin_value,
                 "vpin_zscore": vpin_zscore,
+                "vpin_threshold": self.vpin_z_threshold,
                 "efficiency": efficiency,
                 "gamma": gamma,
                 "jerk": jerk,
@@ -1846,13 +2275,99 @@ class CTraderFixApp(fix.Application):
                 "spread": spread,
                 "imbalance": imbalance,
                 "depth_bid": depth_bid,
-                "depth_ask": depth_ask
+                "depth_ask": depth_ask,
+                "depth_ratio": depth_ratio,
+                "depth_levels": depth_levels,
+                "depth_buffer": depth_buffer,
+                "depth_gate_active": depth_gate_active,
+                "risk_budget_usd": self.risk_budget_usd,
+                "risk_cap_qty": self.last_risk_cap_qty,
+                "risk_requested_qty": self.last_base_qty,
+                "risk_final_qty": self.last_final_qty,
+                "vol_cap": self.vol_cap,
+                "vol_reference": self.vol_ref
             }
             with open(self.hud_data_dir / "risk_metrics.json", 'w') as f:
                 json.dump(risk_metrics, f, indent=2)
             
         except Exception as e:
             LOG.error("[HUD] Failed to export data: %s", str(e))
+
+    def _compute_order_qty(self, abs_delta: int, size_multiplier: float, is_new_entry: bool) -> float:
+        base_qty = abs_delta * self.qty * size_multiplier
+        self.last_base_qty = base_qty
+        self.last_final_qty = base_qty
+        self.last_risk_cap_qty = 0.0
+        if abs_delta == 0 or base_qty <= 0:
+            self.last_final_qty = 0.0
+            return 0.0
+        if not is_new_entry or self.risk_budget_usd <= 0:
+            return base_qty
+        var_value = max(self.last_estimated_var, 0.0)
+        if var_value <= 0:
+            return base_qty
+        equity = self._estimate_account_equity()
+        risk_cap = position_size_from_var(
+            var=max(var_value, 1e-6),
+            risk_budget_usd=self.risk_budget_usd,
+            account_equity=equity,
+            contract_size=max(self.contract_size, 1.0),
+            max_leverage=max(self.max_leverage, 1.0)
+        )
+        if risk_cap <= 0:
+            return base_qty
+        self.last_risk_cap_qty = risk_cap
+        adjusted = min(base_qty, risk_cap)
+        if adjusted < base_qty:
+            LOG.warning(
+                "[RISK] Order size capped by risk budget: requested=%.4f capped=%.4f (VaR=%.4f, budget=$%.2f)",
+                base_qty,
+                adjusted,
+                var_value,
+                self.risk_budget_usd
+            )
+        self.last_final_qty = adjusted
+        return adjusted
+
+    def _estimate_account_equity(self) -> float:
+        try:
+            pnl = self.performance.get_total_pnl()
+        except AttributeError:
+            pnl = 0.0
+        return max(self.starting_equity + pnl, 1.0)
+
+    def _resolve_param(self, env_key: Optional[str], param_name: str, default: float) -> float:
+        if env_key:
+            env_val = os.environ.get(env_key)
+            if env_val not in (None, ""):
+                try:
+                    return float(env_val)
+                except ValueError:
+                    LOG.warning("[PARAM] Invalid %s=%s - using fallback", env_key, env_val)
+        return self._lp_get(param_name, default)
+
+    def _lp_get(self, name: str, default: float) -> float:
+        try:
+            value = self.param_manager.get(
+                self.symbol,
+                name,
+                timeframe=self.timeframe_label,
+                broker=self.broker,
+                default=default
+            )
+            return float(value)
+        except Exception as exc:
+            LOG.debug("[PARAM] Falling back to %.4f for %s (%s)", default, name, exc)
+            return float(default)
+
+    def _current_var_regime(self) -> RegimeType:
+        """Map DualPolicy regime states to VaR estimator enums."""
+        regime_name = getattr(self.policy, 'current_regime', 'UNKNOWN') if hasattr(self, 'policy') else 'UNKNOWN'
+        if regime_name == "TRENDING":
+            return RegimeType.UNDERDAMPED
+        if regime_name == "MEAN_REVERTING":
+            return RegimeType.OVERDAMPED
+        return RegimeType.CRITICAL
 
 
 # ----------------------------
@@ -1891,7 +2406,6 @@ def main():
     except (ValueError, TypeError) as e:
         LOG.error("Invalid configuration value: %s", e)
         raise SystemExit(1)
-
     # CRITICAL: Validate configuration to prevent financial losses
     if qty <= 0:
         LOG.error("CTRADER_QTY must be positive, got: %s", qty)
@@ -1924,6 +2438,23 @@ def main():
     LOG.info("cfg_quote=%s", cfg_quote)
     LOG.info("cfg_trade=%s", cfg_trade)
     LOG.info("CTRADER_USERNAME=%s", user)
+
+    # Persist lightweight runtime profile for control panel / HUD
+    try:
+        status_dir = Path("data")
+        status_dir.mkdir(exist_ok=True)
+        profile = {
+            "symbol": symbol,
+            "symbol_id": symbol_id,
+            "timeframe_minutes": timeframe_minutes,
+            "quantity": qty,
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat()
+        }
+        with open(status_dir / "current_profile.json", "w", encoding="utf-8") as handle:
+            json.dump(profile, handle, indent=2)
+        LOG.info("[PROFILE] Wrote current_profile.json for dashboard consumers")
+    except Exception as e:
+        LOG.warning("[PROFILE] Failed to write status file: %s", e)
 
     app = CTraderFixApp(symbol_id=symbol_id, qty=qty, timeframe_minutes=timeframe_minutes, symbol=symbol)
 

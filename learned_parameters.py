@@ -332,6 +332,62 @@ class LearnedParametersManager:
                 'momentum': 0.9,
                 'description': 'Minimum confidence to exit trade'
             },
+            'feasibility_threshold': {
+                'default': 0.5,
+                'min': 0.0,
+                'max': 1.0,
+                'learning_rate': 0.01,
+                'momentum': 0.9,
+                'description': 'Minimum feasibility score required for entry'
+            },
+            'confidence_floor': {
+                'default': 0.55,
+                'min': 0.3,
+                'max': 0.9,
+                'learning_rate': 0.01,
+                'momentum': 0.9,
+                'description': 'Confidence floor for trigger agent'
+            },
+            'harvester_profit_target_pct': {
+                'default': 0.30,
+                'min': 0.05,
+                'max': 1.00,
+                'learning_rate': 0.01,
+                'momentum': 0.9,
+                'description': 'Target MFE percentage for harvester exits'
+            },
+            'harvester_stop_loss_pct': {
+                'default': 0.20,
+                'min': 0.05,
+                'max': 1.00,
+                'learning_rate': 0.01,
+                'momentum': 0.9,
+                'description': 'Maximum MAE percentage before forced exit'
+            },
+            'harvester_soft_time_bars': {
+                'default': 50,
+                'min': 10,
+                'max': 200,
+                'learning_rate': 1.0,
+                'momentum': 0.8,
+                'description': 'Bars held before soft time-based exit check'
+            },
+            'harvester_hard_time_bars': {
+                'default': 80,
+                'min': 20,
+                'max': 400,
+                'learning_rate': 1.0,
+                'momentum': 0.8,
+                'description': 'Bars held before mandatory exit'
+            },
+            'harvester_min_soft_profit_pct': {
+                'default': 0.05,
+                'min': 0.01,
+                'max': 0.50,
+                'learning_rate': 0.01,
+                'momentum': 0.9,
+                'description': 'Minimum profit required to allow soft time stop'
+            },
             
             # Feature engineering
             'feature_window_min': {
@@ -395,7 +451,7 @@ class LearnedParametersManager:
                 'description': 'Depth buffer for market making'
             },
             'spread_relax': {
-                'default': 0.50,
+                'default': 2.0,
                 'min': 0.0,
                 'max': 2.0,
                 'learning_rate': 0.01,
@@ -417,6 +473,14 @@ class LearnedParametersManager:
                 'learning_rate': 0.1,
                 'momentum': 0.9,
                 'description': 'VPIN z-score limit (alias for compatibility)'
+            },
+            'vpin_bucket_volume': {
+                'default': 25.0,
+                'min': 1.0,
+                'max': 1000.0,
+                'learning_rate': 1.0,
+                'momentum': 0.8,
+                'description': 'Volume bucket size for VPIN calculation'
             },
             'volatility_reference': {
                 'default': 0.005,
@@ -491,15 +555,16 @@ class LearnedParametersManager:
                 )
             
             self.instruments[key] = instrument
-            logger.info(f"Created parameter set for {key} with {len(spec)} parameters")
+            logger.info(f"Created parameter set for {key} with {len(self.param_specs)} parameters")
         
         return self.instruments[key]
     
     def get(self, symbol: str, param_name: str, 
-            timeframe: str = "M1", broker: str = "default") -> float:
+            timeframe: str = "M1", broker: str = "default",
+            default: Optional[float] = None) -> float:
         """Get parameter value for instrument"""
         instrument = self.get_instrument(symbol, timeframe, broker)
-        return instrument.get(param_name)
+        return instrument.get(param_name, default)
     
     def update(self, symbol: str, param_name: str, gradient: float,
               timeframe: str = "M1", broker: str = "default") -> float:
