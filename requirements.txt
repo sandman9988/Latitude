@@ -14,6 +14,9 @@ plotly>=6.5.0
 pandas>=2.3.0
 prometheus-client>=0.23.0
 
+# Tooling
+black>=24.3.0
+
 # Optional: For DDQN model support
 # Uncomment if you want to use trained models
 # torch>=2.0.0
