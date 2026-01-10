@@ -292,6 +292,12 @@ class VaREstimator:
         # Clamp to reasonable range
         return SafeMath.clamp(vol_mult, 0.5, 3.0)
     
+    def set_reference_vol(self, reference_vol: float) -> None:
+        """Pin the reference volatility used for scaling VaR."""
+        if SafeMath.is_valid(reference_vol) and reference_vol > 0:
+            self._reference_vol = reference_vol
+            logger.info("VaR reference volatility set to %.6f", reference_vol)
+    
     @property
     def last_var(self) -> float:
         """Get last calculated VaR"""

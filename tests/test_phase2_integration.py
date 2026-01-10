@@ -11,10 +11,16 @@ Run this to verify Phase 2 features before live deployment.
 import sys
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 LOG = logging.getLogger(__name__)
+
+# Ensure repository root is on sys.path for module imports
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 print("=" * 70)
 print("Phase 2 Integration Test")
@@ -128,7 +134,9 @@ try:
     
     monitor = ActivityMonitor()
     shaper = RewardShaper(
-        instrument="BTCUSD",
+        symbol="BTCUSD",
+        timeframe="M15",
+        broker="default",
         activity_monitor=monitor
     )
     

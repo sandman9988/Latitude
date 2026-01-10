@@ -547,7 +547,7 @@ ctrader_trading_bot/
 │   ├── health_check.sh                 System health monitoring
 │   ├── watchdog.sh                     Auto-restart on failure
 │   ├── start_bot_with_hud.sh           Integrated launcher
-│   └── hud_display.py                  Real-time dashboard
+│   └── hud_tabbed.py                   Tabbed real-time dashboard
 │
 └── DOCUMENTATION
     ├── MASTER_HANDBOOK.md              Original design handbook

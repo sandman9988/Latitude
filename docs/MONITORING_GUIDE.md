@@ -21,7 +21,7 @@ This guide covers four monitoring approaches:
 
 ```bash
 # Run standalone HUD with simulated data
-python3 hud_display.py
+python3 hud_tabbed.py
 
 # Integration with live bot (coming soon)
 # The bot will export metrics to data/performance_snapshot.json
@@ -34,6 +34,14 @@ python3 hud_display.py
 - **Agent Training Stats**: Buffer sizes, loss, TD-errors
 - **Risk Management**: VaR, kurtosis, circuit breakers
 - **Market Microstructure**: VPIN, spread, depth, imbalance
+
+### Symbol/Timeframe Presets
+
+- Press **s** in the HUD to open the preset picker. Arrow/tab through tabs as usual; the modal takes over until you confirm.
+- Presets live in [config/profile_presets.json](config/profile_presets.json); add/edit entries (symbol, ID, timeframe minutes, qty) to expose new markets without touching code.
+- When you select a preset the HUD writes the choice to `.env` and drops a sentinel at `data/pending_profile.json` so other services can see the queued change.
+- On the next `./run.sh` invocation (bot-only or bot+HUD) the launcher auto-detects that file, rewrites `.env`, reloads the environment, and removes the sentinel. The startup log will show which symbol/timeframe was armed.
+- Restarting the bot is still required for the FIX sessions to log in with the new instrument, but the entire workflow is now “HUD → select preset → rerun run.sh”.
 
 ### Screenshot
 
@@ -429,7 +437,8 @@ Access: http://localhost:8050
 
 ## Files Created
 
-- ✅ `hud_display.py` - Terminal HUD
+- ✅ `hud_tabbed.py` - Tabbed terminal HUD
+- ✅ `archive/hud_display_legacy.py` - Legacy single-pane HUD
 - ✅ `analysis_notebook.ipynb` - Jupyter analysis
 - ✅ `docs/MONITORING_GUIDE.md` - This guide
 

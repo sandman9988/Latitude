@@ -53,6 +53,7 @@ class TabbedHUD:
         self.running = False
         self.thread = None
         self.current_tab = 'overview'
+        self.raw_mode_enabled = False
         
         # Data sources
         self.data_dir = Path("data")
@@ -65,6 +66,9 @@ class TabbedHUD:
         self.market_stats = {}
         self.bot_config = {}
         self.last_update = None
+        self.notification = ""
+        self.notification_expiry = datetime.min
+        self.profile_options = self._load_profile_options()
         
         # Time-based metrics
         self.daily_metrics = {}
@@ -84,8 +88,10 @@ class TabbedHUD:
         self.running = True
         # Set terminal to raw mode for key input
         try:
-            self.old_settings = termios.tcgetattr(sys.stdin)
-            tty.setcbreak(sys.stdin.fileno())
+            if sys.stdin.isatty():
+                self.old_settings = termios.tcgetattr(sys.stdin)
+                tty.setcbreak(sys.stdin.fileno())
+                self.raw_mode_enabled = True
         except:
             pass
         
@@ -96,11 +102,7 @@ class TabbedHUD:
         """Stop HUD"""
         self.running = False
         # Restore terminal settings
-        if self.old_settings:
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
-            except:
-                pass
+        self._disable_raw_mode()
         if self.thread:
             self.thread.join(timeout=2)
     
@@ -123,6 +125,8 @@ class TabbedHUD:
                             self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
                 elif key.lower() == 'q':
                     self.running = False
+                elif key.lower() == 's':
+                    self._handle_symbol_selection()
         except:
             pass
     
@@ -142,7 +146,8 @@ class TabbedHUD:
     
     def _refresh_data(self):
         """Refresh all data from bot exports"""
-        self.last_update = datetime.now()
+        # Capture heartbeat timestamp in UTC so header labelling stays accurate
+        self.last_update = datetime.utcnow()
         self.heartbeat_idx = (self.heartbeat_idx + 1) % len(self.heartbeat_chars)
         
         # Bot config
@@ -184,6 +189,36 @@ class TabbedHUD:
                     }
             except:
                 pass
+
+    def _load_profile_options(self):
+        """Load preset symbol/timeframe profiles for selection UI"""
+        presets_path = Path("config/profile_presets.json")
+        if not presets_path.exists():
+            return []
+        try:
+            with open(presets_path, 'r', encoding='utf-8') as handle:
+                data = json.load(handle)
+        except Exception as exc:
+            self._set_notification(f"Failed to load profile presets: {exc}", ttl=6)
+            return []
+
+        profiles = []
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                required = {"symbol", "symbol_id", "timeframe_minutes", "qty"}
+                if not required.issubset(item.keys()):
+                    continue
+                label = item.get("label") or f"{item['symbol']} M{item['timeframe_minutes']}"
+                profiles.append({
+                    "label": label,
+                    "symbol": item["symbol"],
+                    "symbol_id": item["symbol_id"],
+                    "timeframe_minutes": item["timeframe_minutes"],
+                    "qty": item["qty"],
+                })
+        return profiles
     
     def _load_json(self, filename: str, attr: str):
         """Load JSON file into attribute"""
@@ -194,6 +229,135 @@ class TabbedHUD:
                     setattr(self, attr, json.load(f))
             except:
                 pass
+
+    def _disable_raw_mode(self):
+        """Return terminal to original mode for blocking input prompts"""
+        if self.raw_mode_enabled and self.old_settings and sys.stdin.isatty():
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_settings)
+            except:
+                pass
+            self.raw_mode_enabled = False
+
+    def _enable_raw_mode(self):
+        """Re-enter raw mode after prompt interactions"""
+        if (not self.raw_mode_enabled) and self.old_settings and sys.stdin.isatty():
+            try:
+                tty.setcbreak(sys.stdin.fileno())
+                self.raw_mode_enabled = True
+            except:
+                pass
+
+    def _handle_symbol_selection(self):
+        """Interactive prompt for choosing symbol/timeframe presets"""
+        if not self.profile_options:
+            self._set_notification("No profile presets defined (config/profile_presets.json)", ttl=6)
+            return
+
+        self._disable_raw_mode()
+        try:
+            os.system('clear' if os.name != 'nt' else 'cls')
+            print("Preset Trading Profiles\n")
+            for idx, option in enumerate(self.profile_options, start=1):
+                print(f"  {idx}. {option['label']}  |  Symbol: {option['symbol']}  |  ID: {option['symbol_id']}  |  M{option['timeframe_minutes']}  |  Qty: {option['qty']}")
+            print("\nSelect the profile number to queue it (bot restart required). Type 'c' to cancel.\n")
+            choice = input("Selection: ").strip()
+            if not choice or choice.lower().startswith('c'):
+                return
+            try:
+                selection_idx = int(choice) - 1
+            except ValueError:
+                input("Invalid entry. Press Enter to continue...")
+                return
+            if selection_idx < 0 or selection_idx >= len(self.profile_options):
+                input("Option out of range. Press Enter to continue...")
+                return
+            selected = self.profile_options[selection_idx]
+            env_updated = self._apply_profile_selection(selected)
+            status = "✓ Profile queued and .env updated." if env_updated else "⚠ Could not update .env (file missing?)."
+            print(f"\n{status}")
+            print("Restart the bot launcher (run.sh) to apply the new market selection.")
+            input("Press Enter to return to the HUD...")
+        except Exception as exc:
+            input(f"Unexpected error: {exc}. Press Enter to return...")
+        finally:
+            self._enable_raw_mode()
+
+    def _apply_profile_selection(self, selection: Dict[str, Any]) -> bool:
+        """Write selection to .env and pending profile file"""
+        updates = {
+            "SYMBOL": selection["symbol"],
+            "SYMBOL_ID": str(selection["symbol_id"]),
+            "TIMEFRAME_MINUTES": str(selection["timeframe_minutes"]),
+            "QTY": str(selection["qty"]),
+        }
+        env_updated = self._update_env_file(Path(".env"), updates)
+        self._write_pending_profile(selection)
+        label = selection.get("label") or f"{selection['symbol']} M{selection['timeframe_minutes']}"
+        if env_updated:
+            self._set_notification(f"Queued {label}. Restart run.sh to apply.", ttl=10)
+        else:
+            self._set_notification("Preset saved (pending_profile.json) but .env missing", ttl=10)
+        return env_updated
+
+    def _update_env_file(self, env_path: Path, updates: Dict[str, str]) -> bool:
+        """Update target keys inside .env while preserving other settings"""
+        if not env_path.exists():
+            return False
+        try:
+            lines = env_path.read_text(encoding='utf-8').splitlines()
+        except Exception:
+            return False
+        seen = set()
+        new_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#') or '=' not in line:
+                new_lines.append(line)
+                continue
+            key, _, value = line.partition('=')
+            key = key.strip()
+            if key in updates:
+                new_lines.append(f"{key}={updates[key]}")
+                seen.add(key)
+            else:
+                new_lines.append(line)
+        for key, value in updates.items():
+            if key not in seen:
+                new_lines.append(f"{key}={value}")
+        try:
+            env_path.write_text("\n".join(new_lines) + "\n", encoding='utf-8')
+            return True
+        except Exception:
+            return False
+
+    def _write_pending_profile(self, selection: Dict[str, Any]):
+        """Persist requested profile for other tools/dashboard consumers"""
+        payload = {
+            "symbol": selection["symbol"],
+            "symbol_id": selection["symbol_id"],
+            "timeframe_minutes": selection["timeframe_minutes"],
+            "qty": selection["qty"],
+            "label": selection.get("label"),
+            "requested_at": datetime.utcnow().isoformat() + "Z",
+            "status": "pending_restart"
+        }
+        self.data_dir.mkdir(exist_ok=True)
+        try:
+            with open(self.data_dir / "pending_profile.json", 'w', encoding='utf-8') as handle:
+                json.dump(payload, handle, indent=2)
+        except Exception:
+            pass
+
+    def _set_notification(self, message: str, ttl: int = 5):
+        """Display a temporary status message in the footer"""
+        self.notification = message
+        self.notification_expiry = datetime.now() + timedelta(seconds=ttl)
+
+    def _current_notification(self) -> str:
+        if self.notification and datetime.now() < self.notification_expiry:
+            return self.notification
+        return ""
     
     def _render(self):
         """Render current tab"""
@@ -235,7 +399,7 @@ class TabbedHUD:
         minutes = int((uptime % 3600) // 60)
         
         price = self.position.get('current_price', 0)
-        now = self.last_update or datetime.now()
+        now = self.last_update or datetime.utcnow()
         
         print(f"\n🎯 {symbol} @ {tf}    💰 {price:.2f}    ⏱  {hours:02d}h {minutes:02d}m")
         print(f"{heartbeat} {now.strftime('%Y-%m-%d %H:%M:%S')} UTC (Live)")
@@ -591,7 +755,9 @@ class TabbedHUD:
     def _render_footer(self):
         """Render footer with controls"""
         print("\n" + "─" * 80)
-        print("  [1-5] Switch tabs  |  [Tab] Next  |  [Shift+Tab] Prev  |  [q] Quit")
+        print("  [1-5] Tabs  |  [Tab] Next  |  [Shift+Tab] Prev  |  [s] Symbol presets  |  [q] Quit")
+        note = self._current_notification() or "Use 's' to queue a different symbol/timeframe preset (restart required)."
+        print(f"  {note}")
         print("─" * 80)
     
     def _pnl_color(self, pnl: float) -> str:

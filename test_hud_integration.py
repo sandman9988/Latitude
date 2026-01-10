@@ -145,4 +145,4 @@ if __name__ == "__main__":
         print("\nTo simulate live updates, run:")
         print("  python3 test_hud_integration.py update")
         print("\nTo view in HUD, run in another terminal:")
-        print("  python3 hud_display.py")
+        print("  python3 hud_tabbed.py")

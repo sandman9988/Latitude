@@ -26,6 +26,7 @@ import logging
 from typing import Tuple, Optional, Dict
 import numpy as np
 from experience_buffer import ExperienceBuffer, RegimeSampling
+from learned_parameters import LearnedParametersManager
 
 LOG = logging.getLogger(__name__)
 
@@ -56,7 +57,16 @@ class TriggerAgent:
         - predicted_runway: Expected MFE in price units
     """
     
-    def __init__(self, window: int = 64, n_features: int = 7, enable_training: bool = False):
+    def __init__(
+        self,
+        window: int = 64,
+        n_features: int = 7,
+        enable_training: bool = False,
+        symbol: str = "BTCUSD",
+        timeframe: str = "M15",
+        broker: str = "default",
+        param_manager: Optional[LearnedParametersManager] = None
+    ):
         """
         Initialize Trigger Agent.
         
@@ -70,6 +80,10 @@ class TriggerAgent:
         self.use_torch = False
         self.model = None
         self.torch = None
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.broker = broker
+        self.param_manager = param_manager
         
         # Paper mode settings - NO GATING in training
         self.paper_mode = os.environ.get('PAPER_MODE', '0') == '1'
@@ -108,10 +122,23 @@ class TriggerAgent:
             LOG.info("[TRIGGER] TRAINING MODE - All gates DISABLED")
         else:
             # Live trading: use learned gating
-            self.feasibility_threshold = float(os.environ.get('FEAS_THRESHOLD', '0.5'))
-            self.confidence_floor = float(os.environ.get('CONFIDENCE_FLOOR', '0.55'))
-            LOG.info("[TRIGGER] LIVE MODE - Confidence floor: %.2f, Feasibility: %.2f",
-                     self.confidence_floor, self.feasibility_threshold)
+            self.feasibility_threshold, feas_source = self._resolve_gate_value(
+                env_key='FEAS_THRESHOLD',
+                param_name='feasibility_threshold',
+                fallback=0.5
+            )
+            self.confidence_floor, conf_source = self._resolve_gate_value(
+                env_key='CONFIDENCE_FLOOR',
+                param_name='confidence_floor',
+                fallback=0.55
+            )
+            LOG.info(
+                "[TRIGGER] LIVE MODE - Confidence floor: %.2f (%s) | Feasibility: %.2f (%s)",
+                self.confidence_floor,
+                conf_source,
+                self.feasibility_threshold,
+                feas_source
+            )
         
         LOG.info("[TRIGGER] Epsilon: %.2f → %.2f (decay=%.4f)", 
                  self.epsilon, self.epsilon_end, self.epsilon_decay)
@@ -125,6 +152,35 @@ class TriggerAgent:
         
         if self.enable_training:
             LOG.info("[TRIGGER] Online learning ENABLED (buffer capacity=50k, min=%d)", self.min_experiences)
+    
+    def _resolve_gate_value(self, env_key: str, param_name: str, fallback: float) -> Tuple[float, str]:
+        """Resolve gate thresholds via env override → learned params → fallback."""
+        env_val = os.environ.get(env_key)
+        if env_val is not None and env_val != "":
+            try:
+                return float(env_val), "ENV"
+            except ValueError:
+                LOG.warning("[TRIGGER] Invalid %s env value '%s' - falling back", env_key, env_val)
+        value = self._get_param(param_name, fallback)
+        source = "LP" if self.param_manager else "DEFAULT"
+        return value, source
+
+    def _get_param(self, name: str, default: float) -> float:
+        if not self.param_manager:
+            return default
+        try:
+            value = self.param_manager.get(
+                self.symbol,
+                name,
+                timeframe=self.timeframe,
+                broker=self.broker,
+                default=default
+            )
+            return float(value)
+        except Exception as exc:
+            LOG.debug("[TRIGGER] Failed to load %s from LearnedParameters (%s) - using default %.2f",
+                      name, exc, default)
+            return default
     
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for trigger agent."""

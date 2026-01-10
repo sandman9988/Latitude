@@ -18,6 +18,7 @@ from collections import deque
 import numpy as np
 
 from safe_math import SafeMath, RunningStats, SAFE_EPSILON
+from learned_parameters import LearnedParametersManager
 
 LOG = logging.getLogger(__name__)
 
@@ -344,32 +345,63 @@ class CircuitBreakerManager:
     """
     Manages all circuit breakers
     
-    Coordinates multiple breakers and provides unified status
+    Coordinates multiple breakers and provides unified status.
+    Thresholds default to LearnedParametersManager when available to
+    keep safety limits consistent with the rest of the system.
     """
     
-    def __init__(self, 
-                 sortino_threshold: float = 0.5,
-                 kurtosis_threshold: float = 5.0,
-                 max_drawdown: float = 0.20,
-                 max_consecutive_losses: int = 5):
+    def __init__(
+        self,
+        sortino_threshold: Optional[float] = None,
+        kurtosis_threshold: Optional[float] = None,
+        max_drawdown: Optional[float] = None,
+        max_consecutive_losses: Optional[int] = None,
+        symbol: str = "BTCUSD",
+        timeframe: str = "M15",
+        broker: str = "default",
+        param_manager: Optional[LearnedParametersManager] = None
+    ):
         """
-        Initialize all circuit breakers
+        Initialize all circuit breakers.
         
         Args:
-            sortino_threshold: Minimum Sortino ratio
-            kurtosis_threshold: Maximum kurtosis
-            max_drawdown: Maximum drawdown before full stop
-            max_consecutive_losses: Max losses before halt
+            sortino_threshold: Override for Sortino breaker threshold
+            kurtosis_threshold: Override for kurtosis breaker threshold
+            max_drawdown: Override for max drawdown stop level
+            max_consecutive_losses: Override for loss streak limit
+            symbol/timeframe/broker: Context for learned parameters
+            param_manager: LearnedParametersManager instance
         """
-        self.sortino_breaker = SortinoBreaker(threshold=sortino_threshold)
-        self.kurtosis_breaker = KurtosisBreaker(threshold=kurtosis_threshold)
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.broker = broker
+        self.param_manager = param_manager
+        
+        self.sortino_threshold, sortino_source = self._resolve_param(
+            'sortino_threshold', sortino_threshold, 0.5
+        )
+        self.kurtosis_threshold, kurtosis_source = self._resolve_param(
+            'kurtosis_threshold', kurtosis_threshold, 5.0
+        )
+        self.max_drawdown, drawdown_source = self._resolve_param(
+            'max_drawdown_pct', max_drawdown, 0.20
+        )
+        self.max_consecutive_losses, loss_source = self._resolve_param(
+            'max_consecutive_losses', max_consecutive_losses, 5
+        )
+        self.max_consecutive_losses = int(round(self.max_consecutive_losses))
+        
+        self.sortino_breaker = SortinoBreaker(threshold=self.sortino_threshold)
+        self.kurtosis_breaker = KurtosisBreaker(threshold=self.kurtosis_threshold)
         self.drawdown_breaker = DrawdownBreaker(thresholds={
             0.05: 0.9,
             0.10: 0.75,
             0.15: 0.5,
-            max_drawdown: 0.0
+            self.max_drawdown: 0.0
         })
-        self.consecutive_losses_breaker = ConsecutiveLossesBreaker(max_losses=max_consecutive_losses)
+        self.consecutive_losses_breaker = ConsecutiveLossesBreaker(
+            max_losses=self.max_consecutive_losses
+        )
         
         self.breakers = [
             self.sortino_breaker,
@@ -378,11 +410,49 @@ class CircuitBreakerManager:
             self.consecutive_losses_breaker
         ]
         
-        LOG.info("Circuit Breaker Manager initialized")
-        LOG.info(f"  Sortino threshold: {sortino_threshold}")
-        LOG.info(f"  Kurtosis threshold: {kurtosis_threshold}")
-        LOG.info(f"  Max drawdown: {max_drawdown:.1%}")
-        LOG.info(f"  Max consecutive losses: {max_consecutive_losses}")
+        LOG.info(
+            "Circuit Breaker Manager initialized | Sortino>=%.2f (%s) Kurtosis<=%.1f (%s) DD<=%.0f%% (%s) MaxLoss=%d (%s)",
+            self.sortino_threshold,
+            sortino_source,
+            self.kurtosis_threshold,
+            kurtosis_source,
+            self.max_drawdown * 100,
+            drawdown_source,
+            self.max_consecutive_losses,
+            loss_source
+        )
+
+    def _resolve_param(self, name: str, explicit_value, default: float):
+        """Resolve breaker thresholds with override → learned → default."""
+        if explicit_value is not None:
+            try:
+                return float(explicit_value), "explicit"
+            except (TypeError, ValueError):
+                LOG.warning(
+                    "[CIRCUIT-BREAKERS] Invalid explicit override for %s (%s) - using default %.3f",
+                    name,
+                    explicit_value,
+                    default
+                )
+                return float(default), "default"
+        if self.param_manager is not None:
+            try:
+                value = self.param_manager.get(
+                    self.symbol,
+                    name,
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                    default=default
+                )
+                return float(value), "learned"
+            except Exception as exc:
+                LOG.debug(
+                    "[CIRCUIT-BREAKERS] Failed to fetch %s via LearnedParameters (%s) - using default %.3f",
+                    name,
+                    exc,
+                    default
+                )
+        return float(default), "default"
     
     def update_trade(self, pnl: float, equity: float):
         """

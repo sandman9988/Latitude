@@ -12,7 +12,7 @@ From MASTER_HANDBOOK.md Section 2.2: Dual-Agent Architecture
 """
 
 import logging
-from typing import Tuple
+from typing import Tuple, Optional
 from collections import deque
 import numpy as np
 
@@ -20,6 +20,8 @@ from trigger_agent import TriggerAgent
 from harvester_agent import HarvesterAgent
 from regime_detector import RegimeDetector  # Phase 3.4
 from path_geometry import PathGeometry  # Phase 3.5: Entry trigger features
+from experience_buffer import RegimeSampling
+from learned_parameters import LearnedParametersManager
 
 LOG = logging.getLogger(__name__)
 
@@ -38,7 +40,18 @@ class DualPolicy:
     - If DDQN_DUAL_AGENT=1: Uses dual-agent architecture
     """
     
-    def __init__(self, window: int = 64, enable_regime_detection: bool = True, path_geometry=None, enable_training: bool = False, enable_event_features: bool = True):
+    def __init__(
+        self,
+        window: int = 64,
+        enable_regime_detection: bool = True,
+        path_geometry=None,
+        enable_training: bool = False,
+        enable_event_features: bool = True,
+        param_manager: Optional[LearnedParametersManager] = None,
+        symbol: str = "BTCUSD",
+        timeframe: str = "M15",
+        broker: str = "default"
+    ):
         """
         Initialize DualPolicy with trigger and harvester agents.
         
@@ -52,19 +65,51 @@ class DualPolicy:
         self.window = window
         self.enable_training = enable_training
         self.enable_event_features = enable_event_features
+        self.param_manager = param_manager
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.broker = broker
         
-        # Calculate feature dimension: 7 base + 5 geometry (if enabled) + 6 event (if enabled)
-        n_features = 7
-        if path_geometry:
-            n_features += 5
-        if enable_event_features:
-            n_features += 6
-            
-        self.trigger = TriggerAgent(window=window, n_features=n_features, enable_training=enable_training)
-        self.harvester = HarvesterAgent(window=window, n_features=10, enable_training=enable_training)
+        # Calculate feature dimensions (base=7, geometry=5, event=6)
+        base_features = 7
+        geometry_features = 5 if path_geometry else 0
+        self.event_feature_count = 6 if enable_event_features else 0
+
+        trigger_features = base_features + geometry_features + self.event_feature_count
+        harvester_market_features = trigger_features
+        harvester_total_features = harvester_market_features + 3  # +3 position stats (MFE/MAE/bars)
+
+        self.trigger = TriggerAgent(
+            window=window,
+            n_features=trigger_features,
+            enable_training=enable_training,
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+            broker=self.broker,
+            param_manager=self.param_manager
+        )
+        self.harvester = HarvesterAgent(
+            window=window,
+            n_features=harvester_total_features,
+            enable_training=enable_training,
+            symbol=self.symbol,
+            timeframe=self.timeframe,
+            broker=self.broker,
+            param_manager=self.param_manager
+        )
         
-        LOG.info("[DUAL_POLICY] TriggerAgent: %d features (7 base + %d geometry + %d event)", 
-                 n_features, 5 if path_geometry else 0, 6 if enable_event_features else 0)
+        LOG.info(
+            "[DUAL_POLICY] TriggerAgent features: base=%d geom=%d event=%d -> total=%d",
+            base_features,
+            geometry_features,
+            self.event_feature_count,
+            trigger_features
+        )
+        LOG.info(
+            "[DUAL_POLICY] HarvesterAgent features: market=%d + position=3 -> total=%d",
+            harvester_market_features,
+            harvester_total_features
+        )
         LOG.info("[DUAL_POLICY] Online learning: %s", "ENABLED" if enable_training else "DISABLED")
         
         # Path geometry for entry features
@@ -91,6 +136,7 @@ class DualPolicy:
         # Phase 3.4: Regime state
         self.current_regime = "UNKNOWN"
         self.current_zeta = 1.0
+        self.current_regime_enum = RegimeSampling.UNKNOWN
         
         LOG.info("[DUAL_POLICY] Initialized with TriggerAgent + HarvesterAgent")
     
@@ -121,10 +167,8 @@ class DualPolicy:
             - predicted_runway: Expected MFE
         """
         # Phase 3.4: Update regime detection with latest price
-        if self.regime_detector and len(bars) > 0:
-            latest_bar = bars[-1]
-            _, _, _, _, close_price = latest_bar
-            self.current_regime, self.current_zeta = self.regime_detector.add_price(close_price)
+        if len(bars) > 0:
+            self._ingest_price_for_regime(bars[-1][4])
         
         # Build state (includes path geometry and event features if available)
         state = self._build_state(bars, imbalance, vpin_z, depth_ratio, realized_vol, event_features)
@@ -183,7 +227,8 @@ class DualPolicy:
         current_price: float,
         imbalance: float = 0.0,
         vpin_z: float = 0.0,
-        depth_ratio: float = 1.0
+        depth_ratio: float = 1.0,
+        event_features: dict = None
     ) -> Tuple[int, float]:
         """
         Decide exit action using HarvesterAgent.
@@ -194,18 +239,28 @@ class DualPolicy:
             imbalance: Order book imbalance
             vpin_z: VPIN z-score
             depth_ratio: Depth ratio
+            event_features: Event-relative time features (optional)
         
         Returns:
             (action, confidence)
             - action: 0=HOLD, 1=CLOSE
             - confidence: [0, 1]
         """
+        if len(bars) > 0:
+            self._ingest_price_for_regime(bars[-1][4])
+
         # Update MFE/MAE
         self._update_mfe_mae(current_price)
         self.bars_held += 1
         
         # Build market state
-        market_state = self._build_state(bars, imbalance, vpin_z, depth_ratio)
+        market_state = self._build_state(
+            bars,
+            imbalance,
+            vpin_z,
+            depth_ratio,
+            event_features=event_features
+        )
         
         # Harvester decides exit
         action, confidence = self.harvester.decide(
@@ -338,7 +393,7 @@ class DualPolicy:
         if self.path_geometry:
             n_features += 5  # Geometry
         if event_features and self.enable_event_features:
-            n_features += 6  # Event time
+            n_features += self.event_feature_count  # Event time
             
         if len(bars) < 70:
             return np.zeros((self.window, n_features), dtype=np.float32)
@@ -419,7 +474,7 @@ class DualPolicy:
             ])
         
         # Add event time features if available (6 key features)
-        if event_features:
+        if event_features and self.enable_event_features:
             # Select key temporal features (already normalized in event_time_features.py)
             london_active = event_features.get('london_active', 0.0)
             ny_active = event_features.get('ny_active', 0.0)
@@ -451,6 +506,30 @@ class DualPolicy:
         
         return feats
 
+    def _ingest_price_for_regime(self, close_price: float):
+        """Update regime detector with latest close and sync replay buffers."""
+        if not self.regime_detector or close_price is None:
+            return
+
+        self.current_regime, self.current_zeta = self.regime_detector.add_price(close_price)
+        self._sync_replay_buffer_regime()
+
+    def _sync_replay_buffer_regime(self):
+        """Align replay buffer sampling with current regime classification."""
+        regime_map = {
+            "TRENDING": RegimeSampling.TRENDING,
+            "MEAN_REVERTING": RegimeSampling.MEAN_REVERTING,
+            "TRANSITIONAL": RegimeSampling.TRANSITIONAL,
+            "UNKNOWN": RegimeSampling.UNKNOWN
+        }
+        new_enum = regime_map.get(self.current_regime, RegimeSampling.UNKNOWN)
+        self.current_regime_enum = new_enum
+
+        for agent in (self.trigger, self.harvester):
+            buffer = getattr(agent, 'buffer', None)
+            if getattr(agent, 'enable_training', False) and buffer and hasattr(buffer, 'set_current_regime'):
+                buffer.set_current_regime(self.current_regime_enum)
+
     # -------------------------------------------------------------------------
     # Online Learning Methods
     # -------------------------------------------------------------------------
@@ -480,7 +559,8 @@ class DualPolicy:
             action=action,
             reward=reward,
             next_state=next_state,
-            done=done
+            done=done,
+            regime=self.current_regime_enum
         )
     
     def add_harvester_experience(
@@ -509,7 +589,8 @@ class DualPolicy:
             action=action,
             reward=reward,
             next_state=next_state,
-            done=done
+            done=done,
+            regime=self.current_regime_enum
         )
     
     def train_step(self, adaptive_reg=None) -> dict:

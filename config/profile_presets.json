@@ -1,0 +1,30 @@
+[
+  {
+    "label": "BTCUSD · M15 · 0.10",
+    "symbol": "BTCUSD",
+    "symbol_id": 10028,
+    "timeframe_minutes": 15,
+    "qty": 0.10
+  },
+  {
+    "label": "XAUUSD · M5 · 0.50",
+    "symbol": "XAUUSD",
+    "symbol_id": 158688,
+    "timeframe_minutes": 5,
+    "qty": 0.50
+  },
+  {
+    "label": "ETHUSD · M15 · 0.50",
+    "symbol": "ETHUSD",
+    "symbol_id": 10031,
+    "timeframe_minutes": 15,
+    "qty": 0.50
+  },
+  {
+    "label": "US30 · M15 · 1",
+    "symbol": "US30",
+    "symbol_id": 51017,
+    "timeframe_minutes": 15,
+    "qty": 1.00
+  }
+]

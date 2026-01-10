@@ -1,6 +1,20 @@
 # cTrader DDQN Trading Bot
 
-A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network (DDQN) reinforcement learning to trade BTC/USD on M15 timeframes.
+A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network (DDQN) reinforcement learning with a dual-agent architecture (TriggerAgent + HarvesterAgent) to trade XAUUSD (Gold) on M1 timeframes.
+
+## 🚀 Quick Start
+
+**New to deployment?** See [DEPLOYMENT_QUICKSTART.md](DEPLOYMENT_QUICKSTART.md) for the living ecosystem strategy.
+
+**TL;DR:**
+1. Run `./phase0_validate_system.sh` (2-4 hour paper validation)
+2. Run `./launch_micro_learning.sh` (live micro-position learning, QTY=0.001)
+3. Monitor with `./monitor_phase1.sh`
+4. Graduate to Phase 2 after 500+ profitable trades
+
+**Why this approach?** Avoids RL complacency from paper training. Agents learn real friction costs (spread, slippage, requotes) from day one with tiny positions (~$2-3 max loss). See [PAPER_VS_LIVE_CONFIG.md](PAPER_VS_LIVE_CONFIG.md) for full rationale.
+
+---
 
 ## Features
 

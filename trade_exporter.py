@@ -16,9 +16,10 @@ LOG = logging.getLogger(__name__)
 class TradeExporter:
     """Export trade history to CSV format."""
     
-    def __init__(self, output_dir: str = "exports"):
+    def __init__(self, output_dir: str = "trades"):
         self.output_dir = Path(output_dir)
-        self.output_dir.mkdir(exist_ok=True)
+        self.output_dir.mkdir(exist_ok=True, parents=True)
+        LOG.info("TradeExporter initialized: output_dir=%s", self.output_dir)
     
     def export_trades(self, trades: List[Dict], filename: Optional[str] = None) -> str:
         """

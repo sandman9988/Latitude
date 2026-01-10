@@ -47,7 +47,7 @@ echo
 # Menu
 echo "Select monitoring tool:"
 echo
-echo "  1) Terminal HUD        (Real-time dashboard)"
+echo "  1) Terminal HUD        (Tabbed real-time dashboard)"
 echo "  2) Jupyter Notebook    (Interactive analysis)"
 echo "  3) Both                (HUD + Notebook)"
 echo "  4) Test Suite          (Run online learning tests)"
@@ -58,7 +58,7 @@ read -p "Enter choice [1-5]: " choice
 case $choice in
     1)
         echo -e "${GREEN}Launching Terminal HUD...${NC}"
-        python3 hud_display.py
+        python3 hud_tabbed.py
         ;;
     2)
         echo -e "${GREEN}Launching Jupyter Notebook...${NC}"
@@ -67,7 +67,7 @@ case $choice in
         ;;
     3)
         echo -e "${GREEN}Launching HUD in background...${NC}"
-        python3 hud_display.py &
+        python3 hud_tabbed.py &
         HUD_PID=$!
         echo "  PID: $HUD_PID"
         

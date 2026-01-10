@@ -15,11 +15,14 @@ real-time friction estimates for position sizing and reward calculations.
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 from collections import deque
 from datetime import datetime, timezone
 import statistics
+
+from learned_parameters import LearnedParametersManager
 
 LOG = logging.getLogger(__name__)
 
@@ -312,9 +315,24 @@ class FrictionCalculator:
     All costs are converted to USD (or account currency) for consistency.
     """
     
-    def __init__(self, symbol: str = "BTCUSD", symbol_id: int = 10028):
+    def __init__(
+        self,
+        symbol: str = "BTCUSD",
+        symbol_id: int = 10028,
+        timeframe: str = "M15",
+        broker: str = "default",
+        param_manager: Optional[LearnedParametersManager] = None
+    ):
         self.symbol = symbol
         self.symbol_id = symbol_id
+        self.timeframe = timeframe
+        self.broker = broker
+        self.param_manager = param_manager
+        self._param_refresh_interval = 300  # seconds
+        self._last_param_refresh = 0.0
+        self.spread_multiplier = 2.0
+        self.depth_buffer = 0.10
+        self.depth_levels = 5
         
         # Symbol cost specification
         self.costs = SymbolCosts(symbol=symbol, symbol_id=symbol_id)
@@ -325,8 +343,59 @@ class FrictionCalculator:
         # Slippage modeling
         self.slippage_model = SlippageModel()
         
-        LOG.info("FrictionCalculator initialized for %s (id=%d)", symbol, symbol_id)
-        
+        self._load_learned_parameters(force=True)
+        LOG.info(
+            "FrictionCalculator initialized for %s (id=%d) [tf=%s broker=%s]",
+            symbol,
+            symbol_id,
+            timeframe,
+            broker
+        )
+    
+    def _ensure_param_manager(self) -> LearnedParametersManager:
+        if self.param_manager is None:
+            self.param_manager = LearnedParametersManager()
+        return self.param_manager
+    
+    def _get_param(self, name: str, default: float) -> float:
+        try:
+            manager = self._ensure_param_manager()
+            value = manager.get(
+                self.symbol,
+                name,
+                timeframe=self.timeframe,
+                broker=self.broker,
+                default=default
+            )
+            return float(value)
+        except Exception as exc:
+            LOG.debug(
+                "[FRICTION] Falling back to default %.3f for %s (%s)",
+                default,
+                name,
+                exc
+            )
+            return float(default)
+    
+    def _load_learned_parameters(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_param_refresh) < self._param_refresh_interval:
+            return
+        self.spread_multiplier = self._get_param('spread_relax', 2.0)
+        self.depth_buffer = self._get_param('depth_buffer', 0.10)
+        self.depth_levels = int(round(self._get_param('depth_levels', 5.0)))
+        self._last_param_refresh = now
+        LOG.info(
+            "[FRICTION] Learned thresholds loaded: spread<=%.2fx min | depth_levels=%d | depth_buffer=%.2f",
+            self.spread_multiplier,
+            self.depth_levels,
+            self.depth_buffer
+        )
+    
+    def refresh_learned_thresholds(self) -> None:
+        """Force refresh of learned friction thresholds."""
+        self._load_learned_parameters(force=True)
+
     def update_symbol_costs(self, **kwargs):
         """
         Update symbol cost parameters from cTrader SecurityDefinition.
@@ -629,7 +698,7 @@ class FrictionCalculator:
             'last_updated': self.costs.last_updated,
         }
     
-    def is_spread_acceptable(self, multiplier: float = 2.0) -> Tuple[bool, float, float]:
+    def is_spread_acceptable(self, multiplier: Optional[float] = None) -> Tuple[bool, float, float]:
         """
         Check if current spread is acceptable for trading.
         
@@ -644,8 +713,12 @@ class FrictionCalculator:
         """
         import math
         
+        self._load_learned_parameters()
+        effective_multiplier = multiplier if multiplier is not None else self.spread_multiplier
+        if not math.isfinite(effective_multiplier) or effective_multiplier <= 0:
+            effective_multiplier = 2.0
         current_spread = self.spread_tracker.get_current_spread()
-        max_acceptable = self.spread_tracker.get_learned_max_spread(multiplier)
+        max_acceptable = self.spread_tracker.get_learned_max_spread(effective_multiplier)
         
         # Defensive: If either is invalid, allow trading (don't block on calculation error)
         if not math.isfinite(current_spread) or current_spread <= 0:
@@ -671,6 +744,7 @@ class FrictionCalculator:
             'min_observed': min_spread,
             'avg': avg_spread,
             'max_acceptable_2x': max_acceptable,
+            'learned_multiplier': self.spread_multiplier,
             'samples': sample_count,
         }
 

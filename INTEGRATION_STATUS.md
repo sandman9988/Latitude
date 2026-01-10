@@ -6,6 +6,32 @@
 
 ---
 
+## 🚀 NEXT: Phase 1 Live Micro-Position Learning
+
+**⚠️ CRITICAL DECISION: Skip Extended Paper Training**
+
+Based on RL best practices and the **bootstrapping paradox**, we recommend:
+
+1. **Phase 0 (System Validation):** 2-4 hours paper mode, learning disabled
+   - Verify: No crashes, circuit breakers functional, logs clean
+   - Goal: System stability only, NOT agent training
+   
+2. **Phase 1 (START HERE):** LIVE micro-position learning (`QTY=0.001`)
+   - Real friction costs: spread, slippage, requotes, execution delays
+   - Max loss: ~$2-3 per trade ($0.10/pip on XAUUSD)
+   - Duration: 2-4 weeks (500-1000 trades)
+   - Learning: **ENABLED** (create living ecosystem)
+   - See: [PAPER_VS_LIVE_CONFIG.md](PAPER_VS_LIVE_CONFIG.md)
+   - Launch: `./launch_micro_learning.sh`
+
+**Why Skip Paper Learning:**
+- RL agents become complacent with unrealistic profits (1-2 pip slippage vs real 5-20 pips)
+- Paper creates Catch-22: need experience to trade, but can't get REAL experience without trading
+- Micro positions provide real friction at acceptable risk
+- Circuit breakers protect from catastrophic mistakes
+
+---
+
 ## ✅ COMPLETE: All Handbook Components Integrated
 
 ### Phase 1-2: Foundation Components (Commit 4b153e8)

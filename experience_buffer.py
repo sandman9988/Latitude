@@ -57,7 +57,8 @@ class RegimeSampling(IntEnum):
     """Regime types for prioritization weighting."""
     TRENDING = 0
     MEAN_REVERTING = 1
-    UNKNOWN = 2
+    TRANSITIONAL = 2
+    UNKNOWN = 3
 
 
 @dataclass

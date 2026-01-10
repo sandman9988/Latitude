@@ -30,10 +30,17 @@ class RewardShaper:
     Includes activity monitoring and counterfactual analysis
     """
     
-    def __init__(self, instrument: str = "BTCUSD", 
-                 param_manager: Optional[LearnedParametersManager] = None,
-                 activity_monitor: Optional[ActivityMonitor] = None):
-        self.instrument = instrument
+    def __init__(
+        self,
+        symbol: str = "BTCUSD",
+        timeframe: str = "M15",
+        broker: str = "default",
+        param_manager: Optional[LearnedParametersManager] = None,
+        activity_monitor: Optional[ActivityMonitor] = None
+    ):
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.broker = broker
         
         # Use shared parameter manager (DRY)
         if param_manager is None:
@@ -41,6 +48,12 @@ class RewardShaper:
             self.param_manager.load()  # Load existing parameters if available
         else:
             self.param_manager = param_manager
+
+        self._param_cache = {
+            'symbol': self.symbol,
+            'timeframe': self.timeframe,
+            'broker': self.broker
+        }
         
         # Activity monitoring (prevent learned helplessness)
         self.activity_monitor = activity_monitor or ActivityMonitor()
@@ -58,6 +71,15 @@ class RewardShaper:
             'counterfactual': {'sum': 0.0, 'count': 0},
             'ensemble': {'sum': 0.0, 'count': 0}  # NEW: Ensemble disagreement bonus
         }
+    
+    def _get_param(self, name: str, default: Optional[float] = None) -> float:
+        return self.param_manager.get(
+            self.symbol,
+            name,
+            timeframe=self.timeframe,
+            broker=self.broker,
+            default=default
+        )
         
     def calculate_capture_efficiency_reward(self, exit_pnl: float, mfe: float) -> float:
         """
@@ -78,7 +100,7 @@ class RewardShaper:
             return 0.0
         
         # Get adaptive parameters
-        capture_mult = self.param_manager.get(self.instrument, 'capture_multiplier')
+        capture_mult = self._get_param('capture_multiplier')
         target_capture = 0.7  # Principled default from handbook: aim for 70% MFE capture
         
         capture_ratio = exit_pnl / mfe
@@ -114,7 +136,7 @@ class RewardShaper:
             Penalty (negative reward) for WTL, 0 otherwise
         """
         # Get adaptive parameters
-        wtl_penalty_mult = self.param_manager.get(self.instrument, 'wtl_penalty_multiplier')
+        wtl_penalty_mult = self._get_param('wtl_penalty_multiplier')
         wtl_threshold = 10.0  # Principled default: minimum MFE to trigger WTL penalty
         baseline_mfe = 100.0  # Principled default: typical MFE for normalization
         
@@ -156,7 +178,7 @@ class RewardShaper:
             Opportunity cost penalty (negative reward)
         """
         # Get adaptive parameters
-        opportunity_mult = self.param_manager.get(self.instrument, 'opportunity_multiplier')
+        opportunity_mult = self._get_param('opportunity_multiplier')
         opportunity_threshold = 50.0  # Principled default: minimum potential profit to count as missed opportunity
         baseline_mfe = 100.0  # Principled default
         
@@ -293,9 +315,9 @@ class RewardShaper:
         stats = {
             'total_rewards_calculated': self.total_rewards_calculated,
             'parameters': {
-                'capture_multiplier': self.param_manager.get(self.instrument, 'capture_multiplier'),
-                'wtl_penalty_multiplier': self.param_manager.get(self.instrument, 'wtl_penalty_multiplier'),
-                'opportunity_multiplier': self.param_manager.get(self.instrument, 'opportunity_multiplier'),
+                'capture_multiplier': self._get_param('capture_multiplier'),
+                'wtl_penalty_multiplier': self._get_param('wtl_penalty_multiplier'),
+                'opportunity_multiplier': self._get_param('opportunity_multiplier'),
             },
             'weights': {
                 'capture': 1.0,  # Fixed weights
@@ -318,10 +340,11 @@ class RewardShaper:
     def print_summary(self) -> str:
         """Generate human-readable summary of reward shaper state."""
         stats = self.get_statistics()
+        context = f"{self.symbol}_{self.timeframe}_{self.broker}"
         
         summary = f"""
 ╔══════════════════════════════════════════════════════════════════╗
-║               REWARD SHAPER SUMMARY - {self.instrument:^20}          ║
+    ║               REWARD SHAPER SUMMARY - {context:^20}          ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 📊 REWARD STATISTICS
@@ -401,7 +424,7 @@ class RewardShaper:
         
         # Scale reward
         try:
-            runway_mult = self.param_manager.get(self.instrument, 'runway_multiplier')
+            runway_mult = self._get_param('runway_multiplier')
         except KeyError:
             runway_mult = 2.0  # Default multiplier for runway prediction
         runway_reward = base_reward * runway_mult
@@ -470,7 +493,7 @@ class RewardShaper:
             capture_ratio = exit_pnl / mfe
             target_capture = 0.7  # Aim for 70% of MFE
             try:
-                capture_mult = self.param_manager.get(self.instrument, 'capture_multiplier')
+                capture_mult = self._get_param('capture_multiplier')
             except KeyError:
                 capture_mult = 2.0  # Default
             r_capture = (capture_ratio - target_capture) * capture_mult
@@ -481,7 +504,7 @@ class RewardShaper:
         
         # 2. WTL penalty (strong negative signal)
         try:
-            wtl_mult = self.param_manager.get(self.instrument, 'wtl_multiplier')
+            wtl_mult = self._get_param('wtl_multiplier')
         except KeyError:
             wtl_mult = 3.0  # Default WTL penalty multiplier
         r_wtl = -wtl_mult if was_wtl else 0.0
@@ -572,7 +595,7 @@ class RewardShaper:
 if __name__ == "__main__":
     print("Testing RewardShaper module...")
     
-    shaper = RewardShaper(instrument="BTCUSD")
+    shaper = RewardShaper(symbol="BTCUSD", timeframe="M15")
     
     # Test 1: Good capture efficiency
     print("\n=== Test 1: Good Capture (exit_pnl=80, MFE=100) ===")

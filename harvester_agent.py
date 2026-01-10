@@ -26,6 +26,7 @@ import logging
 from typing import Tuple, Optional, Dict
 import numpy as np
 from experience_buffer import ExperienceBuffer, RegimeSampling
+from learned_parameters import LearnedParametersManager
 
 LOG = logging.getLogger(__name__)
 
@@ -60,7 +61,16 @@ class HarvesterAgent:
         - confidence: [0, 1] from softmax probabilities
     """
     
-    def __init__(self, window: int = 64, n_features: int = 10, enable_training: bool = False):
+    def __init__(
+        self,
+        window: int = 64,
+        n_features: int = 10,
+        enable_training: bool = False,
+        symbol: str = "BTCUSD",
+        timeframe: str = "M15",
+        broker: str = "default",
+        param_manager: Optional[LearnedParametersManager] = None
+    ):
         """
         Initialize Harvester Agent.
         
@@ -74,6 +84,10 @@ class HarvesterAgent:
         self.use_torch = False
         self.model = None
         self.torch = None
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.broker = broker
+        self.param_manager = param_manager
         
         # Phase 3.5: Experience replay buffer
         self.enable_training = enable_training
@@ -91,6 +105,8 @@ class HarvesterAgent:
         
         if self.enable_training:
             LOG.info("[HARVESTER] Online learning ENABLED (buffer capacity=50k, min=%d)", self.min_experiences)
+        
+        self._init_exit_thresholds()
     
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for harvester agent."""
@@ -220,27 +236,69 @@ class HarvesterAgent:
         mae_pct = (mae / entry_price) * 100
         
         # Stop loss (priority)
-        if mae_pct >= 0.2:
+        if mae_pct >= self.stop_loss_pct:
             LOG.debug("[HARVESTER] Stop loss hit: %.2f%%", mae_pct)
             return 1  # CLOSE
         
         # Profit target (only if meaningful MFE)
-        if mfe_pct >= 0.3:
+        if mfe_pct >= self.profit_target_pct:
             LOG.debug("[HARVESTER] Profit target hit: %.2f%%", mfe_pct)
             return 1  # CLOSE
         
         # Soft time stop (only exit if we have SOME profit - min 5 pips)
-        if bars_held > 50:
-            if mfe_pct > 0.05:  # At least 0.05% (5 pips) profit
+        if bars_held > self.soft_time_stop_bars:
+            if mfe_pct > self.min_soft_profit_pct:  # At least threshold profit
                 LOG.debug("[HARVESTER] Soft time stop: %d bars, MFE=%.2f%%", bars_held, mfe_pct)
                 return 1  # CLOSE
         
         # Hard time stop (exit regardless to free up capital)
-        if bars_held > 80:
+        if bars_held > self.hard_time_stop_bars:
             LOG.debug("[HARVESTER] Hard time stop: %d bars", bars_held)
             return 1  # CLOSE
         
         return 0  # HOLD
+
+    def _init_exit_thresholds(self):
+        """Load exit thresholds from LearnedParametersManager (or defaults)."""
+        self.profit_target_pct = self._get_param('harvester_profit_target_pct', 0.30)
+        self.stop_loss_pct = self._get_param('harvester_stop_loss_pct', 0.20)
+        self.soft_time_stop_bars = int(round(self._get_param('harvester_soft_time_bars', 50)))
+        self.hard_time_stop_bars = int(round(self._get_param('harvester_hard_time_bars', 80)))
+        self.min_soft_profit_pct = self._get_param('harvester_min_soft_profit_pct', 0.05)
+        LOG.info(
+            "[HARVESTER] Exit plan: TP=%.2f%% SL=%.2f%% soft=%d bars hard=%d bars min_profit=%.2f%%",
+            self.profit_target_pct,
+            self.stop_loss_pct,
+            self.soft_time_stop_bars,
+            self.hard_time_stop_bars,
+            self.min_soft_profit_pct
+        )
+
+    def _ensure_param_manager(self) -> LearnedParametersManager:
+        if self.param_manager is None:
+            self.param_manager = LearnedParametersManager()
+            self.param_manager.load()
+        return self.param_manager
+
+    def _get_param(self, name: str, default: float) -> float:
+        try:
+            manager = self._ensure_param_manager()
+            value = manager.get(
+                self.symbol,
+                name,
+                timeframe=self.timeframe,
+                broker=self.broker,
+                default=default
+            )
+            return float(value)
+        except Exception as exc:
+            LOG.debug(
+                "[HARVESTER] Falling back to default %.3f for %s (%s)",
+                default,
+                name,
+                exc
+            )
+            return float(default)
     
     def _softmax(self, x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
         """Softmax with temperature for confidence calculation."""
