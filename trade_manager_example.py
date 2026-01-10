@@ -49,37 +49,47 @@ class TradeManagerIntegration:
 
         LOG.info("[INTEGRATION] TradeManager integration initialized")
 
-    def initialize_trade_manager(self):
+    def initialize_trade_manager(self) -> bool:
         """
         Initialize TradeManager once TRADE session is connected.
 
         Call this from CTraderFixApp.onCreate() after TRADE session login.
+
+        Returns:
+            True if initialization successful, False otherwise
         """
         if not self.app.trade_sid:
             LOG.warning("[INTEGRATION] Cannot initialize - TRADE session not connected")
-            return
+            return False
 
-        self.trade_manager = TradeManager(
-            session_id=self.app.trade_sid,
-            symbol_id=self.app.symbol_id,
-            on_fill_callback=self.on_order_filled,
-            on_reject_callback=self.on_order_rejected,
-            max_pending_orders=10,
-        )
+        try:
+            self.trade_manager = TradeManager(
+                session_id=self.app.trade_sid,
+                symbol_id=self.app.symbol_id,
+                on_fill_callback=self.on_order_filled,
+                on_reject_callback=self.on_order_rejected,
+                max_pending_orders=10,
+            )
 
-        # Request initial positions
-        self.trade_manager.request_positions()
+            # Request initial positions
+            self.trade_manager.request_positions()
 
-        # Attempt to recover previous state
-        self._recover_state()
+            # Attempt to recover previous state
+            self._recover_state()
 
-        LOG.info("[INTEGRATION] ✓ TradeManager initialized for symbol=%d", self.app.symbol_id)
+            LOG.info("[INTEGRATION] ✓ TradeManager initialized for symbol=%d", self.app.symbol_id)
+            return True
+
+        except Exception as e:
+            LOG.error("[INTEGRATION] Failed to initialize TradeManager: %s", e, exc_info=True)
+            return False
 
     def on_order_filled(self, order: Order):
         """
         Callback when order fills.
 
-        Replaces logic from CTraderFixApp.on_exec_report() for fill handling.
+        FIX P0-2: Proper callback-based state updates (no race conditions)
+        FIX P0-6: Position validation after order execution
         """
         LOG.info(
             "[INTEGRATION] Order filled: %s qty=%.6f @%.5f",
@@ -88,13 +98,14 @@ class TradeManagerIntegration:
             order.avg_price,
         )
 
-        # Start MFE/MAE tracking
+        # FIX P0-2 & GAP 4.3: Start MFE/MAE tracking AFTER fill confirmed (not before)
         if hasattr(self.app, "mfe_mae_tracker") and order.avg_price > 0:
             direction = 1 if order.side == Side.BUY else -1
             self.app.mfe_mae_tracker.start_tracking(order.avg_price, direction)
             self.app.trade_entry_time = order.filled_at
+            LOG.debug("[INTEGRATION] Started MFE/MAE tracking @ %.5f", order.avg_price)
 
-        # Start path recording
+        # Start path recording with actual fill price
         if hasattr(self.app, "path_recorder") and order.filled_at:
             direction = 1 if order.side == Side.BUY else -1
             self.app.path_recorder.start_recording(
@@ -102,6 +113,7 @@ class TradeManagerIntegration:
                 order.avg_price,
                 direction,
             )
+            LOG.debug("[INTEGRATION] Started path recording @ %.5f", order.avg_price)
 
         # Notify activity monitor
         if hasattr(self.app, "activity_monitor"):
@@ -111,8 +123,13 @@ class TradeManagerIntegration:
         if hasattr(self.app, "policy") and hasattr(self.app.policy, "trigger"):
             self.app.entry_state = getattr(self.app.policy.trigger, "last_state", None)
             self.app.entry_action = 1 if order.side == Side.BUY else 2
+            LOG.debug("[INTEGRATION] Stored entry state for learning (action=%d)", self.app.entry_action)
 
-        # Request position update
+        # FIX P0-6: Position validation after fill
+        expected_direction = 1 if order.side == Side.BUY else -1
+        self._validate_position_after_fill(expected_direction, order)
+
+        # Request position update for reconciliation
         self.trade_manager.request_positions()
 
         # Enable trailing stop after entry
@@ -130,7 +147,7 @@ class TradeManagerIntegration:
         """
         Callback when order is rejected.
 
-        Replaces logic from CTraderFixApp.on_exec_report() for reject handling.
+        FIX P0-4: State already cleared in main bot's on_exec_report
         """
         LOG.warning(
             "[INTEGRATION] Order rejected: %s - %s",
@@ -138,7 +155,11 @@ class TradeManagerIntegration:
             order.reject_reason or "Unknown reason",
         )
 
-        # Could add rejection tracking/alerting here
+        # State cleanup already handled in ctrader_ddqn_paper.py on_exec_report
+        # Log for monitoring
+        if hasattr(self.app, "performance"):
+            # Could track rejection statistics here
+            pass
 
     def enter_position(self, side: int, quantity: float) -> bool:
         """
@@ -484,6 +505,49 @@ class TradeManagerIntegration:
                 )
         except Exception as e:
             LOG.error("[INTEGRATION] State recovery failed: %s", e, exc_info=True)
+
+    def _validate_position_after_fill(self, expected_direction: int, order: Order):
+        """
+        FIX P0-6: Validate position matches expected state after order fill.
+
+        Args:
+            expected_direction: Expected position direction (1=LONG, -1=SHORT)
+            order: The filled order
+        """
+        try:
+            # Give TradeManager a moment to process PositionReport
+            import time
+
+            time.sleep(0.1)
+
+            actual_direction = self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
+
+            if actual_direction != expected_direction:
+                LOG.error(
+                    "[VALIDATION] \u2717 Position mismatch after fill! Expected=%d Actual=%d (Order: %s %.6f)",
+                    expected_direction,
+                    actual_direction,
+                    order.side.name,
+                    order.filled_qty,
+                )
+
+                # Request fresh position report for reconciliation
+                self.trade_manager.request_positions()
+
+                # Alert could be sent here
+                if hasattr(self.app, "alert_manager"):
+                    self.app.alert_manager.send_alert(
+                        "CRITICAL", f"Position validation failed: Expected {expected_direction}, got {actual_direction}"
+                    )
+            else:
+                LOG.debug(
+                    "[VALIDATION] \u2713 Position confirmed: %s (%.6f lots)",
+                    "LONG" if actual_direction > 0 else "SHORT",
+                    order.filled_qty,
+                )
+
+        except Exception as e:
+            LOG.error("[VALIDATION] Position validation failed: %s", e, exc_info=True)
 
 
 # Example: How to integrate into CTraderFixApp

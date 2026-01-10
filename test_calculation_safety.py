@@ -350,7 +350,7 @@ class TestPnLCalculations(unittest.TestCase):
     ) -> Decimal:
         """
         Helper: Calculate PnL with SafeMath
-        
+
         PnL = (exit - entry) * quantity * contract_size for LONG
         PnL = (entry - exit) * quantity * contract_size for SHORT
         """

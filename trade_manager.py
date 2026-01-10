@@ -229,8 +229,11 @@ class TradeManager:
         # Position tracking
         self.position = Position(symbol=self.symbol_id)
 
-        # Request tracking
+        # FIX P1-8: Position request tracking with retry logic
         self.pos_req_id: str | None = None
+        self.pending_position_requests: dict[str, dict] = {}  # req_id -> metadata
+        self.position_request_timeout = 5.0  # seconds
+        self.position_request_max_retries = 3
 
         # Execution history (for debugging)
         self.exec_reports: deque[dict] = deque(maxlen=100)
@@ -649,25 +652,87 @@ class TradeManager:
             order.quantity,
         )
 
-    def request_positions(self):
+    def request_positions(self, retry_count: int = 0):
         """
         Request current positions via RequestForPositions (35=AN).
 
+        FIX P1-8: Added retry logic with timeout tracking
+
         Response will be PositionReport (35=AP) handled by on_position_report().
+
+        Args:
+            retry_count: Current retry attempt number
         """
         if not self.session_id:
             LOG.warning("[TRADEMGR] Cannot request positions - no session")
             return
 
-        self.pos_req_id = f"pos_{uuid.uuid4().hex[:10]}"
+        req_id = f"pos_{uuid.uuid4().hex[:10]}"
+        self.pos_req_id = req_id
+
+        # Track request for timeout/retry
+        self.pending_position_requests[req_id] = {
+            "sent_at": utc_now(),
+            "retry_count": retry_count,
+            "timeout": self.position_request_timeout,
+        }
+
         msg = fix44.RequestForPositions()
-        msg.setField(fix.PosReqID(self.pos_req_id))
+        msg.setField(fix.PosReqID(req_id))
 
         try:
             fix.Session.sendToTarget(msg, self.session_id)
-            LOG.info("[TRADEMGR] ✓ Requested positions (PosReqID=%s)", self.pos_req_id)
+            LOG.info("[TRADEMGR] ✓ Requested positions (PosReqID=%s, retry=%d)", req_id, retry_count)
+
+            # Schedule timeout check
+            import threading
+
+            def check_timeout():
+                time.sleep(self.position_request_timeout)
+                self._check_position_request_timeout(req_id)
+
+            threading.Thread(target=check_timeout, daemon=True).start()
+
         except Exception as e:
             LOG.error("[TRADEMGR] ✗ Failed to request positions: %s", e)
+            # Remove from pending
+            self.pending_position_requests.pop(req_id, None)
+
+    def _check_position_request_timeout(self, req_id: str):
+        """
+        FIX P1-8: Check if position request timed out and retry if needed.
+
+        Args:
+            req_id: Position request ID to check
+        """
+        request_info = self.pending_position_requests.get(req_id)
+        if not request_info:
+            # Already received response
+            return
+
+        elapsed = (utc_now() - request_info["sent_at"]).total_seconds()
+        if elapsed < request_info["timeout"]:
+            # Not timed out yet
+            return
+
+        retry_count = request_info["retry_count"]
+        if retry_count < self.position_request_max_retries:
+            LOG.warning(
+                "[TRADEMGR] Position request timeout (%.1fs) - retrying (%d/%d)",
+                elapsed,
+                retry_count + 1,
+                self.position_request_max_retries,
+            )
+            # Remove old request
+            self.pending_position_requests.pop(req_id, None)
+            # Retry
+            self.request_positions(retry_count=retry_count + 1)
+        else:
+            LOG.error(
+                "[TRADEMGR] Position request failed after %d retries - giving up",
+                self.position_request_max_retries,
+            )
+            self.pending_position_requests.pop(req_id, None)
 
     def on_position_report(self, msg: fix.Message):
         """
@@ -679,6 +744,16 @@ class TradeManager:
         - Tag 721 (PosMaintRptID): Position ID for hedged accounts
         """
         try:
+            # FIX P1-8: Clear pending position request on successful response
+            pos_req_id_field = fix.PosReqID()
+            if msg.isSetField(pos_req_id_field):
+                msg.getField(pos_req_id_field)
+                req_id = pos_req_id_field.getValue()
+                if req_id in self.pending_position_requests:
+                    elapsed = (utc_now() - self.pending_position_requests[req_id]["sent_at"]).total_seconds()
+                    LOG.debug("[TRADEMGR] Position response received (%.3fs latency)", elapsed)
+                    self.pending_position_requests.pop(req_id, None)
+
             # Verify symbol
             symbol_field = fix.Symbol()
             if msg.isSetField(symbol_field):

@@ -708,7 +708,8 @@ class CTraderFixApp(fix.Application):
         self.best_bid: float | None = None
         self.best_ask: float | None = None
 
-        self.cur_pos = 0
+        # Position tracking - will delegate to TradeManager after initialization
+        self._cur_pos_fallback = 0  # Only used before TradeManager initialized
         self.pos_req_id = None
         self.clord_counter = 0
         self.trade_entry_time = None  # Track entry time for performance metrics
@@ -769,6 +770,21 @@ class CTraderFixApp(fix.Application):
         # TradeManager integration - centralized order & position management
         self.trade_integration = TradeManagerIntegration(self)
         LOG.info("[INTEGRATION] TradeManager integration initialized")
+
+    @property
+    def cur_pos(self) -> int:
+        """Current position: +1=LONG, 0=FLAT, -1=SHORT (delegates to TradeManager)"""
+        if self.trade_integration.trade_manager:
+            return self.trade_integration.trade_manager.get_position_direction(min_qty=self.qty * 0.5)
+        return self._cur_pos_fallback
+
+    @cur_pos.setter
+    def cur_pos(self, value: int):
+        """Set position (only used before TradeManager initialized)"""
+        if self.trade_integration.trade_manager:
+            LOG.warning("[POSITION] Direct cur_pos assignment ignored - TradeManager is source of truth")
+        else:
+            self._cur_pos_fallback = value
 
         # HUD data export tracking
         self.start_time = dt.datetime.now(dt.UTC)
@@ -1067,9 +1083,11 @@ class CTraderFixApp(fix.Application):
                 self.trade_sid = session_id
                 self.last_trade_heartbeat = utc_now()
                 self.request_security_definition()  # Get symbol info (source of truth)
-                self.request_positions()
                 # Initialize TradeManager now that TRADE session is connected
-                self.trade_integration.initialize_trade_manager()
+                # TradeManager will handle position request
+                if not self.trade_integration.initialize_trade_manager():
+                    LOG.error("[INTEGRATION] TradeManager initialization failed - trading disabled")
+                    return
             else:
                 LOG.warning("[LOGON] Unknown qualifier; not routing: %s", session_id.toString())
         except Exception as e:
@@ -1613,15 +1631,12 @@ class CTraderFixApp(fix.Application):
             # Keep default values (0.0) on error
 
         net = long_qty - short_qty
-        old_pos = self.cur_pos
-        if abs(net) < self.qty * 0.5:
-            self.cur_pos = 0
-        elif net > 0:
-            self.cur_pos = 1
-        else:
-            self.cur_pos = -1
 
-        LOG.info("[TRADE] PositionReport net=%0.6f -> cur_pos=%s", net, self.cur_pos)
+        # FIX P0-2: Position is now tracked by TradeManager (single source of truth)
+        # This code path kept for backward compatibility logging
+        old_pos = self.cur_pos  # Gets from TradeManager via property
+
+        LOG.info("[TRADE] PositionReport net=%0.6f -> cur_pos=%s (via TradeManager)", net, self.cur_pos)
 
         # Log MFE/MAE summary and save path when position closes
         if old_pos != 0 and self.cur_pos == 0:
@@ -1805,7 +1820,7 @@ class CTraderFixApp(fix.Application):
             self.trade_entry_time = None
 
     def on_exec_report(self, msg: fix.Message):
-        # Route to TradeManager first
+        # Route to TradeManager first (callbacks will handle state updates)
         self.trade_integration.handle_execution_report(msg)
 
         ex = fix.ExecType()
@@ -1813,13 +1828,22 @@ class CTraderFixApp(fix.Application):
             return
         msg.getField(ex)
 
+        # FIX P0-4: Clear entry state on rejection to prevent corrupted experiences
         if ex.getValue() == "8":
             txt = fix.Text()
             if msg.isSetField(txt):
                 msg.getField(txt)
                 LOG.warning("[TRADE] Order rejected: %s", txt.getValue())
+
+            # Clear stale state that shouldn't be used for learning
+            self.entry_state = None
+            self.entry_action = None
+            self.trade_entry_time = None
+            LOG.debug("[TRADE] Cleared entry state after rejection")
             return
 
+        # TradeManager handles fill processing via callbacks
+        # No need for explicit position request - callback updates state
         if ex.getValue() != "F":
             return
 
@@ -1829,7 +1853,7 @@ class CTraderFixApp(fix.Application):
             if sym.getValue() != str(self.symbol_id):
                 return
 
-        self.request_positions()
+        # Position will be updated via on_order_filled callback
 
     def on_biz_reject(self, msg: fix.Message):
         txt = fix.Text()
@@ -2359,10 +2383,12 @@ class CTraderFixApp(fix.Application):
         self.send_market_order(side=side, qty=order_qty)
 
     def send_market_order(self, side: str, qty: float):
+        """DEPRECATED: Use TradeManager API via trade_integration.enter_position() instead."""
+        # FIX P0-3: Migrate to TradeManager API for centralized order tracking
         # ROCK SOLID: Block trading on stale prices or unhealthy connection
         if not self.connection_healthy:
             LOG.warning("[SAFETY] ✗ Order blocked - connection unhealthy")
-            return
+            return None
 
         if self.last_quote_heartbeat:
             quote_age = (utc_now() - self.last_quote_heartbeat).total_seconds()
@@ -2372,42 +2398,36 @@ class CTraderFixApp(fix.Application):
                     quote_age,
                     self.max_quote_age_for_trading,
                 )
-                return
+                return None
 
         if not self.trade_sid:
             LOG.warning("[SAFETY] ✗ Order blocked - TRADE session not connected")
-            return
+            return None
 
-        self.clord_counter += 1
-        clid = f"cl_{int(time.time())}_{self.clord_counter}"
+        if not self.trade_integration.trade_manager:
+            LOG.error("[SAFETY] ✗ Order blocked - TradeManager not initialized")
+            return None
 
-        order = fix44.NewOrderSingle()
-        order.setField(fix.ClOrdID(clid))
-        order.setField(fix.Symbol(str(self.symbol_id)))
-        order.setField(fix.Side(side))
-        order.setField(fix.TransactTime(utc_ts_ms()))
-        order.setField(fix.OrdType("1"))
-        order.setField(fix.OrderQty(qty))
+        # Use TradeManager API for proper order lifecycle tracking
+        from trade_manager import Side
 
-        # Start MFE/MAE tracking and path recording
-        if self.best_bid and self.best_ask:
-            entry_price = (self.best_bid + self.best_ask) / 2.0
-            direction = 1 if side == "1" else -1
-            self.trade_entry_time = utc_now()  # Store for performance tracker
-            self.mfe_mae_tracker.start_tracking(entry_price, direction)
-            self.path_recorder.start_recording(self.trade_entry_time, entry_price, direction)
+        tm_side = Side.BUY if side == "1" else Side.SELL
 
-        fix.Session.sendToTarget(order, self.trade_sid)
+        order = self.trade_integration.trade_manager.submit_market_order(side=tm_side, quantity=qty, tag_prefix="DDQN")
 
-        # Phase 3.5: Notify activity monitor of trade execution
-        self.activity_monitor.on_trade_executed()
+        if order:
+            # Phase 3.5: Notify activity monitor of trade execution
+            self.activity_monitor.on_trade_executed()
+            LOG.info(
+                "[TRADE] Submitted MKT %s qty=%.6f via TradeManager (ClOrdID=%s)",
+                tm_side.name,
+                qty,
+                order.clord_id,
+            )
+        else:
+            LOG.error("[TRADE] Failed to submit order via TradeManager")
 
-        LOG.info(
-            "[TRADE] Sent MKT %s qty=%.6f clOrdID=%s",
-            ("BUY" if side == "1" else "SELL"),
-            qty,
-            clid,
-        )
+        return order
 
     def _export_hud_data(self):
         """Export real-time data to JSON files for HUD display.
