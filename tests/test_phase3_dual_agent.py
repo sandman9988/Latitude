@@ -5,11 +5,11 @@ Test Phase 3: Dual-Agent Integration
 Validates TriggerAgent + HarvesterAgent + DualPolicy integration into main bot.
 """
 
+import datetime as dt
+import logging
 import os
 import sys
-import logging
 from collections import deque
-import datetime as dt
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,8 +28,9 @@ print("=" * 70)
 print("\n[TEST 1] Import validation")
 try:
     from dual_policy import DualPolicy
-    from trigger_agent import TriggerAgent
     from harvester_agent import HarvesterAgent
+    from trigger_agent import TriggerAgent
+
     print("✓ Dual-agent modules imported successfully")
 except ImportError as e:
     print(f"✗ Import failed: {e}")
@@ -59,9 +60,11 @@ print(f"✓ Entry decision: action={action}, conf={conf:.2f}, runway={runway:.4f
 
 # Test 4: Position entry
 print("\n[TEST 4] Position entry tracking")
+from safe_math import SafeMath
+
 dual_policy.on_entry(direction=1, entry_price=100000.0, entry_time=dt.datetime.now())
 assert dual_policy.current_position == 1
-assert dual_policy.entry_price == 100000.0
+assert SafeMath.is_close(dual_policy.entry_price, 100000.0)
 assert dual_policy.bars_held == 0
 print("✓ Position tracked: LONG @ 100000.0")
 
@@ -73,32 +76,34 @@ assert action in [0, 1], f"Invalid exit action: {action}"
 assert 0 <= conf <= 1, f"Invalid exit confidence: {conf}"
 assert dual_policy.mfe > 0, "MFE should be tracked"
 assert dual_policy.bars_held == 1, "Bars held should increment"
-print(f"✓ Exit decision: action={action} ({'CLOSE' if action == 1 else 'HOLD'}), "
-      f"conf={conf:.2f}, MFE={dual_policy.mfe:.2f}, bars={dual_policy.bars_held}")
+print(
+    f"✓ Exit decision: action={action} ({'CLOSE' if action == 1 else 'HOLD'}), "
+    f"conf={conf:.2f}, MFE={dual_policy.mfe:.2f}, bars={dual_policy.bars_held}"
+)
 
 # Test 6: Position exit
 print("\n[TEST 6] Position exit tracking")
 dual_policy.on_exit(exit_price=100050.0, capture_ratio=0.8, was_wtl=False)
 assert dual_policy.current_position == 0
-assert dual_policy.mfe == 0.0
+assert SafeMath.is_zero(dual_policy.mfe)
 assert dual_policy.bars_held == 0
 print("✓ Position reset after exit")
 
 # Test 7: Multiple entry/exit cycles
 print("\n[TEST 7] Multiple trade cycles")
-for cycle in range(3):
+for _cycle in range(3):
     # Entry
     action, conf, runway = dual_policy.decide_entry(bars, imbalance=0.1)
     if action != 0:  # If entry signaled
         direction = 1 if action == 1 else -1
         dual_policy.on_entry(direction, 100000.0, dt.datetime.now())
-        
+
         # Hold position for a few bars
         for _ in range(5):
             action, conf = dual_policy.decide_exit(bars, 100050.0, imbalance=0.1)
             if action == 1:  # Close
                 break
-        
+
         # Exit
         dual_policy.on_exit(100050.0, 0.75, False)
         assert dual_policy.current_position == 0

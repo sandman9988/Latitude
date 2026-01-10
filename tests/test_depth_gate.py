@@ -14,12 +14,7 @@ def _build_app():
     with patch("ctrader_ddqn_paper.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
         mock_thread.return_value.start.return_value = None
-        app = ctrader_ddqn_paper.CTraderFixApp(
-            symbol_id=10028,
-            qty=0.1,
-            timeframe_minutes=1,
-            symbol="BTCUSD"
-        )
+        app = ctrader_ddqn_paper.CTraderFixApp(symbol_id=10028, qty=0.1, timeframe_minutes=1, symbol="BTCUSD")
     app._health_monitor_running = False
     return app
 
@@ -27,7 +22,7 @@ def _build_app():
 def test_depth_gate_and_hud_export(tmp_path):
     app = _build_app()
     app.hud_data_dir = tmp_path
-    app.start_time = dt.datetime.now(dt.timezone.utc)
+    app.start_time = dt.datetime.now(dt.UTC)
     app.bar_count = 1
     app.best_bid = 100.0
     app.best_ask = 100.5
@@ -48,7 +43,7 @@ def test_depth_gate_and_hud_export(tmp_path):
 
     # Seed a few bars so RS volatility calculations succeed
     app.bars.clear()
-    now = dt.datetime.now(dt.timezone.utc)
+    now = dt.datetime.now(dt.UTC)
     for i in range(5):
         app.bars.append((now, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i))
 

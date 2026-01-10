@@ -9,20 +9,19 @@ Lightweight L2 order book and VPIN calculator for microstructure signals.
 """
 
 from collections import deque
-from typing import Dict, Optional, Tuple
 
 
 class OrderBook:
     def __init__(self, depth: int = 10):
         self.depth = depth
-        self.bids: Dict[float, float] = {}
-        self.asks: Dict[float, float] = {}
+        self.bids: dict[float, float] = {}
+        self.asks: dict[float, float] = {}
 
     def reset(self) -> None:
         self.bids.clear()
         self.asks.clear()
 
-    def _prune(self, levels: Dict[float, float]) -> Dict[float, float]:
+    def _prune(self, levels: dict[float, float]) -> dict[float, float]:
         # Keep only top-N by price (desc for bids, asc for asks handled externally)
         return dict(list(levels.items())[: self.depth])
 
@@ -30,15 +29,16 @@ class OrderBook:
         """Update order book level with defensive validation."""
         # Defensive: Validate inputs
         import math
+
         if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
             return  # Invalid price, skip silently
         if not isinstance(size, (int, float)) or not math.isfinite(size):
             return  # Invalid size, skip silently
-        
+
         # Defensive: Validate side
         if side not in ("BID", "ASK"):
             return
-        
+
         book = self.bids if side == "BID" else self.asks
         if size <= 0:
             book.pop(price, None)
@@ -55,12 +55,12 @@ class OrderBook:
         else:
             self.asks = pruned
 
-    def best_bid_ask(self) -> Tuple[Optional[float], Optional[float]]:
+    def best_bid_ask(self) -> tuple[float | None, float | None]:
         bid = next(iter(self.bids)) if self.bids else None
         ask = next(iter(self.asks)) if self.asks else None
         return bid, ask
 
-    def spread(self) -> Optional[float]:
+    def spread(self) -> float | None:
         """Calculate spread with defensive validation."""
         bid, ask = self.best_bid_ask()
         if bid is None or ask is None:
@@ -71,11 +71,12 @@ class OrderBook:
         spread_value = ask - bid
         # Defensive: Validate result
         import math
+
         if not math.isfinite(spread_value) or spread_value < 0:
             return None
         return spread_value
 
-    def depth_sum(self, levels: int = 5) -> Tuple[float, float]:
+    def depth_sum(self, levels: int = 5) -> tuple[float, float]:
         b_sum = sum(list(self.bids.values())[:levels]) if self.bids else 0.0
         a_sum = sum(list(self.asks.values())[:levels]) if self.asks else 0.0
         return b_sum, a_sum
@@ -106,23 +107,23 @@ class VPINCalculator:
         self.current_sell = 0.0
         self.completed: deque[float] = deque(maxlen=self.window)
 
-    def update(self, volume: float, side: str) -> Optional[float]:
+    def update(self, volume: float, side: str) -> float | None:
         """Update VPIN with defensive validation."""
         # Defensive: Validate volume
         import math
+
         if not isinstance(volume, (int, float)) or not math.isfinite(volume) or volume <= 0:
             return None
-        
+
         # Defensive: Cap extreme volumes (>1000x bucket size)
         max_volume = self.bucket_volume * 1000.0
-        if volume > max_volume:
-            volume = max_volume
-        
+        volume = min(volume, max_volume)
+
         # Defensive: Validate side
         side_upper = side.upper()
         if side_upper not in ("BUY", "SELL"):
             return None
-        
+
         if side_upper == "BUY":
             self.current_buy += volume
         else:
@@ -162,7 +163,7 @@ class VPINCalculator:
         if not self.completed:
             return {"vpin": vpin, "mean": 0.0, "std": 0.0, "zscore": 0.0}
         mean = vpin
-        
+
         # Defensive: Validate variance calculation
         try:
             variance = sum((x - mean) ** 2 for x in self.completed) / len(self.completed)
@@ -171,13 +172,13 @@ class VPINCalculator:
             std = math.sqrt(max(0.0, variance))
         except (ValueError, OverflowError):
             std = 0.0
-        
+
         last = self.completed[-1]
         # Defensive: Division by zero protection with epsilon
         epsilon = 1e-8
         z = 0.0 if std < epsilon else (last - mean) / std
-        
+
         # Defensive: Cap extreme z-scores
         z = max(-10.0, min(10.0, z))
-        
+
         return {"vpin": vpin, "mean": mean, "std": std, "zscore": z}

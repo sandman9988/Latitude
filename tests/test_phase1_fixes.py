@@ -4,10 +4,16 @@ Comprehensive test suite for Phase 1 critical fixes
 Tests SafeMath, AtomicPersistence, VaR estimation, and kurtosis monitoring
 """
 
-import sys
 import tempfile
-import numpy as np
 from pathlib import Path
+
+from numpy.random import Generator, default_rng
+
+from atomic_persistence import AtomicPersistence
+from learned_parameters import LearnedParametersManager
+from safe_math import SafeMath
+from safe_utils import SafeArray, SafeDeque, safe_mean, safe_std
+from var_estimator import KurtosisMonitor, RegimeType, VaREstimator
 
 print("=" * 70)
 print("PHASE 1 CRITICAL FIXES - TEST SUITE")
@@ -17,20 +23,18 @@ print("=" * 70)
 print("\n[TEST 1] SafeMath Defensive Programming")
 print("-" * 70)
 
-from safe_utils import SafeMath, SafeArray, SafeDeque, safe_mean, safe_std
-
 # Division by zero
 result = SafeMath.safe_div(10.0, 0.0, default=-1.0)
 assert result == -1.0, "Division by zero should return default"
 print("✓ Division by zero returns default")
 
 # NaN handling
-result = SafeMath.safe_div(float('nan'), 2.0, default=-1.0)
+result = SafeMath.safe_div(float("nan"), 2.0, default=-1.0)
 assert result == -1.0, "NaN numerator should return default"
 print("✓ NaN numerator returns default")
 
 # Inf handling
-result = SafeMath.safe_div(float('inf'), 2.0, default=-1.0)
+result = SafeMath.safe_div(float("inf"), 2.0, default=-1.0)
 assert result == -1.0, "Inf numerator should return default"
 print("✓ Inf numerator returns default")
 
@@ -41,11 +45,11 @@ print("✓ Valid division works")
 
 # Clamping
 result = SafeMath.clamp(15.0, 0.0, 10.0)
-assert result == 10.0, "Clamp should limit upper bound"
+assert SafeMath.is_close(result, 10.0), "Clamp should limit upper bound"
 print("✓ Clamping works")
 
 # Clamping NaN
-result = SafeMath.clamp(float('nan'), 0.0, 10.0)
+result = SafeMath.clamp(float("nan"), 0.0, 10.0)
 assert abs(result - 5.0) < 1e-9, "Clamping NaN should return midpoint"
 print("✓ Clamping NaN returns midpoint")
 
@@ -109,43 +113,41 @@ print("✓ SafeDeque eviction works correctly")
 print("\n[TEST 4] Atomic Persistence with CRC32")
 print("-" * 70)
 
-from atomic_persistence import AtomicPersistence
-
 with tempfile.TemporaryDirectory() as tmpdir:
     ap = AtomicPersistence(tmpdir)
-    
+
     # Save data
     test_data = {
         "learned_spread_relax": 1.5,
         "learned_depth_buffer": 1.2,
-        "learned_vpin_z_limit": 2.0
+        "learned_vpin_z_limit": 2.0,
     }
-    
+
     success = ap.save_json(test_data, "test_params.json", create_backup=True)
     assert success, "Save should succeed"
     print("✓ Atomic save with CRC32 succeeded")
-    
+
     # Load data
     loaded = ap.load_json("test_params.json", verify_crc=True)
     assert loaded == test_data, "Loaded data should match saved data"
     print("✓ Atomic load with CRC32 verification succeeded")
-    
+
     # Modify and save again
     test_data["learned_spread_relax"] = 2.0
     ap.save_json(test_data, "test_params.json", create_backup=True)
-    
+
     backups = ap.list_backups("test_params.json")
     assert len(backups) >= 1, "Backup should be created"
     print(f"✓ Backup created: {len(backups)} backup(s)")
-    
+
     # Simulate corruption and restore
     target = Path(tmpdir) / "test_params.json"
-    with open(target, 'r') as f:
-        envelope = __import__('json').load(f)
+    with open(target) as f:
+        envelope = __import__("json").load(f)
     envelope["data"]["learned_spread_relax"] = 999.0  # Corrupt data
-    with open(target, 'w') as f:
-        __import__('json').dump(envelope, f)
-    
+    with open(target, "w") as f:
+        __import__("json").dump(envelope, f)
+
     loaded_corrupted = ap.load_json("test_params.json", verify_crc=True)
     assert loaded_corrupted is not None, "Should restore from backup on CRC error"
     print("✓ Automatic restore from backup on CRC error")
@@ -154,13 +156,11 @@ with tempfile.TemporaryDirectory() as tmpdir:
 print("\n[TEST 5] Kurtosis Circuit Breaker")
 print("-" * 70)
 
-from var_estimator import KurtosisMonitor
-
 km = KurtosisMonitor(window=100, threshold=3.0)
 
 # Add normal returns
-np.random.seed(42)
-normal_returns = np.random.normal(0.0, 0.01, 100)
+rng: Generator = default_rng(42)
+normal_returns = rng.normal(0.0, 0.01, 100)
 for r in normal_returns:
     kurtosis, breaker = km.update(r)
 
@@ -180,31 +180,21 @@ if kurtosis > 2.0:  # May or may not breach depending on window
 print("\n[TEST 6] VaR Estimator with Multi-Factor Adjustment")
 print("-" * 70)
 
-from var_estimator import VaREstimator, RegimeType
-
 var_est = VaREstimator(window=100, confidence=0.95)
 
 # Add returns
-np.random.seed(42)
-returns = list(np.random.normal(0.0, 0.01, 100))
+rng = default_rng(42)
+returns = list(rng.normal(0.0, 0.01, 100))
 for r in returns:
     var_est.update_return(r)
 
 # Estimate VaR in normal regime
-var_normal = var_est.estimate_var(
-    regime=RegimeType.OVERDAMPED,
-    vpin_z=0.0,
-    current_vol=0.01
-)
+var_normal = var_est.estimate_var(regime=RegimeType.OVERDAMPED, vpin_z=0.0, current_vol=0.01)
 assert var_normal > 0, "VaR should be positive"
 print(f"✓ VaR (normal regime): {var_normal:.6f}")
 
 # Estimate VaR in stressed regime
-var_stressed = var_est.estimate_var(
-    regime=RegimeType.UNDERDAMPED,
-    vpin_z=3.0,
-    current_vol=0.03
-)
+var_stressed = var_est.estimate_var(regime=RegimeType.UNDERDAMPED, vpin_z=3.0, current_vol=0.03)
 assert var_stressed > var_normal, "Stressed VaR should be higher"
 print(f"✓ VaR (stressed regime): {var_stressed:.6f}")
 print(f"  Stress multiplier: {var_stressed / var_normal:.2f}x")
@@ -213,38 +203,36 @@ print(f"  Stress multiplier: {var_stressed / var_normal:.2f}x")
 print("\n[TEST 7] Learned Parameters with Atomic Persistence")
 print("-" * 70)
 
-from learned_parameters import LearnedParametersManager
-
 with tempfile.TemporaryDirectory() as tmpdir:
     param_path = Path(tmpdir) / "learned_parameters.json"
-    
+
     # Create manager
     mgr = LearnedParametersManager(persistence_path=param_path)
-    
+
     # Get/set parameters (using correct API)
     symbol = "BTCUSD"
     timeframe = "M15"
     broker = "default"
-    
+
     pos_size = mgr.get(symbol, "base_position_size", timeframe, broker)
     assert pos_size is not None, "Should have default value"
     print(f"✓ Default base_position_size: {pos_size:.4f}")
-    
+
     # Update parameter
     new_value = mgr.update(symbol, "var_multiplier", gradient=0.05, timeframe=timeframe, broker=broker)
     print(f"✓ Updated var_multiplier: {new_value:.4f}")
-    
+
     # Save
     mgr.save()
     assert param_path.exists(), "Parameters should be saved"
     print("✓ Parameters saved with atomic persistence")
-    
+
     # Verify CRC envelope
-    with open(param_path, 'r') as f:
-        envelope = __import__('json').load(f)
+    with open(param_path) as f:
+        envelope = __import__("json").load(f)
     assert "crc32" in envelope, "Should have CRC32 checksum"
     print(f"✓ CRC32 checksum present: {envelope['crc32']:08x}")
-    
+
     # Load in new manager
     mgr2 = LearnedParametersManager(persistence_path=param_path)
     loaded_value = mgr2.get(symbol, "var_multiplier", timeframe, broker)
@@ -256,7 +244,7 @@ print("\n[TEST 8] NaN/Inf Propagation Prevention")
 print("-" * 70)
 
 # Test safe_mean
-values = [1.0, 2.0, float('nan'), 3.0, 4.0]
+values = [1.0, 2.0, float("nan"), 3.0, 4.0]
 result = safe_mean(values, default=-1.0)
 expected = (1.0 + 2.0 + 3.0 + 4.0) / 4.0
 assert abs(result - expected) < 1e-9, "safe_mean should skip NaN"
@@ -268,7 +256,7 @@ assert result > 0, "safe_std should work with valid values"
 print(f"✓ safe_std works with NaN: {result:.2f}")
 
 # Test all NaN
-values = [float('nan'), float('nan')]
+values = [float("nan"), float("nan")]
 result = safe_mean(values, default=-1.0)
 assert result == -1.0, "All NaN should return default"
 print("✓ All NaN returns default")

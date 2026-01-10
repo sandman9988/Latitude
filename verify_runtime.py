@@ -4,7 +4,7 @@
 from ctrader_ddqn_paper import CTraderFixApp
 
 # Initialize bot
-app = CTraderFixApp(symbol_id=41, symbol_name='EURUSD', qty=1000.0, timeframe_minutes=15)
+app = CTraderFixApp(symbol_id=41, symbol_name="EURUSD", qty=1000.0, timeframe_minutes=15)
 
 print("=" * 70)
 print("🚀 COMPLETE BOT INITIALIZATION - RUNTIME VERIFICATION")

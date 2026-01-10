@@ -10,11 +10,13 @@ from ctrader_open_api import Auth
 HOST = "127.0.0.1"
 PORT = 8787
 
+
 def must_env(name: str) -> str:
     v = os.environ.get(name, "").strip()
     if not v:
         raise SystemExit(f"Missing required env var: {name}")
     return v
+
 
 class CodeHandler(BaseHTTPRequestHandler):
     server_version = "cTraderOAuth/1.0"
@@ -24,8 +26,8 @@ class CodeHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
-        CodeHandler.code = (qs.get("code", [None])[0])
-        CodeHandler.error = (qs.get("error", [None])[0])
+        CodeHandler.code = qs.get("code", [None])[0]
+        CodeHandler.error = qs.get("error", [None])[0]
 
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -41,11 +43,13 @@ class CodeHandler(BaseHTTPRequestHandler):
         # quiet
         return
 
+
 def run_server():
     httpd = HTTPServer((HOST, PORT), CodeHandler)
     httpd.timeout = 1
     while CodeHandler.code is None and CodeHandler.error is None:
         httpd.handle_request()
+
 
 def main():
     client_id = must_env("CTRADER_CLIENT_ID")
@@ -88,6 +92,7 @@ def main():
 
     print(f"Saved token to: {out_path}")
     print("Keys: accessToken, refreshToken, expiresIn, tokenType\n")
+
 
 if __name__ == "__main__":
     main()
