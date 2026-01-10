@@ -380,7 +380,7 @@ class HarvesterAgent:
             "[HARVESTER] Experience added: action=%d, reward=%.4f, buffer_size=%d",
             action,
             reward,
-            self.buffer.tree.size,
+            self.buffer.tree.n_entries,
         )
 
     def train_step(self) -> dict | None:
@@ -393,7 +393,7 @@ class HarvesterAgent:
             return None
 
         # Check if we have enough experiences
-        if self.buffer.tree.size < self.min_experiences:
+        if self.buffer.tree.n_entries < self.min_experiences:
             return None
 
         # Sample batch
@@ -449,7 +449,7 @@ class HarvesterAgent:
                 self.training_steps,
                 metrics["mean_reward"],
                 metrics["mean_td_error"],
-                self.buffer.tree.size,
+                self.buffer.tree.n_entries,
             )
 
         return metrics

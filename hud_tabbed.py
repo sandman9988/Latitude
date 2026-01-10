@@ -23,7 +23,7 @@ import termios
 import threading
 import time
 import tty
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,9 +42,9 @@ IMBALANCE_SELL_THRESHOLD: float = -0.3
 class TabbedHUD:
     """Real-time tabbed HUD for trading bot monitoring"""
 
-    TABS = {"1": "overview", "2": "performance", "3": "training", "4": "risk", "5": "market"}
+    TABS = {"1": "overview", "2": "performance", "3": "training", "4": "risk", "5": "market", "6": "log"}
 
-    TAB_ORDER = ["overview", "performance", "training", "risk", "market"]
+    TAB_ORDER = ["overview", "performance", "training", "risk", "market", "log"]
 
     TAB_NAMES = {
         "overview": "📊 Overview",
@@ -52,6 +52,7 @@ class TabbedHUD:
         "training": "🧠 Training",
         "risk": "⚠️  Risk",
         "market": "🔬 Market",
+        "log": "📝 Decision Log",
     }
 
     def __init__(self, refresh_rate: float = 1.0):
@@ -153,7 +154,7 @@ class TabbedHUD:
     def _refresh_data(self):
         """Refresh all data from bot exports"""
         # Capture heartbeat timestamp in UTC so header labelling stays accurate
-        self.last_update = datetime.utcnow()
+        self.last_update = datetime.now(UTC)
         self.heartbeat_idx = (self.heartbeat_idx + 1) % len(self.heartbeat_chars)
 
         # Bot config
@@ -347,7 +348,7 @@ class TabbedHUD:
             "timeframe_minutes": selection["timeframe_minutes"],
             "qty": selection["qty"],
             "label": selection.get("label"),
-            "requested_at": datetime.utcnow().isoformat() + "Z",
+            "requested_at": datetime.now(UTC).isoformat() + "Z",
             "status": "pending_restart",
         }
         self.data_dir.mkdir(exist_ok=True)
@@ -368,7 +369,7 @@ class TabbedHUD:
         return ""
 
     def _render(self):
-        """Render current tab"""
+        """Render current tab and always show footer"""
         os.system("clear" if os.name != "nt" else "cls")
 
         # Header
@@ -388,6 +389,120 @@ class TabbedHUD:
             self._render_risk()
         elif self.current_tab == "market":
             self._render_market()
+        elif self.current_tab == "log":
+            self._render_decision_log()
+
+        # Always render footer (bottom menu)
+        self._render_footer()
+
+    def _render_training(self):
+        """Render agent training status"""
+        print("\n\033[1m🧠 AGENT TRAINING STATUS\033[0m\n")
+
+        ts = self.training_stats
+
+        # Arena info
+        total_agents = ts.get("total_agents", 0)
+        if total_agents > 0:
+            diversity = ts.get("arena_diversity", {})
+            trig_div = diversity.get("trigger_diversity", 0) if isinstance(diversity, dict) else 0
+            harv_div = diversity.get("harvester_diversity", 0) if isinstance(diversity, dict) else 0
+            agreement = ts.get("last_agreement_score", 0)
+            consensus = ts.get("consensus_mode", "unknown")
+
+            print("  \033[1m🤖 MULTI-AGENT ARENA\033[0m")
+            print(f"    Total Agents:     {total_agents}")
+            print(f"    Consensus Mode:   {consensus}")
+            print(f"    Agreement Score:  {agreement:.3f}")
+            print(f"    Trigger Diversity:{trig_div:.3f}")
+            print(f"    Harvester Div:    {harv_div:.3f}")
+            print()
+
+        # Trigger agents
+        print("  \033[1m🎯 TRIGGER AGENTS (Entry)\033[0m")
+        trig_buf = ts.get("trigger_buffer_size", 0)
+        trig_loss = ts.get("trigger_loss", 0)
+        trig_td = ts.get("trigger_td_error", 0)
+        trig_eps = ts.get("trigger_epsilon", 0)
+
+        buf_color = (
+            "\033[92m"
+            if trig_buf > BUFFER_HIGH_THRESHOLD
+            else ("\033[93m" if trig_buf > BUFFER_MEDIUM_THRESHOLD else "\033[91m")
+        )
+
+        print(f"    Experience Buffer: {buf_color}{trig_buf:>8,}\033[0m")
+        print(f"    Training Loss:     {trig_loss:>12.6f}")
+        if trig_td > 0:
+            print(f"    TD-Error:          {trig_td:>12.6f}")
+        if trig_eps > 0:
+            print(f"    Epsilon:           {trig_eps:>12.4f}")
+
+        # Progress bar for buffer
+        max_buf = 10000
+        pct = min(trig_buf / max_buf, 1.0)
+        bar_len = 30
+        filled = int(bar_len * pct)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        print(f"    Buffer Fill:       [{bar}] {pct*100:.0f}%")
+
+        print()
+
+        # Harvester agents
+        print("  \033[1m🌾 HARVESTER AGENTS (Exit)\033[0m")
+        harv_buf = ts.get("harvester_buffer_size", 0)
+        harv_loss = ts.get("harvester_loss", 0)
+        harv_td = ts.get("harvester_td_error", 0)
+        harv_eps = ts.get("harvester_epsilon", 0)
+
+        buf_color = (
+            "\033[92m"
+            if harv_buf > BUFFER_HIGH_THRESHOLD
+            else ("\033[93m" if harv_buf > BUFFER_MEDIUM_THRESHOLD else "\033[91m")
+        )
+
+        print(f"    Experience Buffer: {buf_color}{harv_buf:>8,}\033[0m")
+        print(f"    Training Loss:     {harv_loss:>12.6f}")
+        if harv_td > 0:
+            print(f"    TD-Error:          {harv_td:>12.6f}")
+        if harv_eps > 0:
+            print(f"    Epsilon:           {harv_eps:>12.4f}")
+
+        pct = min(harv_buf / max_buf, 1.0)
+        filled = int(bar_len * pct)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        print(f"    Buffer Fill:       [{bar}] {pct*100:.0f}%")
+
+        print()
+
+        # Training status
+        last_train = ts.get("last_training_time", "Never")
+        print("  \033[1m⏱  TRAINING SCHEDULE\033[0m")
+        print(f"    Last Training:     {last_train}")
+        print(f"    Training Enabled:  {self.bot_config.get('training_enabled', False)}")
+
+    def _render_decision_log(self):
+        """Render the Decision Log tab (Tab 6)"""
+        log_file = self.data_dir / "decision_log.json"
+        print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
+        if not log_file.exists():
+            print("No decision log found.")
+            return
+        try:
+            with open(log_file, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+        except Exception as e:
+            print(f"Error reading decision log: {e}")
+            return
+        if not entries:
+            print("No entries yet.")
+            return
+        # Show only the last 20 entries
+        for entry in entries[-20:]:
+            ts = entry.get("timestamp", "?")
+            event = entry.get("event", "?")
+            details = entry.get("details", "")
+            print(f"[{ts}] {event}: {details}")
 
         # Footer
         self._render_footer()
@@ -407,24 +522,26 @@ class TabbedHUD:
         minutes = int((uptime % 3600) // 60)
 
         price = self.position.get("current_price", 0)
-        now = self.last_update or datetime.utcnow()
+        now = self.last_update or datetime.now(UTC)
 
         print(f"\n🎯 {symbol} @ {tf}    💰 {price:.2f}    ⏱  {hours:02d}h {minutes:02d}m")
         print(f"{heartbeat} {now.strftime('%Y-%m-%d %H:%M:%S')} UTC (Live)")
 
     def _render_tab_bar(self):
-        """Render tab navigation bar"""
+        """Render tab navigation bar, including Tab 6 (Decision Log)"""
         print("\n" + "─" * 80)
 
         tabs = []
-        for key, name in [
+        tab_defs = [
             ("1", "Overview"),
             ("2", "Performance"),
             ("3", "Training"),
             ("4", "Risk"),
             ("5", "Market"),
-        ]:
-            tab_id = self.TABS[key]
+            ("6", "Decision Log"),
+        ]
+        for key, name in tab_defs:
+            tab_id = self.TABS.get(key, None)
             if tab_id == self.current_tab:
                 tabs.append(f"\033[7m [{key}] {name} \033[0m")  # Inverted
             else:
@@ -545,31 +662,28 @@ class TabbedHUD:
         print(f"  Consecutive Wins: {lt.get('max_consec_wins', 0)}")
         print(f"  Consecutive Loss: {lt.get('max_consec_losses', 0)}")
 
-    def _render_training(self):
-        """Render agent training status"""
-        print("\n\033[1m🧠 AGENT TRAINING STATUS\033[0m\n")
-
-        ts = self.training_stats
-
-        # Arena info
-        total_agents = ts.get("total_agents", 0)
-        if total_agents > 0:
-            diversity = ts.get("arena_diversity", {})
-            trig_div = diversity.get("trigger_diversity", 0) if isinstance(diversity, dict) else 0
-            harv_div = diversity.get("harvester_diversity", 0) if isinstance(diversity, dict) else 0
-            agreement = ts.get("last_agreement_score", 0)
-            consensus = ts.get("consensus_mode", "unknown")
-
-            print("  \033[1m🤖 MULTI-AGENT ARENA\033[0m")
-            print(f"    Total Agents:     {total_agents}")
-            print(f"    Consensus Mode:   {consensus}")
-            print(f"    Agreement Score:  {agreement:.3f}")
-            print(f"    Trigger Diversity:{trig_div:.3f}")
-            print(f"    Harvester Div:    {harv_div:.3f}")
-            print()
-
-        # Trigger agents
-        print("  \033[1m🎯 TRIGGER AGENTS (Entry)\033[0m")
+    def _render_decision_log(self):
+        """Render the Decision Log tab (Tab 6)"""
+        log_file = self.data_dir / "decision_log.json"
+        print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
+        if not log_file.exists():
+            print("No decision log found.")
+            return
+        try:
+            with open(log_file, "r", encoding="utf-8") as f:
+                entries = json.load(f)
+        except Exception as e:
+            print(f"Error reading decision log: {e}")
+            return
+        if not entries:
+            print("No entries yet.")
+            return
+        # Show only the last 20 entries
+        for entry in entries[-20:]:
+            ts = entry.get("timestamp", "?")
+            event = entry.get("event", "?")
+            details = entry.get("details", "")
+            print(f"[{ts}] {event}: {details}")
         trig_buf = ts.get("trigger_buffer_size", 0)
         trig_loss = ts.get("trigger_loss", 0)
         trig_td = ts.get("trigger_td_error", 0)

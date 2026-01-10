@@ -58,6 +58,7 @@ from order_book import OrderBook, VPINCalculator
 from path_geometry import PathGeometry
 from performance_tracker import PerformanceTracker
 from reward_shaper import RewardShaper
+from trade_manager_example import TradeManagerIntegration
 from ring_buffer import RollingStats
 
 # Handbook components - Phase 1
@@ -217,19 +218,19 @@ class Policy:
                 assert nn is not None, "nn module should be available"
                 assert torch is not None, "torch module should be available"
 
-                class QNet(nn.Module):  # type: ignore[misc]
+                class QNet(nn.Module):
                     def __init__(self, _window: int, n_features: int, n_actions: int = 3):
                         super().__init__()
-                        self.net = nn.Sequential(  # type: ignore[misc]
-                            nn.Conv1d(n_features, 64, kernel_size=5, padding=2),  # type: ignore[misc]
-                            nn.ReLU(),  # type: ignore[misc]
-                            nn.Conv1d(64, 64, kernel_size=5, padding=2),  # type: ignore[misc]
-                            nn.ReLU(),  # type: ignore[misc]
-                            nn.AdaptiveAvgPool1d(1),  # type: ignore[misc]
-                            nn.Flatten(),  # type: ignore[misc]
-                            nn.Linear(64, 128),  # type: ignore[misc]
-                            nn.ReLU(),  # type: ignore[misc]
-                            nn.Linear(128, n_actions),  # type: ignore[misc]
+                        self.net = nn.Sequential(
+                            nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
+                            nn.ReLU(),
+                            nn.Conv1d(64, 64, kernel_size=5, padding=2),
+                            nn.ReLU(),
+                            nn.AdaptiveAvgPool1d(1),
+                            nn.Flatten(),
+                            nn.Linear(64, 128),
+                            nn.ReLU(),
+                            nn.Linear(128, n_actions),
                         )
 
                     def forward(self, x):
@@ -238,7 +239,7 @@ class Policy:
 
                 self.torch = torch
                 self.model = QNet(_window=self.window, n_features=4, n_actions=3)
-                self.model.load_state_dict(torch.load(model_path, map_location="cpu"))  # type: ignore[misc]
+                self.model.load_state_dict(torch.load(model_path, map_location="cpu"))
                 self.model.eval()
                 self.use_torch = True
                 LOG.info("[POLICY] Loaded DDQN model: %s", model_path)
@@ -311,9 +312,9 @@ class Policy:
         # Type guard: ensure torch is available
         assert self.torch is not None, "torch should be available when use_torch=True"
         assert self.model is not None, "model should be loaded when use_torch=True"
-        with self.torch.no_grad():  # type: ignore[union-attr]
-            t = self.torch.from_numpy(x).unsqueeze(0)  # type: ignore[union-attr]
-            q = self.model(t).squeeze(0).numpy()  # type: ignore[union-attr]
+        with self.torch.no_grad():
+            t = self.torch.from_numpy(x).unsqueeze(0)
+            q = self.model(t).squeeze(0).numpy()
             return int(q.argmax())
 
     def update_ensemble_weights(self, disagreement: float, reward: float = 0.0) -> float:
@@ -523,8 +524,9 @@ class MFEMAETracker:
 class CTraderFixApp(fix.Application):
     def __init__(self, symbol_id: int, qty: float, timeframe_minutes: int = 15, symbol: str = "BTCUSD"):
         super().__init__()
-        self.symbol_id = symbol_id
+
         self.symbol = symbol  # Instrument-agnostic: BTCUSD, XAUUSD, etc.
+        self.symbol_id = symbol_id  # Numeric symbol identifier for FIX messages
 
         # Initialize learned parameters manager (single source of truth)
         self.param_manager = LearnedParametersManager()
@@ -715,6 +717,12 @@ class CTraderFixApp(fix.Application):
         self.entry_state = None  # State at entry decision time (for experience)
         self.entry_action = None  # Action taken at entry (0=NO, 1=LONG, 2=SHORT)
 
+        # Harvester experience tracking (dense feedback every bar)
+        self.prev_harvester_state = None
+        self.prev_exit_action = None
+        self.prev_mfe = 0.0
+        self.prev_mae = 0.0
+
         # Connection health monitoring - ROCK SOLID for financial trading
         self.last_quote_heartbeat = None
         self.last_trade_heartbeat = None
@@ -757,6 +765,10 @@ class CTraderFixApp(fix.Application):
         self._health_thread = threading.Thread(target=self._monitor_connection_health, daemon=True)
         self._health_thread.start()
         LOG.info("[HEALTH] Connection health monitor thread started")
+
+        # TradeManager integration - centralized order & position management
+        self.trade_integration = TradeManagerIntegration(self)
+        LOG.info("[INTEGRATION] TradeManager integration initialized")
 
         # HUD data export tracking
         self.start_time = dt.datetime.now(dt.UTC)
@@ -903,7 +915,7 @@ class CTraderFixApp(fix.Application):
                 LOG.warning("[RECONNECT] Forcing %s session restart (%s)", qual, reason)
                 session.disconnect(reason, False)
                 self.last_forced_restart[qual] = now_ts
-                self.last_disconnect_reason = reason
+                self.last_disconnect_reason = str(reason)
                 return True
             LOG.error("[RECONNECT] lookupSession failed for %s", qual)
         except Exception as e:
@@ -915,7 +927,7 @@ class CTraderFixApp(fix.Application):
         self._health_monitor_running = False
         self._shutdown_requested = True
 
-    def graceful_shutdown(self, signum=None, frame=None):
+    def graceful_shutdown(self, signum=None, frame=None):  # noqa: ARG002
         """Perform graceful shutdown with position cleanup and session closure."""
         if self._shutdown_complete:
             return
@@ -1056,6 +1068,8 @@ class CTraderFixApp(fix.Application):
                 self.last_trade_heartbeat = utc_now()
                 self.request_security_definition()  # Get symbol info (source of truth)
                 self.request_positions()
+                # Initialize TradeManager now that TRADE session is connected
+                self.trade_integration.initialize_trade_manager()
             else:
                 LOG.warning("[LOGON] Unknown qualifier; not routing: %s", session_id.toString())
         except Exception as e:
@@ -1530,6 +1544,7 @@ class CTraderFixApp(fix.Application):
 
     def try_bar_update(self):
         if self.best_bid is None or self.best_ask is None:
+            LOG.debug("[BAR] Skipping bar update: best_bid or best_ask is None")
             return
 
         mid = (self.best_bid + self.best_ask) / 2.0
@@ -1542,12 +1557,14 @@ class CTraderFixApp(fix.Application):
 
         closed = self.builder.update(utc_now(), mid)
         if closed:
+            LOG.info(f"[BAR] Closed bar: {closed}")
             tick_count = self.current_bar_tick_count
             self.current_bar_tick_count = 0
             self._update_non_repaint_series(closed, tick_count)
             self._mark_non_repaint_closed()
             self.close_stats.update(closed[4])
             self.bars.append(closed)
+            LOG.info(f"[BAR] Appended to self.bars (len now {len(self.bars)})")
             self.on_bar_close(closed)
             self._mark_non_repaint_opened()
 
@@ -1565,6 +1582,9 @@ class CTraderFixApp(fix.Application):
         LOG.info("[TRADE] Requested positions")
 
     def on_position_report(self, msg: fix.Message):
+        # Route to TradeManager first
+        self.trade_integration.handle_position_report(msg)
+
         try:
             sym = fix.Symbol()
             if msg.isSetField(sym):
@@ -1695,6 +1715,31 @@ class CTraderFixApp(fix.Application):
                         # Reset entry state
                         self.entry_state = None
 
+                    # Add final harvester experience (CLOSE decision with capture reward)
+                    if hasattr(self.policy, "add_harvester_experience") and self.prev_harvester_state is not None:
+                        capture_reward = shaped_rewards.get("capture_efficiency", 0.0)
+                        next_state = (
+                            self.policy.harvester.last_state
+                            if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state")
+                            else None
+                        )
+
+                        if next_state is not None:
+                            self.policy.add_harvester_experience(
+                                state=self.prev_harvester_state,
+                                action=1,  # CLOSE
+                                reward=capture_reward,
+                                next_state=next_state,
+                                done=True,
+                            )
+                            LOG.info("[ONLINE_LEARNING] Added HarvesterAgent CLOSE: reward=%.4f", capture_reward)
+
+                        # Reset harvester tracking
+                        self.prev_harvester_state = None
+                        self.prev_exit_action = None
+                        self.prev_mfe = 0.0
+                        self.prev_mae = 0.0
+
                     # Handbook: Update circuit breakers with trade result
                     current_equity = self.performance.get_total_pnl() + 10000.0  # Assuming 10K starting equity
                     self.circuit_breakers.update_trade(pnl, current_equity)
@@ -1760,6 +1805,9 @@ class CTraderFixApp(fix.Application):
             self.trade_entry_time = None
 
     def on_exec_report(self, msg: fix.Message):
+        # Route to TradeManager first
+        self.trade_integration.handle_execution_report(msg)
+
         ex = fix.ExecType()
         if not msg.isSetField(ex):
             return
@@ -1862,6 +1910,21 @@ class CTraderFixApp(fix.Application):
     def on_bar_close(self, bar):
         t, o, h, low_price, c = bar
 
+        LOG.info(f"[BAR] on_bar_close called: t={t}, o={o}, h={h}, l={low_price}, c={c}")
+
+        # Initialize decision variables for logging (will be populated later)
+        action = None
+        confidence = None
+        runway = None
+        feas = None
+        exit_action = None
+        exit_conf = None
+        desired = None
+        imbalance = None
+        depth_bid = None
+        depth_ask = None
+        depth_ratio = None
+
         # Increment bar counter for HUD
         self.bar_count += 1
 
@@ -1955,24 +2018,30 @@ class CTraderFixApp(fix.Application):
         # Phase 3.5: Periodic training step
         self.bars_since_training += 1
         if self.bars_since_training >= self.training_interval and hasattr(self.policy, "train_step"):
-            train_metrics = self.policy.train_step(self.adaptive_reg)
-            self.bars_since_training = 0
+            try:
+                train_metrics = self.policy.train_step(self.adaptive_reg)
+                self.bars_since_training = 0
 
-            # Adjust regularization based on training metrics
-            if train_metrics.get("trigger") or train_metrics.get("harvester"):
-                trigger_td = (
-                    train_metrics.get("trigger", {}).get("mean_td_error", 0) if train_metrics.get("trigger") else 0
-                )
-                harvester_td = (
-                    train_metrics.get("harvester", {}).get("mean_td_error", 0) if train_metrics.get("harvester") else 0
-                )
-                avg_td = (trigger_td + harvester_td) / 2 if (trigger_td + harvester_td) else 0
+                # Adjust regularization based on training metrics
+                if train_metrics.get("trigger") or train_metrics.get("harvester"):
+                    trigger_td = (
+                        train_metrics.get("trigger", {}).get("mean_td_error", 0) if train_metrics.get("trigger") else 0
+                    )
+                    harvester_td = (
+                        train_metrics.get("harvester", {}).get("mean_td_error", 0)
+                        if train_metrics.get("harvester")
+                        else 0
+                    )
+                    avg_td = (trigger_td + harvester_td) / 2 if (trigger_td + harvester_td) else 0
 
-                # Adaptive regularization: high TD error = overfitting signal
-                if avg_td > TRAINING_TD_HIGH_THRESHOLD:  # High TD error threshold
-                    self.adaptive_reg.increase_regularization()
-                elif avg_td < TRAINING_TD_LOW_THRESHOLD:  # Low TD error threshold
-                    self.adaptive_reg.decrease_regularization()
+                    # Adaptive regularization: high TD error = overfitting signal
+                    if avg_td > TRAINING_TD_HIGH_THRESHOLD:  # High TD error threshold
+                        self.adaptive_reg.increase_regularization()
+                    elif avg_td < TRAINING_TD_LOW_THRESHOLD:  # Low TD error threshold
+                        self.adaptive_reg.decrease_regularization()
+            except Exception as e:
+                LOG.error(f"[TRAINING] Training step failed: {e}", exc_info=True)
+                self.bars_since_training = 0  # Reset to prevent repeated attempts
 
         # Phase 3: Use DualPolicy if available
         if hasattr(self.policy, "decide_entry"):
@@ -2068,6 +2137,11 @@ class CTraderFixApp(fix.Application):
                 # exit_action: 0=HOLD, 1=CLOSE
                 desired = 0 if exit_action == 1 else self.cur_pos
 
+                # Update trailing stop (HarvesterAgent controls, TradeManager communicates)
+                if hasattr(self, "trade_integration") and self.trade_integration.trailing_stop_active:
+                    mid_price = (self.best_bid + self.best_ask) / 2.0 if self.best_bid and self.best_ask else c
+                    self.trade_integration.update_trailing_stop(mid_price)
+
                 LOG.info(
                     "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f | HARVESTER: exit=%d conf=%.2f | desired=%s cur=%s",
                     self.timeframe_minutes,
@@ -2081,6 +2155,46 @@ class CTraderFixApp(fix.Application):
                     desired,
                     self.cur_pos,
                 )
+
+                # Add harvester experience (dense feedback every bar)
+                if hasattr(self.policy, "add_harvester_experience") and self.prev_harvester_state is not None:
+                    pos_metrics = (
+                        self.policy.get_position_metrics() if hasattr(self.policy, "get_position_metrics") else {}
+                    )
+                    current_mfe = pos_metrics.get("mfe", 0.0)
+                    current_mae = pos_metrics.get("mae", 0.0)
+
+                    # Incremental reward for previous HOLD
+                    mfe_delta = current_mfe - self.prev_mfe
+                    mae_delta = current_mae - self.prev_mae
+                    reward = (0.1 if mfe_delta > 0 else 0.0) - (0.2 if mae_delta > 0 else 0.0) - 0.01
+
+                    next_state = (
+                        self.policy.harvester.last_state
+                        if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state")
+                        else None
+                    )
+                    if next_state is not None:
+                        self.policy.add_harvester_experience(
+                            state=self.prev_harvester_state,
+                            action=self.prev_exit_action,
+                            reward=reward,
+                            next_state=next_state,
+                            done=False,
+                        )
+                        LOG.debug(
+                            "[HARVESTER_EXP] HOLD reward=%.4f (MFE_Δ=%.2f MAE_Δ=%.2f)", reward, mfe_delta, mae_delta
+                        )
+
+                # Store current state for next bar
+                if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
+                    self.prev_harvester_state = self.policy.harvester.last_state
+                    self.prev_exit_action = exit_action
+                    pos_metrics = (
+                        self.policy.get_position_metrics() if hasattr(self.policy, "get_position_metrics") else {}
+                    )
+                    self.prev_mfe = pos_metrics.get("mfe", 0.0)
+                    self.prev_mae = pos_metrics.get("mae", 0.0)
         else:
             # Simple policy fallback
             action = self.policy.decide(self.bars)
@@ -2097,6 +2211,63 @@ class CTraderFixApp(fix.Application):
                 desired,
                 self.cur_pos,
             )
+
+        # --- Decision Log Export (Tab 6 HUD) - AFTER ALL decision logic, BEFORE early returns ---
+        try:
+            log_path = Path("data/decision_log.json")
+            log_path.parent.mkdir(exist_ok=True)
+            # Read existing log (if any)
+            if log_path.exists():
+                with open(log_path, "r", encoding="utf-8") as f:
+                    log_entries = json.load(f)
+            else:
+                log_entries = []
+
+            # Get position metrics from policy (if dual-agent)
+            pos_metrics = {}
+            if hasattr(self.policy, "get_position_metrics"):
+                pos_metrics = self.policy.get_position_metrics()
+
+            # Compose log entry with all decision variables
+            log_entry = {
+                "timestamp": t.isoformat() if hasattr(t, "isoformat") else str(t),
+                "event": "bar_close",
+                "details": {
+                    "open": o,
+                    "high": h,
+                    "low": low_price,
+                    "close": c,
+                    "cur_pos": self.cur_pos,
+                    "desired": desired if "desired" in locals() else None,
+                    "depth_bid": depth_bid if "depth_bid" in locals() else None,
+                    "depth_ask": depth_ask if "depth_ask" in locals() else None,
+                    "depth_ratio": depth_ratio if "depth_ratio" in locals() else None,
+                    "imbalance": imbalance if "imbalance" in locals() else None,
+                    "runway": runway if "runway" in locals() else None,
+                    "feasibility": feas if "feas" in locals() else None,
+                    "action": action if "action" in locals() else None,
+                    "confidence": confidence if "confidence" in locals() else None,
+                    "exit_action": exit_action if "exit_action" in locals() else None,
+                    "exit_conf": exit_conf if "exit_conf" in locals() else None,
+                    # Harvester position metrics
+                    "mfe": pos_metrics.get("mfe", None),
+                    "mae": pos_metrics.get("mae", None),
+                    "bars_held": pos_metrics.get("bars_held", None),
+                    "entry_price": pos_metrics.get("entry_price", None),
+                    "circuit_breaker": (
+                        self.circuit_breakers.is_any_tripped() if hasattr(self, "circuit_breakers") else None
+                    ),
+                },
+            }
+            # Only keep last 1000 entries
+            log_entries.append(log_entry)
+            if len(log_entries) > 1000:
+                log_entries = log_entries[-1000:]
+            with open(log_path, "w", encoding="utf-8") as f:
+                json.dump(log_entries, f, indent=2)
+            LOG.info(f"[DECISION_LOG] Wrote entry for {t} (total: {len(log_entries)})")
+        except Exception as e:
+            LOG.error(f"[DECISION_LOG] Failed to write: {e}", exc_info=True)
 
         if not self.trade_sid:
             self._export_hud_data()  # Still export HUD even without trade session

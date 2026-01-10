@@ -6,7 +6,7 @@ Organized by instrument, timeframe, and session
 """
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +99,7 @@ class BotPersistenceManager:
                 metadata = {}
             metadata.update(
                 {
-                    "saved_at": datetime.utcnow().isoformat() + "Z",
+                    "saved_at": datetime.now(UTC).isoformat() + "Z",
                     "symbol": symbol,
                     "timeframe": timeframe,
                     "agent_type": agent_type,
@@ -149,7 +149,7 @@ class BotPersistenceManager:
             session_id: Unique session identifier (default: timestamp)
         """
         if session_id is None:
-            session_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            session_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
         inst_dir = self.get_instrument_dir(symbol, timeframe)
         stats_dir = inst_dir / "stats"
@@ -162,7 +162,7 @@ class BotPersistenceManager:
             "session_id": session_id,
             "symbol": symbol,
             "timeframe": timeframe,
-            "saved_at": datetime.utcnow().isoformat() + "Z",
+            \"saved_at\": datetime.now(UTC).isoformat() + \"Z\",
         }
 
         success = self.persistence.save_json(stats, str((stats_dir / session_file).relative_to(self.base_dir)))
@@ -195,7 +195,7 @@ class BotPersistenceManager:
                 "total_trades": 0,
                 "total_pnl": 0.0,
                 "total_bars": 0,
-                "first_session": datetime.utcnow().isoformat() + "Z",
+                "first_session": datetime.now(UTC).isoformat() + "Z",
                 "sessions": [],
             }
 
@@ -204,7 +204,7 @@ class BotPersistenceManager:
         existing["total_trades"] += stats.get("total_trades", 0)
         existing["total_pnl"] += stats.get("total_pnl", 0.0)
         existing["total_bars"] += stats.get("bars_processed", 0)
-        existing["last_update"] = datetime.utcnow().isoformat() + "Z"
+        existing["last_update"] = datetime.now(UTC).isoformat() + "Z"
 
         # Append session summary
         if "session_id" in stats:
@@ -213,7 +213,7 @@ class BotPersistenceManager:
                     "session_id": stats["session_id"],
                     "trades": stats.get("total_trades", 0),
                     "pnl": stats.get("total_pnl", 0.0),
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": datetime.now(UTC).isoformat() + "Z",
                 }
             )
 
@@ -255,7 +255,7 @@ class BotPersistenceManager:
             "total_timeframes": 0,
             "total_trades": 0,
             "total_pnl": 0.0,
-            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "updated_at": datetime.now(UTC).isoformat() + "Z",
         }
 
         for inst in all_instruments:
@@ -336,7 +336,7 @@ class BotPersistenceManager:
             "checkpoint_name": checkpoint_name,
             "symbol": symbol,
             "timeframe": timeframe,
-            "saved_at": datetime.utcnow().isoformat() + "Z",
+            \"saved_at\": datetime.now(UTC).isoformat() + \"Z\",
         }
 
         success = self.persistence.save_json(state, str(checkpoint_file.relative_to(self.base_dir)))

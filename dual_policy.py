@@ -289,6 +289,16 @@ class DualPolicy:
 
         return action, confidence
 
+    def get_position_metrics(self) -> dict:
+        """Get current position tracking metrics for logging/debugging."""
+        return {
+            "mfe": self.mfe,
+            "mae": self.mae,
+            "bars_held": self.bars_held,
+            "entry_price": self.entry_price,
+            "current_position": self.current_position,
+        }
+
     def on_entry(self, direction: int, entry_price: float, entry_time):
         """
         Called when position is entered.

@@ -7,7 +7,7 @@ Implements no-trade detection and exploration boost from Master Handbook
 import logging
 import time
 from collections import deque
-from datetime import datetime
+from datetime import UTC, datetime
 
 PAPER_MAX_BARS_INACTIVE: int = 30
 LIVE_MAX_BARS_INACTIVE: int = 100
@@ -52,9 +52,9 @@ class ActivityMonitor:
 
     def __init__(
         self,
-        max_bars_inactive: int = None,
-        min_trades_per_day: float = None,
-        exploration_boost: float = None,
+        max_bars_inactive: int | None = None,
+        min_trades_per_day: float | None = None,
+        exploration_boost: float | None = None,
         activity_decay: float = ACTIVITY_DECAY_DEFAULT,
         phase_maturity: float = 0.0,  # 0.0=early exploration, 1.0=late exploitation
     ):
@@ -117,7 +117,7 @@ class ActivityMonitor:
         self.trade_timestamps: deque[float] = deque(maxlen=TRADE_HISTORY_LIMIT)  # Last 100 trades
         self.activity_score = 1.0  # 1.0 = normal, <0.5 = stagnant
         self.last_trade_time: datetime | None = None
-        self.session_start = datetime.utcnow()
+        self.session_start = datetime.now(UTC)
 
         # Flags
         self._is_stagnant = False
@@ -153,7 +153,7 @@ class ActivityMonitor:
     def on_trade_executed(self, timestamp: datetime | None = None) -> None:
         """Record a trade execution"""
         if timestamp is None:
-            timestamp = datetime.utcnow()
+            timestamp = datetime.now(UTC)
 
         self.bars_since_trade = 0
         self.total_trades += 1
