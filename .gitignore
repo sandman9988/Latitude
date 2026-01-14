@@ -46,3 +46,8 @@ cmd
 To
 *.tmp
 *.bak
+*.pid
+*.pyc
+check_positions.py
+close_all_hedged_positions.py
+emergency_close_all.py

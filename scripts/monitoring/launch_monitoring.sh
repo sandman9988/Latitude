@@ -58,7 +58,7 @@ read -p "Enter choice [1-5]: " choice
 case $choice in
     1)
         echo -e "${GREEN}Launching Terminal HUD...${NC}"
-        python3 hud_tabbed.py
+        python3 -m src.monitoring.hud_tabbed
         ;;
     2)
         echo -e "${GREEN}Launching Jupyter Notebook...${NC}"
@@ -67,7 +67,7 @@ case $choice in
         ;;
     3)
         echo -e "${GREEN}Launching HUD in background...${NC}"
-        python3 hud_tabbed.py &
+        python3 -m src.monitoring.hud_tabbed &
         HUD_PID=$!
         echo "  PID: $HUD_PID"
         

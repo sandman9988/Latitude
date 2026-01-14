@@ -184,9 +184,9 @@ setup_logging() {
 
 # Kill any existing bot processes
 cleanup_old_processes() {
-    if pgrep -f "ctrader_ddqn_paper.py" > /dev/null; then
+    if pgrep -f "ctrader_ddqn_paper" > /dev/null; then
         log "${YELLOW}⚠ Found running bot process, stopping...${NC}"
-        pkill -f "ctrader_ddqn_paper.py" || true
+        pkill -f "ctrader_ddqn_paper" || true
         sleep 2
     fi
 }
@@ -212,14 +212,14 @@ should_enable_hud() {
 }
 
 bot_process_running() {
-    pgrep -f "ctrader_ddqn_paper.py" > /dev/null
+    pgrep -f "ctrader_ddqn_paper" > /dev/null
 }
 
 wait_for_bot_process() {
     local retries=30
     local bot_pid
     for ((i=1; i<=retries; i++)); do
-        if bot_pid=$(pgrep -f "ctrader_ddqn_paper.py" | head -n1); then
+        if bot_pid=$(pgrep -f "ctrader_ddqn_paper" | head -n1); then
             echo "$bot_pid" > .bot.pid
             log "${GREEN}✓ Trading bot running (PID: ${bot_pid})${NC}"
             return 0
@@ -422,7 +422,7 @@ launch_hud_foreground() {
     trap handle_hud_sigint INT
     local hud_status=0
     set +e
-    python3 hud_tabbed.py
+    python3 src/monitoring/hud_tabbed.py
     hud_status=$?
     set -e
 
@@ -437,7 +437,34 @@ launch_hud_foreground() {
     else
         log "${GREEN}HUD closed normally. Bot remains online.${NC}"
     fi
-    log "${BLUE}Stop bot: pkill -f ctrader_ddqn_paper.py${NC}"
+    log "${BLUE}Stop bot: pkill -f ctrader_ddqn_paper${NC}"
+}
+
+launch_hud_background() {
+    log ""
+    log "=========================================="
+    log "  Launching HUD (background mode)"
+    log "=========================================="
+    log ""
+    log "HUD is running in background. Use 'pkill -f hud_tabbed' to stop it."
+    log "Bot console log: bot_console.log"
+    log ""
+    nohup python3 src/monitoring/hud_tabbed.py >> hud_console.log 2>&1 &
+    HUD_PID=$!
+    sleep 2
+    if ! kill -0 "$HUD_PID" 2>/dev/null; then
+        log "${RED}✗ HUD failed to start. Check hud_console.log${NC}"
+        exit 1
+    fi
+    log "${GREEN}✓ HUD started (PID: ${HUD_PID})${NC}"
+    log "${BLUE}Stop HUD: pkill -f hud_tabbed${NC}"
+    log "${BLUE}Stop bot: pkill -f ctrader_ddqn_paper${NC}"
+    log ""
+    log "Both bot and HUD are running. Press Ctrl+C to exit this script."
+    log "The processes will continue running in background."
+    # Wait for Ctrl+C
+    trap 'log "${YELLOW}Script exiting. Processes continue running.${NC}"; exit 0' INT
+    wait
 }
 
 hud_only_flow() {
@@ -466,7 +493,7 @@ orchestrate_with_hud() {
     start_bot_daemon
     wait_for_bot_telemetry || true
     seed_hud_state
-    launch_hud_foreground
+    launch_hud_background
 }
 
 # Main startup sequence
@@ -518,7 +545,7 @@ main() {
     log ""
     
     # Run the bot
-    exec python3 ctrader_ddqn_paper.py "$@"
+    exec python3 -m src.core.ctrader_ddqn_paper "$@"
 }
 
 # Run main / orchestrator

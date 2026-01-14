@@ -75,4 +75,4 @@ sleep 2
 trap "echo ''; echo 'HUD stopped. Bot still running (PID: $BOT_PID)'; exit 0" INT
 
 # Run HUD in foreground
-python3 hud_tabbed.py
+python3 -m src.monitoring.hud_tabbed

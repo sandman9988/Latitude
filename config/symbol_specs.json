@@ -1,0 +1,102 @@
+{
+  "_comment": "Symbol specifications - broker-specific settings for price/volume normalization",
+  "_note": "These are fallback defaults. SecurityDefinition response from broker takes precedence.",
+  
+  "BTCUSD": {
+    "symbol_id": 10028,
+    "digits": 2,
+    "pip_size": 1.0,
+    "min_volume": 0.01,
+    "max_volume": 100.0,
+    "volume_step": 0.01,
+    "contract_size": 1.0,
+    "pip_value_per_lot": 0.01
+  },
+  
+  "XAUUSD": {
+    "symbol_id": 41,
+    "digits": 2,
+    "pip_size": 0.01,
+    "min_volume": 0.01,
+    "max_volume": 50.0,
+    "volume_step": 0.01,
+    "contract_size": 100.0,
+    "pip_value_per_lot": 1.0
+  },
+  
+  "EURUSD": {
+    "symbol_id": 1,
+    "digits": 5,
+    "pip_size": 0.00001,
+    "min_volume": 0.01,
+    "max_volume": 100.0,
+    "volume_step": 0.01,
+    "contract_size": 100000.0,
+    "pip_value_per_lot": 1.0
+  },
+  
+  "USDJPY": {
+    "symbol_id": 2,
+    "digits": 3,
+    "pip_size": 0.001,
+    "min_volume": 0.01,
+    "max_volume": 100.0,
+    "volume_step": 0.01,
+    "contract_size": 100000.0,
+    "pip_value_per_lot": 1.0
+  },
+  
+  "GBPUSD": {
+    "symbol_id": 3,
+    "digits": 5,
+    "pip_size": 0.00001,
+    "min_volume": 0.01,
+    "max_volume": 100.0,
+    "volume_step": 0.01,
+    "contract_size": 100000.0,
+    "pip_value_per_lot": 1.0
+  },
+  
+  "AUDUSD": {
+    "symbol_id": 6,
+    "digits": 5,
+    "pip_size": 0.00001,
+    "min_volume": 0.01,
+    "max_volume": 100.0,
+    "volume_step": 0.01,
+    "contract_size": 100000.0,
+    "pip_value_per_lot": 1.0
+  },
+  
+  "NAS100": {
+    "symbol_id": 10016,
+    "digits": 2,
+    "pip_size": 0.01,
+    "min_volume": 0.1,
+    "max_volume": 100.0,
+    "volume_step": 0.1,
+    "contract_size": 1.0,
+    "pip_value_per_lot": 0.01
+  },
+  
+  "US30": {
+    "symbol_id": 10017,
+    "digits": 2,
+    "pip_size": 0.01,
+    "min_volume": 0.1,
+    "max_volume": 100.0,
+    "volume_step": 0.1,
+    "contract_size": 1.0,
+    "pip_value_per_lot": 0.01
+  },
+  
+  "_default": {
+    "digits": 5,
+    "pip_size": 0.00001,
+    "min_volume": 0.01,
+    "max_volume": 100.0,
+    "volume_step": 0.01,
+    "contract_size": 100000.0,
+    "pip_value_per_lot": 1.0
+  }
+}
