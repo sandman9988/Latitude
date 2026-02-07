@@ -30,13 +30,13 @@ class TestAutocorrelation:
         """Series shorter than lag → returns 0."""
         det = RegimeDetector()
         result = det._autocorrelation(np.array([1.0, 2.0]), lag=5)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_constant_series_returns_zero(self):
         """Constant series has zero variance → returns 0."""
         det = RegimeDetector()
         result = det._autocorrelation(np.array([5.0] * 20), lag=1)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_positive_autocorrelation(self):
         """Trending data should show positive autocorrelation."""

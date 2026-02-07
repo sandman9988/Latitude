@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import pytest
+
 """
 Test the decision flow and logging without live connection.
 Simulates bar closes and verifies decision log is written correctly.
@@ -10,9 +12,6 @@ import os
 import sys
 from pathlib import Path
 from collections import deque
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
 
 
 def test_decision_log_structure():
@@ -81,19 +80,17 @@ def test_decision_log_structure():
 
     # Check all fields are present and non-null
     assert details["action"] == 1, "Action should be 1 (LONG)"
-    assert details["confidence"] == 0.75, "Confidence should be 0.75"
-    assert details["runway"] == 0.0025, "Runway should be set"
-    assert details["feasibility"] == 0.65, "Feasibility should be set"
+    assert details["confidence"] == pytest.approx(0.75), "Confidence should be 0.75"
+    assert details["runway"] == pytest.approx(0.0025), "Runway should be set"
+    assert details["feasibility"] == pytest.approx(0.65), "Feasibility should be set"
     assert details["desired"] == 1, "Desired should be 1"
-    assert details["depth_bid"] == 1.5, "Depth bid should be set"
-    assert details["depth_ask"] == 1.3, "Depth ask should be set"
-    assert details["depth_ratio"] == 1.15, "Depth ratio should be set"
-    assert details["imbalance"] == 0.02, "Imbalance should be set"
+    assert details["depth_bid"] == pytest.approx(1.5), "Depth bid should be set"
+    assert details["depth_ask"] == pytest.approx(1.3), "Depth ask should be set"
+    assert details["depth_ratio"] == pytest.approx(1.15), "Depth ratio should be set"
+    assert details["imbalance"] == pytest.approx(0.02), "Imbalance should be set"
 
     print("✓ All decision variables correctly captured")
     print(json.dumps(entry, indent=2))
-
-    return True
 
 
 def test_decision_flow_logic():
@@ -142,7 +139,6 @@ def test_decision_flow_logic():
         print(f"  {step}")
 
     print("\n✓ Decision flow sequence validated")
-    return True
 
 
 def test_bar_builder():
@@ -204,15 +200,13 @@ def test_bar_builder():
 
     bar_time, o, h, l, c = closed
     assert bar_time == dt.datetime(2026, 1, 10, 16, 30, tzinfo=dt.UTC), "Bar time should be 16:30"
-    assert o == 90500.0, "Open should be first price"
-    assert h == 90520.0, "High should be max price"
-    assert l == 90490.0, "Low should be min price"
-    assert c == 90490.0, "Close should be last price before bar close"
+    assert o == pytest.approx(90500.0), "Open should be first price"
+    assert h == pytest.approx(90520.0), "High should be max price"
+    assert l == pytest.approx(90490.0), "Low should be min price"
+    assert c == pytest.approx(90490.0), "Close should be last price before bar close"
 
     print(f"  ✓ Bar closed: {bar_time} O={o} H={h} L={l} C={c}")
     print("✓ BarBuilder logic validated")
-
-    return True
 
 
 def test_hud_integration():
@@ -249,7 +243,6 @@ def test_hud_integration():
         print(f"    Desired Position: {details.get('desired', 'None')} (Current: {details.get('cur_pos', 0)})")
 
     print("\n✓ HUD integration validated")
-    return True
 
 
 def main():

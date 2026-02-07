@@ -42,7 +42,7 @@ class TestOrderBookGaps:
         # Set bid higher than ask
         ob.bids = {101.0: 10.0}
         ob.asks = {100.0: 10.0}
-        assert ob.spread() == 0.0
+        assert ob.spread() == pytest.approx(0.0)
 
     def test_spread_non_finite_returns_none(self):
         """When spread_value is non-finite, return None (line 76)."""
@@ -52,7 +52,7 @@ class TestOrderBookGaps:
         ob.bids = {float('inf'): 10.0}
         ob.asks = {float('inf'): 10.0}
         # bid == ask → crossed book → returns 0.0
-        assert ob.spread() == 0.0
+        assert ob.spread() == pytest.approx(0.0)
 
 
 # ===========================================================================
@@ -71,7 +71,7 @@ class TestVPINResidualCarryOver:
         # Bucket completed; residual = 0.2 goes to sell (dominant)
         assert result is not None
         assert vpin.current_sell == pytest.approx(0.2, abs=1e-6)
-        assert vpin.current_buy == 0.0
+        assert vpin.current_buy == pytest.approx(0.0)
 
     def test_buy_dominant_residual(self):
         """When buys dominate, residual goes to buy side (lines 141-143)."""
@@ -82,7 +82,7 @@ class TestVPINResidualCarryOver:
 
         assert result is not None
         assert vpin.current_buy == pytest.approx(0.2, abs=1e-6)
-        assert vpin.current_sell == 0.0
+        assert vpin.current_sell == pytest.approx(0.0)
 
     def test_exact_bucket_fill_no_residual(self):
         """Exact bucket fill → residual = 0 → both zeroed (lines 147-149)."""
@@ -91,8 +91,8 @@ class TestVPINResidualCarryOver:
         result = vpin.update(1.0, "BUY")  # Exactly fills bucket
 
         assert result is not None
-        assert vpin.current_buy == 0.0
-        assert vpin.current_sell == 0.0
+        assert vpin.current_buy == pytest.approx(0.0)
+        assert vpin.current_sell == pytest.approx(0.0)
 
     def test_get_stats_with_varied_buckets(self):
         """get_stats computes meaningful z-score with varied data."""
@@ -143,7 +143,7 @@ class TestFeatureTournamentGaps:
         # Constant x → std(x) == 0 → returns 0.0 (line 182)
         x = np.array([1.0, 1.0, 1.0])
         y = np.array([1.0, 2.0, 3.0])
-        assert ft._safe_correlation(x, y) == 0.0
+        assert ft._safe_correlation(x, y) == pytest.approx(0.0)
 
     def test_regime_stability_single_regime(self):
         """Single unique regime → returns 1.0 (line 214)."""
@@ -154,7 +154,7 @@ class TestFeatureTournamentGaps:
         target = np.array([0.5, 1.0, 1.5])
         regimes = np.array([0, 0, 0])  # All same regime
 
-        assert ft._calculate_regime_stability(feature, target, regimes) == 1.0
+        assert ft._calculate_regime_stability(feature, target, regimes) == pytest.approx(1.0)
 
     def test_regime_stability_insufficient_samples(self):
         """All regimes have < MIN_REGIME_SAMPLES → returns DEFAULT_STABILITY (line 220)."""
@@ -167,7 +167,7 @@ class TestFeatureTournamentGaps:
         regimes = np.array([0, 0, 1, 1])  # 2 samples per regime
 
         result = ft._calculate_regime_stability(feature, target, regimes)
-        assert result == 0.5  # DEFAULT_STABILITY
+        assert result == pytest.approx(0.5)  # DEFAULT_STABILITY
 
     def test_regime_stability_zero_mean_correlation(self):
         """Mean correlation near zero → returns 0.0 (line 227)."""
@@ -185,7 +185,7 @@ class TestFeatureTournamentGaps:
         with patch.object(ft, "_safe_correlation", return_value=0.0):
             result = ft._calculate_regime_stability(feature, target, regimes)
 
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
 
 # ===========================================================================
@@ -242,7 +242,7 @@ class TestRiskAwareSACManagerGaps:
         for _ in range(10):
             mgr.ret_buf.append(0.01)
 
-        assert mgr._compute_rolling_kurtosis() == 0.0
+        assert mgr._compute_rolling_kurtosis() == pytest.approx(0.0)
 
     def test_gpd_exception_returns_zero(self):
         """GPD fit fails → returns 0.0 (lines 304-307)."""
@@ -257,7 +257,7 @@ class TestRiskAwareSACManagerGaps:
         with patch("src.risk.risk_aware_sac_manager.genpareto.fit", side_effect=RuntimeError("fit failed")):
             result = mgr._compute_gpd_hazard()
 
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_collapse_exposure(self):
         """Both kurt > max and vpin_z > trigger → collapse (line 327)."""
@@ -315,7 +315,7 @@ class TestRiskAwareSACManagerGaps:
         assert len(mgr.ret_buf) == 0
         assert len(mgr.vpin_buf) == 0
         assert mgr.total_updates == 0
-        assert mgr.latest_exposure == 1.0
+        assert mgr.latest_exposure == pytest.approx(1.0)
 
     def test_vpin_zscore_standalone(self):
         """Standalone vpin_zscore function (lines 492-498)."""

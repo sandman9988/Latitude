@@ -16,10 +16,10 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+rng = np.random.default_rng(42)
+
+import pytest
 
 
 class MockBot:
@@ -413,11 +413,11 @@ class TestRewardPnLCorrelation:
 
         for _ in range(n_samples):
             # Simulate trade
-            pnl = np.random.randn() * 10
-            mfe = abs(pnl) + abs(np.random.randn() * 5)  # MFE >= |P&L|
+            pnl = rng.standard_normal() * 10
+            mfe = abs(pnl) + abs(rng.standard_normal() * 5)  # MFE >= |P&L|
 
             # Good predictor: predicted MFE close to actual
-            predicted = mfe + np.random.randn() * 2
+            predicted = mfe + rng.standard_normal() * 2
 
             summary = {"mfe": mfe, "pnl": pnl}
             reward = bot._calculate_trigger_reward(summary, predicted, 0.01)
@@ -442,12 +442,12 @@ class TestRewardPnLCorrelation:
 
         for _ in range(n_samples):
             # Simulate various hold scenarios
-            current_mfe = abs(np.random.randn() * 10) + 5
-            current_mae = abs(np.random.randn() * 5)
-            prev_mfe = current_mfe - abs(np.random.randn() * 2)
-            prev_mae = current_mae - abs(np.random.randn() * 1)
-            bars_held = int(np.random.uniform(1, 50))
-            capture_pct = np.random.uniform(0.3, 0.95)
+            current_mfe = abs(rng.standard_normal() * 10) + 5
+            current_mae = abs(rng.standard_normal() * 5)
+            prev_mfe = current_mfe - abs(rng.standard_normal() * 2)
+            prev_mae = current_mae - abs(rng.standard_normal() * 1)
+            bars_held = int(rng.uniform(1, 50))
+            capture_pct = rng.uniform(0.3, 0.95)
             unrealized_pnl = current_mfe * capture_pct
 
             reward = bot._calculate_harvester_hold_reward(

@@ -112,12 +112,12 @@ class TestNormalizeAngleNegative:
     def test_nan_degrees_returns_zero(self):
         """NaN degrees → returns 0.0 via SafeMath.is_valid check."""
         result = TFSafeMath.normalize_angle(float('nan'))
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_inf_degrees_returns_zero(self):
         """Inf degrees → returns 0.0."""
         result = TFSafeMath.normalize_angle(float('inf'))
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ class TestTimeFeatureExceptionPaths:
         # A simpler approach: patch the internal to throw
         with patch("src.features.time_features.SafeMath.clamp", side_effect=Exception("boom")):
             result = tf.minutes_to_session_close(valid_time)
-            assert result == 0.0
+            assert result == pytest.approx(0.0)
 
     def test_minutes_to_rollover_exception(self):
         """Exception in minutes_to_rollover → returns 0.0 (lines 298-299)."""
@@ -151,7 +151,7 @@ class TestTimeFeatureExceptionPaths:
 
         with patch("src.features.time_features.SafeMath.clamp", side_effect=Exception("boom")):
             result = tf.minutes_to_rollover(valid_time)
-            assert result == 0.0
+            assert result == pytest.approx(0.0)
 
     def test_minutes_to_day_end_exception(self):
         """Exception in minutes_to_day_end → returns 0.0 (lines 335-336)."""
@@ -160,7 +160,7 @@ class TestTimeFeatureExceptionPaths:
 
         with patch("src.features.time_features.SafeMath.clamp", side_effect=Exception("boom")):
             result = tf.minutes_to_day_end(valid_time)
-            assert result == 0.0
+            assert result == pytest.approx(0.0)
 
     def test_day_of_week_encoded_exception(self):
         """Exception in day_of_week_encoded → returns 0.0 (lines 358-359)."""
@@ -175,7 +175,7 @@ class TestTimeFeatureExceptionPaths:
         # We need _validate_datetime to pass, so patch it
         with patch.object(tf, "_validate_datetime", return_value=True):
             result = tf.day_of_week_encoded(mock_time)
-            assert result == 0.0
+            assert result == pytest.approx(0.0)
 
     def test_is_friday_close_approaching_exception(self):
         """Exception in is_friday_close_approaching → returns False (lines 379-380)."""

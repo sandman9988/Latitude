@@ -35,6 +35,7 @@ import quickfix44 as fix44
 
 from src.monitoring.trade_audit_logger import get_trade_audit_logger
 from src.utils.safe_utils import utc_now, utc_ts_ms
+from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)
 
@@ -97,36 +98,32 @@ class OrdType(Enum):
     STOP_LIMIT = "4"
 
 
-@dataclass
 class Order:
-    """Represents a FIX order with full lifecycle tracking"""
+    """Represents a FIX order with full lifecycle tracking, using SafeMath for precision"""
 
-    clord_id: str  # Tag 11: Client Order ID
-    symbol: str  # Tag 55: Symbol ID
-    side: Side  # Tag 54: Buy/Sell
-    ord_type: OrdType  # Tag 40: Market/Limit
-    quantity: float  # Tag 38: Order quantity
-    price: float | None = None  # Tag 44: Limit price (if applicable)
+    def __init__(self, clord_id, symbol, side, ord_type, quantity, price=None, instrument_digits=2):
+        from src.utils.safe_math import SafeMath
 
-    # Broker-assigned fields (from ExecutionReport)
-    order_id: str | None = None  # Tag 37: Broker order ID
-    position_ticket: str | None = None  # Tag 721: Broker position ticket (hedging mode)
-    status: OrderStatus = OrderStatus.PENDING_NEW  # Tag 39: Order status
-    filled_qty: float = 0.0  # Tag 14: Cumulative filled quantity
-    avg_price: float = 0.0  # Tag 6: Average fill price
-    last_qty: float = 0.0  # Tag 32: Last fill quantity
-    last_px: float = 0.0  # Tag 31: Last fill price
+        self.clord_id = clord_id
+        self.symbol = symbol
+        self.side = side
+        self.ord_type = ord_type
+        self.instrument_digits = instrument_digits
+        self.quantity = SafeMath.to_decimal(quantity, instrument_digits)
+        self.price = SafeMath.to_decimal(price, instrument_digits) if price is not None else None
+        self.order_id = None
+        self.position_ticket = None
+        self.status = OrderStatus.PENDING_NEW
+        self.filled_qty = SafeMath.to_decimal(0.0, instrument_digits)
+        self.avg_price = SafeMath.to_decimal(0.0, instrument_digits)
+        self.last_qty = SafeMath.to_decimal(0.0, instrument_digits)
+        self.last_px = SafeMath.to_decimal(0.0, instrument_digits)
+        self.created_at = utc_now()
+        self.updated_at = utc_now()
+        self.filled_at = None
+        self.reject_reason = None
 
-    # Timestamps
-    created_at: datetime = field(default_factory=utc_now)
-    updated_at: datetime = field(default_factory=utc_now)
-    filled_at: datetime | None = None
-
-    # Error tracking
-    reject_reason: str | None = None  # Tag 103/58: Reject reason
-
-    def is_terminal(self) -> bool:
-        """Check if order reached terminal state"""
+    def is_terminal(self):
         return self.status in (
             OrderStatus.FILLED,
             OrderStatus.CANCELED,
@@ -134,129 +131,183 @@ class Order:
             OrderStatus.EXPIRED,
         )
 
-    def is_active(self) -> bool:
-        """Check if order is actively working"""
+    def is_active(self):
         return self.status in (
             OrderStatus.NEW,
             OrderStatus.PARTIALLY_FILLED,
             OrderStatus.PENDING_NEW,
         )
 
-    def remaining_qty(self) -> float:
-        """Calculate unfilled quantity"""
-        return max(0.0, self.quantity - self.filled_qty)
+    def remaining_qty(self):
+        from src.utils.safe_math import SafeMath
+
+        return SafeMath.quantize(
+            max(SafeMath.to_decimal(0.0, self.instrument_digits), self.quantity - self.filled_qty),
+            self.instrument_digits,
+        )
+
+    def to_dict(self):
+        from src.utils.safe_math import SafeMath
+
+        return {
+            "clord_id": self.clord_id,
+            "symbol": self.symbol,
+            "side": self.side.value,
+            "ord_type": self.ord_type.value,
+            "quantity": str(SafeMath.quantize(self.quantity, self.instrument_digits)),
+            "price": str(SafeMath.quantize(self.price, self.instrument_digits)) if self.price is not None else None,
+            "order_id": self.order_id,
+            "position_ticket": self.position_ticket,
+            "status": self.status.value,
+            "filled_qty": str(SafeMath.quantize(self.filled_qty, self.instrument_digits)),
+            "avg_price": str(SafeMath.quantize(self.avg_price, self.instrument_digits)),
+            "last_qty": str(SafeMath.quantize(self.last_qty, self.instrument_digits)),
+            "last_px": str(SafeMath.quantize(self.last_px, self.instrument_digits)),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "filled_at": self.filled_at.isoformat() if self.filled_at else None,
+            "reject_reason": self.reject_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data, instrument_digits=2):
+        from src.utils.safe_math import SafeMath
+
+        order = cls(
+            clord_id=data.get("clord_id", ""),
+            symbol=data.get("symbol", ""),
+            side=Side(data.get("side")),
+            ord_type=OrdType(data.get("ord_type")),
+            quantity=SafeMath.to_decimal(data.get("quantity", 0.0), instrument_digits),
+            price=(
+                SafeMath.to_decimal(data.get("price", 0.0), instrument_digits)
+                if data.get("price") is not None
+                else None
+            ),
+            instrument_digits=instrument_digits,
+        )
+        order.order_id = data.get("order_id")
+        order.position_ticket = data.get("position_ticket")
+        order.status = OrderStatus(data.get("status", OrderStatus.PENDING_NEW.value))
+        order.filled_qty = SafeMath.to_decimal(str(data.get("filled_qty", 0.0)), instrument_digits)
+        order.avg_price = SafeMath.to_decimal(str(data.get("avg_price", 0.0)), instrument_digits)
+        order.last_qty = SafeMath.to_decimal(str(data.get("last_qty", 0.0)), instrument_digits)
+        order.last_px = SafeMath.to_decimal(str(data.get("last_px", 0.0)), instrument_digits)
+        from datetime import datetime
+
+        order.created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else utc_now()
+        order.updated_at = datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else utc_now()
+        order.filled_at = datetime.fromisoformat(data["filled_at"]) if data.get("filled_at") else None
+        order.reject_reason = data.get("reject_reason")
+        return order
 
 
-@dataclass
 class Position:
-    """Represents current position for a symbol"""
+    """Represents current position for a symbol, using SafeMath for precision"""
 
-    symbol: str
-    long_qty: float = 0.0  # Tag 704: Long position quantity
-    short_qty: float = 0.0  # Tag 705: Short position quantity
-    net_qty: float = 0.0  # Calculated: long - short
+    def __init__(
+        self,
+        symbol,
+        long_qty=0.0,
+        short_qty=0.0,
+        net_qty=0.0,
+        pos_maint_rpt_id=None,
+        updated_at=None,
+        instrument_digits=2,
+    ):
+        from src.utils.safe_math import SafeMath
 
-    # Position tracking (for hedged accounts)
-    pos_maint_rpt_id: str | None = None  # Tag 721: Position maintenance report ID
+        self.symbol = symbol
+        self.instrument_digits = instrument_digits
+        self.long_qty = SafeMath.to_decimal(long_qty, instrument_digits)
+        self.short_qty = SafeMath.to_decimal(short_qty, instrument_digits)
+        self.net_qty = SafeMath.to_decimal(net_qty, instrument_digits)
+        self.pos_maint_rpt_id = pos_maint_rpt_id
+        self.updated_at = updated_at if updated_at else utc_now()
 
-    # Timestamps
-    updated_at: datetime = field(default_factory=utc_now)
+    def update_from_report(self, long_qty, short_qty, pos_id=None):
+        from src.utils.safe_math import SafeMath
 
-    def update_from_report(self, long_qty: float, short_qty: float, pos_id: str | None = None):
-        """Update position from PositionReport (35=AP)"""
-        self.long_qty = long_qty
-        self.short_qty = short_qty
-        self.net_qty = long_qty - short_qty
+        self.long_qty = SafeMath.to_decimal(long_qty, self.instrument_digits)
+        self.short_qty = SafeMath.to_decimal(short_qty, self.instrument_digits)
+        self.net_qty = SafeMath.quantize(self.long_qty - self.short_qty, self.instrument_digits)
         self.pos_maint_rpt_id = pos_id
         self.updated_at = utc_now()
 
-    def update_from_fill(self, side: Side, filled_qty: float, avg_price: float):
-        """
-        Update position from order fill (when PositionReport unavailable).
+    def update_from_fill(self, side, filled_qty, avg_price):
+        from src.utils.safe_math import SafeMath
 
-        This is needed for brokers like cTrader that don't respond to
-        RequestForPositions (35=AN) messages.
-
-        Args:
-            side: BUY or SELL
-            filled_qty: Quantity filled
-            avg_price: Average fill price
-        """
+        filled_qty = SafeMath.to_decimal(filled_qty, self.instrument_digits)
         if side == Side.BUY:
             self.long_qty += filled_qty
         else:
             self.short_qty += filled_qty
-
-        # Net position (positive = long, negative = short)
-        self.net_qty = self.long_qty - self.short_qty
+        self.net_qty = SafeMath.quantize(self.long_qty - self.short_qty, self.instrument_digits)
         self.updated_at = utc_now()
-
         LOG.info(
-            "[POSITION] Updated from fill: %s %.6f → net=%.6f (long=%.6f, short=%.6f)",
+            "[POSITION] Updated from fill: %s %s → net=%s (long=%s, short=%s)",
             side.name,
-            filled_qty,
-            self.net_qty,
-            self.long_qty,
-            self.short_qty,
+            str(filled_qty),
+            str(self.net_qty),
+            str(self.long_qty),
+            str(self.short_qty),
         )
 
-    def seed(self, net_qty: float, entry_price: float = 0.0):
-        """
-        Seed position with externally-known quantity.
+    def seed(self, net_qty, entry_price=0.0):
+        from src.utils.safe_math import SafeMath
 
-        Use this when starting up with positions already open at broker.
-
-        Args:
-            net_qty: Net position (positive=LONG, negative=SHORT)
-            entry_price: Optional entry price for tracking
-        """
+        net_qty = SafeMath.to_decimal(net_qty, self.instrument_digits)
         if net_qty > 0:
             self.long_qty = net_qty
-            self.short_qty = 0.0
+            self.short_qty = SafeMath.to_decimal(0.0, self.instrument_digits)
         elif net_qty < 0:
-            self.long_qty = 0.0
+            self.long_qty = SafeMath.to_decimal(0.0, self.instrument_digits)
             self.short_qty = abs(net_qty)
         else:
-            self.long_qty = 0.0
-            self.short_qty = 0.0
-
+            self.long_qty = SafeMath.to_decimal(0.0, self.instrument_digits)
+            self.short_qty = SafeMath.to_decimal(0.0, self.instrument_digits)
         self.net_qty = net_qty
         self.updated_at = utc_now()
-
         LOG.info(
-            "[POSITION] 🌱 Seeded position: net=%.6f (long=%.6f, short=%.6f)",
-            self.net_qty,
-            self.long_qty,
-            self.short_qty,
+            "[POSITION] 🌱 Seeded position: net=%s (long=%s, short=%s)",
+            str(self.net_qty),
+            str(self.long_qty),
+            str(self.short_qty),
         )
 
-    def to_dict(self) -> dict:
-        """Serialize position for persistence."""
+    def to_dict(self):
+        from src.utils.safe_math import SafeMath
+
         return {
             "symbol": self.symbol,
-            "long_qty": round(self.long_qty, 8),
-            "short_qty": round(self.short_qty, 8),
-            "net_qty": round(self.net_qty, 8),
+            "long_qty": str(SafeMath.quantize(self.long_qty, self.instrument_digits)),
+            "short_qty": str(SafeMath.quantize(self.short_qty, self.instrument_digits)),
+            "net_qty": str(SafeMath.quantize(self.net_qty, self.instrument_digits)),
             "pos_maint_rpt_id": self.pos_maint_rpt_id,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Position":
-        """Deserialize position from persistence."""
-        pos = cls(symbol=data.get("symbol", ""))
-        pos.long_qty = float(data.get("long_qty", 0.0))
-        pos.short_qty = float(data.get("short_qty", 0.0))
-        pos.net_qty = float(data.get("net_qty", 0.0))
-        pos.pos_maint_rpt_id = data.get("pos_maint_rpt_id")
+    def from_dict(cls, data, instrument_digits=2):
+        from src.utils.safe_math import SafeMath
+
+        updated_at = None
         if data.get("updated_at"):
             from datetime import datetime
 
             try:
-                pos.updated_at = datetime.fromisoformat(data["updated_at"])
+                updated_at = datetime.fromisoformat(data["updated_at"])
             except (ValueError, TypeError):
-                pos.updated_at = utc_now()
-        return pos
+                updated_at = utc_now()
+        return cls(
+            symbol=data.get("symbol", ""),
+            long_qty=SafeMath.to_decimal(data.get("long_qty", 0.0), instrument_digits),
+            short_qty=SafeMath.to_decimal(data.get("short_qty", 0.0), instrument_digits),
+            net_qty=SafeMath.to_decimal(data.get("net_qty", 0.0), instrument_digits),
+            pos_maint_rpt_id=data.get("pos_maint_rpt_id"),
+            updated_at=updated_at,
+            instrument_digits=instrument_digits,
+        )
 
 
 class TradeManager:
@@ -850,22 +901,22 @@ class TradeManager:
             cum_qty_field = fix.CumQty()
             if msg.isSetField(cum_qty_field):
                 msg.getField(cum_qty_field)
-                order.filled_qty = float(cum_qty_field.getValue())
+                order.filled_qty = SafeMath.to_decimal(cum_qty_field.getValue(), self.position.instrument_digits)
 
             avg_px_field = fix.AvgPx()
             if msg.isSetField(avg_px_field):
                 msg.getField(avg_px_field)
-                order.avg_price = float(avg_px_field.getValue())
+                order.avg_price = SafeMath.to_decimal(avg_px_field.getValue(), self.position.instrument_digits)
 
             last_qty_field = fix.LastQty()
             if msg.isSetField(last_qty_field):
                 msg.getField(last_qty_field)
-                order.last_qty = float(last_qty_field.getValue())
+                order.last_qty = SafeMath.to_decimal(last_qty_field.getValue(), self.position.instrument_digits)
 
             last_px_field = fix.LastPx()
             if msg.isSetField(last_px_field):
                 msg.getField(last_px_field)
-                order.last_px = float(last_px_field.getValue())
+                order.last_px = SafeMath.to_decimal(last_px_field.getValue(), self.position.instrument_digits)
 
             # Store execution report for debugging
             self.exec_reports.append(

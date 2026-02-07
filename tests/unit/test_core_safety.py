@@ -1,3 +1,5 @@
+import pytest
+
 """
 Unit Tests for Core Safety Components
 
@@ -20,9 +22,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from safe_math import SafeMath
+from src.utils.safe_math import SafeMath
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -38,24 +38,24 @@ def test_safe_math_division():
     LOG.info("\n=== TEST: SafeMath Division ===")
 
     # Normal division
-    result = SafeMath.safe_divide(10.0, 2.0, default=0.0)
+    result = SafeMath.safe_div(10.0, 2.0, default=0.0)
     assert abs(result - 5.0) < 0.001, "Normal division failed"
 
     # Division by zero
-    result = SafeMath.safe_divide(10.0, 0.0, default=99.0)
-    assert result == 99.0, "Division by zero should return default"
+    result = SafeMath.safe_div(10.0, 0.0, default=99.0)
+    assert result == pytest.approx(99.0), "Division by zero should return default"
 
     # Division by NaN
-    result = SafeMath.safe_divide(10.0, np.nan, default=99.0)
-    assert result == 99.0, "Division by NaN should return default"
+    result = SafeMath.safe_div(10.0, np.nan, default=99.0)
+    assert result == pytest.approx(99.0), "Division by NaN should return default"
 
     # NaN dividend
-    result = SafeMath.safe_divide(np.nan, 2.0, default=99.0)
-    assert result == 99.0, "NaN dividend should return default"
+    result = SafeMath.safe_div(np.nan, 2.0, default=99.0)
+    assert result == pytest.approx(99.0), "NaN dividend should return default"
 
     # Division by Inf
-    result = SafeMath.safe_divide(10.0, np.inf, default=99.0)
-    assert result == 0.0, "Division by inf should give 0"
+    result = SafeMath.safe_div(10.0, np.inf, default=99.0)
+    assert result == pytest.approx(0.0), "Division by inf should give 0"
 
     LOG.info("✓ SafeMath division tests passed")
 
@@ -70,15 +70,15 @@ def test_safe_math_log():
 
     # Log of zero
     result = SafeMath.safe_log(0.0, default=-99.0)
-    assert result == -99.0, "Log(0) should return default"
+    assert result == pytest.approx(-99.0), "Log(0) should return default"
 
     # Log of negative
     result = SafeMath.safe_log(-5.0, default=-99.0)
-    assert result == -99.0, "Log(negative) should return default"
+    assert result == pytest.approx(-99.0), "Log(negative) should return default"
 
     # Log of NaN
     result = SafeMath.safe_log(np.nan, default=-99.0)
-    assert result == -99.0, "Log(NaN) should return default"
+    assert result == pytest.approx(-99.0), "Log(NaN) should return default"
 
     LOG.info("✓ SafeMath logarithm tests passed")
 
@@ -93,15 +93,15 @@ def test_safe_math_sqrt():
 
     # Sqrt of zero
     result = SafeMath.safe_sqrt(0.0, default=-1.0)
-    assert result == 0.0, "Sqrt(0) should be 0"
+    assert result == pytest.approx(0.0), "Sqrt(0) should be 0"
 
     # Sqrt of negative
     result = SafeMath.safe_sqrt(-9.0, default=-99.0)
-    assert result == -99.0, "Sqrt(negative) should return default"
+    assert result == pytest.approx(-99.0), "Sqrt(negative) should return default"
 
     # Sqrt of NaN
     result = SafeMath.safe_sqrt(np.nan, default=-99.0)
-    assert result == -99.0, "Sqrt(NaN) should return default"
+    assert result == pytest.approx(-99.0), "Sqrt(NaN) should return default"
 
     LOG.info("✓ SafeMath sqrt tests passed")
 
@@ -112,23 +112,23 @@ def test_safe_math_clip():
 
     # Normal clip
     result = SafeMath.safe_clip(5.0, min_val=0.0, max_val=10.0, default=0.0)
-    assert result == 5.0, "Value within range should be unchanged"
+    assert result == pytest.approx(5.0), "Value within range should be unchanged"
 
     # Clip below min
     result = SafeMath.safe_clip(-5.0, min_val=0.0, max_val=10.0, default=0.0)
-    assert result == 0.0, "Value below min should be clipped"
+    assert result == pytest.approx(0.0), "Value below min should be clipped"
 
     # Clip above max
     result = SafeMath.safe_clip(15.0, min_val=0.0, max_val=10.0, default=0.0)
-    assert result == 10.0, "Value above max should be clipped"
+    assert result == pytest.approx(10.0), "Value above max should be clipped"
 
     # Clip NaN
     result = SafeMath.safe_clip(np.nan, min_val=0.0, max_val=10.0, default=5.0)
-    assert result == 5.0, "NaN should return default"
+    assert result == pytest.approx(5.0), "NaN should return default"
 
     # Clip Inf
     result = SafeMath.safe_clip(np.inf, min_val=0.0, max_val=10.0, default=5.0)
-    assert result == 10.0, "Inf should be clipped to max"
+    assert result == pytest.approx(10.0), "Inf should be clipped to max"
 
     LOG.info("✓ SafeMath clip tests passed")
 
@@ -143,12 +143,12 @@ def test_safe_math_mean():
 
     # Empty list
     result = SafeMath.safe_mean([], default=-99.0)
-    assert result == -99.0, "Empty list should return default"
+    assert result == pytest.approx(-99.0), "Empty list should return default"
 
     # List with NaN
     result = SafeMath.safe_mean([1, np.nan, 3], default=-99.0)
     # Should skip NaN and average 1 and 3
-    assert abs(result - 2.0) < 0.001 or result == -99.0, "Should handle NaN"
+    assert abs(result - 2.0) < 0.001 or result == pytest.approx(-99.0), "Should handle NaN"
 
     LOG.info("✓ SafeMath mean tests passed")
 

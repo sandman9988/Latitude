@@ -16,8 +16,8 @@ from collections import deque
 class MockHarvesterAgent:
     def decide(self, market_state, mfe, mae, bars_held, entry_price, direction):
         """Mock harvester decision"""
-        # Simple rule: close if MFE > 30 pips or bars_held > 50
-        if mfe / entry_price > 0.003 or bars_held > 50:
+        # Simple rule: close if MFE > 0.05% of entry or bars_held > 8
+        if (entry_price > 0 and mfe / entry_price > 0.0005) or bars_held > 8:
             return 1, 0.8  # CLOSE with 80% confidence
         return 0, 0.6  # HOLD with 60% confidence
 
@@ -48,7 +48,7 @@ class MockDualPolicy:
         # Call harvester
         import numpy as np
 
-        market_state = np.random.randn(64, 7)  # Mock state
+        market_state = np.random.default_rng(42).standard_normal((64, 7))  # Mock state
 
         action, confidence = self.harvester.decide(
             market_state=market_state,
@@ -182,7 +182,7 @@ def test_entry_to_exit_flow():
         print(f"  Entry: {entry_found}, In-position: {in_position_found}, Exit: {exit_found}")
     print("=" * 70)
 
-    return entry_found and in_position_found and exit_found
+    assert entry_found and in_position_found and exit_found, "Incomplete entry→in_position→exit flow"
 
 
 def test_decision_log_harvester_fields():
@@ -215,8 +215,6 @@ def test_decision_log_harvester_fields():
     for field in required_fields:
         print(f"✓ Field '{field}' is tracked by harvester")
     print("=" * 70)
-
-    return True
 
 
 if __name__ == "__main__":

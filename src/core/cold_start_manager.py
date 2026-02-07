@@ -441,6 +441,7 @@ if __name__ == "__main__":
     import numpy as np
 
     logging.basicConfig(level=logging.INFO)
+    rng = np.random.default_rng(42)
 
     print("=== ColdStartManager Self-Test ===\n")
 
@@ -468,7 +469,7 @@ if __name__ == "__main__":
     for i in range(30):
         mgr2.update(new_bar=True)
         if i % 2 == 0:  # Trade every 2 bars
-            pnl = np.random.randn() + 0.5  # Biased positive
+            pnl = rng.standard_normal() + 0.5  # Biased positive
             mgr2.update(trade_completed={"pnl": pnl, "is_paper": True})
 
     next_phase = mgr2.check_graduation()
@@ -490,7 +491,7 @@ if __name__ == "__main__":
     for i in range(30):
         mgr3.update(new_bar=True)
         if i % 2 == 0:
-            pnl = np.random.randn() - 0.5  # Biased negative
+            pnl = rng.standard_normal() - 0.5  # Biased negative
             mgr3.update(trade_completed={"pnl": pnl, "is_paper": True})
 
     next_phase = mgr3.check_graduation()
@@ -531,7 +532,7 @@ if __name__ == "__main__":
     for i in range(100):
         mgr5.update(new_bar=True)
         if i % 2 == 0:
-            pnl = np.random.randn() - 0.3  # Losing bias
+            pnl = rng.standard_normal() - 0.3  # Losing bias
             mgr5.update(trade_completed={"pnl": pnl, "is_paper": False})
 
     demote_to = mgr5.check_graduation()  # In production, "graduation" is actually demotion check

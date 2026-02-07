@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import pytest
+
 """
 Bar Building & Bar Closure Verification Tests
 
@@ -62,37 +64,37 @@ def test_basic_bar_aggregation():
     # First tick opens the bar
     result = bb.update(base, 100.0)
     assert result is None, "First tick should not close a bar"
-    assert bb.o == 100.0, f"Open should be 100.0, got {bb.o}"
-    assert bb.h == 100.0, f"High should be 100.0, got {bb.h}"
-    assert bb.l == 100.0, f"Low should be 100.0, got {bb.l}"
-    assert bb.c == 100.0, f"Close should be 100.0, got {bb.c}"
+    assert bb.o == pytest.approx(100.0), f"Open should be 100.0, got {bb.o}"
+    assert bb.h == pytest.approx(100.0), f"High should be 100.0, got {bb.h}"
+    assert bb.l == pytest.approx(100.0), f"Low should be 100.0, got {bb.l}"
+    assert bb.c == pytest.approx(100.0), f"Close should be 100.0, got {bb.c}"
     print("  ✓ First tick: O=100.0 H=100.0 L=100.0 C=100.0")
 
     # Update with higher price
     result = bb.update(base + dt.timedelta(seconds=30), 105.0)
     assert result is None, "Tick within bar should not close"
-    assert bb.o == 100.0, "Open should remain 100.0"
-    assert bb.h == 105.0, f"High should update to 105.0, got {bb.h}"
-    assert bb.l == 100.0, "Low should remain 100.0"
-    assert bb.c == 105.0, f"Close should update to 105.0, got {bb.c}"
+    assert bb.o == pytest.approx(100.0), "Open should remain 100.0"
+    assert bb.h == pytest.approx(105.0), f"High should update to 105.0, got {bb.h}"
+    assert bb.l == pytest.approx(100.0), "Low should remain 100.0"
+    assert bb.c == pytest.approx(105.0), f"Close should update to 105.0, got {bb.c}"
     print("  ✓ High update: H=105.0 C=105.0")
 
     # Update with lower price
     result = bb.update(base + dt.timedelta(seconds=60), 95.0)
     assert result is None, "Tick within bar should not close"
-    assert bb.o == 100.0, "Open should remain 100.0"
-    assert bb.h == 105.0, "High should remain 105.0"
-    assert bb.l == 95.0, f"Low should update to 95.0, got {bb.l}"
-    assert bb.c == 95.0, f"Close should update to 95.0, got {bb.c}"
+    assert bb.o == pytest.approx(100.0), "Open should remain 100.0"
+    assert bb.h == pytest.approx(105.0), "High should remain 105.0"
+    assert bb.l == pytest.approx(95.0), f"Low should update to 95.0, got {bb.l}"
+    assert bb.c == pytest.approx(95.0), f"Close should update to 95.0, got {bb.c}"
     print("  ✓ Low update: L=95.0 C=95.0")
 
     # Final close value
     result = bb.update(base + dt.timedelta(seconds=120), 102.0)
     assert result is None, "Tick within bar should not close"
-    assert bb.o == 100.0, "Open should remain 100.0"
-    assert bb.h == 105.0, "High should remain 105.0"
-    assert bb.l == 95.0, "Low should remain 95.0"
-    assert bb.c == 102.0, f"Close should update to 102.0, got {bb.c}"
+    assert bb.o == pytest.approx(100.0), "Open should remain 100.0"
+    assert bb.h == pytest.approx(105.0), "High should remain 105.0"
+    assert bb.l == pytest.approx(95.0), "Low should remain 95.0"
+    assert bb.c == pytest.approx(102.0), f"Close should update to 102.0, got {bb.c}"
     print("  ✓ Final bar state: O=100.0 H=105.0 L=95.0 C=102.0")
 
     print("✅ PASSED: Bar aggregation works correctly")
@@ -129,16 +131,16 @@ def test_bar_closure_timing():
     assert closed_time == dt.datetime(
         2026, 1, 11, 10, 0, 0, tzinfo=UTC
     ), f"Closed bar timestamp should be 10:00, got {closed_time}"
-    assert o == 100.0, f"Closed bar O should be 100.0, got {o}"
-    assert h == 105.0, f"Closed bar H should be 105.0, got {h}"
-    assert l == 100.0, f"Closed bar L should be 100.0, got {l}"
-    assert c == 102.0, f"Closed bar C should be 102.0, got {c}"
+    assert o == pytest.approx(100.0), f"Closed bar O should be 100.0, got {o}"
+    assert h == pytest.approx(105.0), f"Closed bar H should be 105.0, got {h}"
+    assert l == pytest.approx(100.0), f"Closed bar L should be 100.0, got {l}"
+    assert c == pytest.approx(102.0), f"Closed bar C should be 102.0, got {c}"
     print(f"  ✓ Bar closed at 10:15:00: O={o} H={h} L={l} C={c}")
 
     # Verify new bar started
     assert bb.bucket == dt.datetime(2026, 1, 11, 10, 15, 0, tzinfo=UTC), "New bar should start at 10:15:00"
-    assert bb.o == 103.0, "New bar O should be 103.0"
-    assert bb.c == 103.0, "New bar C should be 103.0"
+    assert bb.o == pytest.approx(103.0), "New bar O should be 103.0"
+    assert bb.c == pytest.approx(103.0), "New bar C should be 103.0"
     print(f"  ✓ New bar started at 10:15:00: O={bb.o}")
 
     print("✅ PASSED: Bar closure timing is correct")
@@ -255,22 +257,22 @@ def test_data_integrity_across_bars():
     # Verify Bar 1 closed correctly
     assert result is not None, "Bar 1 should be closed"
     closed_time, o, h, l, c = result
-    assert o == 100.0, f"Bar 1 O should be 100.0, got {o}"
-    assert h == 110.0, f"Bar 1 H should be 110.0, got {h}"
-    assert l == 95.0, f"Bar 1 L should be 95.0, got {l}"
-    assert c == 105.0, f"Bar 1 C should be 105.0, got {c}"
+    assert o == pytest.approx(100.0), f"Bar 1 O should be 100.0, got {o}"
+    assert h == pytest.approx(110.0), f"Bar 1 H should be 110.0, got {h}"
+    assert l == pytest.approx(95.0), f"Bar 1 L should be 95.0, got {l}"
+    assert c == pytest.approx(105.0), f"Bar 1 C should be 105.0, got {c}"
     print(f"  ✓ Bar 1 closed correctly: O={o} H={h} L={l} C={c}")
 
     # Verify Bar 2 started fresh (no contamination from Bar 1)
-    assert bb.o == 200.0, f"Bar 2 O should be 200.0, got {bb.o}"
-    assert bb.h == 200.0, f"Bar 2 H should be 200.0, got {bb.h}"
-    assert bb.l == 200.0, f"Bar 2 L should be 200.0, got {bb.l}"
-    assert bb.c == 200.0, f"Bar 2 C should be 200.0, got {bb.c}"
+    assert bb.o == pytest.approx(200.0), f"Bar 2 O should be 200.0, got {bb.o}"
+    assert bb.h == pytest.approx(200.0), f"Bar 2 H should be 200.0, got {bb.h}"
+    assert bb.l == pytest.approx(200.0), f"Bar 2 L should be 200.0, got {bb.l}"
+    assert bb.c == pytest.approx(200.0), f"Bar 2 C should be 200.0, got {bb.c}"
     print(f"  ✓ Bar 2 started fresh: O={bb.o} H={bb.h} L={bb.l} C={bb.c}")
 
     # Update Bar 2 and verify it doesn't affect closed Bar 1
     bb.update(t2 + dt.timedelta(seconds=30), 150.0)
-    assert bb.l == 150.0, "Bar 2 L should update to 150.0"
+    assert bb.l == pytest.approx(150.0), "Bar 2 L should update to 150.0"
     # Bar 1 values should remain unchanged (they're in 'result')
     print("  ✓ Bar 2 updates don't affect closed Bar 1")
 
@@ -292,7 +294,7 @@ def test_edge_cases():
         if i < 9:
             assert result is None
 
-    assert bb1.o == 100.0 and bb1.h == 100.0 and bb1.l == 100.0 and bb1.c == 100.0
+    assert bb1.o == pytest.approx(100.0) and bb1.h == pytest.approx(100.0) and bb1.l == pytest.approx(100.0) and bb1.c == pytest.approx(100.0)
     print("  ✓ Same price all ticks: O=H=L=C=100.0")
 
     # Edge case 2: Extreme price swing
@@ -301,8 +303,8 @@ def test_edge_cases():
     bb2.update(base + dt.timedelta(seconds=30), 1000.0)
     bb2.update(base + dt.timedelta(seconds=60), 1.0)
 
-    assert bb2.h == 1000.0, "Should handle extreme high"
-    assert bb2.l == 1.0, "Should handle extreme low"
+    assert bb2.h == pytest.approx(1000.0), "Should handle extreme high"
+    assert bb2.l == pytest.approx(1.0), "Should handle extreme low"
     print("  ✓ Extreme price swing: L=1.0 to H=1000.0")
 
     # Edge case 3: Rapid-fire updates at boundary
@@ -319,7 +321,7 @@ def test_edge_cases():
     assert result1 is not None, "First tick at boundary should close bar"
     assert result2 is None, "Subsequent ticks at same time should not close"
     assert result3 is None, "Subsequent ticks at same time should not close"
-    assert bb3.c == 103.0, "Close should be last tick"
+    assert bb3.c == pytest.approx(103.0), "Close should be last tick"
     print("  ✓ Rapid-fire updates at boundary handled correctly")
 
     print("✅ PASSED: All edge cases handled correctly")

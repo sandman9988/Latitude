@@ -23,13 +23,16 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
+
+rng = np.random.default_rng(42)
+
 import pytest
 
-from cold_start_manager import ColdStartManager, WarmupPhase
-from feedback_loop_breaker import FeedbackLoopBreaker
-from journaled_persistence import Journal
-from production_monitor import ProductionMonitor
-from reward_integrity_monitor import RewardIntegrityMonitor
+from src.core.cold_start_manager import ColdStartManager, WarmupPhase
+from src.core.feedback_loop_breaker import FeedbackLoopBreaker
+from src.persistence.journaled_persistence import Journal
+from src.monitoring.production_monitor import ProductionMonitor
+from src.core.reward_integrity_monitor import RewardIntegrityMonitor
 
 
 class TestFullWarmupLifecycle:
@@ -66,11 +69,11 @@ class TestFullWarmupLifecycle:
         assert mgr.is_paper_only()
 
         # Simulate profitable trades (deterministic)
-        np.random.seed(42)  # For reproducibility
+        rng = np.random.default_rng(42)  # For reproducibility
         for i in range(30):
             mgr.update(new_bar=True)
             if i % 2 == 0:
-                pnl = abs(np.random.randn()) + 0.6  # Always profitable
+                pnl = abs(rng.standard_normal()) + 0.6  # Always profitable
                 mgr.update(trade_completed={"pnl": pnl, "is_paper": True})
 
         next_phase = mgr.check_graduation()
@@ -79,13 +82,13 @@ class TestFullWarmupLifecycle:
 
         # Phase 3: Micro Positions
         assert mgr.current_phase == WarmupPhase.MICRO_POSITIONS
-        assert mgr.get_position_size_multiplier() == 0.001
+        assert mgr.get_position_size_multiplier() == pytest.approx(0.001)
 
         # Simulate more profitable trades (deterministic)
         for i in range(40):
             mgr.update(new_bar=True)
             if i % 2 == 0:
-                pnl = abs(np.random.randn()) + 0.5  # Always profitable
+                pnl = abs(rng.standard_normal()) + 0.5  # Always profitable
                 mgr.update(trade_completed={"pnl": pnl, "is_paper": False})
 
         next_phase = mgr.check_graduation()
@@ -94,7 +97,7 @@ class TestFullWarmupLifecycle:
 
         # Phase 4: Production
         assert mgr.current_phase == WarmupPhase.PRODUCTION
-        assert mgr.get_position_size_multiplier() == 1.0
+        assert mgr.get_position_size_multiplier() == pytest.approx(1.0)
 
         # Cleanup
         mgr.state_file.unlink(missing_ok=True)
@@ -249,8 +252,8 @@ class TestRewardGamingDetection:
 
         # Add correlated trades
         for _ in range(50):
-            pnl = np.random.randn() * 10
-            reward = pnl * 0.1 + np.random.randn() * 2  # Correlated
+            pnl = rng.standard_normal() * 10
+            reward = pnl * 0.1 + rng.standard_normal() * 2  # Correlated
 
             monitor.add_trade(
                 reward=reward,
@@ -270,15 +273,15 @@ class TestRewardGamingDetection:
         # Add normal trades
         for _ in range(50):
             monitor.add_trade(
-                reward=np.random.randn() * 0.5,
-                pnl=np.random.randn() * 10,
+                reward=rng.standard_normal() * 0.5,
+                pnl=rng.standard_normal() * 10,
                 reward_components={"main": 0.5},
             )
 
         # Add outlier
         monitor.add_trade(
             reward=10.0,  # Huge outlier
-            pnl=np.random.randn() * 10,
+            pnl=rng.standard_normal() * 10,
             reward_components={"main": 10.0},
         )
 
@@ -347,7 +350,7 @@ class TestMonitoringAndAlerting:
         with open(temp_file) as f:
             data = json.load(f)
 
-        assert data["metrics"]["realized_pnl_day"] == 100.0
+        assert data["metrics"]["realized_pnl_day"] == pytest.approx(100.0)
         assert data["metrics"]["trades_today"] == 5
 
         # Cleanup
@@ -405,7 +408,7 @@ class TestIntegratedScenario:
             # Simulate trade decision
             if cold_start.can_trade() and bar % 5 == 0:
                 # Execute trade
-                pnl = np.random.randn() * 5 + 2  # Slightly profitable bias
+                pnl = rng.standard_normal() * 5 + 2  # Slightly profitable bias
                 reward = pnl * 0.1
 
                 # Log to journal
@@ -414,8 +417,8 @@ class TestIntegratedScenario:
                     order_id="EURUSD",
                     exit_price=1.1000 + pnl / 1000,  # Approximate price
                     pnl=pnl,
-                    mfe=max(0, pnl) + abs(np.random.randn()),  # Max favorable excursion
-                    mae=min(0, pnl) - abs(np.random.randn()),  # Max adverse excursion
+                    mfe=max(0, pnl) + abs(rng.standard_normal()),  # Max favorable excursion
+                    mae=min(0, pnl) - abs(rng.standard_normal()),  # Max adverse excursion
                     winner_to_loser=pnl > 0,
                 )
 

@@ -26,13 +26,14 @@ import os
 
 import numpy as np
 
+from src.core.ddqn_network import DDQNNetwork
 from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 from src.persistence.learned_parameters import LearnedParametersManager
 
 LOG = logging.getLogger(__name__)
 
 BUFFER_CAPACITY: int = 50_000
-MIN_EXPERIENCES_DEFAULT: int = 1000
+MIN_EXPERIENCES_DEFAULT: int = 100  # Lowered for faster training
 BATCH_SIZE_DEFAULT: int = 64
 CONFIDENCE_FALLBACK: float = 0.7
 PCT_SCALE: float = 100.0
@@ -83,6 +84,7 @@ class HarvesterAgent:
         timeframe: str = "M15",
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
+        friction_calculator=None,
     ):
         """
         Initialize Harvester Agent.
@@ -91,6 +93,7 @@ class HarvesterAgent:
             window: Lookback window for state
             n_features: Number of input features (7 market + 3 position)
             enable_training: Enable online learning (Phase 3.5)
+            friction_calculator: FrictionCalculator for cost-aware exit decisions
         """
         self.window = window
         self.n_features = n_features
@@ -98,6 +101,7 @@ class HarvesterAgent:
         self.model = None
         self.torch = None
         self.symbol = symbol
+        self.friction_calculator = friction_calculator
         self.timeframe = timeframe
         self.broker = broker
         self.param_manager = param_manager
@@ -108,6 +112,20 @@ class HarvesterAgent:
         self.min_experiences = MIN_EXPERIENCES_DEFAULT  # Minimum before training starts
         self.batch_size = BATCH_SIZE_DEFAULT
         self.training_steps = 0
+        self.last_state = None  # Track state for experience creation
+
+        # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
+        self.ddqn = DDQNNetwork(
+            state_dim=window * n_features,  # Flattened state vector
+            n_actions=2,  # HOLD=0, CLOSE=1
+            learning_rate=0.0005,
+            gamma=0.99,
+            tau=0.005,
+            l2_weight=0.0001,
+            grad_clip_norm=1.0,
+        ) if enable_training else None
+        if enable_training:
+            LOG.info("[HARVESTER] DDQNNetwork initialized: state_dim=%d, actions=2", window * n_features)
 
         # Try to load model if path specified
         model_path = os.environ.get("DDQN_HARVESTER_MODEL", "").strip()
@@ -187,10 +205,29 @@ class HarvesterAgent:
             - confidence: [0, 1] probability from model
         """
         if not self.use_torch:
-            # Fallback: Simple profit target + stop loss
-            action = self._fallback_strategy(mfe, mae, ticks_held, entry_price)
-            confidence = CONFIDENCE_FALLBACK  # Medium-high confidence for rule-based
-            return action, confidence
+            # Build full state for DDQN (market + position features)
+            full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
+            self.last_state = full_state.copy()  # Track for experience creation
+
+            # Use DDQN network if available and trained, else fallback
+            if self.ddqn is not None and self.enable_training and self.training_steps > 0:
+                flat_state = full_state.reshape(1, -1).astype(np.float64)
+                q_values = self.ddqn.predict(flat_state)
+                action = int(np.argmax(q_values))
+
+                probs = self._softmax(q_values)
+                confidence = float(probs[action])
+
+                LOG.debug(
+                    "[HARVESTER] DDQN decision: Q=%s, action=%d (%s), conf=%.3f",
+                    q_values, action, "CLOSE" if action == 1 else "HOLD", confidence,
+                )
+                return action, confidence
+            else:
+                # Fallback: Simple profit target + stop loss
+                action = self._fallback_strategy(mfe, mae, ticks_held, entry_price)
+                confidence = CONFIDENCE_FALLBACK
+                return action, confidence
 
         # Augment state with position information
         # Normalize MFE/MAE/ticks_held to [0, 1] range
@@ -229,42 +266,83 @@ class HarvesterAgent:
 
             return action, confidence
 
+    def _build_full_state(self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float) -> np.ndarray:
+        """Build full state vector with market features + position stats.
+
+        Args:
+            market_state: Market features (window, n_market_features)
+            mfe: Maximum favorable excursion (absolute price)
+            mae: Maximum adverse excursion (absolute price)
+            ticks_held: Number of ticks in position
+            entry_price: Position entry price
+
+        Returns:
+            Full state array (window, n_features) including position stats
+        """
+        if entry_price <= 0:
+            entry_price = 1.0  # Prevent division by zero
+        mfe_norm = (mfe / entry_price) * PCT_SCALE
+        mae_norm = (mae / entry_price) * PCT_SCALE
+        ticks_held_norm = min(ticks_held / TICKS_HELD_NORM_DENOM, 1.0)
+        position_features = np.full(
+            (market_state.shape[0], 3), [mfe_norm, mae_norm, ticks_held_norm], dtype=np.float32
+        )
+        return np.hstack([market_state, position_features])
+
     def _fallback_strategy(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> int:
         """
         Fallback exit strategy when no model loaded.
 
         Rules (designed for serious MFE development):
-        1. Take profit at 2.5% MFE (250 pips) - LET WINNERS RUN for major MFE
+        1. Take profit at target AFTER subtracting friction costs
         2. Stop loss at -0.8% MAE (-80 pips) - wider cushion for volatility
-        3. Soft time stop: 200 ticks if MFE > 0.20% (20 pips minimum)
+        3. Soft time stop: 200 ticks if NET profit > 0 (after friction)
         4. Hard time stop: 400 ticks (allow full runway for trend capture)
 
-        With M5 0.6x scale: TP=1.5%, SL=0.48%, soft=333 ticks, hard=666 ticks
-        This gives trades room to develop substantial MFE before exit.
+        Critical: Profit targets are friction-adjusted to ensure NET profitability.
+        Raw target of 2.5% - 0.15% friction = 2.35% net target.
         """
         # Guard against division by zero (entry_price not set yet)
         if entry_price <= 0:
             LOG.warning("[HARVESTER] entry_price=0, cannot evaluate exit - holding")
             return 0  # HOLD
 
+        # Calculate friction cost percentage
+        friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE  # Convert to same scale as mfe_pct
+
         mfe_pct = (mfe / entry_price) * PCT_SCALE
         mae_pct = (mae / entry_price) * PCT_SCALE
+
+        # Net profit after friction costs
+        net_profit_pct = mfe_pct - friction_pct
 
         # Stop loss (priority)
         if mae_pct >= self.stop_loss_pct:
             LOG.debug("[HARVESTER] Stop loss hit: %.2f%%", mae_pct)
             return 1  # CLOSE
 
-        # Profit target (only if meaningful MFE)
-        if mfe_pct >= self.profit_target_pct:
-            LOG.debug("[HARVESTER] Profit target hit: %.2f%%", mfe_pct)
+        # Profit target (NET profit must exceed target after friction)
+        if net_profit_pct >= self.profit_target_pct:
+            LOG.debug(
+                "[HARVESTER] Profit target hit: MFE=%.2f%%, Friction=%.2f%%, Net=%.2f%% (target=%.2f%%)",
+                mfe_pct,
+                friction_pct,
+                net_profit_pct,
+                self.profit_target_pct,
+            )
             return 1  # CLOSE
 
-        # Soft time stop (only exit if we have SOME profit - min 5 pips)
+        # Soft time stop (only exit if NET profit is positive after friction)
         # TODO: Rename self.soft_time_stop_bars -> self.soft_time_stop_ticks in __init__
         if ticks_held > self.soft_time_stop_bars:
-            if mfe_pct > self.min_soft_profit_pct:  # At least threshold profit
-                LOG.debug("[HARVESTER] Soft time stop: %d ticks, MFE=%.2f%%", ticks_held, mfe_pct)
+            if net_profit_pct > 0:  # Any net profit after friction
+                LOG.debug(
+                    "[HARVESTER] Soft time stop: %d ticks, MFE=%.2f%%, Net=%.2f%% (after %.2f%% friction)",
+                    ticks_held,
+                    mfe_pct,
+                    net_profit_pct,
+                    friction_pct,
+                )
                 return 1  # CLOSE
 
         # Hard time stop (exit regardless to free up capital)
@@ -295,17 +373,25 @@ class HarvesterAgent:
         if entry_price <= 0:
             return False
 
+        friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE
         mfe_pct = (mfe / entry_price) * PCT_SCALE
         mae_pct = (mae / entry_price) * PCT_SCALE
+        net_profit_pct = mfe_pct - friction_pct
 
         # Stop loss check (immediate exit)
         if mae_pct >= self.stop_loss_pct:
             LOG.info("[TICK_HARVESTER] Stop loss triggered: %.2f%% >= %.2f%%", mae_pct, self.stop_loss_pct)
             return True
 
-        # Profit target check (immediate exit)
-        if mfe_pct >= self.profit_target_pct:
-            LOG.info("[TICK_HARVESTER] Profit target triggered: %.2f%% >= %.2f%%", mfe_pct, self.profit_target_pct)
+        # Profit target check (NET profit after friction)
+        if net_profit_pct >= self.profit_target_pct:
+            LOG.info(
+                "[TICK_HARVESTER] Profit target triggered: MFE=%.2f%%, Net=%.2f%% (friction=%.2f%%) >= %.2f%%",
+                mfe_pct,
+                net_profit_pct,
+                friction_pct,
+                self.profit_target_pct,
+            )
             return True
 
         return False
@@ -353,6 +439,56 @@ class HarvesterAgent:
         """
         tf_map = {"M1": 0.3, "M5": 0.6, "M15": 1.0, "M30": 1.5, "H1": 2.0, "H4": 3.5, "D1": 5.0}
         return tf_map.get(self.timeframe, 1.0)
+
+    def get_friction_cost_pct(self, entry_price: float, quantity: float = 0.10, side: str = "BUY") -> float:
+        """Calculate estimated friction costs as percentage of entry price.
+
+        Args:
+            entry_price: Position entry price
+            quantity: Position size in lots
+            side: "BUY" or "SELL"
+
+        Returns:
+            Friction cost as percentage (e.g., 0.05 = 5 pips for 0.05% of price)
+        """
+        if not self.friction_calculator or entry_price <= 0:
+            # Conservative estimate: spread ~0.10% + commission ~0.02% + slippage ~0.03% = 0.15%
+            # For XAUUSD @ $4600: 0.15% = 6.9 pips ($6.90)
+            return 0.0015  # Default 0.15% = 15 pips per 1% move
+
+        try:
+            # Calculate total friction in USD
+            # SAME CODE PATH for both paper trading and live trading
+            # CRITICAL: M5 intraday trades don't cross rollover → swap = 0
+            friction = self.friction_calculator.calculate_total_friction(
+                quantity=quantity,
+                side=side,
+                price=entry_price,
+                holding_days=0.1,  # Assume ~2-3 hours avg hold (M5 trades)
+                volatility_factor=1.0,
+                crosses_rollover=False,  # Intraday M5 trades don't cross rollover
+            )
+
+            # Convert USD friction to percentage of entry price
+            # For XAUUSD @ $4600: friction ~$3.4 (spread+comm+slip, NO swap) → 0.074% = 7.4 pips
+            contract_size = getattr(self.friction_calculator.costs, "contract_size", 100000)
+            position_value = quantity * entry_price * contract_size
+            if position_value > 0:
+                friction_pct = friction["total"] / position_value
+                LOG.debug(
+                    "[HARVESTER-FRICTION] Entry=%.2f, Quantity=%.2f, Friction=$%.2f (%.3f%% = %.2f pips) [swap=$%.2f intraday=0]",
+                    entry_price,
+                    quantity,
+                    friction["total"],
+                    friction_pct * 100,
+                    friction.get("total_pips", 0),
+                    friction.get("swap", 0),
+                )
+                return friction_pct
+        except Exception as exc:
+            LOG.warning("[HARVESTER] Friction calculation failed: %s", exc)
+
+        return 0.0015  # Fallback to conservative 0.15%
 
     def _ensure_param_manager(self) -> LearnedParametersManager:
         if self.param_manager is None:
@@ -474,6 +610,8 @@ class HarvesterAgent:
     def train_step(self) -> dict | None:
         """Perform one training step using prioritized experience replay.
 
+        Uses DDQNNetwork.train_batch() for actual backpropagation and weight updates.
+
         Returns:
             Dictionary with training metrics, or None if insufficient data
         """
@@ -490,13 +628,8 @@ class HarvesterAgent:
             return None
 
         # Extract batch components
-        batch["states"]  # (batch_size, window, n_features)
-        batch["actions"]  # (batch_size,)
         rewards = batch["rewards"]  # (batch_size,)
-        batch["next_states"]  # (batch_size, window, n_features)
-        batch["dones"]  # (batch_size,)
         indices = batch["indices"]  # (batch_size,)
-        batch["weights"]  # (batch_size,) for importance sampling
 
         # Defensive: Validate batch
         import math
@@ -505,45 +638,90 @@ class HarvesterAgent:
             LOG.warning("[HARVESTER] Non-finite rewards in batch, skipping training")
             return None
 
-        if self.use_torch:
-            # PyTorch training (full implementation)
+        TD_ERROR_CAP = 10.0
+
+        if self.ddqn is not None:
+            # Real DDQN training with backpropagation
+            try:
+                # Flatten states: (batch, window, features) -> (batch, window*features)
+                states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
+                next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
+                actions = batch["actions"].astype(np.intp)
+                dones = batch["dones"].astype(np.float64)
+                weights = batch["weights"].astype(np.float64)
+                rewards_f = rewards.astype(np.float64)
+
+                # Train batch: forward pass, TD targets, backward pass, weight update
+                train_result = self.ddqn.train_batch(
+                    states=states,
+                    actions=actions,
+                    rewards=rewards_f,
+                    next_states=next_states,
+                    dones=dones,
+                    weights=weights,
+                )
+
+                # Update buffer priorities with actual TD errors
+                td_errors = np.abs(train_result["td_errors"])
+                td_errors = np.clip(td_errors, 0, TD_ERROR_CAP)
+                self.buffer.update_priorities(indices, td_errors)
+
+                metrics = {
+                    "loss": train_result["loss"],
+                    "mean_q": train_result["mean_q"],
+                    "mean_td_error": train_result["mean_td_error"],
+                    "max_td_error": train_result["max_td_error"],
+                    "grad_norm": train_result["grad_norm"],
+                    "mean_reward": float(np.mean(rewards)),
+                }
+            except Exception as e:
+                LOG.error("[HARVESTER] DDQN train_batch failed: %s", e, exc_info=True)
+                td_errors = np.clip(np.abs(rewards), 0, TD_ERROR_CAP)
+                self.buffer.update_priorities(indices, td_errors)
+                metrics = {
+                    "loss": 0.0, "mean_q": 0.0,
+                    "mean_td_error": float(np.mean(td_errors)),
+                    "max_td_error": float(np.max(td_errors)),
+                    "mean_reward": float(np.mean(rewards)),
+                }
+        elif self.use_torch:
             metrics = self._train_step_torch(batch)
         else:
-            # Placeholder: Calculate TD-errors for priority updates (no actual training)
-            # TD-error = |reward + γ * max Q(s') - Q(s,a)|
-            # Simplified: Use reward directly as TD-error proxy
+            # No network available - priority updates only (degraded mode)
             td_errors = np.abs(rewards)
-
-            # Defensive: Cap TD-errors
-            td_errors = np.clip(td_errors, -10.0, 10.0)
-
-            # Update priorities
+            td_errors = np.clip(td_errors, -TD_ERROR_CAP, TD_ERROR_CAP)
             self.buffer.update_priorities(indices, td_errors)
-
             metrics = {
-                "loss": 0.0,  # Placeholder
+                "loss": 0.0,
                 "mean_q": 0.0,
                 "mean_td_error": float(np.mean(td_errors)),
                 "max_td_error": float(np.max(td_errors)),
                 "mean_reward": float(np.mean(rewards)),
             }
+            LOG.warning("[HARVESTER] No DDQN network - only updating priorities (no weight updates)")
 
         self.training_steps += 1
 
-        # Log every 100 steps
-        if self.training_steps % 100 == 0:
+        # Log every 10 steps (more frequent during early training)
+        log_interval = 10 if self.training_steps < 100 else 100
+        if self.training_steps % log_interval == 0:
             LOG.info(
-                "[HARVESTER] Training step %d: mean_reward=%.4f, mean_td_error=%.4f, buffer_size=%d",
+                "[HARVESTER] Training step %d: loss=%.4f, mean_q=%.3f, mean_reward=%.4f, mean_td=%.4f, buffer=%d",
                 self.training_steps,
-                metrics["mean_reward"],
-                metrics["mean_td_error"],
+                metrics.get("loss", 0.0),
+                metrics.get("mean_q", 0.0),
+                metrics.get("mean_reward", 0.0),
+                metrics.get("mean_td_error", 0.0),
                 self.buffer.tree.n_entries,
             )
 
         return metrics
 
     def _train_step_torch(self, batch: dict) -> dict:
-        """Full PyTorch training step (placeholder for future implementation).
+        """Training step when use_torch=True (PyTorch model loaded from disk).
+
+        Delegates to the numpy DDQN network for actual weight updates.
+        The PyTorch model is only used for inference (pre-trained).
 
         Args:
             batch: Sampled batch from buffer
@@ -551,22 +729,34 @@ class HarvesterAgent:
         Returns:
             Training metrics
         """
-        # TODO: Implement full DDQN training
-        # 1. Forward pass: Q(s,a)
-        # 2. Target network: Q_target(s',a')
-        # 3. TD-target: r + γ * max Q_target(s') * (1 - done)
-        # 4. Loss: weighted MSE with importance sampling weights
-        # 5. Backward pass with gradient clipping
-        # 6. Update priorities based on TD-errors
-        # 7. Sync target network every 1000 steps
+        if self.ddqn is not None:
+            states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
+            next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
+            train_result = self.ddqn.train_batch(
+                states=states,
+                actions=batch["actions"].astype(np.intp),
+                rewards=batch["rewards"].astype(np.float64),
+                next_states=next_states,
+                dones=batch["dones"].astype(np.float64),
+                weights=batch["weights"].astype(np.float64),
+            )
+            self.buffer.update_priorities(batch["indices"], np.abs(train_result["td_errors"]))
+            return {
+                "loss": train_result["loss"],
+                "mean_q": train_result["mean_q"],
+                "mean_td_error": train_result["mean_td_error"],
+                "mean_reward": float(np.mean(batch["rewards"])),
+            }
 
-        LOG.warning("[HARVESTER] PyTorch training not yet implemented, using placeholder")
-
-        # Placeholder: Return dummy metrics
+        # No DDQN network — priority-only update (degraded mode)
+        LOG.warning("[HARVESTER] No DDQN network in torch path — priority-only update")
+        td_errors = np.abs(batch["rewards"])
+        td_errors = np.clip(td_errors, 0, 10.0)
+        self.buffer.update_priorities(batch["indices"], td_errors)
         return {
             "loss": 0.0,
             "mean_q": 0.0,
-            "mean_td_error": 0.0,
+            "mean_td_error": float(np.mean(td_errors)),
             "mean_reward": float(np.mean(batch["rewards"])),
         }
 

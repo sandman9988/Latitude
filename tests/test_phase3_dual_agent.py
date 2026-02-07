@@ -10,9 +10,12 @@ import logging
 import os
 import sys
 from collections import deque
+from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to sys.path for direct script execution
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 # Set dual-agent mode
 os.environ["DDQN_DUAL_AGENT"] = "1"
@@ -27,14 +30,14 @@ print("=" * 70)
 # Test 1: Import checks
 print("\n[TEST 1] Import validation")
 try:
-    from dual_policy import DualPolicy
-    from harvester_agent import HarvesterAgent
-    from trigger_agent import TriggerAgent
+    from src.agents.dual_policy import DualPolicy
+    from src.agents.harvester_agent import HarvesterAgent
+    from src.agents.trigger_agent import TriggerAgent
 
     print("✓ Dual-agent modules imported successfully")
 except ImportError as e:
     print(f"✗ Import failed: {e}")
-    sys.exit(1)
+    raise
 
 # Test 2: DualPolicy initialization
 print("\n[TEST 2] DualPolicy initialization")
@@ -60,7 +63,7 @@ print(f"✓ Entry decision: action={action}, conf={conf:.2f}, runway={runway:.4f
 
 # Test 4: Position entry
 print("\n[TEST 4] Position entry tracking")
-from safe_math import SafeMath
+from src.utils.safe_math import SafeMath
 
 dual_policy.on_entry(direction=1, entry_price=100000.0, entry_time=dt.datetime.now())
 assert dual_policy.current_position == 1

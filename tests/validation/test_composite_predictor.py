@@ -11,9 +11,9 @@ agent's predicted vs actual outcomes and becomes the main risk management tool.
 """
 
 import numpy as np
-from circuit_breakers import CircuitBreakerManager
-from risk_manager import RiskManager
-from var_estimator import VaREstimator
+from src.risk.circuit_breakers import CircuitBreakerManager
+from src.risk.risk_manager import RiskManager
+from src.risk.var_estimator import VaREstimator
 
 
 def test_per_agent_calibration():
@@ -86,7 +86,6 @@ def test_per_agent_calibration():
     print("   ✓ HarvesterAgent independently tracked")
 
     print("\n✓ Per-agent calibration tracking PASSED")
-    return True
 
 
 def test_composite_probability_predictor():
@@ -161,7 +160,6 @@ def test_composite_probability_predictor():
         )
 
     print("\n✓ Composite probability predictor PASSED")
-    return True
 
 
 def test_composite_in_risk_assessment():
@@ -217,7 +215,6 @@ def test_composite_in_risk_assessment():
     )
 
     print("\n✓ Composite predictor integration PASSED")
-    return True
 
 
 def test_adaptive_trust_weighting():
@@ -280,7 +277,6 @@ def test_adaptive_trust_weighting():
     print("   ✓ Correctly identified equal calibration")
 
     print("\n✓ Adaptive trust weighting PASSED")
-    return True
 
 
 def main():

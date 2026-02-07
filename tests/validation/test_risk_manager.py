@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import pytest
+
 """
 Test Suite for RiskManager
 ===========================
@@ -8,21 +10,21 @@ Tests portfolio-level risk validation per SYSTEM_FLOW.md design.
 import sys
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
-
 import numpy as np
 
-from circuit_breakers import CircuitBreakerManager
-from risk_manager import RiskManager, EntryValidation, ExitValidation, RiskAssessment
-from var_estimator import VaREstimator, RegimeType
+rng = np.random.default_rng(42)
+
+
+from src.risk.circuit_breakers import CircuitBreakerManager
+from src.risk.risk_manager import RiskManager, EntryValidation, ExitValidation, RiskAssessment
+from src.risk.var_estimator import VaREstimator, RegimeType
 
 
 def create_var_estimator_with_data(window=100, confidence=0.95, seed=42):
     """Helper to create VaREstimator with sample data"""
     var_estimator = VaREstimator(window=window, confidence=confidence)
-    np.random.seed(seed)
-    sample_returns = np.random.normal(0.0, 0.01, max(window, 50))
+    rng = np.random.default_rng(seed)
+    sample_returns = rng.normal(0.0, 0.01, max(window, 50))
     for ret in sample_returns:
         var_estimator.update_return(ret)
     return var_estimator
@@ -85,7 +87,6 @@ def test_entry_validation_basic():
     print(f"   ✓ Correctly handled: {validation.reason}")
 
     print("\n✓ Basic entry validation PASSED")
-    return True
 
 
 def test_circuit_breaker_integration():
@@ -140,7 +141,6 @@ def test_circuit_breaker_integration():
     print(f"   ✓ Entry rejected: {validation.reason}")
 
     print("\n✓ Circuit breaker integration PASSED")
-    return True
 
 
 def test_exit_validation():
@@ -215,7 +215,6 @@ def test_exit_validation():
     print(f"   ✓ Upgraded to FULL: volume={validation.volume}")
 
     print("\n✓ Exit validation PASSED")
-    return True
 
 
 def test_emergency_exit_override():
@@ -259,7 +258,6 @@ def test_emergency_exit_override():
     print(f"   ✓ Override successful: urgency={validation.urgency}, volume={validation.volume}")
 
     print("\n✓ Emergency exit override PASSED")
-    return True
 
 
 def test_position_size_limits():
@@ -307,7 +305,6 @@ def test_position_size_limits():
     print(f"   ✓ Rejected: {validation.reason}")
 
     print("\n✓ Position size limits PASSED")
-    return True
 
 
 def test_statistics_tracking():
@@ -360,7 +357,6 @@ def test_statistics_tracking():
     assert status["exits_rejected"] == 1, f"Should have 1 exit rejection: {status['exits_rejected']}"
 
     print("\n✓ Statistics tracking PASSED")
-    return True
 
 
 def test_adaptive_updates():
@@ -383,14 +379,14 @@ def test_adaptive_updates():
     print("\n1. Update risk budget: $100 → $200")
     risk_manager.update_risk_budget(200.0)
     status = risk_manager.get_status()
-    assert status["risk_budget_usd"] == 200.0, "Risk budget should be updated"
+    assert status["risk_budget_usd"] == pytest.approx(200.0), "Risk budget should be updated"
     print("   ✓ Risk budget updated")
 
     # Test 2: Update confidence thresholds
     print("\n2. Update confidence thresholds")
     risk_manager.update_confidence_thresholds(entry=0.7, exit=0.6)
-    assert risk_manager.min_confidence_entry == 0.7, "Entry threshold should be updated"
-    assert risk_manager.min_confidence_exit == 0.6, "Exit threshold should be updated"
+    assert risk_manager.min_confidence_entry == pytest.approx(0.7), "Entry threshold should be updated"
+    assert risk_manager.min_confidence_exit == pytest.approx(0.6), "Exit threshold should be updated"
     print("   ✓ Confidence thresholds updated")
 
     # Test 3: Verify updated threshold affects validation
@@ -404,7 +400,6 @@ def test_adaptive_updates():
     print(f"   ✓ Correctly rejected: {validation.reason}")
 
     print("\n✓ Adaptive updates PASSED")
-    return True
 
 
 def test_circuit_breaker_control():
@@ -448,7 +443,6 @@ def test_circuit_breaker_control():
     print(f"   ✓ Entry blocked: {validation.reason}")
 
     print("\n✓ Circuit breaker control PASSED")
-    return True
 
 
 def test_risk_assessment():
@@ -475,7 +469,7 @@ def test_risk_assessment():
 
     assert isinstance(assessment, RiskAssessment), "Should return RiskAssessment"
     assert assessment.portfolio_health == "HEALTHY", "Empty portfolio should be healthy"
-    assert assessment.position_concentration == 0.0, "No positions = no concentration"
+    assert assessment.position_concentration == pytest.approx(0.0), "No positions = no concentration"
     print(f"   ✓ Health: {assessment.portfolio_health}, Concentration: {assessment.position_concentration:.2f}")
 
     # Test 2: With position
@@ -487,8 +481,8 @@ def test_risk_assessment():
     )
 
     assert assessment.total_exposure_usd > 0, "Should track exposure"
-    assert assessment.position_concentration == 1.0, "Single position = full concentration"
-    assert assessment.regime_risk_multiplier == 2.0, "UNDERDAMPED = 2.0x multiplier"
+    assert assessment.position_concentration == pytest.approx(1.0), "Single position = full concentration"
+    assert assessment.regime_risk_multiplier == pytest.approx(2.0), "UNDERDAMPED = 2.0x multiplier"
     print(f"   ✓ Exposure: ${assessment.total_exposure_usd:.2f}, Regime: {assessment.regime_risk_multiplier:.1f}x")
 
     # Test 3: Risk summary
@@ -499,7 +493,6 @@ def test_risk_assessment():
     print("   ✓ Risk summary generated")
 
     print("\n✓ Risk assessment PASSED")
-    return True
 
 
 def test_adaptive_risk_budget():
@@ -551,7 +544,6 @@ def test_adaptive_risk_budget():
         print(f"   → Budget unchanged: ${risk_manager2.risk_budget_usd:.2f}")
 
     print("\n✓ Adaptive risk budget PASSED")
-    return True
 
 
 if __name__ == "__main__":

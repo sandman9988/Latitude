@@ -123,10 +123,7 @@ class RollingMean:
         self.sum += new_value
         self.buffer.append(new_value)
 
-        if len(self.buffer) > 0:
-            self.value = self.sum / len(self.buffer)
-        else:
-            self.value = 0.0
+        self.value = self.sum / len(self.buffer)
 
     def is_ready(self) -> bool:
         """Check if buffer is full (period samples collected)."""

@@ -91,8 +91,8 @@ class TestFallbackPrediction:
         # Models default to [None, None, None]
         action, disagreement, stats = ens.predict(np.zeros(5))
         assert action == 1  # Default action
-        assert disagreement == 0.0
-        assert stats["mean_q"] == 0.0
+        assert disagreement == pytest.approx(0.0)
+        assert stats["mean_q"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +153,6 @@ class TestGetStatsEmpty:
         ens = EnsembleTracker(n_models=2)
         stats = ens.get_stats()
         assert stats["total_predictions"] == 0
-        assert stats["mean_disagreement"] == 0.0
-        assert stats["max_disagreement"] == 0.0
-        assert stats["avg_exploration_bonus"] == 0.0
+        assert stats["mean_disagreement"] == pytest.approx(0.0)
+        assert stats["max_disagreement"] == pytest.approx(0.0)
+        assert stats["avg_exploration_bonus"] == pytest.approx(0.0)

@@ -43,6 +43,10 @@ class AdamOptimizer:
         self.v = {}  # Second moment (variance)
         self.t = 0  # Time step
 
+    def step(self):
+        """Advance the timestep counter. Call once per batch before updating all parameters."""
+        self.t += 1
+
     def update(self, param_name: str, param: np.ndarray, grad: np.ndarray) -> np.ndarray:
         """
         Update parameter using Adam.
@@ -60,15 +64,13 @@ class AdamOptimizer:
             self.m[param_name] = np.zeros_like(param)
             self.v[param_name] = np.zeros_like(param)
 
-        self.t += 1
-
         # Update biased first moment estimate
         self.m[param_name] = self.beta1 * self.m[param_name] + (1 - self.beta1) * grad
 
         # Update biased second moment estimate
         self.v[param_name] = self.beta2 * self.v[param_name] + (1 - self.beta2) * (grad**2)
 
-        # Bias correction
+        # Bias correction (t must be incremented via step() before calling update)
         m_hat = self.m[param_name] / (1 - self.beta1**self.t)
         v_hat = self.v[param_name] / (1 - self.beta2**self.t)
 
@@ -363,6 +365,9 @@ class DDQNNetwork:
         # Gradient clipping by norm
         gradients = [dw1, db1, dw2, db2, dw3, db3]
         self.total_grad_norm = self._clip_gradients(gradients)
+
+        # Advance Adam timestep once per batch (not per parameter)
+        self.optimizer.step()
 
         # Update weights with Adam
         self.w3 = self.optimizer.update("w3", self.w3, dw3)

@@ -1,3 +1,5 @@
+import pytest
+
 """
 Multi-Position Testing Suite
 
@@ -21,9 +23,6 @@ from pathlib import Path
 from typing import List
 
 import numpy as np
-
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -177,9 +176,9 @@ def test_multiple_long_positions():
     assert abs(total_pnl - expected_pnl) < 0.01, f"P&L mismatch: {total_pnl} vs {expected_pnl}"
 
     exposure = manager.get_total_exposure("BTCUSD")
-    assert exposure["long_quantity"] == 0.10, "Total LONG quantity should be 0.10"
-    assert exposure["short_quantity"] == 0.0, "No SHORT positions"
-    assert exposure["net_quantity"] == 0.10, "Net should equal LONG"
+    assert exposure["long_quantity"] == pytest.approx(0.10), "Total LONG quantity should be 0.10"
+    assert exposure["short_quantity"] == pytest.approx(0.0), "No SHORT positions"
+    assert exposure["net_quantity"] == pytest.approx(0.10), "Net should equal LONG"
 
     LOG.info("✓ Multiple LONG positions tracked correctly")
     LOG.info(f"  Total unrealized P&L: ${total_pnl:.2f}")
@@ -213,8 +212,8 @@ def test_multiple_short_positions():
     assert abs(total_pnl - expected_pnl) < 0.01, f"P&L mismatch: {total_pnl} vs {expected_pnl}"
 
     exposure = manager.get_total_exposure("BTCUSD")
-    assert exposure["short_quantity"] == 0.10, "Total SHORT quantity should be 0.10"
-    assert exposure["long_quantity"] == 0.0, "No LONG positions"
+    assert exposure["short_quantity"] == pytest.approx(0.10), "Total SHORT quantity should be 0.10"
+    assert exposure["long_quantity"] == pytest.approx(0.0), "No LONG positions"
 
     LOG.info("✓ Multiple SHORT positions tracked correctly")
     LOG.info(f"  Total unrealized P&L: ${total_pnl:.2f}")

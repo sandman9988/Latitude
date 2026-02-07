@@ -42,7 +42,7 @@ class TestOrderBookNonFiniteSpread:
         ob.update_level("BID", 102.0, 1.0)
         ob.update_level("ASK", 101.0, 1.0)
         s = ob.spread()
-        assert s == 0.0
+        assert s == pytest.approx(0.0)
 
     def test_spread_negative_value_returns_none(self):
         """Line 76: spread_value < 0 → None. Hard to trigger naturally since bid<ask
@@ -50,7 +50,7 @@ class TestOrderBookNonFiniteSpread:
         ob = OrderBook()
         ob.update_level("BID", 101.0, 1.0)
         ob.update_level("ASK", 101.0, 1.0)  # equal → crossed
-        assert ob.spread() == 0.0
+        assert ob.spread() == pytest.approx(0.0)
 
 
 class TestVPINGetStats:
@@ -61,8 +61,8 @@ class TestVPINGetStats:
         vpin = VPINCalculator()
         stats = vpin.get_stats()
         assert "vpin" in stats
-        assert stats["std"] == 0.0
-        assert stats["zscore"] == 0.0
+        assert stats["std"] == pytest.approx(0.0)
+        assert stats["zscore"] == pytest.approx(0.0)
 
     def test_get_stats_with_completed_buckets(self):
         """Lines 173-174: with completed buckets → variance/std computed."""
@@ -93,7 +93,7 @@ class TestRollingMeanEmptyBuffer:
 
     def test_initial_value_is_zero(self):
         rm = RollingMean(period=5)
-        assert rm.value == 0.0
+        assert rm.value == pytest.approx(0.0)
 
     def test_value_after_single_update(self):
         rm = RollingMean(period=5)
@@ -347,4 +347,4 @@ class TestActivityMonitorExplorationBoost:
         """When exploration_boost is provided, env var is ignored."""
         with patch.dict(os.environ, {"EXPLORATION_BOOST": "99.0"}):
             am = ActivityMonitor(phase_maturity=0.0, exploration_boost=2.0)
-        assert am.exploration_boost == 2.0
+        assert am.exploration_boost == pytest.approx(2.0)

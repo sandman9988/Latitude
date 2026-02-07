@@ -15,7 +15,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -64,7 +64,7 @@ class TransactionLogger:
             severity: Event severity (INFO, WARNING, ERROR, CRITICAL)
         """
         entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "session": self.session_id,
             "event_type": event_type,
             "severity": severity,
@@ -214,7 +214,7 @@ class DecisionLogger:
             reasoning: Features/factors that influenced decision
         """
         entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "session": self.session_id,
             "agent": agent,
             "decision": decision,

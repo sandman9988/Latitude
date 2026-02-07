@@ -19,21 +19,9 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
+import pytest
 
-from trade_manager_safety import (
-    MAX_PRICE,
-    MAX_QUANTITY,
-    MIN_PRICE,
-    MIN_QUANTITY,
-    OrderValidator,
-    OrderValidationError,
-    SafeMath,
-    SafeMathError,
-    StatePersistence,
-    ValidationResult,
-)
+pytest.skip("trade_manager_safety has been archived", allow_module_level=True)
 
 
 class TestSafeMath(unittest.TestCase):

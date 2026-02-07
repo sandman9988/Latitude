@@ -249,7 +249,7 @@ class TestSafeMathEdgeCases:
         result = SafeMath.running_variance_update(
             old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=0
         )
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_running_variance_count_one(self):
         from src.utils.safe_math import SafeMath
@@ -257,7 +257,7 @@ class TestSafeMathEdgeCases:
         result = SafeMath.running_variance_update(
             old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=1
         )
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     # Lines 274-276: normal computation path when count >= MIN_SAMPLE_COUNT (2)
     def test_running_variance_normal_path(self):

@@ -126,7 +126,7 @@ class TestDecideEntryRegimeLog:
 
         action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
         assert action == 1
-        assert conf == 0.85
+        assert conf == pytest.approx(0.85)
 
     def test_regime_log_on_short_entry(self):
         """When trigger returns SHORT (action=2), regime adjustment is applied."""
@@ -148,7 +148,7 @@ class TestDecideEntryRegimeLog:
 
         action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
         assert action == 1
-        assert dp.predicted_runway == 0.005
+        assert dp.predicted_runway == pytest.approx(0.005)
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ class TestDecideExitClose:
 
         action, conf = dp.decide_exit(bars, current_price=100050.0, imbalance=0.0)
         assert action == 1
-        assert conf == 0.95
+        assert conf == pytest.approx(0.95)
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ class TestUpdateMfeMaeExceptions:
         dp._update_mfe_mae(object())
         # Should not crash; mfe/mae should be based on cp=0.0 vs ep=100.0
         # For LONG: profit = 0.0 - 100.0 = -100.0 → mae = 100.0
-        assert dp.mae == 100.0
+        assert dp.mae == pytest.approx(100.0)
 
     def test_non_float_entry_price_handled(self):
         """Non-convertible entry_price → ep = 0.0 (lines 390-391)."""
@@ -207,7 +207,7 @@ class TestUpdateMfeMaeExceptions:
 
         dp._update_mfe_mae(100.0)
         # cp=100.0, ep=0.0 → profit=100.0 → mfe=100.0
-        assert dp.mfe == 100.0
+        assert dp.mfe == pytest.approx(100.0)
 
 
 # ---------------------------------------------------------------------------
@@ -260,5 +260,5 @@ class TestTrainingEnabledPaths:
         dp.harvester.train_step = MagicMock(return_value={"loss": 0.02, "mean_td_error": 0.01})
 
         result = dp.train_step()
-        assert result["trigger"]["loss"] == 0.01
-        assert result["harvester"]["loss"] == 0.02
+        assert result["trigger"]["loss"] == pytest.approx(0.01)
+        assert result["harvester"]["loss"] == pytest.approx(0.02)

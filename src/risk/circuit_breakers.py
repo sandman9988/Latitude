@@ -606,10 +606,11 @@ class CircuitBreakerManager:
             filepath: Path to save state file
         """
         import json
+        import time as _time
         from pathlib import Path
 
         state = {
-            "timestamp": time.time(),
+            "timestamp": _time.time(),
             "sortino": {
                 "is_tripped": self.sortino_breaker.state.is_tripped,
                 "trip_time": self.sortino_breaker.state.trip_time,

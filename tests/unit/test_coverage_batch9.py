@@ -124,8 +124,8 @@ class TestVPINCalculatorGetStatsEdges:
         calc = VPINCalculator(bucket_volume=1000.0, window=5)
         calc.update(volume=5.0, side="BUY")
         stats = calc.get_stats()
-        assert stats["std"] == 0.0
-        assert stats["zscore"] == 0.0
+        assert stats["std"] == pytest.approx(0.0)
+        assert stats["zscore"] == pytest.approx(0.0)
 
     def test_get_stats_nonfinite_variance(self):
         """Inject inf into completed deque → variance is non-finite → line 171."""
@@ -138,7 +138,7 @@ class TestVPINCalculatorGetStatsEdges:
         calc.completed = deque([float("inf"), 0.5, float("inf")], maxlen=5)
         stats = calc.get_stats()
         # Variance will be inf (non-finite) → reset to 0 → std = 0
-        assert stats["std"] == 0.0 or stats["std"] >= 0.0
+        assert stats["std"] == pytest.approx(0.0) or stats["std"] >= 0.0
 
     def test_get_stats_overflow_variance(self):
         """Inject values that cause OverflowError in variance calc → lines 173-174."""
@@ -163,7 +163,7 @@ class TestVPINCalculatorGetStatsEdges:
         calc.completed = bad_deque
         stats = calc.get_stats()
         # Should catch OverflowError → std = 0.0
-        assert stats["std"] == 0.0
+        assert stats["std"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -179,5 +179,5 @@ class TestRingBufferNegativeIndex:
         for i in range(5):
             rb.append(float(i))
         # Access last element using negative index
-        assert rb[-1] == 4.0
-        assert rb[-2] == 3.0
+        assert rb[-1] == pytest.approx(4.0)
+        assert rb[-2] == pytest.approx(3.0)

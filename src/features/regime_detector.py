@@ -174,9 +174,6 @@ class RegimeDetector:
                 return
 
             # 2-period overlapping returns
-            if len(returns) < MIN_RETURNS_TWO_PERIOD:
-                return
-
             returns_2 = returns[:-1] + returns[1:]
 
             # Defensive: Validate 2-period returns

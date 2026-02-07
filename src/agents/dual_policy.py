@@ -57,6 +57,7 @@ class DualPolicy:
         symbol: str = "BTCUSD",
         timeframe: str = "M15",
         broker: str = "default",
+        friction_calculator=None,
     ):
         """
         Initialize DualPolicy with trigger and harvester agents.
@@ -67,6 +68,7 @@ class DualPolicy:
             path_geometry: PathGeometry instance for entry features (optional)
             enable_training: Enable online learning with PER buffer (default False)
             enable_event_features: Enable Phase 3 event-relative time features (default True)
+            friction_calculator: FrictionCalculator for cost-aware exit decisions
         """
         self.window = window
         self.enable_training = enable_training
@@ -75,6 +77,7 @@ class DualPolicy:
         self.symbol = symbol
         self.timeframe = timeframe
         self.broker = broker
+        self.friction_calculator = friction_calculator
 
         # Calculate feature dimensions (base=7, geometry=5, event=6)
         base_features = 7
@@ -102,6 +105,7 @@ class DualPolicy:
             timeframe=self.timeframe,
             broker=self.broker,
             param_manager=self.param_manager,
+            friction_calculator=self.friction_calculator,
         )
 
         LOG.info(
@@ -193,17 +197,39 @@ class DualPolicy:
         # Expected gain/loss based on realized volatility and typical move sizes
         expected_gain = realized_vol * 2.0  # Expect 2σ move on winning trades
         expected_loss = realized_vol * 1.0  # Risk 1σ on losing trades
-        friction_cost = realized_vol * 0.1  # Friction ~10% of volatility (spread + slippage)
 
-        # Trigger decides entry with all Phase 2 gates
+        # Calculate actual friction from broker data (spread, commission, swap, slippage)
+        # Uses actual broker commission rates and swap fees (important for gold with triple swap)
+        # SAME CODE PATH for both paper trading and live trading
+        if self.friction_calculator and len(bars) > 0:
+            current_price = bars[-1][4]
+            # Calculate friction for typical M5 intraday trade
+            # CRITICAL: M5 trades (~2-3 hours) typically DON'T cross rollover → swap = 0
+            # Swap only charged if position held through daily rollover (5pm EST/10pm UTC)
+            friction_data = self.friction_calculator.calculate_total_friction(
+                quantity=0.10,
+                side="BUY",  # Use BUY as reference (SELL has similar costs)
+                price=current_price,
+                holding_days=0.1,  # ~2.4 hours for M5 trades
+                volatility_factor=1.0,
+                crosses_rollover=False,  # Intraday trades don't cross rollover → swap = 0
+            )
+            # Convert USD total to price units (for XAUUSD @ $4600: $6-7 friction = 0.0015 price units)
+            # Breakdown: spread (~$1.6) + commission (~$0.8) + swap ($0) + slippage (~$1.0) = ~$3.4
+            friction_cost = friction_data["total"] / current_price if current_price > 0 else 0.0002
+        else:
+            # Conservative fallback: 3 pips (spread + commission + slippage, no swap)
+            friction_cost = 3.0 * 0.0001
+
+        # Call TriggerAgent with friction costs and economics parameters
         action, confidence, predicted_runway = self.trigger.decide(
-            state,
+            state=state,
             current_position=self.current_position,
             regime_threshold_adj=regime_threshold_adj,  # Phase 3.4
             feasibility=feasibility,  # Phase 2: Hard gate
             expected_gain=expected_gain,  # Phase 2: Economics
             expected_loss=expected_loss,
-            friction_cost=friction_cost,
+            friction_cost=friction_cost,  # Phase 2: Actual broker friction (commission + swap + spread + slippage)
         )
 
         # Phase 3.4: Apply regime-aware runway adjustment
@@ -309,7 +335,7 @@ class DualPolicy:
             entry_time: Entry bar timestamp
         """
         self.current_position = direction
-        self.entry_price = entry_price
+        self.entry_price = float(entry_price)
         self.entry_bar_time = entry_time
         self.mfe = 0.0
         self.mae = 0.0
@@ -354,12 +380,22 @@ class DualPolicy:
         if SafeMath.is_zero(self.entry_price):
             return
 
+        # Ensure both prices are float for safe arithmetic
+        try:
+            cp = float(current_price)
+        except Exception:
+            cp = 0.0
+        try:
+            ep = float(self.entry_price)
+        except Exception:
+            ep = 0.0
+
         if self.current_position == 1:  # LONG
-            profit = current_price - self.entry_price
+            profit = cp - ep
             self.mfe = max(self.mfe, profit)
             self.mae = max(self.mae, -profit)
         elif self.current_position == -1:  # SHORT
-            profit = self.entry_price - current_price
+            profit = ep - cp
             self.mfe = max(self.mfe, profit)
             self.mae = max(self.mae, -profit)
 
@@ -403,12 +439,12 @@ class DualPolicy:
         Returns:
             State array (window, n_features) with features normalized
         """
-        # Calculate expected feature dimension
+        # Calculate expected feature dimension (MUST match __init__ dimensions)
         n_features = 7  # Base
         if self.path_geometry:
-            n_features += 5  # Geometry
-        if event_features and self.enable_event_features:
-            n_features += self.event_feature_count  # Event time
+            n_features += 5  # Geometry features: efficiency, gamma, jerk, runway, feasibility
+        if self.enable_event_features:
+            n_features += self.event_feature_count  # Event time (always counted when enabled)
 
         if len(bars) < MIN_BARS_FOR_FEATURES:
             return np.zeros((self.window, n_features), dtype=np.float32)
@@ -484,15 +520,25 @@ class DualPolicy:
                 ]
             )
 
-        # Add event time features if available (6 key features)
-        if event_features and self.enable_event_features:
-            # Select key temporal features (already normalized in event_time_features.py)
-            london_active = event_features.get("london_active", 0.0)
-            ny_active = event_features.get("ny_active", 0.0)
-            tokyo_active = event_features.get("tokyo_active", 0.0)
-            london_ny_overlap = event_features.get("london_ny_overlap", 0.0)
-            rollover_proximity = event_features.get("rollover_proximity_norm", 0.0)
-            week_progress = event_features.get("week_progress", 0.5)
+        # Add event time features if enabled (6 key features) — always include
+        # when self.enable_event_features is True, defaulting to zeros so the
+        # feature count stays consistent with the DDQN's fixed state_dim.
+        if self.enable_event_features:
+            if event_features:
+                london_active = event_features.get("london_active", 0.0)
+                ny_active = event_features.get("ny_active", 0.0)
+                tokyo_active = event_features.get("tokyo_active", 0.0)
+                london_ny_overlap = event_features.get("london_ny_overlap", 0.0)
+                rollover_proximity = event_features.get("rollover_proximity_norm", 0.0)
+                week_progress = event_features.get("week_progress", 0.5)
+            else:
+                # No event data available — use neutral defaults
+                london_active = 0.0
+                ny_active = 0.0
+                tokyo_active = 0.0
+                london_ny_overlap = 0.0
+                rollover_proximity = 0.0
+                week_progress = 0.5
 
             # Broadcast event features to window length
             base_feats.extend(

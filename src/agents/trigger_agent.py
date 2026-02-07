@@ -28,6 +28,7 @@ import random
 
 import numpy as np
 
+from src.core.ddqn_network import DDQNNetwork
 from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 from src.persistence.learned_parameters import LearnedParametersManager
 
@@ -117,11 +118,25 @@ class TriggerAgent:
         # Phase 3.5: Experience replay buffer
         self.enable_training = enable_training
         self.buffer = ExperienceBuffer(capacity=50_000) if enable_training else None
-        self.min_experiences = 1000  # Minimum before training starts
+        self.min_experiences = 100  # Minimum before training starts (lowered for faster training)
         self.batch_size = 64
         self.training_steps = 0
         self.last_state = None  # Track state for experience creation
         self.last_action = None
+
+        # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
+        # This is the actual trainable network - separate from the PyTorch model loaded from disk
+        self.ddqn = DDQNNetwork(
+            state_dim=window * n_features,  # Flattened state vector
+            n_actions=3,  # NO_ENTRY=0, LONG=1, SHORT=2
+            learning_rate=0.0005,
+            gamma=0.99,
+            tau=0.005,
+            l2_weight=0.0001,
+            grad_clip_norm=1.0,
+        ) if enable_training else None
+        if enable_training:
+            LOG.info("[TRIGGER] DDQNNetwork initialized: state_dim=%d, actions=3", window * n_features)
 
         # Phase 2: Platt calibration for probability estimates (online learning)
         # Converts raw scores to calibrated probabilities: p = 1/(1 + exp(A*score + B))
@@ -312,10 +327,38 @@ class TriggerAgent:
             return 0, 0.0, 0.0  # NO_ENTRY
 
         if not self.use_torch:
-            # Fallback: Simple MA crossover with microstructure tilt + regime adjustment
-            action = self._fallback_strategy(state, regime_threshold_adj)
-            confidence = 0.6  # Medium confidence for rule-based
-            predicted_runway = PREDICTED_RUNWAY_FALLBACK  # Conservative estimate: 15 pips
+            # Use DDQN network if available (online learning), else fallback to MA crossover
+            if self.ddqn is not None and self.enable_training and self.training_steps > 0:
+                # DDQN-based decision (numpy network, trained online)
+                flat_state = state.reshape(1, -1).astype(np.float64)
+                q_values = self.ddqn.predict(flat_state)
+                action = int(np.argmax(q_values))
+
+                # Confidence from softmax
+                probs = self._softmax(q_values)
+                confidence = float(probs[action])
+
+                # Predicted runway from Q-value
+                gross_runway = self._q_to_runway(float(q_values[action]))
+                predicted_runway = max(0.0, gross_runway - friction_cost)
+
+                # Store last state for experience creation
+                self.last_state = state.copy()
+                self.last_action = action
+
+                LOG.debug(
+                    "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, runway=%.4f",
+                    q_values, action, confidence, predicted_runway,
+                )
+            else:
+                # Fallback: Simple MA crossover with microstructure tilt + regime adjustment
+                action = self._fallback_strategy(state, regime_threshold_adj)
+                confidence = 0.6  # Medium confidence for rule-based
+                predicted_runway = PREDICTED_RUNWAY_FALLBACK  # Conservative estimate: 15 pips
+
+            # Store last state for experience creation (always, for both paths)
+            self.last_state = state.copy()
+            self.last_action = action
 
             # In training, accept all signals. In live, require confidence floor
             if not self.paper_mode and confidence < self.confidence_floor:
@@ -372,17 +415,20 @@ class TriggerAgent:
                 )
                 return 0, 0.0, 0.0  # NO_ENTRY
 
-            # Predicted runway from Q-value magnitude
+            # Predicted runway from Q-value magnitude (NET after friction)
             q_max = q_values[action]
-            predicted_runway = self._q_to_runway(q_max)
+            gross_runway = self._q_to_runway(q_max)
+            predicted_runway = max(0.0, gross_runway - friction_cost)  # Net runway after friction
 
             LOG.debug(
-                "[TRIGGER] Q-values: %s, Action: %d, Raw_p: %.3f, Calib_p: %.3f, Breakeven: %.3f, Runway: %.4f",
+                "[TRIGGER] Q-values: %s, Action: %d, Raw_p: %.3f, Calib_p: %.3f, Breakeven: %.3f, Gross_runway: %.4f, Friction: %.4f, Net_runway: %.4f",
                 q_values,
                 action,
                 raw_prob,
                 calibrated_prob,
                 breakeven_prob,
+                gross_runway,
+                friction_cost,
                 predicted_runway,
             )
 
@@ -498,7 +544,9 @@ class TriggerAgent:
 
     def _q_to_runway(self, q_value: float) -> float:
         """
-        Convert Q-value to predicted runway (expected MFE).
+        Convert Q-value to predicted GROSS runway (expected MFE before friction).
+
+        NOTE: This returns GROSS runway. Caller must subtract friction_cost to get NET runway.
 
         Heuristic mapping:
         - Q ≤ 0: 0.0010 (10 pips, minimal runway)
@@ -580,6 +628,8 @@ class TriggerAgent:
     def train_step(self) -> dict | None:
         """Perform one training step using prioritized experience replay.
 
+        Uses DDQNNetwork.train_batch() for actual backpropagation and weight updates.
+
         Returns:
             Dictionary with training metrics, or None if insufficient data
         """
@@ -599,51 +649,94 @@ class TriggerAgent:
         indices = batch["indices"]  # (batch_size,)
 
         # Defensive: Validate batch
-
         if not all(math.isfinite(r) for r in rewards):
             LOG.warning("[TRIGGER] Non-finite rewards in batch, skipping training")
             return None
 
-        if self.use_torch:
-            # PyTorch training (full implementation)
+        if self.ddqn is not None:
+            # Real DDQN training with backpropagation
+            try:
+                # Flatten states: (batch, window, features) -> (batch, window*features)
+                states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
+                next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
+                actions = batch["actions"].astype(np.intp)
+                dones = batch["dones"].astype(np.float64)
+                weights = batch["weights"].astype(np.float64)
+                rewards_f = rewards.astype(np.float64)
+
+                # Train batch: forward pass, TD targets, backward pass, weight update
+                train_result = self.ddqn.train_batch(
+                    states=states,
+                    actions=actions,
+                    rewards=rewards_f,
+                    next_states=next_states,
+                    dones=dones,
+                    weights=weights,
+                )
+
+                # Update buffer priorities with actual TD errors
+                td_errors = np.abs(train_result["td_errors"])
+                td_errors = np.clip(td_errors, 0, TD_ERROR_CAP)
+                self.buffer.update_priorities(indices, td_errors)
+
+                metrics = {
+                    "loss": train_result["loss"],
+                    "mean_q": train_result["mean_q"],
+                    "mean_td_error": train_result["mean_td_error"],
+                    "max_td_error": train_result["max_td_error"],
+                    "grad_norm": train_result["grad_norm"],
+                    "mean_reward": float(np.mean(rewards)),
+                }
+            except Exception as e:
+                LOG.error("[TRIGGER] DDQN train_batch failed: %s", e, exc_info=True)
+                # Fallback to priority-only update
+                td_errors = np.clip(np.abs(rewards), 0, TD_ERROR_CAP)
+                self.buffer.update_priorities(indices, td_errors)
+                metrics = {
+                    "loss": 0.0, "mean_q": 0.0,
+                    "mean_td_error": float(np.mean(td_errors)),
+                    "max_td_error": float(np.max(td_errors)),
+                    "mean_reward": float(np.mean(rewards)),
+                }
+        elif self.use_torch:
+            # PyTorch training path
             metrics = self._train_step_torch(batch)
         else:
-            # Placeholder: Calculate TD-errors for priority updates (no actual training)
-            # TD-error = |reward + γ * max Q(s') - Q(s,a)|
-            # For trigger agent, terminal states (done=True) have no next_state value
-            # Simplified: Use reward directly as TD-error proxy
+            # No network available - priority updates only (degraded mode)
             td_errors = np.abs(rewards)
-
-            # Defensive: Cap TD-errors
             td_errors = np.clip(td_errors, -TD_ERROR_CAP, TD_ERROR_CAP)
-
-            # Update priorities
             self.buffer.update_priorities(indices, td_errors)
-
             metrics = {
-                "loss": 0.0,  # Placeholder
+                "loss": 0.0,
                 "mean_q": 0.0,
                 "mean_td_error": float(np.mean(td_errors)),
                 "max_td_error": float(np.max(td_errors)),
                 "mean_reward": float(np.mean(rewards)),
             }
+            LOG.warning("[TRIGGER] No DDQN network - only updating priorities (no weight updates)")
 
         self.training_steps += 1
 
-        # Log every 100 steps
-        if self.training_steps % 100 == 0:
+        # Log every 10 steps (more frequent during early training)
+        log_interval = 10 if self.training_steps < 100 else 100
+        if self.training_steps % log_interval == 0:
             LOG.info(
-                "[TRIGGER] Training step %d: mean_reward=%.4f, mean_td_error=%.4f, buffer_size=%d",
+                "[TRIGGER] Training step %d: loss=%.4f, mean_q=%.3f, mean_reward=%.4f, mean_td=%.4f, buffer=%d",
                 self.training_steps,
-                metrics["mean_reward"],
-                metrics["mean_td_error"],
+                metrics.get("loss", 0.0),
+                metrics.get("mean_q", 0.0),
+                metrics.get("mean_reward", 0.0),
+                metrics.get("mean_td_error", 0.0),
                 self.buffer.tree.n_entries,
             )
 
         return metrics
 
     def _train_step_torch(self, batch: dict) -> dict:
-        """Full PyTorch training step (placeholder for future implementation).
+        """Training step when use_torch=True (PyTorch model loaded from disk).
+
+        Delegates to the numpy DDQN network for actual weight updates.
+        The PyTorch model is only used for inference (pre-trained).
 
         Args:
             batch: Sampled batch from buffer
@@ -651,25 +744,37 @@ class TriggerAgent:
         Returns:
             Training metrics
         """
-        # TODO: Implement full DDQN training
-        # 1. Forward pass: Q(s,a)
-        # 2. Target network: Q_target(s',a')
-        # 3. TD-target: r + γ * max Q_target(s')
-        # 4. Loss: weighted MSE with importance sampling weights
-        # 5. Backward pass with gradient clipping
-        # 6. Update priorities based on TD-errors
-        # 7. Sync target network every 1000 steps
+        # Delegate to DDQN numpy network for online learning
+        if self.ddqn is not None:
+            states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
+            next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
+            train_result = self.ddqn.train_batch(
+                states=states,
+                actions=batch["actions"].astype(np.intp),
+                rewards=batch["rewards"].astype(np.float64),
+                next_states=next_states,
+                dones=batch["dones"].astype(np.float64),
+                weights=batch["weights"].astype(np.float64),
+            )
+            self.buffer.update_priorities(batch["indices"], np.abs(train_result["td_errors"]))
+            return {
+                "loss": train_result["loss"],
+                "mean_q": train_result["mean_q"],
+                "mean_td_error": train_result["mean_td_error"],
+                "mean_reward": float(np.mean(batch["rewards"])),
+            }
 
-        LOG.warning("[TRIGGER] PyTorch training not yet implemented, using placeholder")
-
-        # Placeholder: Return dummy metrics
+        # No DDQN network — priority-only update (degraded mode)
+        LOG.warning("[TRIGGER] No DDQN network in torch path — priority-only update")
+        td_errors = np.abs(batch["rewards"])
+        td_errors = np.clip(td_errors, 0, 10.0)
+        self.buffer.update_priorities(batch["indices"], td_errors)
         return {
             "loss": 0.0,
             "mean_q": 0.0,
-            "mean_td_error": 0.0,
+            "mean_td_error": float(np.mean(td_errors)),
             "mean_reward": float(np.mean(batch["rewards"])),
         }
-
     def get_training_stats(self) -> dict:
         """Get training statistics for monitoring.
 
@@ -724,7 +829,7 @@ if __name__ == "__main__":
     print("\n[TEST 3] Entry decision (already in position)")
     action, conf, runway = trigger.decide(state, current_position=1)
     assert action == 0  # NO_ENTRY
-    from safe_math import SafeMath
+    from src.utils.safe_math import SafeMath
 
     assert SafeMath.is_zero(conf)
     assert SafeMath.is_zero(runway)

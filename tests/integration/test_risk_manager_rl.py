@@ -9,9 +9,12 @@ Tests:
 """
 
 import numpy as np
-from circuit_breakers import CircuitBreakerManager
-from risk_manager import RiskManager
-from var_estimator import RegimeType, VaREstimator
+
+rng = np.random.default_rng(42)
+
+from src.risk.circuit_breakers import CircuitBreakerManager
+from src.risk.risk_manager import RiskManager
+from src.risk.var_estimator import RegimeType, VaREstimator
 
 
 def test_probability_calibration():
@@ -73,7 +76,6 @@ def test_probability_calibration():
         assert not c.is_well_calibrated  # Should be poorly calibrated
 
     print("\n✓ Probability calibration tracking PASSED")
-    return True
 
 
 def test_rl_q_learning():
@@ -134,7 +136,6 @@ def test_rl_q_learning():
     assert len(risk_mgr.rl_state_history) > 0
 
     print("\n✓ RL Q-learning PASSED")
-    return True
 
 
 def test_correlation_breakdown_detection():
@@ -154,11 +155,11 @@ def test_correlation_breakdown_detection():
 
     print("\n1. Normal market: Independent asset returns")
     # Simulate 3 uncorrelated assets
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     for i in range(50):
-        risk_mgr.update_returns("BTCUSD", np.random.normal(0, 0.01))
-        risk_mgr.update_returns("ETHUSD", np.random.normal(0, 0.015))
-        risk_mgr.update_returns("XRPUSD", np.random.normal(0, 0.02))
+        risk_mgr.update_returns("BTCUSD", rng.normal(0, 0.01))
+        risk_mgr.update_returns("ETHUSD", rng.normal(0, 0.015))
+        risk_mgr.update_returns("XRPUSD", rng.normal(0, 0.02))
 
     breakdown = risk_mgr.check_correlation_breakdown(current_time=100.0)
     if breakdown:
@@ -173,11 +174,11 @@ def test_correlation_breakdown_detection():
     print("\n2. Flash crash scenario: All correlations → 1.0")
     # Simulate synchronized crash (everything moves together)
     # Use even more correlated returns
-    crash_returns = np.random.normal(-0.05, 0.002, 30)  # Very tight correlation
+    crash_returns = rng.normal(-0.05, 0.002, 30)  # Very tight correlation
     for ret in crash_returns:
-        risk_mgr.update_returns("BTCUSD", ret + np.random.normal(0, 0.0001))
-        risk_mgr.update_returns("ETHUSD", ret + np.random.normal(0, 0.0001))
-        risk_mgr.update_returns("XRPUSD", ret + np.random.normal(0, 0.0001))
+        risk_mgr.update_returns("BTCUSD", ret + rng.normal(0, 0.0001))
+        risk_mgr.update_returns("ETHUSD", ret + rng.normal(0, 0.0001))
+        risk_mgr.update_returns("XRPUSD", ret + rng.normal(0, 0.0001))
 
     breakdown_crash = risk_mgr.check_correlation_breakdown(current_time=200.0)
     if breakdown_crash:
@@ -192,7 +193,6 @@ def test_correlation_breakdown_detection():
         print(f"   ✓ High correlation detected: {breakdown_crash.avg_correlation:.3f}")
 
     print("\n✓ Correlation breakdown detection PASSED")
-    return True
 
 
 def test_capital_allocation_by_correlation():
@@ -216,17 +216,17 @@ def test_capital_allocation_by_correlation():
     print("   ETHUSD & XRPUSD: Low correlation")
 
     # Create returns with specific correlation structure
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     n = 50
 
     # BTC returns
-    btc_returns = np.random.normal(0, 0.01, n)
+    btc_returns = rng.normal(0, 0.01, n)
 
     # ETH: positively correlated with BTC
-    eth_returns = 0.7 * btc_returns + 0.3 * np.random.normal(0, 0.01, n)
+    eth_returns = 0.7 * btc_returns + 0.3 * rng.normal(0, 0.01, n)
 
     # XRP: negatively correlated with BTC (hedge)
-    xrp_returns = -0.6 * btc_returns + 0.4 * np.random.normal(0, 0.01, n)
+    xrp_returns = -0.6 * btc_returns + 0.4 * rng.normal(0, 0.01, n)
 
     for i in range(n):
         risk_mgr.update_returns("BTCUSD", btc_returns[i])
@@ -278,7 +278,6 @@ def test_capital_allocation_by_correlation():
     assert abs(amounts[0] - amounts[1]) < 100  # Within $100
 
     print("\n✓ Capital allocation by correlation PASSED")
-    return True
 
 
 def test_integrated_risk_assessment():
@@ -306,8 +305,8 @@ def test_integrated_risk_assessment():
 
     # Add correlation data
     for i in range(50):
-        risk_mgr.update_returns("BTCUSD", np.random.normal(0, 0.01))
-        risk_mgr.update_returns("ETHUSD", np.random.normal(0, 0.015))
+        risk_mgr.update_returns("BTCUSD", rng.normal(0, 0.01))
+        risk_mgr.update_returns("ETHUSD", rng.normal(0, 0.015))
 
     # Add RL data
     for i in range(15):
@@ -359,7 +358,6 @@ def test_integrated_risk_assessment():
     assert assessment.correlation_status is not None
 
     print("\n✓ Integrated risk assessment PASSED")
-    return True
 
 
 def main():

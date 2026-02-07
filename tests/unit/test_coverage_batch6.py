@@ -113,15 +113,15 @@ class TestSpreadTrackerEdges:
 
     def test_get_min_spread_empty(self):
         t = SpreadTracker()
-        assert t.get_min_spread() == 0.0
+        assert t.get_min_spread() == pytest.approx(0.0)
 
     def test_get_max_spread_empty(self):
         t = SpreadTracker()
-        assert t.get_max_spread() == 0.0
+        assert t.get_max_spread() == pytest.approx(0.0)
 
     def test_get_avg_spread_empty(self):
         t = SpreadTracker()
-        assert t.get_avg_spread() == 0.0
+        assert t.get_avg_spread() == pytest.approx(0.0)
 
     def test_get_avg_spread_with_samples(self):
         t = SpreadTracker()
@@ -133,7 +133,7 @@ class TestSpreadTrackerEdges:
     def test_get_current_hour_spread_no_data(self):
         """Line 164-165: current hour has no data → 0.0."""
         t = SpreadTracker()
-        assert t.get_current_hour_spread() == 0.0
+        assert t.get_current_hour_spread() == pytest.approx(0.0)
 
 
 class TestSpreadTrackerLearnedMax:
@@ -249,7 +249,7 @@ class TestLoadSymbolSpecs:
             calc._load_symbol_specs_from_config()
 
         assert calc.costs.digits == 1
-        assert calc.costs.swap_long == -1.0
+        assert calc.costs.swap_long == pytest.approx(-1.0)
 
 
 # ===================================================================
@@ -272,7 +272,7 @@ class TestParamManagement:
         calc.param_manager = MagicMock()
         calc.param_manager.get.side_effect = RuntimeError("DB gone")
         result = calc._get_param("spread_relax", 2.5)
-        assert result == 2.5
+        assert result == pytest.approx(2.5)
 
     def test_load_learned_parameters_skip_when_recent(self):
         """Line 450: not enough time elapsed → skip refresh."""
@@ -293,7 +293,7 @@ class TestParamManagement:
         calc.param_manager.get.return_value = 3.0
 
         calc._load_learned_parameters(force=True)
-        assert calc.spread_multiplier == 3.0
+        assert calc.spread_multiplier == pytest.approx(3.0)
 
 
 # ===================================================================
@@ -380,20 +380,20 @@ class TestSpreadCostDefensive:
     def test_non_type_quantity_returns_zero(self):
         """Line 683: non-numeric quantity → 0.0."""
         calc = _make_calc()
-        assert calc.calculate_spread_cost("bad") == 0.0
+        assert calc.calculate_spread_cost("bad") == pytest.approx(0.0)
 
     def test_nan_quantity_returns_zero(self):
         """Line 692: non-finite quantity → 0.0."""
         calc = _make_calc()
-        assert calc.calculate_spread_cost(float("nan")) == 0.0
+        assert calc.calculate_spread_cost(float("nan")) == pytest.approx(0.0)
 
     def test_zero_quantity_returns_zero(self):
         calc = _make_calc()
-        assert calc.calculate_spread_cost(0.0) == 0.0
+        assert calc.calculate_spread_cost(0.0) == pytest.approx(0.0)
 
     def test_negative_quantity_returns_zero(self):
         calc = _make_calc()
-        assert calc.calculate_spread_cost(-1.0) == 0.0
+        assert calc.calculate_spread_cost(-1.0) == pytest.approx(0.0)
 
     def test_no_current_spread_uses_avg_fallback(self):
         """Line 696: current_spread <= 0 → fallback to avg or 2.0."""
@@ -447,12 +447,12 @@ class TestCommissionDefensive:
     def test_non_numeric_inputs_return_zero(self):
         """Line 729: non-numeric → 0.0."""
         calc = _make_calc()
-        assert calc.calculate_commission("bad", 100.0) == 0.0
+        assert calc.calculate_commission("bad", 100.0) == pytest.approx(0.0)
 
     def test_non_finite_quantity_returns_zero(self):
         """Line 731: non-finite → 0.0."""
         calc = _make_calc()
-        assert calc.calculate_commission(float("inf"), 100.0) == 0.0
+        assert calc.calculate_commission(float("inf"), 100.0) == pytest.approx(0.0)
 
     def test_non_finite_commission_per_lot_uses_default(self):
         """Line 758: commission_per_lot non-finite → default $7."""
@@ -502,7 +502,7 @@ class TestSwapPercentageType:
         calc.costs.swap_type = "PERCENTAGE"
         calc.costs.swap_long = -2.5
         result = calc.calculate_swap(1.0, "BUY", holding_days=1.0, crosses_rollover=True, price=0.0)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_percentage_swap_valid(self):
         """Line 838+: PERCENTAGE swap with valid price → non-zero."""

@@ -38,7 +38,7 @@ class TestCorrelationException:
         with patch("src.core.reward_integrity_monitor.np.corrcoef", side_effect=ValueError("test")):
             result = monitor.check_integrity()
 
-        assert result["correlation"] == 0.0
+        assert result["correlation"] == pytest.approx(0.0)
         assert result["status"] != "insufficient_data"
 
     def test_nan_correlation_handled(self):
@@ -56,7 +56,7 @@ class TestCorrelationException:
 
         result = monitor.check_integrity()
         # NaN should be caught and set to 0.0
-        assert result["correlation"] == 0.0
+        assert result["correlation"] == pytest.approx(0.0)
 
     def test_insufficient_data_returns_early(self):
         """Below min_samples → insufficient_data status."""

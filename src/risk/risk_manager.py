@@ -307,7 +307,7 @@ class RiskManager:
         # risk_budget_usd = var_value * position_size * contract_value
         # For simplicity: position_size = risk_budget_usd / (var_value * price)
         # Assuming BTCUSD, contract_size = 1 BTC
-        from var_estimator import position_size_from_var
+        from src.risk.var_estimator import position_size_from_var
 
         qty = position_size_from_var(
             var=var_value,  # Correct parameter name
@@ -486,6 +486,23 @@ class RiskManager:
 
         # Step 5: APPROVED
         self.exits_approved += 1
+
+        # Convert to FIX lots (integer centi-lots)
+        volume_lots = int(volume * 100)
+
+        # Guard: tiny positions can round to 0 after int() conversion
+        if volume_lots <= 0:
+            self.exits_approved -= 1
+            self.exits_rejected += 1
+            reason = f"Volume rounds to zero after lot conversion (raw={volume:.6f})"
+            LOG.error("[RISK] Exit REJECTED: %s", reason)
+            return ExitValidation(
+                approved=False,
+                volume=0,
+                urgency=urgency,
+                reason=reason,
+            )
+
         LOG.info(
             "[RISK] Exit APPROVED: type=%s volume=%.4f urgency=%s",
             exit_type,
@@ -495,7 +512,7 @@ class RiskManager:
 
         return ExitValidation(
             approved=True,
-            volume=int(volume * 100),  # Convert to lots (for FIX)
+            volume=volume_lots,
             urgency=urgency,
             reason=f"{exit_type} exit approved",
         )

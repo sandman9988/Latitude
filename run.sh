@@ -377,8 +377,11 @@ PY
 
 start_bot_daemon() {
     local launcher_log="bot_console.log"
+    # Always use the absolute path to this script for recursion
+    local script_path
+    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     log "${BLUE}Launching trading bot (daemon mode)...${NC}"
-    ("$0" --bot-daemon "${FORWARDED_ARGS[@]}") >> "$launcher_log" 2>&1 &
+    ("$script_path" --bot-daemon "${FORWARDED_ARGS[@]}") >> "$launcher_log" 2>&1 &
     BOT_LAUNCHER_PID=$!
     sleep 2
     if ! kill -0 "$BOT_LAUNCHER_PID" 2>/dev/null; then

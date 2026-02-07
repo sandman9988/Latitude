@@ -171,18 +171,23 @@ def verify_data_files(data_dir: Path):
 
 def test_hud_features():
     """Test HUD feature implementations"""
+    import pytest
+
+    try:
+        from hud_tabbed import TabbedHUD
+    except ImportError:
+        pytest.skip("hud_tabbed module not available")
+
     print("\n🔬 HUD Feature Tests:")
 
     tests_passed = 0
     tests_total = 0
 
+    hud = TabbedHUD()
+
     # Test 1: Sparkline generation
     tests_total += 1
     try:
-        from hud_tabbed import TabbedHUD
-
-        hud = TabbedHUD()
-
         # Test sparkline with positive/negative values
         test_values = [10, -5, 15, 20, -10, 25, 30]
         sparkline = hud._create_sparkline(test_values)
@@ -245,7 +250,7 @@ def test_hud_features():
         print(f"  ❌ Data directory error: {e}")
 
     print(f"\n  Tests passed: {tests_passed}/{tests_total}")
-    return tests_passed == tests_total
+    assert tests_passed == tests_total, f"Only {tests_passed}/{tests_total} HUD feature tests passed"
 
 
 def main():
@@ -266,7 +271,11 @@ def main():
         files_ok = verify_data_files(data_dir)
 
         # Test features
-        features_ok = test_hud_features()
+        try:
+            test_hud_features()
+            features_ok = True
+        except AssertionError:
+            features_ok = False
 
         print("\n" + "═" * 80)
         print("SUMMARY")

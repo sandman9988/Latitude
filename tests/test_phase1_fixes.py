@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
+import pytest
+
 """
 Comprehensive test suite for Phase 1 critical fixes
 Tests SafeMath, AtomicPersistence, VaR estimation, and kurtosis monitoring
 """
 
+import sys
 import tempfile
 from pathlib import Path
 
+# Add project root to sys.path for direct script execution
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 from numpy.random import Generator, default_rng
 
-from atomic_persistence import AtomicPersistence
-from learned_parameters import LearnedParametersManager
-from safe_math import SafeMath
-from safe_utils import SafeArray, SafeDeque, safe_mean, safe_std
-from var_estimator import KurtosisMonitor, RegimeType, VaREstimator
+from src.persistence.atomic_persistence import AtomicPersistence
+from src.persistence.learned_parameters import LearnedParametersManager
+from src.utils.safe_math import SafeMath
+from src.utils.safe_utils import SafeArray, SafeDeque, safe_mean, safe_std
+from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator
 
 print("=" * 70)
 print("PHASE 1 CRITICAL FIXES - TEST SUITE")
@@ -25,17 +33,17 @@ print("-" * 70)
 
 # Division by zero
 result = SafeMath.safe_div(10.0, 0.0, default=-1.0)
-assert result == -1.0, "Division by zero should return default"
+assert result == pytest.approx(-1.0), "Division by zero should return default"
 print("✓ Division by zero returns default")
 
 # NaN handling
 result = SafeMath.safe_div(float("nan"), 2.0, default=-1.0)
-assert result == -1.0, "NaN numerator should return default"
+assert result == pytest.approx(-1.0), "NaN numerator should return default"
 print("✓ NaN numerator returns default")
 
 # Inf handling
 result = SafeMath.safe_div(float("inf"), 2.0, default=-1.0)
-assert result == -1.0, "Inf numerator should return default"
+assert result == pytest.approx(-1.0), "Inf numerator should return default"
 print("✓ Inf numerator returns default")
 
 # Valid division
@@ -258,7 +266,7 @@ print(f"✓ safe_std works with NaN: {result:.2f}")
 # Test all NaN
 values = [float("nan"), float("nan")]
 result = safe_mean(values, default=-1.0)
-assert result == -1.0, "All NaN should return default"
+assert result == pytest.approx(-1.0), "All NaN should return default"
 print("✓ All NaN returns default")
 
 # Summary

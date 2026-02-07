@@ -360,14 +360,15 @@ class RewardIntegrityMonitor:
 # Self-test
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+    rng = np.random.default_rng(42)
 
     monitor = RewardIntegrityMonitor(correlation_threshold=0.7, min_samples=20)
 
     # Test 1: Good correlation (reward follows P&L)
     print("\n--- Test 1: Good Correlation ---")
     for i in range(50):
-        pnl = np.random.randn() * 10  # Random P&L
-        reward = pnl + np.random.randn() * 2  # Reward correlated with P&L
+        pnl = rng.standard_normal() * 10  # Random P&L
+        reward = pnl + rng.standard_normal() * 2  # Reward correlated with P&L
 
         monitor.add_trade(
             reward=reward,
@@ -385,8 +386,8 @@ if __name__ == "__main__":
     monitor.reset()
 
     for i in range(50):
-        pnl = np.random.randn() * 10
-        reward = np.random.randn() * 5  # Reward UNCORRELATED with P&L
+        pnl = rng.standard_normal() * 10
+        reward = rng.standard_normal() * 5  # Reward UNCORRELATED with P&L
 
         monitor.add_trade(reward=reward, pnl=pnl)
 

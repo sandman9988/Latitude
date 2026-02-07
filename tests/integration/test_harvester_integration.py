@@ -17,7 +17,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from dual_policy import DualPolicy
+from src.agents.dual_policy import DualPolicy
 
 
 def simulate_trading_session():

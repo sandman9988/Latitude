@@ -104,12 +104,14 @@ class TradeManagerIntegration:
 
         if self.app.mfe_mae_trackers:
             tracker_count = len(self.app.mfe_mae_trackers)
-            self.app.mfe_mae_trackers.clear()
+            with self.app._tracker_lock:
+                self.app.mfe_mae_trackers.clear()
             LOG.warning("[CLEANUP] Removed %d stale MFE/MAE trackers", tracker_count)
 
         if hasattr(self.app, "path_recorders") and self.app.path_recorders:
             recorder_count = len(self.app.path_recorders)
-            self.app.path_recorders.clear()
+            with self.app._tracker_lock:
+                self.app.path_recorders.clear()
             LOG.warning("[CLEANUP] Removed %d stale path recorders", recorder_count)
 
     def initialize_trade_manager(self) -> bool:
@@ -207,10 +209,11 @@ class TradeManagerIntegration:
             if hasattr(self.app, "mfe_mae_trackers"):
                 # Scan for tracker with this ticket
                 position_id_to_remove = None
-                for pos_id, tracker in list(self.app.mfe_mae_trackers.items()):
-                    if getattr(tracker, "position_ticket", None) == closed_ticket:
-                        position_id_to_remove = pos_id
-                        break
+                with self.app._tracker_lock:
+                    for pos_id, tracker in list(self.app.mfe_mae_trackers.items()):
+                        if getattr(tracker, "position_ticket", None) == closed_ticket:
+                            position_id_to_remove = pos_id
+                            break
 
                 if position_id_to_remove:
                     # Get MFE/MAE before deletion
@@ -230,7 +233,8 @@ class TradeManagerIntegration:
                         ticket=closed_ticket,
                     )
 
-                    del self.app.mfe_mae_trackers[position_id_to_remove]
+                    with self.app._tracker_lock:
+                        del self.app.mfe_mae_trackers[position_id_to_remove]
                     LOG.info("[HEDGING] ✓ Closed position ticket %s (tracker=%s)", closed_ticket, position_id_to_remove)
 
                     # Remove from pending closes
@@ -239,7 +243,8 @@ class TradeManagerIntegration:
 
                     # Remove path recorder
                     if hasattr(self.app, "path_recorders") and position_id_to_remove in self.app.path_recorders:
-                        del self.app.path_recorders[position_id_to_remove]
+                        with self.app._tracker_lock:
+                            del self.app.path_recorders[position_id_to_remove]
 
                     # CRITICAL: Notify DualPolicy that position was closed
                     # Without this, DualPolicy.current_position stays stale and blocks epsilon exploration
@@ -289,15 +294,16 @@ class TradeManagerIntegration:
             direction = 1 if order.side == Side.BUY else -1
 
             # Create tracker
-            if position_id not in self.app.mfe_mae_trackers:
-                from src.core.ctrader_ddqn_paper import MFEMAETracker
+            with self.app._tracker_lock:
+                if position_id not in self.app.mfe_mae_trackers:
+                    from src.core.ctrader_ddqn_paper import MFEMAETracker
 
-                self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
-                # Store ticket on tracker for later reference
-                self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
-                LOG.info("[HEDGING] Created tracker for ticket %s (id=%s)", order.position_ticket, position_id)
+                    self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
+                    # Store ticket on tracker for later reference
+                    self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
+                    LOG.info("[HEDGING] Created tracker for ticket %s (id=%s)", order.position_ticket, position_id)
 
-            self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
+                self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
             self.app.trade_entry_time = order.filled_at
             LOG.info(
                 "[INTEGRATION] ✓ Tracking position ticket=%s @ %.5f dir=%d",

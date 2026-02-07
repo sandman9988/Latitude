@@ -46,7 +46,7 @@ class TestPerformanceTrackerGaps:
         pt = PerformanceTracker()
         pt.add_trade(**self._trade_kwargs(mae=-5.0))
         # Stored trade should have mae clamped to 0
-        assert pt.trades[-1]["mae"] == 0.0
+        assert pt.trades[-1]["mae"] == pytest.approx(0.0)
 
     def test_zero_peak_equity_drawdown(self):
         """Line 121: peak_equity == 0 → current_drawdown stays 0."""
@@ -56,7 +56,7 @@ class TestPerformanceTrackerGaps:
         pt.current_equity = -100.0
         pt.add_trade(**self._trade_kwargs(pnl=-50.0))
         # Should NOT divide by zero; drawdown stays 0
-        assert pt.current_drawdown == 0.0
+        assert pt.current_drawdown == pytest.approx(0.0)
 
 
 # ── parameter_staleness ──────────────────────────────────────────────────
@@ -82,7 +82,7 @@ class TestParameterStalenessGaps:
             det.update(bar_num=i, parameters=params, performance_metrics=perf, regime="TRENDING")
         # Baseline established at bar 20. But len(snapshots) == 20 < 50 → triggers line 239
         assert det.baseline_established
-        assert det.staleness_score == 0.0  # No detection ran
+        assert det.staleness_score == pytest.approx(0.0)  # No detection ran
 
     # Line 314: _check_performance_decay returns None when < 50 snapshots
     def test_check_performance_decay_insufficient(self):
@@ -179,29 +179,29 @@ class TestSafeMathExceptionPaths:
     def test_safe_mean_exception(self):
         """Lines 199-200: catch Exception → default."""
         result = SafeMath.safe_mean(self._Unconvertible(), default=42.0)
-        assert result == 42.0
+        assert result == pytest.approx(42.0)
 
     def test_safe_percentile_exception(self):
         """Lines 212-213: catch Exception → default."""
         result = SafeMath.safe_percentile(self._Unconvertible(), 50.0, default=42.0)
-        assert result == 42.0
+        assert result == pytest.approx(42.0)
 
     def test_safe_min_exception(self):
         """Lines 225-226: catch Exception → default."""
         result = SafeMath.safe_min(self._Unconvertible(), default=42.0)
-        assert result == 42.0
+        assert result == pytest.approx(42.0)
 
     def test_safe_max_exception(self):
         """Lines 238-239: catch Exception → default."""
         result = SafeMath.safe_max(self._Unconvertible(), default=42.0)
-        assert result == 42.0
+        assert result == pytest.approx(42.0)
 
     def test_running_variance_small_count(self):
         """Lines 274-276: count < MIN_SAMPLE_COUNT → return 0.0."""
         result = SafeMath.running_variance_update(
             old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=1
         )
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_safe_array_operation_exception(self):
         """Lines 357-358: catch Exception → default."""
@@ -210,7 +210,7 @@ class TestSafeMathExceptionPaths:
         # Mock the operation to raise
         with patch("numpy.mean", side_effect=RuntimeError("boom")):
             result = safe_array_operation(bad_arr, "mean", default=-99.0)
-        assert result == -99.0
+        assert result == pytest.approx(-99.0)
 
 
 # ── risk_aware_sac_manager standalone functions ──────────────────────────
@@ -228,33 +228,33 @@ class TestStandaloneFunctionEdgeCases:
     def test_rolling_kurtosis_too_few_elements(self):
         """Line 429: len(x) < 4 → 0.0."""
         arr = np.array([1.0, 2.0, 3.0])
-        assert rolling_kurtosis(arr, 10) == 0.0
+        assert rolling_kurtosis(arr, 10) == pytest.approx(0.0)
 
     def test_rolling_kurtosis_zero_variance(self):
         """Line 435: var < 1e-12 → 0.0."""
         arr = np.array([5.0, 5.0, 5.0, 5.0, 5.0])
-        assert rolling_kurtosis(arr, 5) == 0.0
+        assert rolling_kurtosis(arr, 5) == pytest.approx(0.0)
 
     def test_vpin_zscore_single_element(self):
         """Line 461: len(arr) < 2 → 0.0."""
         arr = np.array([1.0])
-        assert vpin_zscore(arr, 10) == 0.0
+        assert vpin_zscore(arr, 10) == pytest.approx(0.0)
 
     def test_vpin_zscore_zero_std(self):
         """Line 468: hist_std < 1e-12 → 0.0."""
         arr = np.array([5.0, 5.0, 5.0, 5.0, 5.0])
-        assert vpin_zscore(arr, 5) == 0.0
+        assert vpin_zscore(arr, 5) == pytest.approx(0.0)
 
     def test_truncated_gpd_hazard_short_array(self):
         """Line 492: len(arr) < 10 → 0.0."""
         arr = np.array([1.0, 2.0, 3.0])
-        assert truncated_gpd_hazard(arr) == 0.0
+        assert truncated_gpd_hazard(arr) == pytest.approx(0.0)
 
     def test_truncated_gpd_hazard_few_exceedances(self):
         """Line 498: len(exceedances) < 3 → 0.0."""
         # Array of 10 identical values → percentile == value → no exceedances
         arr = np.array([5.0] * 10)
-        assert truncated_gpd_hazard(arr) == 0.0
+        assert truncated_gpd_hazard(arr) == pytest.approx(0.0)
 
     def test_truncated_gpd_hazard_fit_exception(self):
         """Lines 504-505: GPD fit failure → 0.0."""
@@ -263,7 +263,7 @@ class TestStandaloneFunctionEdgeCases:
             # Array that would have exceedances
             arr = np.concatenate([np.zeros(90), np.ones(10) * 100])
             result = truncated_gpd_hazard(arr)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
 
 # ── feature_tournament NaN correlation ───────────────────────────────────
@@ -280,7 +280,7 @@ class TestFeatureTournamentNaN:
         x = np.array([1.0, 2.0, np.nan, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
         y = np.array([10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
         result = ft._safe_correlation(x, y)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
 
 # ── journaled_persistence ────────────────────────────────────────────────

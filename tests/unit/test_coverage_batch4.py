@@ -23,21 +23,21 @@ class TestKurtosisMonitorGaps:
         km = KurtosisMonitor(window=100)
         # Directly add < 4 returns to the deque (bypassing update's 30-check)
         km.returns.extend([0.01, 0.02, 0.03])
-        assert km._calculate_kurtosis() == 0.0
+        assert km._calculate_kurtosis() == pytest.approx(0.0)
 
     def test_calculate_kurtosis_non_finite_filtered(self):
         """Line 107: after filtering non-finite, len < MIN_KURTOSIS_STATS → 0.0."""
         km = KurtosisMonitor(window=100)
         # 3 finite + lots of inf/nan → after filtering, only 3 remain < 4
         km.returns.extend([0.01, 0.02, 0.03, float("inf"), float("nan"), float("-inf")])
-        assert km._calculate_kurtosis() == 0.0
+        assert km._calculate_kurtosis() == pytest.approx(0.0)
 
     def test_calculate_kurtosis_zero_std(self):
         """Line 113: std < STD_EPS → 0.0."""
         km = KurtosisMonitor(window=100)
         # All same value → std = 0
         km.returns.extend([0.01] * 10)
-        assert km._calculate_kurtosis() == 0.0
+        assert km._calculate_kurtosis() == pytest.approx(0.0)
 
 
 class TestVaREstimatorGaps:
@@ -55,7 +55,7 @@ class TestVaREstimatorGaps:
         self._fill_var(var_est)
         with patch.object(var_est, "_calculate_base_var", return_value=float("nan")):
             result = var_est.estimate_var(regime=RegimeType.CRITICAL, vpin_z=0.0)
-        assert result == 0.0
+        assert result == pytest.approx(0.0)
 
     def test_invalid_combined_var_falls_back(self):
         """Lines 258-259: combined var overflows to Inf → falls back to base_var."""
@@ -93,9 +93,9 @@ class TestSafeUtilsGaps:
         """Lines 57-58: numerator/denominator overflows → return default."""
         # 1e308 / 1e-10 = 1e318 → Inf (overflow)
         result = SafeMath.safe_div(1e308, 1e-10, default=-1.0)
-        assert result == -1.0
+        assert result == pytest.approx(-1.0)
 
     def test_safe_div_result_neg_overflow(self):
         """Also triggers lines 57-58 with negative overflow."""
         result = SafeMath.safe_div(-1e308, 1e-10, default=-2.0)
-        assert result == -2.0
+        assert result == pytest.approx(-2.0)

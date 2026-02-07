@@ -52,8 +52,9 @@ class SymbolCosts:
 
     # Swap rates (overnight financing)
     swap_long: float = 0.0  # Swap for long positions (pips per lot per day)
-    swap_short: float = 0.0  # Swap for short positions
+    swap_short: float = 0.0  # Swap for short positions (pips per lot per day)
     swap_type: str = "PIPS"  # "PIPS", "PERCENTAGE", or "POINTS"
+    triple_swap_day: int = 2  # Day of week for triple swap (0=Mon..6=Sun). Commonly Wednesday=2.
 
     # Position limits
     min_volume: float = 0.01  # Minimum position size
@@ -393,18 +394,24 @@ class FrictionCalculator:
                     "volume_step",
                     "contract_size",
                     "pip_value_per_lot",
+                    "swap_long",
+                    "swap_short",
+                    "triple_swap_day",
                 ]:
                     if key in symbol_spec:
                         setattr(self.costs, key, symbol_spec[key])
 
                 self._refresh_derived_costs()
                 LOG.info(
-                    "[FRICTION] Loaded symbol specs from config for %s: digits=%d min=%.4f max=%.2f step=%.4f",
+                    "[FRICTION] Loaded symbol specs from config for %s: digits=%d min=%.4f max=%.2f step=%.4f contract_size=%.2f swap_long=%.2f swap_short=%.2f",
                     self.symbol,
                     self.costs.digits,
                     self.costs.min_volume,
                     self.costs.max_volume,
                     self.costs.volume_step,
+                    self.costs.contract_size,
+                    self.costs.swap_long,
+                    self.costs.swap_short,
                 )
         except Exception as e:
             LOG.warning("[FRICTION] Failed to load symbol_specs.json: %s", e)
@@ -534,19 +541,24 @@ class FrictionCalculator:
 
     def update_symbol_costs(self, **kwargs):
         """
-        Update symbol cost parameters from cTrader SecurityDefinition.
+        Update symbol cost parameters from broker SecurityDefinition or config.
+
+        Broker-provided values always take precedence over config fallbacks.
+        This is the symbol-agnostic approach - all costs come from broker.
 
         Args:
-            **kwargs: Fields from FIX SecurityDefinition message
+            **kwargs: Fields from FIX SecurityDefinition message or config
                 - digits: Price precision
-                - pip_value: Value of 1 pip
-                - commission_per_lot: Fixed commission
+                - pip_value_per_lot: Value of 1 pip per lot (USD)
+                - commission_per_lot: Fixed commission per lot
                 - commission_percentage: Percentage commission
-                - swap_long: Long swap rate
-                - swap_short: Short swap rate
+                - swap_long: Long swap rate (pips/lot/day) - BROKER-SPECIFIC
+                - swap_short: Short swap rate (pips/lot/day) - BROKER-SPECIFIC
+                - triple_swap_day: Day of week for triple swap (0=Mon, 2=Wed, etc.)
                 - min_volume: Minimum lot size
                 - max_volume: Maximum lot size
-                - etc.
+                - volume_step: Lot size increment
+                - contract_size: Units per lot (e.g., 100 for XAUUSD)
         """
         for key, value in kwargs.items():
             if hasattr(self.costs, key):
@@ -555,16 +567,21 @@ class FrictionCalculator:
         self.costs.last_updated = datetime.now(UTC)
         self._refresh_derived_costs()
 
-        # Log full symbol info after update
+        # Log full symbol info after update (including swap rates)
         info = self.get_symbol_info()
+        source = "broker" if kwargs else "config"
         LOG.info(
-            "[FRICTION] SecurityDefinition updated %s: digits=%d tick=%.6f min=%.4f max=%.2f step=%.4f",
+            "[FRICTION] Symbol costs updated for %s: digits=%d tick=%.6f min=%.4f max=%.2f step=%.4f contract_size=%.2f swap_long=%.2f swap_short=%.2f (source: %s)",
             self.symbol,
             info["digits"],
             info["tick_size"],
             info["min_volume"],
             info["max_volume"],
             info["volume_step"],
+            self.costs.contract_size,
+            self.costs.swap_long,
+            self.costs.swap_short,
+            source,
         )
 
     def _refresh_derived_costs(self) -> None:
@@ -755,28 +772,94 @@ class FrictionCalculator:
         # Cap at reasonable limit
         return min(commission, 100_000.0)
 
-    def calculate_swap(self, quantity: float, side: str, holding_days: float = 1.0) -> float:
+    def calculate_swap(
+        self, quantity: float, side: str, holding_days: float = 1.0, crosses_rollover: bool = False, price: float = 0.0
+    ) -> float:
         """
         Calculate swap (overnight financing) cost in USD.
+
+        CRITICAL: Swap only charged at daily rollover time (typically 5pm EST/10pm UTC).
+        For intraday M5 trades that close before rollover: swap = 0
+        For overnight trades crossing rollover: swap = full day rate (or 3x on Wednesday)
 
         Args:
             quantity: Position size in lots
             side: "BUY" (long) or "SELL" (short)
-            holding_days: Expected holding period in days
+            holding_days: Expected holding period in days (for multi-day positions)
+            crosses_rollover: Whether position will cross daily rollover time (default: False for intraday)
 
         Returns:
             Swap cost in USD (negative = you pay, positive = you earn)
+            Returns 0 for intraday trades that don't cross rollover
         """
+        from datetime import UTC, datetime
+
+        # INTRADAY TRADES: No swap if not crossing rollover
+        # Most M5 trades (~2.4hrs) close before rollover → swap = 0
+        if not crosses_rollover and holding_days < 1.0:
+            return 0.0
+
         swap_rate = self.costs.swap_long if side.upper() == "BUY" else self.costs.swap_short
 
         if self.costs.swap_type == "PIPS":
-            # Swap in pips per lot per day
-            # For BTCUSD: 1 pip per lot = $10 per standard lot
-            swap_cost = swap_rate * self.costs.pip_value_per_lot * quantity * holding_days
+            # Swap charged at rollover, in full day increments
+            now = datetime.now(UTC)
+            # Validate and normalize triple_swap_day to [0..6]
+            try:
+                tsd = int(self.costs.triple_swap_day)
+            except (TypeError, ValueError):
+                tsd = 2
+            if tsd < 0 or tsd > 6:
+                tsd = 2  # Default to Wednesday
+            is_triple_swap_day = now.weekday() == tsd
+
+            # Calculate number of rollovers
+            if crosses_rollover:
+                # At least 1 rollover if crossing rollover time
+                num_rollovers = max(1, int(holding_days))
+                # Triple swap on Wednesday (accounts for weekend)
+                if is_triple_swap_day and num_rollovers > 0:
+                    num_rollovers += 2  # +2 extra days for weekend
+            else:
+                # Multi-day position: count full days
+                num_rollovers = int(holding_days)
+                if is_triple_swap_day and num_rollovers > 0:
+                    num_rollovers += 2
+
+            # For XAUUSD: swap_long=-7.2 pips, pip_value=1.0, qty=0.1
+            # Intraday (crosses_rollover=False): swap = $0
+            # Overnight (crosses_rollover=True): swap = -$0.72 (1 rollover)
+            # Wednesday overnight: swap = -$2.16 (3 rollovers for weekend)
+            swap_cost = swap_rate * self.costs.pip_value_per_lot * quantity * num_rollovers
         elif self.costs.swap_type == "PERCENTAGE":
-            # Swap as percentage per day (would need price)
-            # For now, use simplified calculation
-            swap_cost = 0.0  # TODO: implement percentage swap
+            # Swap as annual percentage of notional value, charged per rollover day
+            # swap_rate is expressed as annual % (e.g., -2.5 means -2.5% per year)
+            # Formula: notional * (swap_rate / 100) / 365 * num_rollover_days
+            if price <= 0:
+                swap_cost = 0.0
+            else:
+                notional = quantity * self.costs.contract_size * price
+                daily_rate = swap_rate / 100.0 / 365.0
+
+                now = datetime.now(UTC)
+                try:
+                    tsd = int(self.costs.triple_swap_day)
+                except (TypeError, ValueError):
+                    tsd = 2
+                if tsd < 0 or tsd > 6:
+                    tsd = 2
+                is_triple_swap_day = now.weekday() == tsd
+
+                if crosses_rollover:
+                    num_rollovers = max(1, int(holding_days))
+                    if is_triple_swap_day and num_rollovers > 0:
+                        num_rollovers += 2
+                else:
+                    num_rollovers = int(holding_days)
+                    if is_triple_swap_day and num_rollovers > 0:
+                        num_rollovers += 2
+
+                swap_cost = notional * daily_rate * num_rollovers
         else:
             swap_cost = 0.0
 
@@ -809,29 +892,33 @@ class FrictionCalculator:
         price: float,
         holding_days: float = 1.0,
         volatility_factor: float = 1.0,
+        crosses_rollover: bool = False,
     ) -> dict[str, float]:
         """
         Calculate all friction costs for a trade.
+
+        Same logic for BOTH paper trading and live trading.
 
         Args:
             quantity: Position size in lots
             side: "BUY" or "SELL"
             price: Entry price
-            holding_days: Expected holding period
+            holding_days: Expected holding period in days
             volatility_factor: Volatility multiplier for slippage
+            crosses_rollover: Whether position crosses daily rollover (default: False for M5 intraday)
 
         Returns:
             Dictionary with breakdown of costs:
                 - spread: Spread cost (USD)
                 - commission: Commission cost (USD)
-                - swap: Swap cost (USD, can be negative)
+                - swap: Swap cost (USD, 0 for intraday trades, can be negative)
                 - slippage: Expected slippage (USD)
                 - total: Total friction (USD)
                 - total_pips: Total friction in pips
         """
         spread = self.calculate_spread_cost(quantity)
         commission = self.calculate_commission(quantity, price)
-        swap = self.calculate_swap(quantity, side, holding_days)
+        swap = self.calculate_swap(quantity, side, holding_days, crosses_rollover, price=price)
         slippage = self.calculate_slippage_cost(quantity, side, volatility_factor)
 
         total = spread + commission + swap + slippage

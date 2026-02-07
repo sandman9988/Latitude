@@ -14,14 +14,14 @@ from pathlib import Path
 
 from numpy.random import Generator, default_rng
 
+# Add project root to sys.path for direct script execution
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 LOG = logging.getLogger(__name__)
-
-# Ensure repository root is on sys.path for module imports
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 print("=" * 70)
 print("Phase 2 Integration Test")
@@ -30,7 +30,7 @@ print("=" * 70)
 # Test 1: Non-repaint guards
 print("\n[TEST 1] Non-repaint bar access")
 try:
-    from non_repaint_guards import NonRepaintBarAccess, NonRepaintError
+    from src.utils.non_repaint_guards import NonRepaintBarAccess, NonRepaintError
 
     close_series = NonRepaintBarAccess("close", max_lookback=100)
 
@@ -50,8 +50,7 @@ try:
     close_series.mark_bar_closed()
     val = close_series.get_current()
 
-    # Import SafeMath for floating point comparison
-    from safe_math import SafeMath
+    from src.utils.safe_math import SafeMath
 
     if SafeMath.is_close(val, 104.0):
         print(f"    ✓ Bar[0] access allowed after mark_bar_closed: {val}")
@@ -74,7 +73,7 @@ except Exception as e:
 # Test 2: Ring buffers
 print("\n[TEST 2] Ring buffer O(1) statistics")
 try:
-    from ring_buffer import RollingStats
+    from src.utils.ring_buffer import RollingStats
 
     stats = RollingStats(period=10)
 
@@ -104,7 +103,7 @@ except Exception as e:
 # Test 3: Activity monitoring
 print("\n[TEST 3] Activity monitoring")
 try:
-    from activity_monitor import ActivityMonitor
+    from src.monitoring.activity_monitor import ActivityMonitor
 
     monitor = ActivityMonitor(max_bars_inactive=10, min_trades_per_day=2.0)
 
@@ -134,8 +133,8 @@ except Exception as e:
 # Test 4: Reward shaping integration
 print("\n[TEST 4] Enhanced reward shaping (5 components)")
 try:
-    from activity_monitor import ActivityMonitor
-    from reward_shaper import RewardShaper
+    from src.monitoring.activity_monitor import ActivityMonitor
+    from src.core.reward_shaper import RewardShaper
 
     monitor = ActivityMonitor()
     shaper = RewardShaper(symbol="BTCUSD", timeframe="M15", broker="default", activity_monitor=monitor)
@@ -182,19 +181,17 @@ try:
     # Check if main bot can import all Phase 2 modules
     import sys
 
-    sys.path.insert(0, "/home/renierdejager/Documents/ctrader_trading_bot")
-
     # This will fail if any imports are broken
-    with open("ctrader_ddqn_paper.py") as f:
+    with open("src/core/ctrader_ddqn_paper.py") as f:
         content = f.read()
 
-    if "from non_repaint_guards import NonRepaintBarAccess" in content:
+    if "from src.utils.non_repaint_guards import NonRepaintBarAccess" in content:
         print("    ✓ Main bot imports NonRepaintBarAccess")
     else:
         print("    ✗ FAIL: NonRepaintBarAccess import missing")
         sys.exit(1)
 
-    if "from ring_buffer import RollingStats" in content:
+    if "from src.utils.ring_buffer import RollingStats" in content:
         print("    ✓ Main bot imports RollingStats")
     else:
         print("    ✗ FAIL: RollingStats import missing")
@@ -221,7 +218,7 @@ print("\n[TEST 6] Ensemble disagreement tracking")
 try:
     import numpy as np
 
-    from ensemble_tracker import EnsembleTracker
+    from src.core.ensemble_tracker import EnsembleTracker
 
     ensemble = EnsembleTracker(n_models=3)
 
@@ -284,8 +281,7 @@ try:
     os.environ["DDQN_MODEL_ENSEMBLE"] = "0"
 
     # Import Policy after mocking and setting env
-    sys.path.insert(0, "/home/renierdejager/Documents/ctrader_trading_bot")
-    from ctrader_ddqn_paper import Policy
+    from src.core.ctrader_ddqn_paper import Policy
 
     # Test 1: Create policy without ensemble (fallback mode)
     policy = Policy()

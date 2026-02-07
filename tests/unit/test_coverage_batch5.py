@@ -10,6 +10,9 @@ import time
 from unittest.mock import patch
 
 import numpy as np
+
+rng = np.random.default_rng(42)
+
 import pandas as pd
 import pytest
 
@@ -136,12 +139,12 @@ class TestRiskManagerGaps:
     def test_get_confidence_bucket_high(self, _rm):
         """Line 957: confidence ≥ 0.95 → bucket 1.0."""
         bucket = _rm._get_confidence_bucket(0.99)
-        assert bucket == 1.0
+        assert bucket == pytest.approx(1.0)
 
     def test_check_correlation_breakdown_insufficient_data(self, _rm):
         """Line 1230: 2 symbols but only 1 has enough data → returns None."""
         _rm.returns_history = {
-            "BTCUSD": list(np.random.randn(50)),
+            "BTCUSD": list(rng.standard_normal(50)),
             "EURUSD": [0.01],  # too short
         }
         result = _rm.check_correlation_breakdown(current_time=time.time())

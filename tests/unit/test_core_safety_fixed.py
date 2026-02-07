@@ -1,3 +1,5 @@
+import pytest
+
 """
 Core Safety Component Unit Tests (Fixed)
 
@@ -15,12 +17,9 @@ import os
 
 import numpy as np
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
-
-from safe_math import SafeMath
-from ring_buffer import RingBuffer, RollingStats
-from atomic_persistence import AtomicPersistence
+from src.utils.safe_math import SafeMath
+from src.utils.ring_buffer import RingBuffer, RollingStats
+from src.persistence.atomic_persistence import AtomicPersistence
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -36,15 +35,15 @@ def test_safe_math_div():
 
     # Division by zero
     result = SafeMath.safe_div(10.0, 0.0, default=99.0)
-    assert result == 99.0, "Division by zero should return default"
+    assert result == pytest.approx(99.0), "Division by zero should return default"
 
     # Division by NaN
     result = SafeMath.safe_div(10.0, np.nan, default=99.0)
-    assert result == 99.0, "Division by NaN should return default"
+    assert result == pytest.approx(99.0), "Division by NaN should return default"
 
     # NaN dividend
     result = SafeMath.safe_div(np.nan, 2.0, default=99.0)
-    assert result == 99.0, "NaN dividend should return default"
+    assert result == pytest.approx(99.0), "NaN dividend should return default"
 
     LOG.info("✓ SafeMath safe_div tests passed")
 
@@ -59,15 +58,15 @@ def test_safe_math_log():
 
     # Log of zero
     result = SafeMath.safe_log(0.0, default=-99.0)
-    assert result == -99.0, "Log(0) should return default"
+    assert result == pytest.approx(-99.0), "Log(0) should return default"
 
     # Log of negative
     result = SafeMath.safe_log(-5.0, default=-99.0)
-    assert result == -99.0, "Log(negative) should return default"
+    assert result == pytest.approx(-99.0), "Log(negative) should return default"
 
     # Log of NaN
     result = SafeMath.safe_log(np.nan, default=-99.0)
-    assert result == -99.0, "Log(NaN) should return default"
+    assert result == pytest.approx(-99.0), "Log(NaN) should return default"
 
     LOG.info("✓ SafeMath safe_log tests passed")
 
@@ -82,15 +81,15 @@ def test_safe_math_sqrt():
 
     # Sqrt of zero
     result = SafeMath.safe_sqrt(0.0, default=-1.0)
-    assert result == 0.0, "Sqrt(0) should be 0"
+    assert result == pytest.approx(0.0), "Sqrt(0) should be 0"
 
     # Sqrt of negative
     result = SafeMath.safe_sqrt(-9.0, default=-99.0)
-    assert result == -99.0, "Sqrt(negative) should return default"
+    assert result == pytest.approx(-99.0), "Sqrt(negative) should return default"
 
     # Sqrt of NaN
     result = SafeMath.safe_sqrt(np.nan, default=-99.0)
-    assert result == -99.0, "Sqrt(NaN) should return default"
+    assert result == pytest.approx(-99.0), "Sqrt(NaN) should return default"
 
     LOG.info("✓ SafeMath safe_sqrt tests passed")
 
@@ -101,15 +100,15 @@ def test_safe_math_clamp():
 
     # Normal clamp
     result = SafeMath.clamp(5.0, min_val=0.0, max_val=10.0)
-    assert result == 5.0, "Value within range should be unchanged"
+    assert result == pytest.approx(5.0), "Value within range should be unchanged"
 
     # Clamp below min
     result = SafeMath.clamp(-5.0, min_val=0.0, max_val=10.0)
-    assert result == 0.0, "Value below min should be clamped"
+    assert result == pytest.approx(0.0), "Value below min should be clamped"
 
     # Clamp above max
     result = SafeMath.clamp(15.0, min_val=0.0, max_val=10.0)
-    assert result == 10.0, "Value above max should be clamped"
+    assert result == pytest.approx(10.0), "Value above max should be clamped"
 
     LOG.info("✓ SafeMath clamp tests passed")
 

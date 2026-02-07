@@ -6,12 +6,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import ctrader_ddqn_paper
+from src.core import ctrader_ddqn_paper
 
 
 def _build_app():
     """Instantiate CTraderFixApp without launching background threads."""
-    with patch("ctrader_ddqn_paper.threading.Thread") as mock_thread:
+    with patch("src.core.ctrader_ddqn_paper.threading.Thread") as mock_thread:
         mock_thread.return_value = MagicMock()
         mock_thread.return_value.start.return_value = None
         app = ctrader_ddqn_paper.CTraderFixApp(symbol_id=10028, qty=0.1, timeframe_minutes=1, symbol="BTCUSD")

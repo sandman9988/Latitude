@@ -23,6 +23,29 @@ class SafeMath:
     """Safe mathematical operations with validation and default handling"""
 
     @staticmethod
+    def to_decimal(value, digits: int):
+        """Convert value to Decimal with instrument-specific digits."""
+        from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+
+        try:
+            dec = Decimal(str(value))
+            quant = Decimal("1").scaleb(-digits)
+            return dec.quantize(quant, rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError, TypeError):
+            return Decimal("0").quantize(Decimal("1").scaleb(-digits))
+
+    @staticmethod
+    def quantize(value, digits: int):
+        """Quantize an existing Decimal to instrument-specific digits."""
+        from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+
+        try:
+            quant = Decimal("1").scaleb(-digits)
+            return Decimal(value).quantize(quant, rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError, TypeError):
+            return Decimal("0").quantize(Decimal("1").scaleb(-digits))
+
+    @staticmethod
     def is_valid(x: float | np.ndarray) -> bool:
         """Check if value is valid (not NaN or Inf)"""
         if isinstance(x, np.ndarray):
@@ -157,6 +180,65 @@ class SafeMath:
         return a < b - eps
 
     @staticmethod
+    def safe_clip(x: float, min_val: float, max_val: float, default: float = 0.0) -> float:
+        """Clamp with NaN/Inf protection — returns default for NaN, clips Inf to bounds."""
+        if math.isnan(x):
+            return default
+        # +/- Inf gets clipped to bounds
+        return max(min_val, min(max_val, x))
+
+    @staticmethod
+    def safe_mean(values, default: float = 0.0) -> float:
+        """Mean with NaN-skip and empty-list protection."""
+        try:
+            arr = np.asarray(values, dtype=float)
+            if arr.size == 0:
+                return default
+            result = float(np.nanmean(arr))
+            return result if SafeMath.is_valid(result) else default
+        except Exception:
+            return default
+
+    @staticmethod
+    def safe_percentile(values, percentile: float, default: float = 0.0) -> float:
+        """Percentile with NaN-skip and empty-list protection."""
+        try:
+            arr = np.asarray(values, dtype=float)
+            clean = arr[~np.isnan(arr)]
+            if clean.size == 0:
+                return default
+            result = float(np.percentile(clean, percentile))
+            return result if SafeMath.is_valid(result) else default
+        except Exception:
+            return default
+
+    @staticmethod
+    def safe_min(values, default: float = 0.0) -> float:
+        """Min with NaN-skip and empty-list protection."""
+        try:
+            arr = np.asarray(values, dtype=float)
+            clean = arr[~np.isnan(arr)]
+            if clean.size == 0:
+                return default
+            result = float(np.min(clean))
+            return result if SafeMath.is_valid(result) else default
+        except Exception:
+            return default
+
+    @staticmethod
+    def safe_max(values, default: float = 0.0) -> float:
+        """Max with NaN-skip and empty-list protection."""
+        try:
+            arr = np.asarray(values, dtype=float)
+            clean = arr[~np.isnan(arr)]
+            if clean.size == 0:
+                return default
+            result = float(np.max(clean))
+            return result if SafeMath.is_valid(result) else default
+        except Exception:
+            return default
+
+    @staticmethod
     def normalize_logits(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
         """Safe softmax normalization"""
         if not SafeMath.is_valid(logits):
@@ -171,9 +253,6 @@ class SafeMath:
         # Exp and normalize
         exp_vals = np.exp(np.clip(scaled, EXP_LOWER_GUARD, EXP_UPPER_GUARD))
         total = np.sum(exp_vals)
-
-        if total < SAFE_DIV_MIN:
-            return np.ones(len(logits)) / len(logits)
 
         return exp_vals / total
 

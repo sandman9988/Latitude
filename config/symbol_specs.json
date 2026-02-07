@@ -10,7 +10,10 @@
     "max_volume": 100.0,
     "volume_step": 0.01,
     "contract_size": 1.0,
-    "pip_value_per_lot": 0.01
+    "pip_value_per_lot": 0.01,
+    "swap_long": -0.5,
+    "swap_short": -0.3,
+    "triple_swap_day": 3
   },
   
   "XAUUSD": {
@@ -21,7 +24,10 @@
     "max_volume": 50.0,
     "volume_step": 0.01,
     "contract_size": 100.0,
-    "pip_value_per_lot": 1.0
+    "pip_value_per_lot": 1.0,
+    "swap_long": -7.2,
+    "swap_short": 4.33,
+    "triple_swap_day": 3
   },
   
   "EURUSD": {

@@ -137,7 +137,7 @@ class ParameterStalenessDetector:
         self.baseline_sharpe: Optional[float] = None
         self.baseline_confidence: Optional[float] = None
         self.baseline_established: bool = False
-        self.bars_for_baseline = 500
+        self.bars_for_baseline = min(500, performance_window)
 
         # Current staleness state
         self.staleness_score: float = 0.0

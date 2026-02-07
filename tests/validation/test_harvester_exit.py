@@ -12,7 +12,7 @@ import sys
 import numpy as np
 
 # Import harvester
-from harvester_agent import HarvesterAgent
+from src.agents.harvester_agent import HarvesterAgent
 
 
 def test_profit_target():
@@ -29,6 +29,7 @@ def test_profit_target():
     entry_price = 90000.0
 
     # Simulate MFE building up to 30%
+    exit_triggered = False
     for pct in [5, 10, 15, 20, 25, 28, 30, 31]:
         mfe = entry_price * (pct / 100.0)
         mae = 0.0  # No adverse movement
@@ -38,12 +39,12 @@ def test_profit_target():
 
         if action == 1:
             print(f"✓ EXIT TRIGGERED at MFE={pct:.1f}%, action={action}, conf={conf:.2f}")
-            return True
+            exit_triggered = True
+            break
         else:
             print(f"  HOLD at MFE={pct:.1f}%, action={action}")
 
-    print("✗ FAIL: No exit triggered at profit target")
-    return False
+    assert exit_triggered, "No exit triggered at profit target"
 
 
 def test_stop_loss():
@@ -58,6 +59,7 @@ def test_stop_loss():
     entry_price = 90000.0
 
     # Simulate MAE building up to 20%
+    exit_triggered = False
     for pct in [5, 10, 15, 18, 20, 22]:
         mae = entry_price * (pct / 100.0)
         mfe = entry_price * 0.05  # Small profit before reversal
@@ -67,12 +69,12 @@ def test_stop_loss():
 
         if action == 1:
             print(f"✓ EXIT TRIGGERED at MAE={pct:.1f}%, action={action}, conf={conf:.2f}")
-            return True
+            exit_triggered = True
+            break
         else:
             print(f"  HOLD at MAE={pct:.1f}%, action={action}")
 
-    print("✗ FAIL: No exit triggered at stop loss")
-    return False
+    assert exit_triggered, "No exit triggered at stop loss"
 
 
 def test_soft_time_stop():
@@ -89,17 +91,18 @@ def test_soft_time_stop():
     mae = 0.0
 
     # Test various bar counts
+    exit_triggered = False
     for bars in [40, 45, 50, 51, 52]:
         action, conf = harvester.decide(market_state, mfe, mae, bars, entry_price, direction=1)
 
         if action == 1:
             print(f"✓ EXIT TRIGGERED at bars_held={bars}, MFE=6.0%, action={action}, conf={conf:.2f}")
-            return True
+            exit_triggered = True
+            break
         else:
             print(f"  HOLD at bars_held={bars}")
 
-    print("✗ FAIL: No exit triggered at soft time stop")
-    return False
+    assert exit_triggered, "No exit triggered at soft time stop"
 
 
 def test_hard_time_stop():
@@ -116,17 +119,18 @@ def test_hard_time_stop():
     mae = entry_price * 0.01  # Small loss
 
     # Test various bar counts
+    exit_triggered = False
     for bars in [70, 75, 79, 80, 81]:
         action, conf = harvester.decide(market_state, mfe, mae, bars, entry_price, direction=1)
 
         if action == 1:
             print(f"✓ EXIT TRIGGERED at bars_held={bars}, action={action}, conf={conf:.2f}")
-            return True
+            exit_triggered = True
+            break
         else:
             print(f"  HOLD at bars_held={bars}")
 
-    print("✗ FAIL: No exit triggered at hard time stop")
-    return False
+    assert exit_triggered, "No exit triggered at hard time stop"
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+import pytest
+
 """
 Mathematical Verification Tests for RiskManager
 
@@ -13,9 +15,9 @@ Comprehensive testing of all calculations, statistics, and probabilities:
 import numpy as np
 from collections import deque
 
-from risk_manager import RiskManager, ProbabilityCalibration, CompositeProbabilityPredictor
-from circuit_breakers import CircuitBreakerManager
-from var_estimator import VaREstimator, RegimeType
+from src.risk.risk_manager import RiskManager, ProbabilityCalibration, CompositeProbabilityPredictor
+from src.risk.circuit_breakers import CircuitBreakerManager
+from src.risk.var_estimator import VaREstimator, RegimeType
 
 
 class TestProbabilityMath:
@@ -182,10 +184,10 @@ class TestCorrelationMath:
         )
 
         # Add returns for two symbols
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         for _ in range(50):
-            rm.update_returns("BTC", np.random.randn() * 0.01)
-            rm.update_returns("ETH", np.random.randn() * 0.01)
+            rm.update_returns("BTC", rng.standard_normal() * 0.01)
+            rm.update_returns("ETH", rng.standard_normal() * 0.01)
 
         breakdown = rm.check_correlation_breakdown(current_time=1000.0)
 
@@ -201,8 +203,8 @@ class TestCorrelationMath:
         )
 
         # Same returns for both symbols (perfect correlation)
-        np.random.seed(42)
-        returns = [np.random.randn() * 0.01 for _ in range(50)]
+        rng = np.random.default_rng(42)
+        returns = [rng.standard_normal() * 0.01 for _ in range(50)]
         for r in returns:
             rm.update_returns("BTC", r)
             rm.update_returns("BTC_COPY", r)  # Identical returns
@@ -221,8 +223,8 @@ class TestCorrelationMath:
         )
 
         # Opposite returns (negative correlation)
-        np.random.seed(42)
-        returns = [np.random.randn() * 0.01 for _ in range(50)]
+        rng = np.random.default_rng(42)
+        returns = [rng.standard_normal() * 0.01 for _ in range(50)]
         for r in returns:
             rm.update_returns("BTC", r)
             rm.update_returns("ETH", -r)  # Opposite returns
@@ -264,11 +266,11 @@ class TestCapitalAllocationMath:
         )
 
         # Add correlation data
-        np.random.seed(42)
+        rng = np.random.default_rng(42)
         for _ in range(50):
-            rm.update_returns("BTC", np.random.randn() * 0.01)
-            rm.update_returns("ETH", np.random.randn() * 0.01)
-            rm.update_returns("SOL", np.random.randn() * 0.01)
+            rm.update_returns("BTC", rng.standard_normal() * 0.01)
+            rm.update_returns("ETH", rng.standard_normal() * 0.01)
+            rm.update_returns("SOL", rng.standard_normal() * 0.01)
 
         symbols = ["BTC", "ETH", "SOL"]
         total_capital = 10000.0
@@ -289,8 +291,8 @@ class TestCapitalAllocationMath:
         )
 
         # Create negative correlation between BTC and ETH
-        np.random.seed(42)
-        returns = [np.random.randn() * 0.01 for _ in range(50)]
+        rng = np.random.default_rng(42)
+        returns = [rng.standard_normal() * 0.01 for _ in range(50)]
         for r in returns:
             rm.update_returns("BTC", r)
             rm.update_returns("ETH", -r * 0.8)  # Negative correlation
@@ -346,7 +348,7 @@ class TestQLearningMath:
 
         # Verify reward calculation logic
         last_update = rm.rl_state_history[-1]
-        assert last_update["reward"] == 1.0, "Reward should be +1.0 for approved win"
+        assert last_update["reward"] == pytest.approx(1.0), "Reward should be +1.0 for approved win"
         assert last_update["approved"] is True
         assert last_update["outcome"] is True
 
@@ -360,19 +362,19 @@ class TestQLearningMath:
 
         # Approved and won: +1.0
         rm.update_decision_outcome("entry", 0.7, True, True)
-        assert rm.rl_state_history[-1]["reward"] == 1.0
+        assert rm.rl_state_history[-1]["reward"] == pytest.approx(1.0)
 
         # Approved and lost: -1.0
         rm.update_decision_outcome("entry", 0.7, True, False)
-        assert rm.rl_state_history[-1]["reward"] == -1.0
+        assert rm.rl_state_history[-1]["reward"] == pytest.approx(-1.0)
 
         # Rejected and would have lost: +0.5
         rm.update_decision_outcome("entry", 0.5, False, False)
-        assert rm.rl_state_history[-1]["reward"] == 0.5
+        assert rm.rl_state_history[-1]["reward"] == pytest.approx(0.5)
 
         # Rejected and would have won: -0.5
         rm.update_decision_outcome("entry", 0.5, False, True)
-        assert rm.rl_state_history[-1]["reward"] == -0.5
+        assert rm.rl_state_history[-1]["reward"] == pytest.approx(-0.5)
 
 
 class TestRiskMetricsMath:
@@ -408,7 +410,7 @@ class TestRiskMetricsMath:
         # Single position: concentration = 1.0
         rm.active_positions = {"BTC": 1.0}
         assessment = rm.assess_risk()
-        assert assessment.position_concentration == 1.0, "Single position should have concentration = 1.0"
+        assert assessment.position_concentration == pytest.approx(1.0), "Single position should have concentration = 1.0"
 
         # Two equal positions: H = (0.5^2 + 0.5^2) = 0.5
         rm.active_positions = {"BTC": 1.0, "ETH": 1.0}
@@ -473,7 +475,7 @@ class TestStatisticalAggregations:
 
         # No trades: win_rate should use max(total_trades, 1) to avoid division by zero
         win_rate = rm.winning_trades / max(rm.total_trades, 1)
-        assert win_rate == 0.0, "Win rate should be 0 when no trades"
+        assert win_rate == pytest.approx(0.0), "Win rate should be 0 when no trades"
 
         # Verify no crashes
         composite = rm.get_composite_probability_predictor()
@@ -531,11 +533,14 @@ def test_all_calculations():
         for class_name, method_name, error in failed_tests:
             print(f"  - {class_name}.{method_name}")
             print(f"    {error}")
-        return 1
+        assert False, f"{len(failed_tests)} mathematical verification(s) failed"
     else:
         print("\n✓ ALL MATHEMATICAL VERIFICATIONS PASSED")
-        return 0
 
 
 if __name__ == "__main__":
-    exit(test_all_calculations())
+    try:
+        test_all_calculations()
+        exit(0)
+    except (AssertionError, Exception):
+        exit(1)

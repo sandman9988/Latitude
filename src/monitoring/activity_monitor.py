@@ -99,13 +99,8 @@ class ActivityMonitor:
         self.max_bars_inactive = max_bars_inactive
         self.min_trades_per_day = min_trades_per_day
 
-        # Blend exploration boost: high early, low late
-        if exploration_boost is not None:
-            self.exploration_boost = exploration_boost
-        else:
-            early_boost = float(os.environ.get("EXPLORATION_BOOST", str(PAPER_EXPLORATION_BOOST)))
-            late_boost = float(os.environ.get("EXPLORATION_BOOST", str(LIVE_EXPLORATION_BOOST)))
-            self.exploration_boost = early_boost * (1.0 - blend) + late_boost * blend
+        # exploration_boost is always resolved by the None-check above
+        self.exploration_boost = exploration_boost
 
         self.activity_decay = activity_decay
         self.phase_maturity = blend

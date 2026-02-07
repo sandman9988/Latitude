@@ -7,7 +7,7 @@
 #
 # Run:
 #   source ~/Documents/.venv/bin/activate
-#   export CTRADER_USERNAME="5179095"
+#   export CTRADER_USERNAME="your_username_here"
 #   export CTRADER_PASSWORD_QUOTE="***"
 #   export CTRADER_PASSWORD_TRADE="***"
 #   export CTRADER_CFG_QUOTE="ctrader_quote.cfg"
@@ -178,14 +178,17 @@ class BarBuilder:
         return t.replace(minute=m, second=0, microsecond=0)
 
     def update(self, t: dt.datetime, mid: float):
+        LOG.debug("[BARBUILDER] update called: t=%s, mid=%.5f", t, mid)
         b = self.bucket_start(t)
         if self.bucket is None:
+            LOG.debug("[BARBUILDER] Initializing new bucket: %s mid=%.5f", b, mid)
             self.bucket = b
             self.o = self.h = self.l = self.c = mid
             return None
 
         if b != self.bucket:
             closed = (self.bucket, self.o, self.h, self.l, self.c)
+            LOG.debug("[BARBUILDER] Closing bar: %s starting new bucket: %s mid=%.5f", closed, b, mid)
             self.bucket = b
             self.o = self.h = self.l = self.c = mid
             return closed
@@ -326,7 +329,7 @@ class Policy:
             return int(q.argmax())
 
     def update_ensemble_weights(self, disagreement: float, reward: float = 0.0) -> float:
-        """Lightweight placeholder for Phase 2 ensemble tracking hooks."""
+        """Update ensemble weight tracking based on model disagreement and reward feedback."""
         disagreement = max(0.0, float(disagreement))
         normalized = min(disagreement, 1.0)
         weight = 1.0 - normalized
@@ -485,11 +488,21 @@ class MFEMAETracker:
         if self.entry_price is None:
             return
 
+        # Ensure both prices are float for safe arithmetic
+        try:
+            cp = float(current_price)
+        except Exception:
+            cp = 0.0
+        try:
+            ep = float(self.entry_price)
+        except Exception:
+            ep = 0.0
+
         # Calculate P&L
         if self.direction == 1:  # long
-            pnl = current_price - self.entry_price
+            pnl = cp - ep
         else:  # short
-            pnl = self.entry_price - current_price
+            pnl = ep - cp
 
         # Track best profit (MFE)
         if pnl > self.best_profit:
@@ -587,6 +600,18 @@ class CTraderFixApp(fix.Application):
         # Phase 3.5: Path geometry for trigger features (gamma, jerk, runway)
         self.path_geometry = PathGeometry()
 
+        # Friction calculator (source of truth: cTrader SymbolInfo)
+        # MUST be created before DualPolicy so it can be passed to HarvesterAgent
+        self.friction_calculator = FrictionCalculator(
+            symbol=symbol,
+            symbol_id=symbol_id,
+            timeframe=self.timeframe_label,
+            broker="default",
+            param_manager=self.param_manager,
+        )
+        if os.environ.get("CTRADER_CONTRACT_SIZE") is None:
+            self.contract_size = max(self.friction_calculator.costs.contract_size or 1.0, 1.0)
+
         # Phase 3: Dual-agent policy (TriggerAgent + HarvesterAgent)
         # Falls back to simple policy if DDQN_DUAL_AGENT=0
         use_dual_agent = os.environ.get("DDQN_DUAL_AGENT", "1") == "1"
@@ -601,9 +626,10 @@ class CTraderFixApp(fix.Application):
                 symbol=symbol,
                 timeframe=self.timeframe_label,
                 broker="default",
+                friction_calculator=self.friction_calculator,
             )
             LOG.info(
-                "[POLICY] Using DualPolicy with TriggerAgent + HarvesterAgent + PathGeometry (training=%s)",
+                "[POLICY] Using DualPolicy with TriggerAgent + HarvesterAgent + PathGeometry + FrictionCalculator (training=%s)",
                 enable_online_learning,
             )
         else:
@@ -635,24 +661,14 @@ class CTraderFixApp(fix.Application):
             {}
         )  # FIXED: was {self.default_position_id: self.mfe_mae_tracker}
         self.path_recorders: dict[str, PathRecorder] = {}  # FIXED: was {self.default_position_id: self.path_recorder}
+        self._tracker_lock = threading.Lock()  # Protects mfe_mae_trackers & path_recorders across FIX callbacks
         self.performance = PerformanceTracker()
         self.trade_exporter = TradeExporter(output_dir="trades")  # Save to trades/ directory
         self.last_export_count = 0  # Track last export to avoid duplicates
-        self.bar_count = 0  # Track total bars processed
-        self.last_autosave_bar = 0  # Track last auto-save bar count
         self.bar_count = 0  # Track bars for periodic auto-save
         self.last_autosave_bar = 0  # Last bar when auto-save occurred
 
-        # Friction calculator (source of truth: cTrader SymbolInfo)
-        self.friction_calculator = FrictionCalculator(
-            symbol=symbol,
-            symbol_id=symbol_id,
-            timeframe=self.timeframe_label,
-            broker="default",
-            param_manager=self.param_manager,
-        )
-        if os.environ.get("CTRADER_CONTRACT_SIZE") is None:
-            self.contract_size = max(self.friction_calculator.costs.contract_size or 1.0, 1.0)
+        # Log friction parameters
         LOG.info(
             "[PARAM] depth_levels=%d depth_buffer=%.2f spread_relax=%.2f vpin_z=%.2f vol_ref=%.4f vol_cap=%.4f risk_budget_usd=%.2f",
             self.friction_calculator.depth_levels,
@@ -863,17 +879,6 @@ class CTraderFixApp(fix.Application):
             LOG.warning("[POSITION] Direct cur_pos assignment ignored - TradeManager is source of truth")
         else:
             self._cur_pos_fallback = value
-
-        # HUD data export tracking
-        self.start_time = dt.datetime.now(dt.UTC)
-        self.bar_count = 0
-        self.hud_data_dir = Path("data")
-        self.hud_data_dir.mkdir(exist_ok=True)
-        # Seed HUD files immediately so the dashboard reflects the active symbol/timeframe
-        try:
-            self._export_hud_data()
-        except Exception as hud_init_err:
-            LOG.warning("[HUD] Initial export failed: %s", hud_init_err)
 
     # ---- connection health monitoring ----
     def _monitor_connection_health(self):
@@ -1128,15 +1133,15 @@ class CTraderFixApp(fix.Application):
             return ""
 
     # ---- session events ----
-    def onCreate(self, session_id):
-        LOG.info("[CREATE] %s qual=%s", session_id.toString(), self._qual(session_id))
+    def onCreate(self, sessionID):
+        LOG.info("[CREATE] %s qual=%s", sessionID.toString(), self._qual(sessionID))
 
-    def onLogon(self, session_id):
-        qual = self._qual(session_id)
-        LOG.info("[LOGON] %s qual=%s", session_id.toString(), qual)
+    def onLogon(self, sessionID):
+        qual = self._qual(sessionID)
+        LOG.info("[LOGON] %s qual=%s", sessionID.toString(), qual)
 
         # GAP 10.1: Log session event
-        self.transaction_log.log_session_event(qual, "LOGON", {"session_id": session_id.toString()})
+        self.transaction_log.log_session_event(qual, "LOGON", {"session_id": sessionID.toString()})
 
         # Track reconnection success
         if self.reconnect_attempts > 0:
@@ -1157,7 +1162,7 @@ class CTraderFixApp(fix.Application):
 
         try:
             if qual == "QUOTE":
-                self.quote_sid = session_id
+                self.quote_sid = sessionID
                 self.last_quote_heartbeat = utc_now()
                 # Only subscribe if symbol ID is resolved
                 if not self.symbol_id_pending:
@@ -1166,7 +1171,7 @@ class CTraderFixApp(fix.Application):
                     self.quote_subscription_deferred = True
                     LOG.info("[QUOTE] Deferring market data subscription until symbol ID resolved")
             elif qual == "TRADE":
-                self.trade_sid = session_id
+                self.trade_sid = sessionID
                 self.last_trade_heartbeat = utc_now()
 
                 # If symbol_id is 0 (AUTO mode), request SecurityList first
@@ -1178,7 +1183,7 @@ class CTraderFixApp(fix.Application):
                 # Normal flow: proceed with trade session startup
                 self._complete_trade_session_startup()
             else:
-                LOG.warning("[LOGON] Unknown qualifier; not routing: %s", session_id.toString())
+                LOG.warning("[LOGON] Unknown qualifier; not routing: %s", sessionID.toString())
         except Exception as e:
             LOG.error("[LOGON] Error during session setup for %s: %s", qual, e, exc_info=True)
 
@@ -1224,19 +1229,19 @@ class CTraderFixApp(fix.Application):
         if self.trade_integration.trade_manager:
             self.trade_integration.trade_manager.on_logon()
 
-    def onLogout(self, session_id):
-        qual = self._qual(session_id)
+    def onLogout(self, sessionID):
+        qual = self._qual(sessionID)
 
         # GAP 10.1: Log session event
-        self.transaction_log.log_session_event(qual, "LOGOUT", {"session_id": session_id.toString()})
+        self.transaction_log.log_session_event(qual, "LOGOUT", {"session_id": sessionID.toString()})
 
         # Track uptime before disconnect
         if self.connection_uptime_start:
             uptime = time.time() - self.connection_uptime_start
             self.longest_uptime = max(self.longest_uptime, uptime)
-            LOG.warning("[LOGOUT] %s qual=%s (uptime was %.1f min)", session_id.toString(), qual, uptime / 60)
+            LOG.warning("[LOGOUT] %s qual=%s (uptime was %.1f min)", sessionID.toString(), qual, uptime / 60)
         else:
-            LOG.warning("[LOGOUT] %s qual=%s", session_id.toString(), qual)
+            LOG.warning("[LOGOUT] %s qual=%s", sessionID.toString(), qual)
 
         # Mark session as down
         if qual == "QUOTE":
@@ -1280,14 +1285,16 @@ class CTraderFixApp(fix.Application):
             LOG.error("[RECONNECT] Consider restarting the bot or checking network/credentials")
 
     # ---- admin hooks ----
-    def toAdmin(self, message, session_id):
+
+    def toAdmin(self, message, sessionID):
         msg_type = fix.MsgType()
         message.getHeader().getField(msg_type)
 
         if msg_type.getValue() != fix.MsgType_Logon:
             return
 
-        qual = self._qual(session_id)
+        qual = self._qual(sessionID)
+        LOG.info(f"[DEBUG] toAdmin called for session: {sessionID}, qual: {qual}")
 
         # Reset seq nums
         message.setField(fix.ResetSeqNumFlag(True))
@@ -1296,9 +1303,11 @@ class CTraderFixApp(fix.Application):
         if qual == "QUOTE":
             pwd = os.environ.get("CTRADER_PASSWORD_QUOTE", "").strip()
             message.getHeader().setField(fix.TargetSubID("QUOTE"))
+            LOG.info("[DEBUG] Set TargetSubID=QUOTE in logon header")
         else:
             pwd = os.environ.get("CTRADER_PASSWORD_TRADE", "").strip()
             message.getHeader().setField(fix.TargetSubID("TRADE"))
+            LOG.info("[DEBUG] Set TargetSubID=TRADE in logon header")
 
         if user:
             message.setField(fix.Username(user))
@@ -1307,8 +1316,8 @@ class CTraderFixApp(fix.Application):
 
         LOG.info("[ADMIN][LOGON OUT] qual=%s %s", qual, _redact_fix(message.toString()))
 
-    def fromAdmin(self, message, session_id):
-        qual = self._qual(session_id)
+    def fromAdmin(self, message, sessionID):
+        qual = self._qual(sessionID)
 
         # Update heartbeat timestamp on ANY admin message
         now = utc_now()
@@ -1319,13 +1328,13 @@ class CTraderFixApp(fix.Application):
 
         LOG.info("[ADMIN][IN] qual=%s %s", qual, _redact_fix(message.toString()))
 
-    def toApp(self, message, session_id):
-        qual = self._qual(session_id)
+    def toApp(self, message, sessionID):
+        qual = self._qual(sessionID)
         # Keep this INFO until stable; you can reduce to DEBUG later.
         LOG.info("[APP][OUT] qual=%s %s", qual, _redact_fix(message.toString()))
 
-    def fromApp(self, message, session_id):
-        qual = self._qual(session_id)
+    def fromApp(self, message, sessionID):
+        qual = self._qual(sessionID)
 
         # Update heartbeat on any app message
         now = utc_now()
@@ -1854,23 +1863,26 @@ class CTraderFixApp(fix.Application):
             series.mark_bar_opened()
 
     def try_bar_update(self):
+        LOG.info(f"[DIAG] try_bar_update called. best_bid={self.best_bid}, best_ask={self.best_ask}")
         if self.best_bid is None or self.best_ask is None:
-            LOG.debug("[BAR] Skipping bar update: best_bid or best_ask is None")
+            LOG.info("[BAR] Skipping bar update: best_bid or best_ask is None")
             return
 
         mid = (self.best_bid + self.best_ask) / 2.0
+        LOG.info(f"[DIAG] Calculated mid={mid}")
         self.current_bar_tick_count += 1
         self._update_vpin(mid)
 
         # Update MFE/MAE if we have an open position
-        if self.trade_integration.trade_manager:
-            position = self.trade_integration.trade_manager.get_position()
-            if abs(position.net_qty) > 0.0001:  # Active position
+        with self._tracker_lock:
+            if self.trade_integration.trade_manager:
+                position = self.trade_integration.trade_manager.get_position()
+                if abs(position.net_qty) > 0.0001:  # Active position
+                    if self.default_position_id in self.mfe_mae_trackers:
+                        self.mfe_mae_trackers[self.default_position_id].update(mid)
+            elif self.cur_pos != 0:  # Fallback for legacy single-position mode
                 if self.default_position_id in self.mfe_mae_trackers:
                     self.mfe_mae_trackers[self.default_position_id].update(mid)
-        elif self.cur_pos != 0:  # Fallback for legacy single-position mode
-            if self.default_position_id in self.mfe_mae_trackers:
-                self.mfe_mae_trackers[self.default_position_id].update(mid)
 
         closed = self.builder.update(utc_now(), mid)
         if closed:
@@ -1909,8 +1921,12 @@ class CTraderFixApp(fix.Application):
         if not hasattr(self, "_pending_closes"):
             self._pending_closes = set()
 
+        # Snapshot tracker items under lock to avoid dict-changed-during-iteration
+        with self._tracker_lock:
+            tracker_snapshot = list(self.mfe_mae_trackers.items())
+
         # Check each position independently
-        for position_id, tracker in list(self.mfe_mae_trackers.items()):
+        for position_id, tracker in tracker_snapshot:
             # Skip if already closing this position
             if position_id in self._pending_closes:
                 continue
@@ -1932,9 +1948,10 @@ class CTraderFixApp(fix.Application):
             try:
                 # Get current market features
                 imbalance = self.order_book.imbalance() if hasattr(self.order_book, "imbalance") else 0.0
-                vpin_zscore = self.vpin_tracker.get_zscore() if hasattr(self, "vpin_tracker") else 0.0
-                depth_ratio = self.order_book.depth_ratio() if hasattr(self.order_book, "depth_ratio") else 1.0
-                event_features = self.event_tracker.get_features() if hasattr(self, "event_tracker") else []
+                vpin_zscore = self.last_vpin_stats.get("zscore", 0.0) if hasattr(self, "last_vpin_stats") else 0.0
+                b_depth, a_depth = self.order_book.depth_sum() if hasattr(self.order_book, "depth_sum") else (0.0, 0.0)
+                depth_ratio = b_depth / a_depth if a_depth > 0 else 1.0
+                event_features = self.event_time_engine.calculate_features() if hasattr(self, "event_time_engine") and self.event_time_engine else {}
 
                 # Harvester decision (ML-based) for this specific position
                 exit_action, exit_conf = self.policy.decide_exit(
@@ -2039,14 +2056,22 @@ class CTraderFixApp(fix.Application):
 
         # GAP 10.1: Log position update
         avg_price = 0.0
-        if self.mfe_mae_tracker and self.mfe_mae_tracker.entry_price:
-            avg_price = self.mfe_mae_tracker.entry_price
+        # Look up the active tracker from the multi-position dict (fall back to legacy singleton)
+        _active_tracker = None
+        with self._tracker_lock:
+            if self.mfe_mae_trackers:
+                # Use the most recent tracker (last entry)
+                _active_tracker = next(reversed(self.mfe_mae_trackers.values()), None)
+        if _active_tracker is None:
+            _active_tracker = self.mfe_mae_tracker  # Legacy fallback
+        if _active_tracker and _active_tracker.entry_price:
+            avg_price = _active_tracker.entry_price
 
         self.transaction_log.log_position_update(position_id=f"{self.symbol_id}_net", net_qty=net, avg_price=avg_price)
 
         # Log MFE/MAE summary and save path when position closes
         if old_pos != 0 and self.cur_pos == 0:
-            summary = self.mfe_mae_tracker.get_summary()
+            summary = _active_tracker.get_summary() if _active_tracker and _active_tracker.entry_price else self.mfe_mae_tracker.get_summary()
             LOG.info(
                 "[MFE/MAE] Entry=%.5f %s | MFE=%.5f MAE=%.5f | Best=%.5f Worst=%.5f | WTL=%s",
                 summary["entry_price"],
@@ -2110,6 +2135,21 @@ class CTraderFixApp(fix.Application):
                             winner_to_loser=summary["winner_to_loser"],
                         )
 
+                    # --- CRITICAL: Set prev_harvester_state for experience addition ---
+                    # Only update harvester state (NOT entry_state - that was set at entry time)
+                    if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
+                        self.prev_harvester_state = (
+                            self.policy.harvester.last_state.copy()
+                            if self.policy.harvester.last_state is not None
+                            else None
+                        )
+                        self.prev_exit_action = 1  # CLOSE
+                    # FIX 4: Do NOT overwrite entry_state here - it was correctly set at entry time
+                    # The entry_state should reflect market conditions AT ENTRY, not at exit.
+                    # Only set entry_action as fallback if it wasn't captured at entry
+                    if self.entry_action is None:
+                        self.entry_action = 1 if summary["direction"] == "LONG" else 2
+
                     # Calculate shaped rewards for DDQN training
                     reward_data = {
                         "exit_pnl": pnl,
@@ -2160,6 +2200,9 @@ class CTraderFixApp(fix.Application):
                                 next_state=next_state,
                                 done=True,
                             )
+                            # Log buffer size after experience addition
+                            if hasattr(self.policy.trigger, "buffer") and self.policy.trigger.buffer:
+                                LOG.info("[BUFFER] TriggerAgent buffer size: %d", self.policy.trigger.buffer.size)
                             LOG.info(
                                 "[ONLINE_LEARNING] Added TriggerAgent experience: action=%d reward=%.4f (predicted_mfe=%.4f actual_mfe=%.4f)",
                                 self.entry_action,
@@ -2189,6 +2232,9 @@ class CTraderFixApp(fix.Application):
                                 next_state=next_state,
                                 done=True,
                             )
+                            # Log buffer size after experience addition
+                            if hasattr(self.policy.harvester, "buffer") and self.policy.harvester.buffer:
+                                LOG.info("[BUFFER] HarvesterAgent buffer size: %d", self.policy.harvester.buffer.size)
                             LOG.info("[ONLINE_LEARNING] Added HarvesterAgent CLOSE: reward=%.4f", capture_reward)
 
                         # Reset harvester tracking
@@ -2198,7 +2244,7 @@ class CTraderFixApp(fix.Application):
                         self.prev_mae = 0.0
 
                     # Handbook: Update circuit breakers with trade result
-                    current_equity = self.performance.get_total_pnl() + 10000.0  # Assuming 10K starting equity
+                    current_equity = self.performance.total_pnl + 10000.0  # Assuming 10K starting equity
                     self.circuit_breakers.update_trade(pnl, current_equity)
 
                     # Check and log circuit breaker status
@@ -2710,7 +2756,7 @@ class CTraderFixApp(fix.Application):
         self.last_depth_gate = False
 
         # Phase 3.5: Get exploration bonus from activity monitor
-        (
+        exploration_bonus = (
             self.activity_monitor.get_exploration_bonus()
             if hasattr(self.activity_monitor, "get_exploration_bonus")
             else 0.0
@@ -2759,6 +2805,10 @@ class CTraderFixApp(fix.Application):
             if trigger_size >= MIN_EXPERIENCES_FOR_TRAINING or harvester_size >= MIN_EXPERIENCES_FOR_TRAINING:
                 try:
                     train_metrics = self.policy.train_step(self.adaptive_reg)
+                    # Log training stats after each training step
+                    stats = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
+                    LOG.info("[TRAINING] TriggerAgent stats: %s", stats.get("trigger", {}))
+                    LOG.info("[TRAINING] HarvesterAgent stats: %s", stats.get("harvester", {}))
                     self.bars_since_training = 0
 
                     LOG.debug(
@@ -2896,6 +2946,26 @@ class CTraderFixApp(fix.Application):
                     self.entry_action = action
                     self.predicted_runway = runway  # FIX 1: Store predicted MFE for trigger reward
 
+                # FIX 5: Add NO_ENTRY experiences so trigger learns when NOT to trade
+                # This provides negative/neutral examples critical for balanced learning
+                if action == 0 and hasattr(self.policy, "add_trigger_experience"):
+                    trigger_state = (
+                        self.policy.trigger.last_state.copy()
+                        if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "last_state")
+                        and self.policy.trigger.last_state is not None
+                        else None
+                    )
+                    if trigger_state is not None:
+                        # Reward of 0.0 for NO_ENTRY: neutral - neither penalize nor reward inaction
+                        self.policy.add_trigger_experience(
+                            state=trigger_state,
+                            action=0,  # NO_ENTRY
+                            reward=0.0,
+                            next_state=trigger_state,  # Same state (no position change)
+                            done=True,
+                        )
+                        LOG.debug("[ONLINE_LEARNING] Added NO_ENTRY trigger experience")
+
                 # Get PathGeometry features for logging
                 geom = (
                     self.policy.path_geometry.last
@@ -2925,14 +2995,21 @@ class CTraderFixApp(fix.Application):
                 )
             else:
                 # IN POSITION: Check for exit
-                exit_action, exit_conf = self.policy.decide_exit(
-                    self.bars,
-                    current_price=c,
-                    imbalance=imbalance,
-                    vpin_z=vpin_zscore,
-                    depth_ratio=depth_ratio,
-                    event_features=event_features,
-                )
+                # Skip if tick-level harvester already issued a close for this position
+                _already_closing = hasattr(self, "_pending_closes") and len(self._pending_closes) > 0
+                if _already_closing:
+                    LOG.info("[BAR] Tick harvester already issued close — skipping bar-level exit check")
+                    exit_action = 0
+                    exit_conf = 0.0
+                else:
+                    exit_action, exit_conf = self.policy.decide_exit(
+                        self.bars,
+                        current_price=c,
+                        imbalance=imbalance,
+                        vpin_z=vpin_zscore,
+                        depth_ratio=depth_ratio,
+                        event_features=event_features,
+                    )
                 # exit_action: 0=HOLD, 1=CLOSE
                 desired = 0 if exit_action == 1 else self.cur_pos
 
@@ -3238,7 +3315,8 @@ class CTraderFixApp(fix.Application):
         self.trade_integration.trade_manager.check_pending_order_timeouts()
 
         # P0 FIX: Adjust quantity for realistic execution costs
-        mid_price = (self.best_bid + self.best_ask) / 2.0 if self.best_bid and self.best_ask else 50000.0
+        last_close = self.bars[-1][4] if self.bars else 0.0
+        mid_price = (self.best_bid + self.best_ask) / 2.0 if self.best_bid and self.best_ask else last_close
         spread_bps = 0.0
         if self.best_bid and self.best_ask and mid_price > 0:
             spread_bps = ((self.best_ask - self.best_bid) / mid_price) * 10000.0
@@ -3249,7 +3327,7 @@ class CTraderFixApp(fix.Application):
             target_quantity=qty,
             mid_price=mid_price,
             spread_bps=spread_bps,
-            regime=self.regime_detector.current_regime if hasattr(self, "regime_detector") else "UNKNOWN",
+            regime=getattr(self.policy, "current_regime", "UNKNOWN"),
         )
 
         if adjusted_qty < qty:
@@ -3331,20 +3409,24 @@ class CTraderFixApp(fix.Application):
             current_price = (self.best_bid + self.best_ask) / 2.0 if self.best_bid and self.best_ask else 0.0
             direction = "LONG" if self.cur_pos > 0 else ("SHORT" if self.cur_pos < 0 else "FLAT")
 
-            # Get MFE/MAE from multi-position tracker
-            position_id = f"{self.symbol_id}_net"
-            tracker = self.mfe_mae_trackers.get(position_id, self.mfe_mae_tracker)  # Fallback to default
+            # Get MFE/MAE from multi-position tracker (look up any active tracker)
+            tracker = None
+            with self._tracker_lock:
+                if self.mfe_mae_trackers:
+                    # Use the most recent active tracker
+                    tracker = next(reversed(self.mfe_mae_trackers.values()), None)
+            if tracker is None:
+                tracker = self.mfe_mae_tracker  # Legacy fallback
             entry_price = tracker.entry_price if self.cur_pos != 0 and tracker.entry_price else 0.0
 
             # Debug: Log tracker state
             if self.cur_pos != 0 and entry_price == 0:
                 LOG.warning(
-                    "[HUD_DEBUG] Tracker for %s has entry_price=%s (cur_pos=%d, tracker=%s, has_tracker=%s)",
-                    position_id,
+                    "[HUD_DEBUG] Tracker has entry_price=%s (cur_pos=%d, tracker=%s, trackers_count=%d)",
                     tracker.entry_price,
                     self.cur_pos,
                     type(tracker).__name__,
-                    position_id in self.mfe_mae_trackers,
+                    len(self.mfe_mae_trackers),
                 )
 
             mfe = tracker.mfe if self.cur_pos != 0 else 0.0
@@ -3354,12 +3436,18 @@ class CTraderFixApp(fix.Application):
             unrealized_pnl = 0.0
             bars_held = 0
             if self.cur_pos != 0 and entry_price > 0:
+                # Get actual position qty from TradeManager if available
+                actual_qty = self.qty  # Default
+                if self.trade_integration and self.trade_integration.trade_manager:
+                    pos = self.trade_integration.trade_manager.get_position()
+                    actual_qty = abs(pos.net_qty) if abs(pos.net_qty) > 0 else self.qty
                 if self.cur_pos > 0:  # LONG
-                    unrealized_pnl = (current_price - entry_price) * self.qty
+                    unrealized_pnl = (current_price - entry_price) * actual_qty
                 else:  # SHORT
-                    unrealized_pnl = (entry_price - current_price) * self.qty
-                # Use multi-position path recorder
-                position_path_recorder = self.path_recorders.get(position_id, self.path_recorder)
+                    unrealized_pnl = (entry_price - current_price) * actual_qty
+                # Use any active path recorder (look up like tracker)
+                with self._tracker_lock:
+                    position_path_recorder = next(iter(self.path_recorders.values()), self.path_recorder) if self.path_recorders else self.path_recorder
                 bars_held = len(position_path_recorder.bars) if hasattr(position_path_recorder, "bars") else 0
 
             position_data = {
@@ -3624,13 +3712,18 @@ class CTraderFixApp(fix.Application):
 
         trade_id = trade_record.get("trade_id", int(time.time()))
         backup_file = backup_dir / f"trade_{trade_id}_backup.json"
+        primary_file = Path("data") / "trade_log.jsonl"
 
         try:
             # First write to backup location
             with open(backup_file, "w", encoding="utf-8") as f:
                 json.dump(trade_record, f, indent=2, default=str)
 
-            # All operations succeeded - can remove backup
+            # Append to primary trade log (JSON Lines format)
+            with open(primary_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(trade_record, default=str) + "\n")
+
+            # Primary save succeeded - can remove backup
             if backup_file.exists():
                 backup_file.unlink()
 

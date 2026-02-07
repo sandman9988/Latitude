@@ -6,14 +6,22 @@ Test Online Learning Integration
 Verifies that training loops are properly wired up and functional.
 """
 
+
+import os
+import sys
 import datetime as dt
 import logging
-import sys
 import traceback
 from collections import deque
 
 import numpy as np
 from numpy.random import Generator, default_rng
+
+
+# Ensure project root is in sys.path for src imports
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -34,7 +42,7 @@ def test_trigger_agent_training():
     rng: Generator = default_rng(42)
 
     try:
-        from trigger_agent import TriggerAgent  # noqa: PLC0415
+        from src.agents.trigger_agent import TriggerAgent  # noqa: PLC0415
 
         # Initialize agent
         agent = TriggerAgent(window=64, n_features=7, enable_training=True)
@@ -54,7 +62,7 @@ def test_trigger_agent_training():
                 done=True,
             )
 
-        buffer_size = agent.buffer.tree.size if hasattr(agent, "buffer") else 0
+        buffer_size = agent.buffer.tree.n_entries if hasattr(agent, "buffer") else 0
         LOG.info(f"✓ Buffer size: {buffer_size} experiences")
         assert buffer_size == BUFFER_SMALL, f"Expected {BUFFER_SMALL} experiences, got {buffer_size}"
 
@@ -87,7 +95,7 @@ def test_harvester_agent_training():
     rng: Generator = default_rng(43)
 
     try:
-        from harvester_agent import HarvesterAgent  # noqa: PLC0415
+        from src.agents.harvester_agent import HarvesterAgent  # noqa: PLC0415
 
         # Initialize agent
         agent = HarvesterAgent(window=64, n_features=10, enable_training=True)
@@ -107,7 +115,7 @@ def test_harvester_agent_training():
                 done=True,
             )
 
-        buffer_size = agent.buffer.tree.size if hasattr(agent, "buffer") else 0
+        buffer_size = agent.buffer.tree.n_entries if hasattr(agent, "buffer") else 0
         LOG.info(f"✓ Buffer size: {buffer_size} experiences")
         assert buffer_size == BUFFER_SMALL, f"Expected {BUFFER_SMALL} experiences, got {buffer_size}"
 
@@ -138,10 +146,10 @@ def test_dual_policy_integration():
     LOG.info("=" * 70)
 
     try:
-        from dual_policy import DualPolicy  # noqa: PLC0415
+        from src.agents.dual_policy import DualPolicy  # noqa: PLC0415
 
         # Initialize DualPolicy
-        policy = DualPolicy(window=64, enable_regime_detection=False)
+        policy = DualPolicy(window=64, enable_regime_detection=False, enable_training=True)
 
         # Create dummy bars
         bars = deque(maxlen=100)
@@ -176,13 +184,13 @@ def test_dual_policy_integration():
         harvester_has_buffer = hasattr(policy.harvester, "buffer") and policy.harvester.buffer is not None
 
         if trigger_has_buffer:
-            trigger_buffer_size = policy.trigger.buffer.tree.size
+            trigger_buffer_size = policy.trigger.buffer.tree.n_entries
             LOG.info(f"✓ TriggerAgent buffer: {trigger_buffer_size} experiences")
         else:
             LOG.warning("⚠ TriggerAgent buffer not initialized (training may be disabled)")
 
         if harvester_has_buffer:
-            harvester_buffer_size = policy.harvester.buffer.tree.size
+            harvester_buffer_size = policy.harvester.buffer.tree.n_entries
             LOG.info(f"✓ HarvesterAgent buffer: {harvester_buffer_size} experiences")
         else:
             LOG.warning("⚠ HarvesterAgent buffer not initialized (training may be disabled)")
@@ -204,7 +212,7 @@ def test_experience_buffer():
     rng: Generator = default_rng(44)
 
     try:
-        from experience_buffer import ExperienceBuffer  # noqa: PLC0415
+        from src.utils.experience_buffer import ExperienceBuffer  # noqa: PLC0415
 
         # Initialize buffer
         buffer = ExperienceBuffer(capacity=1000)
@@ -225,8 +233,8 @@ def test_experience_buffer():
                 regime=rng.integers(0, 3),
             )
 
-        LOG.info(f"✓ Buffer size: {buffer.tree.size}")
-        assert buffer.tree.size == BUFFER_MEDIUM, f"Expected {BUFFER_MEDIUM}, got {buffer.tree.size}"
+        LOG.info(f"✓ Buffer size: {buffer.tree.n_entries}")
+        assert buffer.tree.n_entries == BUFFER_MEDIUM, f"Expected {BUFFER_MEDIUM}, got {buffer.tree.n_entries}"
 
         # Test sampling
         LOG.info("Sampling batch of 64...")
