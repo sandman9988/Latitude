@@ -5,9 +5,7 @@ Targets:
   - risk_manager.py     (94% → ~97%): lines 463, 477-480, 529, 642, 854, 957, 1230, 1322-1323
 """
 
-import io
 import time
-from unittest.mock import patch
 
 import numpy as np
 

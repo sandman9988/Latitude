@@ -1,8 +1,6 @@
 """Tests for src.monitoring.activity_monitor – ActivityMonitor & CounterfactualAnalyzer."""
 
-import time
-from datetime import UTC, datetime, timedelta
-from unittest.mock import patch
+from datetime import UTC, datetime
 
 import pytest
 

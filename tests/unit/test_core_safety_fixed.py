@@ -11,7 +11,6 @@ Tests the actual API of core safety components:
 
 import logging
 import sys
-from pathlib import Path
 import tempfile
 import os
 

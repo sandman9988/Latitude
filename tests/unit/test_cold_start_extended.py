@@ -6,7 +6,7 @@ workflow, demotion back, phase history after multiple transitions.
 
 import pytest
 
-from src.core.cold_start_manager import ColdStartManager, PhaseMetrics, WarmupPhase
+from src.core.cold_start_manager import ColdStartManager, WarmupPhase
 
 
 class TestFullWorkflow:

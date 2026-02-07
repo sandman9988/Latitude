@@ -3,19 +3,13 @@
 Covers: RegimeType, KurtosisMonitor, VaREstimator, position_size_from_var.
 """
 
-import math
 import pytest
 import numpy as np
 
 from src.risk.var_estimator import (
-    KURTOSIS_CAP,
-    MIN_BASE_VAR_SAMPLE,
     MIN_KURTOSIS_SAMPLE,
     MIN_VAR_SAMPLE,
-    MIN_VAR_THRESHOLD,
-    REFERENCE_VOL_FALLBACK,
     VAR_MULT_MAX,
-    VPIN_CAP,
     KurtosisMonitor,
     RegimeType,
     VaREstimator,

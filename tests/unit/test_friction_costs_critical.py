@@ -8,9 +8,7 @@ Covers:
   - FrictionCalculator.calculate_swap rollover counting (lines 847-860)
 """
 
-import math
-from datetime import UTC, datetime
-from unittest.mock import patch
+from datetime import UTC
 
 import pytest
 
@@ -157,7 +155,6 @@ class TestTripleSwapDay:
 
     def test_triple_swap_wednesday(self, fc_pips):
         """On Wednesday, overnight hold gets 3x (1+2) rollovers."""
-        from unittest.mock import PropertyMock
         # The code does `from datetime import UTC, datetime` locally,
         # so we can't easily mock datetime.now. Instead, set triple_swap_day
         # to match today's weekday so the test is deterministic.

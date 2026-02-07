@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from src.features.event_time_features import EventTimeFeatureEngine, SessionTimes
+from src.features.event_time_features import EventTimeFeatureEngine
 
 
 # ---------------------------------------------------------------------------

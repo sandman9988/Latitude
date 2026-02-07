@@ -12,7 +12,6 @@ This simulates the actual bot flow: FLAT → ENTRY → IN_POSITION → EXIT
 """
 import sys
 import json
-import numpy as np
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path

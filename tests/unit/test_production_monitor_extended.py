@@ -7,11 +7,8 @@ _save_metrics details, and edge cases not in the original test file.
 import json
 import time
 import pytest
-from pathlib import Path
-from unittest.mock import patch, MagicMock
 
 from src.monitoring.production_monitor import (
-    Alert,
     ProductionMonitor,
     TradingMetrics,
 )

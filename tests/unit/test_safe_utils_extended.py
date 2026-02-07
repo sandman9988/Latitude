@@ -5,7 +5,6 @@ safe_get_series None arr, safe_get_series no-len, safe_slice None/exception,
 safe_percentile empty valid values, safe_percentile f==c path.
 """
 
-import math
 from collections import deque
 
 import pytest

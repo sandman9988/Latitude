@@ -9,9 +9,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from src.persistence.journaled_persistence import Journal, JournalEntry
+from src.persistence.journaled_persistence import Journal
 
 
 # ---------------------------------------------------------------------------

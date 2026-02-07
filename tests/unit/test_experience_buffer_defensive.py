@@ -8,9 +8,7 @@ Covers:
 """
 
 import logging
-import math
 import time
-from unittest.mock import patch
 
 import numpy as np
 
@@ -18,7 +16,7 @@ rng = np.random.default_rng(42)
 
 import pytest
 
-from src.utils.experience_buffer import ExperienceBuffer, Experience, RegimeSampling
+from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 
 
 def _make_state(dim: int = 7) -> np.ndarray:

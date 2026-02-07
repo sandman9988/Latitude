@@ -1,7 +1,6 @@
 """Tests for src.monitoring.trade_analyzer – TradeAnalyzer (CSV trade analysis)."""
 
 import os
-import tempfile
 from datetime import datetime, timedelta
 
 import numpy as np

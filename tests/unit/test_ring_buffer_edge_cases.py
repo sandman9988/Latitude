@@ -13,7 +13,6 @@ import math
 import pytest
 
 from src.utils.ring_buffer import (
-    RingBuffer,
     RollingMean,
     RollingMinMax,
     RollingStats,

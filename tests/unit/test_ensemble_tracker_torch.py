@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 from src.core.ensemble_tracker import (
     EnsembleTracker,
     NUM_ACTIONS,
-    MIN_ENSEMBLE_MODELS,
 )
 
 

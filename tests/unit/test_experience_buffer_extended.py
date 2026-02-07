@@ -4,13 +4,11 @@ Covers: sample() edge paths, update_priorities clamping, get_stats,
 set_current_regime, staleness negative-age, RegimeSampling enum.
 """
 
-import math
 import time
 import pytest
 import numpy as np
 
 from src.utils.experience_buffer import (
-    Experience,
     ExperienceBuffer,
     RegimeSampling,
 )

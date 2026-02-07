@@ -15,7 +15,7 @@ Covers:
 """
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -25,10 +25,6 @@ import pytest
 
 from src.agents.harvester_agent import (
     HarvesterAgent,
-    PROFIT_TARGET_PCT_DEFAULT,
-    STOP_LOSS_PCT_DEFAULT,
-    SOFT_TIME_STOP_BARS,
-    HARD_TIME_STOP_BARS,
     PCT_SCALE,
 )
 

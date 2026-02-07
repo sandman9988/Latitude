@@ -1,7 +1,5 @@
 """Tests for src.core.reward_shaper – RewardShaper (6-component reward calculation)."""
 
-import math
-
 import pytest
 
 from src.core.reward_shaper import RewardShaper

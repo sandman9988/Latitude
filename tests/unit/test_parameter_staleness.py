@@ -8,7 +8,6 @@ Covers: ParameterStalenessDetector, StalenessSnapshot, StalenessSignal,
 import json
 import pytest
 from dataclasses import asdict
-from pathlib import Path
 
 from src.core.parameter_staleness import (
     ParameterStalenessDetector,

@@ -13,9 +13,8 @@ Comprehensive testing of all calculations, statistics, and probabilities:
 """
 
 import numpy as np
-from collections import deque
 
-from src.risk.risk_manager import RiskManager, ProbabilityCalibration, CompositeProbabilityPredictor
+from src.risk.risk_manager import RiskManager
 from src.risk.circuit_breakers import CircuitBreakerManager
 from src.risk.var_estimator import VaREstimator, RegimeType
 
@@ -340,7 +339,7 @@ class TestQLearningMath:
         )
 
         # Expected new Q-value: Q = Q + α[r - Q] = 0.5 + 0.1[1.0 - 0.5] = 0.55
-        expected_new_q = old_q + alpha * (reward - old_q)
+        _expected_new_q = old_q + alpha * (reward - old_q)
 
         # Check updated Q-value (state might not match exactly due to dynamic state)
         # Instead, verify RL state history records the update

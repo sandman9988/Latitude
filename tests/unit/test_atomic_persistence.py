@@ -1,8 +1,6 @@
 """Tests for src.persistence.atomic_persistence – AtomicPersistence."""
 
 import json
-import shutil
-from pathlib import Path
 
 import pytest
 

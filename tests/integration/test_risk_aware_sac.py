@@ -19,7 +19,7 @@ import numpy as np
 rng = np.random.default_rng(42)
 
 import matplotlib.pyplot as plt
-from typing import List, Tuple
+from typing import Tuple
 from src.risk.risk_aware_sac_manager import RiskAwareSAC_Manager, rolling_kurtosis, vpin_zscore, truncated_gpd_hazard
 
 

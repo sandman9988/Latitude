@@ -1,7 +1,6 @@
 """Tests for src.monitoring.performance_tracker – PerformanceTracker."""
 
 import datetime as dt
-import math
 
 import pytest
 

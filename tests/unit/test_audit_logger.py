@@ -1,8 +1,6 @@
 """Tests for src.monitoring.audit_logger – TransactionLogger & DecisionLogger."""
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -115,7 +113,7 @@ class TestTransactionLogger:
 
     def test_log_dir_created(self, tmp_path):
         sub = tmp_path / "deep" / "nested"
-        logger = TransactionLogger(log_dir=str(sub))
+        _logger = TransactionLogger(log_dir=str(sub))
         assert sub.exists()
 
 

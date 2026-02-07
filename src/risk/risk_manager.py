@@ -19,7 +19,7 @@ Design Philosophy:
 import logging
 import numpy as np
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from src.risk.circuit_breakers import CircuitBreakerManager
@@ -1097,9 +1097,6 @@ class RiskManager:
         else:  # not approved and outcome (missed opportunity)
             reward = -0.5
 
-        # Current threshold action
-        current_threshold = self.min_confidence_entry if decision_type == "entry" else self.min_confidence_exit
-
         # Initialize Q-values for this state if needed
         if state not in self.q_table:
             self.q_table[state] = {
@@ -1321,9 +1318,6 @@ class RiskManager:
         if len(symbols_with_data) < 2:
             equal_alloc = total_capital / len(symbols)
             return {sym: equal_alloc for sym in symbols}
-
-        # Map symbols to correlation matrix indices
-        sym_to_idx = {sym: i for i, sym in enumerate(symbols_with_data)}
 
         # Diversification score: average of (1 - |correlation|) with other assets
         # Higher score = less correlated = better diversification

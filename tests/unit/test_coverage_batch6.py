@@ -15,7 +15,6 @@ from src.risk.friction_costs import (
     FrictionCalculator,
     SlippageModel,
     SpreadTracker,
-    SymbolCosts,
 )
 
 
@@ -279,7 +278,7 @@ class TestParamManagement:
         calc = _make_calc()
         calc._last_param_refresh = time.time()  # Just refreshed
         calc._param_refresh_interval = 300
-        original_mult = calc.spread_multiplier
+        _original_mult = calc.spread_multiplier
 
         with patch.object(calc, "_get_param") as mock_get:
             calc._load_learned_parameters(force=False)

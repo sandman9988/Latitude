@@ -9,7 +9,7 @@ from src.core.paper_mode import setup_paper_mode, setup_live_mode, get_paper_set
 
 class TestSetupPaperMode:
     def test_sets_environment_variables(self):
-        result = setup_paper_mode()
+        _result = setup_paper_mode()
         assert os.environ["PAPER_MODE"] == "1"
         assert os.environ["DISABLE_GATES"] == "1"
         assert os.environ["FEAS_THRESHOLD"] == "0.0"
@@ -30,7 +30,7 @@ class TestSetupPaperMode:
 
 class TestSetupLiveMode:
     def test_sets_environment_variables(self):
-        result = setup_live_mode()
+        _result = setup_live_mode()
         assert os.environ["PAPER_MODE"] == "0"
         assert os.environ["DISABLE_GATES"] == "0"
         assert os.environ["EPSILON_START"] == "0.05"

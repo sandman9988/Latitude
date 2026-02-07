@@ -8,8 +8,6 @@ Handles both netting and hedging modes.
 import logging
 from typing import TYPE_CHECKING
 
-import quickfix as fix
-
 if TYPE_CHECKING:
     from src.core.trade_manager_integration import TradeManagerIntegration
 

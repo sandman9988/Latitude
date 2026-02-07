@@ -2470,11 +2470,6 @@ class CTraderFixApp(fix.Application):
         if realized_vol <= 0:
             realized_vol = 0.01
 
-        # Normalize by volatility
-        norm_mfe = current_mfe / (realized_vol + 1e-8)
-        norm_mae = current_mae / (realized_vol + 1e-8)
-        norm_pnl = unrealized_pnl / (realized_vol + 1e-8)
-
         # Current capture ratio: how much of MFE are we capturing?
         capture_ratio = unrealized_pnl / (current_mfe + 1e-8) if current_mfe > 0 else 0.0
 

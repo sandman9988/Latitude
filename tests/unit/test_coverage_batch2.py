@@ -14,13 +14,10 @@ Targets:
 - atomic_persistence.py: Lines 186-190 (backup cleanup + OSError)
 """
 
-import math
-import os
 import tempfile
 import time
-from collections import deque
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -125,7 +122,7 @@ class TestFeatureTournamentGaps:
         target = rng.normal(0, 1, 100)
         for i in range(100):
             features = rng.normal(0, 1, 5)
-            regimes = np.array([0])  # Single regime
+            _regimes = np.array([0])  # Single regime
             ft.add_sample(features, target[i], regime=0)
 
         # Run 10 tournaments to hit modulo 10

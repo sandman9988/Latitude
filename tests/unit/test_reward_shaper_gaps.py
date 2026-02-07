@@ -7,7 +7,7 @@ Targets:
 - Also target calculate_trigger_reward KeyError for runway_multiplier (lines 456-457)
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

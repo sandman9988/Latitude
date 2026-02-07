@@ -1,10 +1,7 @@
 """Tests for src.persistence.learned_parameters – AdaptiveParam, InstrumentParameters, LearnedParametersManager."""
 
 import time
-from pathlib import Path
-from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from src.persistence.learned_parameters import (
@@ -161,7 +158,7 @@ class TestLearnedParametersManager:
 
     def test_init_creates_dir(self, tmp_path):
         path = tmp_path / "sub" / "params.json"
-        m = LearnedParametersManager(persistence_path=path)
+        _m = LearnedParametersManager(persistence_path=path)
         assert path.parent.exists()
 
     def test_get_instrument_creates_defaults(self, manager):

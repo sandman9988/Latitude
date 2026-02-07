@@ -12,7 +12,6 @@ import pytest
 from src.monitoring.trade_audit_logger import (
     TradeAuditLogger,
     get_trade_audit_logger,
-    _audit_lock,
 )
 import src.monitoring.trade_audit_logger as tal_module
 

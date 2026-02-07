@@ -7,7 +7,6 @@ Coverage targets:
                target update, hard update, save/load weights
 """
 
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -309,7 +308,7 @@ class TestClipGradients:
         net = DDQNNetwork(state_dim=4, n_actions=3, grad_clip_norm=100.0, seed=42)
         grads = [np.ones(3) * 0.1, np.ones(2) * 0.1]
         originals = [g.copy() for g in grads]
-        norm = net._clip_gradients(grads)
+        _norm = net._clip_gradients(grads)
         for g, orig in zip(grads, originals):
             np.testing.assert_array_almost_equal(g, orig)
 

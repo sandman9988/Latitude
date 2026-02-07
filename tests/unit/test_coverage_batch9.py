@@ -16,11 +16,8 @@ Dead code identified (not tested):
 from __future__ import annotations
 
 import json
-import math
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 

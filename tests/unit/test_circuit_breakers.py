@@ -1,8 +1,5 @@
 """Tests for src.risk.circuit_breakers – BreakerState, individual breakers, CircuitBreakerManager."""
 
-import json
-import time
-from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
 

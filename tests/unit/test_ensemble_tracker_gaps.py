@@ -69,6 +69,7 @@ class TestPyTorchForwardPath:
         """Test full ensemble predict with forward models."""
         try:
             import torch  # noqa: F401
+            _ = torch  # mark as used
 
             # If torch available, exercise the forward path fully
             ens = EnsembleTracker(n_models=2)

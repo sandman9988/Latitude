@@ -7,7 +7,6 @@ Tests all data paths and enhancements in the Tabbed HUD
 import json
 import tempfile
 from pathlib import Path
-from datetime import datetime, UTC
 
 
 def create_mock_data(data_dir: Path):

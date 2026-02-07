@@ -17,8 +17,7 @@ This test suite ensures:
 
 import logging
 import sys
-from pathlib import Path
-from typing import Dict, List
+from typing import Dict
 
 import numpy as np
 
@@ -490,11 +489,11 @@ def test_edge_cases():
     assert reward2["total_reward"] < 0, "Loss trade should have negative reward"
 
     # Edge case 3: Very long hold time
-    reward3 = calculate_harvester_hold_reward_capture_based(100, 100, time_held=1000)
+    _reward3 = calculate_harvester_hold_reward_capture_based(100, 100, time_held=1000)
     # Should still be positive at peak but with time penalty
 
     # Edge case 4: Zero baseline
-    reward4 = calculate_trigger_reward_prediction_accuracy(100, 100, baseline_mfe=0)
+    _reward4 = calculate_trigger_reward_prediction_accuracy(100, 100, baseline_mfe=0)
     # Should not crash (division by zero protection)
 
     LOG.info("✓ Edge cases handled correctly")

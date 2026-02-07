@@ -31,7 +31,7 @@ Date: 2026-01-11
 """
 
 import numpy as np
-from typing import Tuple, Optional, Callable
+from typing import Tuple
 from collections import deque
 from scipy.stats import genpareto
 import logging
@@ -210,7 +210,6 @@ class RiskAwareSAC_Manager:
         if arr.std() < 1e-12:
             return 0.0
 
-        n = len(arr)
         mean = arr.mean()
         std = arr.std(ddof=0)
 

@@ -6,8 +6,6 @@ zero actual_mfe/underpredicted/overpredicted, calculate_dual_agent_rewards,
 adapt_weights noop, print_summary, get_statistics averages.
 """
 
-import math
-
 import pytest
 
 from src.core.reward_shaper import RewardShaper

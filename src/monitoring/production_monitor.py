@@ -29,7 +29,7 @@ from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -355,8 +355,6 @@ class ProductionMonitor:
 
 # Self-test
 if __name__ == "__main__":
-    import psutil
-
     logging.basicConfig(level=logging.INFO)
 
     print("=== ProductionMonitor Self-Test ===\n")

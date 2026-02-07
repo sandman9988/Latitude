@@ -21,8 +21,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from src.risk.circuit_breakers import CircuitBreakerManager
-from src.risk.risk_manager import RiskManager, EntryValidation, ExitValidation
-from src.risk.var_estimator import VaREstimator, RegimeType
+from src.risk.risk_manager import RiskManager
+from src.risk.var_estimator import VaREstimator
 
 
 # ---------------------------------------------------------------------------

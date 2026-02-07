@@ -5,7 +5,6 @@ _execute_emergency_close paths (no closer, success, failure, exception),
 restore_state corrupt data, save/restore roundtrip with actual breaker values.
 """
 
-from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest

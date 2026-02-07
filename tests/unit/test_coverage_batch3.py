@@ -10,8 +10,6 @@ Targets:
 """
 
 import datetime as dt
-import json
-from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np

@@ -10,7 +10,6 @@ import datetime as dt
 from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from src.core.reward_integrity_monitor import RewardIntegrityMonitor

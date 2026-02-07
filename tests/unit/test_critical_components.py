@@ -12,22 +12,20 @@ These tests verify that the gap-closing implementations work correctly
 and integrate properly with the rest of the system.
 """
 
-import json
 import logging
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 rng = np.random.default_rng(42)
 
 
-from src.core.broker_execution_model import BrokerExecutionModel, ExecutionCosts, OrderSide
+from src.core.broker_execution_model import BrokerExecutionModel, OrderSide
 from src.core.cold_start_manager import ColdStartManager, WarmupPhase
-from src.core.feedback_loop_breaker import FeedbackLoopBreaker, FeedbackLoopSignal
-from src.core.parameter_staleness import ParameterStalenessDetector, StalenessSignal
+from src.core.feedback_loop_breaker import FeedbackLoopBreaker
+from src.core.parameter_staleness import ParameterStalenessDetector
 from src.core.reward_integrity_monitor import RewardIntegrityMonitor
 
 logging.basicConfig(level=logging.INFO)

@@ -33,6 +33,7 @@ try:
     from src.agents.dual_policy import DualPolicy
     from src.agents.harvester_agent import HarvesterAgent
     from src.agents.trigger_agent import TriggerAgent
+    _ = (HarvesterAgent, TriggerAgent)
 
     print("✓ Dual-agent modules imported successfully")
 except ImportError as e:

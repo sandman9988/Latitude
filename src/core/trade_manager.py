@@ -25,8 +25,6 @@ import logging
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from typing import Callable
 
@@ -34,7 +32,7 @@ import quickfix as fix
 import quickfix44 as fix44
 
 from src.monitoring.trade_audit_logger import get_trade_audit_logger
-from src.utils.safe_utils import utc_now, utc_ts_ms
+from src.utils.safe_utils import utc_now
 from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)

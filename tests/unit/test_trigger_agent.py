@@ -14,7 +14,7 @@ Covers:
 
 import logging
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 
@@ -27,7 +27,6 @@ from src.agents.trigger_agent import (
     Q_RUNWAY_MIN,
     Q_RUNWAY_MAX,
     Q_RUNWAY_MAX_Q,
-    PREDICTED_RUNWAY_FALLBACK,
 )
 
 LOG = logging.getLogger(__name__)
@@ -172,7 +171,7 @@ class TestFallbackStrategy:
         state[-1, 2] = 0.35  # Medium positive MA diff
 
         # Without adjustment — should trigger LONG
-        action_no_adj = ta._fallback_strategy(state, regime_threshold_adj=0.0)
+        _action_no_adj = ta._fallback_strategy(state, regime_threshold_adj=0.0)
 
         # With positive adjustment (mean-reverting → harder threshold)
         action_hard = ta._fallback_strategy(state, regime_threshold_adj=0.5)

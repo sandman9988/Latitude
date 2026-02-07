@@ -12,9 +12,6 @@ These tests validate that:
 4. Intuitive scenarios produce intuitive rewards
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 
 rng = np.random.default_rng(42)
@@ -88,11 +85,6 @@ class MockBot:
         # Default fallback
         if realized_vol <= 0:
             realized_vol = 0.01
-
-        # Normalize by volatility
-        norm_mfe = current_mfe / (realized_vol + 1e-8)
-        norm_mae = current_mae / (realized_vol + 1e-8)
-        norm_pnl = unrealized_pnl / (realized_vol + 1e-8)
 
         # Current capture ratio
         capture_ratio = unrealized_pnl / (current_mfe + 1e-8) if current_mfe > 0 else 0.0

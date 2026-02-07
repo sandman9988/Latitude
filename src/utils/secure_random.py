@@ -24,7 +24,6 @@ For non-security randomness, use:
 
 import secrets
 import string
-from typing import Literal
 
 
 class SecureRandom:

@@ -16,12 +16,12 @@ Covers:
 import datetime as dt
 import logging
 from collections import deque
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from src.agents.dual_policy import DualPolicy, MIN_BARS_FOR_FEATURES
+from src.agents.dual_policy import DualPolicy
 
 LOG = logging.getLogger(__name__)
 

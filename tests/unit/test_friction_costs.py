@@ -1,6 +1,5 @@
 """Tests for src.risk.friction_costs – SpreadTracker, SlippageModel, FrictionCalculator."""
 
-import math
 from datetime import UTC, datetime
 
 import pytest

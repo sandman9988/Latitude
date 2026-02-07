@@ -15,7 +15,6 @@ import quickfix as fix
 from src.core.trade_manager import Order, Side, TradeManager
 from src.monitoring.trade_audit_logger import get_trade_audit_logger
 from src.persistence.atomic_persistence import AtomicPersistence
-from src.utils.safe_math import SafeMath
 from src.utils.safe_utils import utc_now
 
 if TYPE_CHECKING:

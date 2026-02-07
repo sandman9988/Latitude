@@ -9,9 +9,6 @@ import pytest
 import numpy as np
 
 from src.features.regime_detector import (
-    DEFAULT_UPDATE_INTERVAL,
-    DEFAULT_WINDOW_SIZE,
-    MIN_RETURNS_REQUIRED,
     RUNWAY_MULT_MEAN_REVERTING,
     RUNWAY_MULT_NEUTRAL,
     RUNWAY_MULT_TRENDING,
@@ -173,11 +170,11 @@ class TestRegimeTransition:
         for _ in range(25):
             price += 15.0 + rng.normal(0, 1.0)
             det.add_price(price)
-        first_regime = det.current_regime
+        _first_regime = det.current_regime
         # Now mean-revert
         det2 = RegimeDetector(window_size=20, update_interval=1)
         _fill_mean_reverting(det2, n=25)
-        second_regime = det2.current_regime
+        _second_regime = det2.current_regime
         # They should be different regimes (or both transitional is ok too)
         # Main goal: no crash during transition
 

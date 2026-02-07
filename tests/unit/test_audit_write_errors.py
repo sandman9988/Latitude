@@ -10,12 +10,12 @@ import json
 import os
 import threading
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
 from src.monitoring.audit_logger import DecisionLogger
-from src.monitoring.trade_audit_logger import TradeAuditLogger, get_trade_audit_logger, _audit_lock
+from src.monitoring.trade_audit_logger import TradeAuditLogger, get_trade_audit_logger
 
 
 # ===========================================================================

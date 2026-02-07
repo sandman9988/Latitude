@@ -13,12 +13,10 @@ Expands test coverage for critical safety components:
 Target: Increase coverage from ~40% to 70%+
 """
 
-import json
 import logging
 import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 

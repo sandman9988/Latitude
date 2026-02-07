@@ -1,7 +1,6 @@
 """Tests for src.core.adaptive_regularization."""
 
 import pytest
-import numpy as np
 
 from src.core.adaptive_regularization import AdaptiveRegularization
 
@@ -177,8 +176,8 @@ class TestReset:
     def test_reset_with_none_keeps_current(self):
         ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.2)
         ar.increase_regularization()
-        old_l2 = ar.l2_weight
-        old_dropout = ar.dropout_rate
+        _old_l2 = ar.l2_weight
+        _old_dropout = ar.dropout_rate
         ar.reset(l2=None, dropout=None)
         # None means keep current value (no assignment in source)
         # But adjustment_history is still cleared

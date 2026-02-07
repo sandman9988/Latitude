@@ -12,8 +12,6 @@ Targets uncovered production lines:
 """
 
 import datetime as dt
-import math
-from unittest.mock import patch, PropertyMock
 
 import pytest
 

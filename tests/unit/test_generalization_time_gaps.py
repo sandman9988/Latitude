@@ -16,7 +16,6 @@ Targets:
 import datetime as dt
 from unittest.mock import patch, MagicMock
 
-import numpy as np
 import pytest
 
 from src.core.generalization_monitor import GeneralizationMonitor, GeneralizationState
@@ -156,16 +155,16 @@ class TestTimeFeatureExceptionPaths:
     def test_minutes_to_day_end_exception(self):
         """Exception in minutes_to_day_end → returns 0.0 (lines 335-336)."""
         tf = TimeFeatures()
-        valid_time = self._get_valid_time()
+        _valid_time = self._get_valid_time()
 
         with patch("src.features.time_features.SafeMath.clamp", side_effect=Exception("boom")):
-            result = tf.minutes_to_day_end(valid_time)
+            result = tf.minutes_to_day_end(_valid_time)
             assert result == pytest.approx(0.0)
 
     def test_day_of_week_encoded_exception(self):
         """Exception in day_of_week_encoded → returns 0.0 (lines 358-359)."""
         tf = TimeFeatures()
-        valid_time = self._get_valid_time()
+        _valid_time = self._get_valid_time()
 
         # Patch weekday to raise
         mock_time = MagicMock(spec=dt.datetime)

@@ -19,10 +19,7 @@ Test Coverage:
 
 import logging
 import sys
-from pathlib import Path
 from typing import List
-
-import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -160,9 +157,9 @@ def test_multiple_long_positions():
     manager = MultiPositionManager()
 
     # Open 3 LONG positions
-    pos1 = manager.open_position("BTCUSD", "LONG", 0.05, 50000.0)
-    pos2 = manager.open_position("BTCUSD", "LONG", 0.03, 50100.0)
-    pos3 = manager.open_position("BTCUSD", "LONG", 0.02, 50200.0)
+    _pos1 = manager.open_position("BTCUSD", "LONG", 0.05, 50000.0)
+    _pos2 = manager.open_position("BTCUSD", "LONG", 0.03, 50100.0)
+    _pos3 = manager.open_position("BTCUSD", "LONG", 0.02, 50200.0)
 
     assert len(manager.positions) == 3, "Should have 3 open positions"
 
@@ -197,8 +194,8 @@ def test_multiple_short_positions():
     manager = MultiPositionManager()
 
     # Open 2 SHORT positions
-    pos1 = manager.open_position("BTCUSD", "SHORT", 0.04, 50000.0)
-    pos2 = manager.open_position("BTCUSD", "SHORT", 0.06, 50200.0)
+    _pos1 = manager.open_position("BTCUSD", "SHORT", 0.04, 50000.0)
+    _pos2 = manager.open_position("BTCUSD", "SHORT", 0.06, 50200.0)
 
     assert len(manager.positions) == 2, "Should have 2 open positions"
 

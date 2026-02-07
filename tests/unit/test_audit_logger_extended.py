@@ -187,5 +187,5 @@ class TestDecisionLoggerExt:
 
     def test_log_dir_creation(self, tmp_path):
         new_dir = tmp_path / "nested" / "dir"
-        dl = DecisionLogger(log_dir=str(new_dir))
+        _dl = DecisionLogger(log_dir=str(new_dir))
         assert new_dir.exists()

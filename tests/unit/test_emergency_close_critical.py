@@ -7,8 +7,6 @@ positions are iterated and closed individually.
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.risk.emergency_close import EmergencyPositionCloser
 
 

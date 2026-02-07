@@ -11,9 +11,6 @@ Targets:
 from __future__ import annotations
 
 import json
-import math
-import os
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -118,7 +115,7 @@ class TestRegimeDetectorUpdateRegimeDefensiveGuards:
 
         import src.features.regime_detector as rd_mod
 
-        orig_var = np.var
+        _orig_var = np.var
         call_count = {"n": 0}
 
         def var_side_effect(arr, *a, **kw):

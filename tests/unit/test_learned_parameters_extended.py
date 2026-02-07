@@ -4,11 +4,6 @@ Covers: save failure path, load version mismatch, load corrupt CRC,
 check_staleness returns stale params, get_summary details.
 """
 
-import json
-import time
-
-import pytest
-
 from src.persistence.learned_parameters import (
     AdaptiveParam,
     InstrumentParameters,

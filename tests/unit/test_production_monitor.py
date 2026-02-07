@@ -1,9 +1,7 @@
 """Tests for src.monitoring.production_monitor – ProductionMonitor, TradingMetrics, Alert."""
 
 import json
-import tempfile
 import time
-from pathlib import Path
 
 import pytest
 

@@ -8,7 +8,6 @@ Tests portfolio-level risk validation per SYSTEM_FLOW.md design.
 """
 
 import sys
-from pathlib import Path
 
 import numpy as np
 
@@ -16,7 +15,7 @@ rng = np.random.default_rng(42)
 
 
 from src.risk.circuit_breakers import CircuitBreakerManager
-from src.risk.risk_manager import RiskManager, EntryValidation, ExitValidation, RiskAssessment
+from src.risk.risk_manager import RiskManager, RiskAssessment
 from src.risk.var_estimator import VaREstimator, RegimeType
 
 

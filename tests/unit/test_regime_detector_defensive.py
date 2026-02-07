@@ -10,13 +10,11 @@ and 234-238 (_autocorrelation body).
 
 import numpy as np
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.features.regime_detector import (
     RegimeDetector,
     NEUTRAL_ZETA,
-    MIN_RETURNS_REQUIRED,
-    VARIANCE_EPSILON,
 )
 
 
@@ -94,7 +92,7 @@ class TestUpdateRegimeDefensivePaths:
         det._cached_returns = None
         # First call fills the cache
         det._update_regime()
-        first_regime = det.current_regime
+        _first_regime = det.current_regime
 
         # Manually set cache as valid (not invalidated) and call again
         det._cache_invalidated = False

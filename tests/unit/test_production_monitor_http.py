@@ -6,16 +6,10 @@ start_http_server with actual requests, stop_http_server.
 """
 
 import json
-import time
 import urllib.request
 import pytest
-from pathlib import Path
 
-from src.monitoring.production_monitor import (
-    Alert,
-    ProductionMonitor,
-    TradingMetrics,
-)
+from src.monitoring.production_monitor import ProductionMonitor
 
 
 class TestCheckAlertsNoMetrics:

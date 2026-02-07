@@ -7,8 +7,6 @@ Coverage targets:
 """
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -120,7 +118,7 @@ class TestCircuitBreakerLoop:
         for i in range(12):
             fb.update(bars_since_last_trade=i, current_volatility=0.005, circuit_breakers_tripped=True)
         # Clear breakers
-        sig = fb.update(bars_since_last_trade=13, current_volatility=0.005, circuit_breakers_tripped=False)
+        _sig = fb.update(bars_since_last_trade=13, current_volatility=0.005, circuit_breakers_tripped=False)
         # Counter should reset
         assert fb.bars_since_circuit_breaker_trip == 0
 

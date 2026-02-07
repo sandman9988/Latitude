@@ -8,10 +8,7 @@ JournaledPersistence subclass (recover, journal_write, journal_commit).
 import json
 import os
 import time
-from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from src.persistence.atomic_persistence import AtomicPersistence, JournaledPersistence
 
@@ -127,7 +124,7 @@ class TestJournaledPersistence:
         entry = {"committed": False, "op": "test_save", "filename": "f.json"}
         journal_path.write_text(json.dumps(entry) + "\n")
 
-        jp = JournaledPersistence(str(tmp_path))
+        _jp = JournaledPersistence(str(tmp_path))
         # Journal should have been archived (moved)
         assert not journal_path.exists()
         archives = list(tmp_path.glob("persistence.journal.*.old"))
@@ -139,7 +136,7 @@ class TestJournaledPersistence:
         entry = {"committed": True, "op": "test_save", "filename": "f.json"}
         journal_path.write_text(json.dumps(entry) + "\n")
 
-        jp = JournaledPersistence(str(tmp_path))
+        _jp = JournaledPersistence(str(tmp_path))
         assert not journal_path.exists()
 
     def test_recover_corrupt_journal(self, tmp_path):

@@ -7,7 +7,6 @@ get_spread_stats_for_logging, update_digits_from_price,
 _refresh_derived_costs, SpreadTracker current_hour_spread.
 """
 
-import math
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -109,8 +108,8 @@ class TestSwapPips:
     def test_multiday_holding(self, calc):
         swap = calc.calculate_swap(0.1, "BUY", holding_days=3.0, crosses_rollover=False)
         # 3 rollovers (no triple swap unless weekday matches)
-        expected_rollovers = 3
-        expected = -7.2 * 10.0 * 0.1 * expected_rollovers
+        _expected_rollovers = 3
+        _expected = -7.2 * 10.0 * 0.1 * _expected_rollovers
         # Could be 3 or 5 depending on weekday; just ensure non-zero and negative
         assert swap < 0
 

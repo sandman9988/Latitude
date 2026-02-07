@@ -6,9 +6,7 @@ _convert_types edge cases, export auto-path, and capture efficiency details.
 
 import json
 import os
-import sys
 from datetime import datetime, timedelta
-from io import StringIO
 from unittest.mock import patch
 
 import numpy as np

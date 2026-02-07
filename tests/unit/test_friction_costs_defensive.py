@@ -7,12 +7,9 @@ Covers scattered uncovered production lines in:
 - FrictionCalculator (config loading, normalize methods, commission/swap modes)
 """
 
-import math
 import statistics
-from collections import deque
 from datetime import UTC, datetime
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -20,7 +17,6 @@ from src.risk.friction_costs import (
     FrictionCalculator,
     SlippageModel,
     SpreadTracker,
-    SymbolCosts,
     MAX_SPREAD_PIPS,
     MIN_SPREAD_SAMPLES,
 )
@@ -339,7 +335,7 @@ class TestFrictionCalculatorDefensive:
         calc.costs.swap_long = -5.0
         calc.costs.pip_value_per_lot = 1.0
         # Should not raise
-        swap = calc.calculate_swap(0.1, "BUY", holding_days=1.0, crosses_rollover=True)
+        _swap = calc.calculate_swap(0.1, "BUY", holding_days=1.0, crosses_rollover=True)
 
     def test_calculate_total_friction(self, calc):
         """Total friction is sum of all components."""

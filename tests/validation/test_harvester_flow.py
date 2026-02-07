@@ -6,8 +6,6 @@ Tests the complete flow from entry → in-position → exit decision → logging
 """
 
 import sys
-import json
-from pathlib import Path
 from datetime import datetime, timezone
 from collections import deque
 

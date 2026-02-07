@@ -17,9 +17,6 @@ import numpy as np
 import pytest
 
 from src.utils.safe_math import (
-    EXP_LOWER_GUARD,
-    EXP_UPPER_GUARD,
-    SAFE_EPSILON,
     RunningStats,
     SafeMath,
     safe_array_operation,

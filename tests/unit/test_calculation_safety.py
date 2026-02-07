@@ -11,7 +11,7 @@ Tests ALL mathematical operations for:
 
 import math
 import unittest
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 import pytest
 
@@ -50,7 +50,7 @@ class TestTrailingStopCalculations(unittest.TestCase):
     def test_long_trailing_stop_normal(self):
         """LONG position trailing stop: price rises, stop trails up"""
         spec = INSTRUMENT_SPECS["BTCUSD"]
-        entry_price = Decimal("100000.00000000")
+        _entry_price = Decimal("100000.00000000")
         current_price = Decimal("102000.00000000")  # +2%
         distance_pct = Decimal("1.0")  # 1% trail
 
@@ -70,7 +70,7 @@ class TestTrailingStopCalculations(unittest.TestCase):
     def test_short_trailing_stop_normal(self):
         """SHORT position trailing stop: price falls, stop trails down"""
         spec = INSTRUMENT_SPECS["BTCUSD"]
-        entry_price = Decimal("100000.00000000")
+        _entry_price = Decimal("100000.00000000")
         current_price = Decimal("98000.00000000")  # -2%
         distance_pct = Decimal("1.0")
 
@@ -132,18 +132,18 @@ class TestTrailingStopCalculations(unittest.TestCase):
 
     def test_trailing_stop_price_nan(self):
         """Trailing stop with NaN price"""
-        spec = INSTRUMENT_SPECS["BTCUSD"]
+        _spec = INSTRUMENT_SPECS["BTCUSD"]
         current_price = float("nan")
-        distance_pct = Decimal("1.0")
+        _distance_pct = Decimal("1.0")
 
         # Should detect invalid
         self.assertFalse(SafeMath.is_valid(current_price))
 
     def test_trailing_stop_price_inf(self):
         """Trailing stop with Inf price"""
-        spec = INSTRUMENT_SPECS["BTCUSD"]
+        _spec = INSTRUMENT_SPECS["BTCUSD"]
         current_price = float("inf")
-        distance_pct = Decimal("1.0")
+        _distance_pct = Decimal("1.0")
 
         # Should detect invalid
         self.assertFalse(SafeMath.is_valid(current_price))
@@ -226,7 +226,7 @@ class TestCommissionCalculations(unittest.TestCase):
         price = Decimal("0.0")
 
         # Should handle gracefully
-        comm = spec.calculate_commission(quantity, price)
+        _comm = spec.calculate_commission(quantity, price)
         # Depends on implementation, but should not crash
 
     def test_commission_large_quantity(self):

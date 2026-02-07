@@ -18,9 +18,7 @@ Scenarios:
 
 import json
 import tempfile
-import time
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -435,7 +433,7 @@ class TestIntegratedScenario:
                 bars_since_trade += 1
 
             # Check feedback loops
-            loop_signal = loop_breaker.update(
+            _loop_signal = loop_breaker.update(
                 bars_since_last_trade=bars_since_trade,
                 current_volatility=0.01,
                 circuit_breakers_tripped=False,

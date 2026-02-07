@@ -34,7 +34,6 @@ Usage:
 
 import json
 import logging
-import os
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone

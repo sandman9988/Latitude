@@ -8,10 +8,8 @@ Simulates bar closes and verifies decision log is written correctly.
 
 import datetime as dt
 import json
-import os
 import sys
 from pathlib import Path
-from collections import deque
 
 
 def test_decision_log_structure():

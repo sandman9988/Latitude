@@ -11,10 +11,7 @@ Tier 2:
 """
 
 import json
-import os
-import shutil
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -82,7 +79,7 @@ class TestJournaledPersistenceRecovery:
         journal_path.write_text(json.dumps(uncommitted) + "\n")
 
         # Creating JournaledPersistence triggers _recover_from_journal
-        jp = JournaledPersistence(base_dir=str(tmp_path))
+        _jp = JournaledPersistence(base_dir=str(tmp_path))
 
         # Journal should be archived (moved with timestamp suffix)
         assert not journal_path.exists()
@@ -101,7 +98,7 @@ class TestJournaledPersistenceRecovery:
         }
         journal_path.write_text(json.dumps(committed) + "\n")
 
-        jp = JournaledPersistence(base_dir=str(tmp_path))
+        _jp = JournaledPersistence(base_dir=str(tmp_path))
         # Should still archive journal
         assert not journal_path.exists()
 
@@ -111,12 +108,12 @@ class TestJournaledPersistenceRecovery:
         journal_path.write_text("not valid json\n")
 
         # Should not raise
-        jp = JournaledPersistence(base_dir=str(tmp_path))
-        assert jp is not None
+        _jp = JournaledPersistence(base_dir=str(tmp_path))
+        assert _jp is not None
 
     def test_no_journal_file_is_noop(self, tmp_path):
         """No journal file → no recovery needed."""
-        jp = JournaledPersistence(base_dir=str(tmp_path))
+        _jp = JournaledPersistence(base_dir=str(tmp_path))
         old_journals = list(tmp_path.glob("persistence.journal.*.old"))
         assert len(old_journals) == 0
 
@@ -130,7 +127,7 @@ class TestJournaledPersistenceRecovery:
         ]
         journal_path.write_text("\n".join(json.dumps(e) for e in entries) + "\n")
 
-        jp = JournaledPersistence(base_dir=str(tmp_path))
+        _jp = JournaledPersistence(base_dir=str(tmp_path))
         assert not journal_path.exists()
 
 

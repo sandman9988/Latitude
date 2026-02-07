@@ -10,8 +10,6 @@ Coverage targets:
 """
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -152,11 +150,11 @@ class TestTypedLogHelpers:
         assert entry.data["entry_state_shape"] == "(5,)"
 
     def test_log_trade_open_no_state(self, journal):
-        seq = journal.log_trade_open("ORD2", "SELL", 0.02, 3000.0, entry_state=None)
+        _seq = journal.log_trade_open("ORD2", "SELL", 0.02, 3000.0, entry_state=None)
         assert journal.recent_operations[-1].data["entry_state_shape"] is None
 
     def test_log_trade_close(self, journal):
-        seq = journal.log_trade_close("ORD1", 2010.0, 10.0, 15.0, -5.0, False)
+        _seq = journal.log_trade_close("ORD1", 2010.0, 10.0, 15.0, -5.0, False)
         entry = journal.recent_operations[-1]
         assert entry.op == "trade_close"
         assert entry.data["pnl"] == pytest.approx(10.0)
