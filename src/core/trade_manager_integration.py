@@ -205,6 +205,7 @@ class TradeManagerIntegration:
             closed_ticket = self.exit_order_to_ticket.pop(order.clord_id)
 
             # Find and remove tracker by ticket
+            tracker_summary = None  # Will be set if tracker found
             if hasattr(self.app, "mfe_mae_trackers"):
                 # Scan for tracker with this ticket
                 position_id_to_remove = None
@@ -267,10 +268,38 @@ class TradeManagerIntegration:
             if closed_ticket in self.position_tickets:
                 del self.position_tickets[closed_ticket]
 
-            # Sync cur_pos from TradeManager (should now be 0)
+            # Sync cur_pos from TradeManager
             self.app.cur_pos = self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
             self.position_direction = self.app.cur_pos
             LOG.info("[INTEGRATION] Position synced after exit: cur_pos=%d", self.app.cur_pos)
+
+            # FIX: If another position still exists after this close (hedging transition),
+            # re-notify DualPolicy so entry_price is restored.
+            # Without this, on_exit() resets entry_price=0 which blinds the Harvester.
+            if self.app.cur_pos != 0 and hasattr(self.app, "mfe_mae_trackers"):
+                with self.app._tracker_lock:
+                    for pid, tracker in self.app.mfe_mae_trackers.items():
+                        if pid != position_id_to_remove and tracker.entry_price is not None and tracker.entry_price > 0:
+                            if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
+                                self.app.policy.on_entry(
+                                    direction=tracker.direction,
+                                    entry_price=tracker.entry_price,
+                                    entry_time=getattr(self.app, "trade_entry_time", None),
+                                )
+                                LOG.info(
+                                    "[INTEGRATION] ✓ Restored DualPolicy entry after hedging close: "
+                                    "price=%.5f dir=%d (tracker=%s)",
+                                    tracker.entry_price,
+                                    tracker.direction,
+                                    pid,
+                                )
+                            break  # Only restore from one active tracker
+
+            # CRITICAL: Trigger trade completion processing (experience collection, rewards)
+            # In paper mode, FIX PositionReport (35=AP) never arrives, so we must
+            # trigger experience addition here after closing a position.
+            if hasattr(self.app, "_process_trade_completion") and tracker_summary:
+                self.app._process_trade_completion(tracker_summary, order.avg_price)
 
             # Persist updated state
             self._persist_state()
@@ -368,8 +397,16 @@ class TradeManagerIntegration:
         self._persist_state()
 
         # FIX P0-6: Position validation after fill
-        expected_direction = 1 if order.side == Side.BUY else -1
-        self._validate_position_after_fill(expected_direction, order)
+        # In hedging mode, skip validation during transitions (pending close + new entry = mixed positions)
+        pending_closes = getattr(self.app, "_pending_closes", set())
+        if pending_closes:
+            LOG.debug(
+                "[VALIDATION] Skipped during hedging transition (pending_closes=%d)",
+                len(pending_closes),
+            )
+        else:
+            expected_direction = 1 if order.side == Side.BUY else -1
+            self._validate_position_after_fill(expected_direction, order)
 
         # Request position update for reconciliation (may timeout on cTrader)
         self.trade_manager.request_positions()
@@ -595,7 +632,7 @@ class TradeManagerIntegration:
         if self.trailing_stop_order and self.trailing_stop_order.clord_id:
             try:
                 self.trade_manager.modify_order(
-                    original_clord_id=self.trailing_stop_order.clord_id,
+                    clord_id=self.trailing_stop_order.clord_id,
                     new_price=stop_price,
                 )
                 LOG.debug("[TRAILING-STOP] Modified stop order to %.5f", stop_price)
@@ -831,7 +868,7 @@ class TradeManagerIntegration:
             self.persistence.save_json(state, self.state_filename, create_backup=True)
             LOG.info(
                 "[INTEGRATION] 💾 Position persisted: net=%.6f trackers=%d tickets=%d",
-                position_data.get("net_qty", 0) if position_data else 0,
+                float(position_data.get("net_qty", 0)) if position_data else 0.0,
                 len(active_trackers),
                 len(position_tickets),
             )

@@ -126,15 +126,19 @@ class TriggerAgent:
 
         # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
         # This is the actual trainable network - separate from the PyTorch model loaded from disk
-        self.ddqn = DDQNNetwork(
-            state_dim=window * n_features,  # Flattened state vector
-            n_actions=3,  # NO_ENTRY=0, LONG=1, SHORT=2
-            learning_rate=0.0005,
-            gamma=0.99,
-            tau=0.005,
-            l2_weight=0.0001,
-            grad_clip_norm=1.0,
-        ) if enable_training else None
+        self.ddqn = (
+            DDQNNetwork(
+                state_dim=window * n_features,  # Flattened state vector
+                n_actions=3,  # NO_ENTRY=0, LONG=1, SHORT=2
+                learning_rate=0.0005,
+                gamma=0.99,
+                tau=0.005,
+                l2_weight=0.0001,
+                grad_clip_norm=1.0,
+            )
+            if enable_training
+            else None
+        )
         if enable_training:
             LOG.info("[TRIGGER] DDQNNetwork initialized: state_dim=%d, actions=3", window * n_features)
 
@@ -304,6 +308,8 @@ class TriggerAgent:
                 )
                 self._decay_epsilon()
                 self.bars_since_trade = 0  # Reset counter when taking action
+                self.last_state = state.copy()  # FIX: Store state for experience creation
+                self.last_action = action
                 return action, 0.5, PREDICTED_RUNWAY_FALLBACK
 
             # Forced exploration after too many bars flat
@@ -315,6 +321,8 @@ class TriggerAgent:
                     action,
                 )
                 self.bars_since_trade = 0
+                self.last_state = state.copy()  # FIX: Store state for experience creation
+                self.last_action = action
                 return action, 0.5, PREDICTED_RUNWAY_FALLBACK
 
         # LIVE MODE: Feasibility gate (only if not disabled)
@@ -348,7 +356,10 @@ class TriggerAgent:
 
                 LOG.debug(
                     "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, runway=%.4f",
-                    q_values, action, confidence, predicted_runway,
+                    q_values,
+                    action,
+                    confidence,
+                    predicted_runway,
                 )
             else:
                 # Fallback: Simple MA crossover with microstructure tilt + regime adjustment
@@ -693,7 +704,8 @@ class TriggerAgent:
                 td_errors = np.clip(np.abs(rewards), 0, TD_ERROR_CAP)
                 self.buffer.update_priorities(indices, td_errors)
                 metrics = {
-                    "loss": 0.0, "mean_q": 0.0,
+                    "loss": 0.0,
+                    "mean_q": 0.0,
                     "mean_td_error": float(np.mean(td_errors)),
                     "max_td_error": float(np.max(td_errors)),
                     "mean_reward": float(np.mean(rewards)),
@@ -775,6 +787,7 @@ class TriggerAgent:
             "mean_td_error": float(np.mean(td_errors)),
             "mean_reward": float(np.mean(batch["rewards"])),
         }
+
     def get_training_stats(self) -> dict:
         """Get training statistics for monitoring.
 
