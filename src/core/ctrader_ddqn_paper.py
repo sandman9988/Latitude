@@ -796,6 +796,11 @@ class CTraderFixApp(fix.Application):
         self._shutdown_requested = False
         self._shutdown_complete = False
 
+        # Stale market data watchdog - auto-resubscribe after rollover/gap
+        self.last_market_data_time = None  # Updated on every md_snapshot / md_incremental
+        self.market_data_stale_threshold = 300  # seconds (5 min) with no data triggers resubscribe
+        self._last_md_resubscribe_time = 0.0  # cooldown to avoid spamming
+
         # Connection statistics for monitoring
         self.total_reconnects = 0
         self.successful_reconnects = 0
@@ -936,6 +941,31 @@ class CTraderFixApp(fix.Application):
                     if not self.connection_healthy and self.quote_sid and self.trade_sid:
                         LOG.info("[HEALTH] Connection restored (QUOTE+TRADE active)")
                     self.connection_healthy = True
+
+                # ---- Stale market data watchdog ----
+                # If QUOTE session is alive but no market data for >threshold,
+                # re-subscribe (handles rollover subscription drops)
+                if (
+                    self.quote_sid
+                    and self.last_market_data_time is not None
+                    and self.connection_healthy
+                ):
+                    md_age = time.time() - self.last_market_data_time
+                    resubscribe_cooldown = 120  # seconds between resubscribe attempts
+                    if (
+                        md_age > self.market_data_stale_threshold
+                        and time.time() - self._last_md_resubscribe_time > resubscribe_cooldown
+                    ):
+                        LOG.warning(
+                            "[HEALTH] Market data stale for %.0fs (threshold=%ds) — re-subscribing spot",
+                            md_age,
+                            self.market_data_stale_threshold,
+                        )
+                        try:
+                            self.send_md_subscribe_spot()
+                            self._last_md_resubscribe_time = time.time()
+                        except Exception as e:
+                            LOG.error("[HEALTH] Failed to re-subscribe market data: %s", e)
 
                 # Systemd watchdog notification (if enabled)
                 if self.watchdog_enabled and self.connection_healthy:
@@ -1690,6 +1720,7 @@ class CTraderFixApp(fix.Application):
             LOG.error("[TRADE] Error parsing SecurityDefinition: %s", e, exc_info=True)
 
     def on_md_snapshot(self, msg: fix.Message):
+        self.last_market_data_time = time.time()
         try:
             no = fix.NoMDEntries()
             msg.getField(no)
@@ -1748,6 +1779,7 @@ class CTraderFixApp(fix.Application):
         self.try_bar_update()
 
     def on_md_incremental(self, msg: fix.Message):
+        self.last_market_data_time = time.time()
         try:
             no = fix.NoMDEntries()
             msg.getField(no)
