@@ -464,7 +464,7 @@ class TradeManager:
         msg.setField(fix.Side(side.value))
         msg.setField(fix.TransactTime())
         msg.setField(fix.OrdType(OrdType.MARKET.value))
-        msg.setField(fix.OrderQty(round(quantity, 2)))
+        msg.setField(fix.OrderQty(round(float(quantity), 2)))
 
         # HEDGING MODE FIX: Specify position to close via PosMaintRptID (tag 721)
         if position_ticket:
@@ -546,8 +546,8 @@ class TradeManager:
         msg.setField(fix.Side(side.value))
         msg.setField(fix.TransactTime())
         msg.setField(fix.OrdType(OrdType.LIMIT.value))
-        msg.setField(fix.OrderQty(round(quantity, 2)))
-        msg.setField(fix.Price(price))
+        msg.setField(fix.OrderQty(round(float(quantity), 2)))
+        msg.setField(fix.Price(float(price)))
 
         try:
             fix.Session.sendToTarget(msg, self.session_id)
@@ -651,8 +651,8 @@ class TradeManager:
         msg.setField(fix.Side(order.side.value))
         msg.setField(fix.TransactTime())
         msg.setField(fix.OrdType(OrdType.LIMIT.value))
-        msg.setField(fix.OrderQty(round(quantity, 2)))
-        msg.setField(fix.Price(new_price))
+        msg.setField(fix.OrderQty(round(float(quantity), 2)))
+        msg.setField(fix.Price(float(new_price)))
 
         if order.order_id:
             msg.setField(fix.OrderID(order.order_id))
