@@ -78,21 +78,30 @@ class RegimeDetector:
         self.update_interval = update_interval
 
         # Price history (rolling window)
-        self.price_buffer = []
+        self.price_buffer: list[float] = []
 
         # Cached regime state
         self.current_regime: RegimeType = "UNKNOWN"
         self.current_zeta = NEUTRAL_ZETA  # Damping ratio
         self.bars_since_update = 0
 
+        # Performance cache
+        self._cache_invalidated: bool = True
+        self._cached_var_1: float | None = None
+        self._cached_returns: np.ndarray | None = None
+
         # Regime thresholds (from handbook Section 6.2.3)
         # Scale by instrument characteristics: high-vol assets need wider bands
         vol_scale = max(0.5, min(2.0, instrument_volatility))
-        self.TRENDING_THRESHOLD = TRENDING_THRESHOLD * vol_scale  # ζ < 0.7 → trending
-        self.MEAN_REVERTING_THRESHOLD = MEAN_REVERTING_THRESHOLD * vol_scale  # ζ > 1.3 → mean-reverting
+        self.trending_threshold = TRENDING_THRESHOLD * vol_scale  # ζ < 0.7 → trending
+        self.mean_reverting_threshold = MEAN_REVERTING_THRESHOLD * vol_scale  # ζ > 1.3 → mean-reverting
         self.instrument_volatility = vol_scale
 
-        LOG.info("[REGIME] Initialized: window=%d, update_every=%d bars", window_size, update_interval)
+        LOG.info(
+            "[REGIME] Initialized: window=%d, update_every=%d bars",
+            window_size,
+            update_interval,
+        )
 
     def add_price(self, price: float) -> tuple[RegimeType, float]:
         """
@@ -115,7 +124,7 @@ class RegimeDetector:
             self.price_buffer.pop(0)  # Remove oldest
 
         # Performance: Invalidate cache
-        self._cache_invalidated = True
+        self._cache_invalidated = True  # noqa: attribute defined in __init__
 
         self.bars_since_update += 1
 
@@ -129,110 +138,109 @@ class RegimeDetector:
     def _update_regime(self):
         """Calculate damping ratio and classify regime using variance ratio test."""
         try:
-            # Convert to numpy array for vectorized operations
-            prices = np.array(self.price_buffer, dtype=np.float64)
-
-            # Defensive: Validate price array
-            if not np.all(np.isfinite(prices)):
-                LOG.warning("[REGIME] Non-finite prices detected, skipping update")
-                return
-            if not np.all(prices > 0):
-                LOG.warning("[REGIME] Non-positive prices detected, skipping update")
+            returns = self._compute_validated_returns()
+            if returns is None:
                 return
 
-            # Calculate log returns (more stable than raw prices)
-            try:
-                log_prices = np.log(prices)
-                returns = np.diff(log_prices)
-            except (ValueError, RuntimeWarning) as e:
-                LOG.warning("[REGIME] Log calculation failed: %s", e)
-                return
-
-            # Defensive: Validate returns
-            if not np.all(np.isfinite(returns)):
-                LOG.warning("[REGIME] Non-finite returns detected, skipping update")
-                return
-
-            # Defensive: Handle edge cases
-            if len(returns) < MIN_RETURNS_REQUIRED:
-                LOG.warning("[REGIME] Insufficient data: %d returns", len(returns))
-                return
-
-            # Performance: Use cached variance if available and cache not invalidated
-            if self._cache_invalidated or self._cached_var_1 is None:
-                var_1 = np.var(returns)
-                self._cached_var_1 = var_1
-                self._cached_returns = returns
-                self._cache_invalidated = False
-            else:
-                var_1 = self._cached_var_1
-
-            # Defensive: Check for zero variance
-            if var_1 < VARIANCE_EPSILON:
-                self.current_zeta = NEUTRAL_ZETA  # No variance → neutral
+            var_1 = self._get_or_compute_variance(returns)
+            if var_1 is None or var_1 < VARIANCE_EPSILON:
+                self.current_zeta = NEUTRAL_ZETA
                 self.current_regime = "TRANSITIONAL"
                 return
 
-            # 2-period overlapping returns
-            returns_2 = returns[:-1] + returns[1:]
-
-            # Defensive: Validate 2-period returns
-            if not np.all(np.isfinite(returns_2)):
-                LOG.warning("[REGIME] Non-finite 2-period returns, skipping")
+            vr = self._compute_variance_ratio(returns, var_1)
+            if vr is None:
                 return
 
-            var_2 = np.var(returns_2)
+            self._classify_regime(vr, var_1)
 
-            # Defensive: Validate var_2
-            if not np.isfinite(var_2) or var_2 < 0:
-                LOG.warning("[REGIME] Invalid var_2: %s", var_2)
-                return
-
-            # Variance ratio with defensive division
-            vr = var_2 / (2.0 * var_1)
-
-            # Defensive: Validate variance ratio
-            if not np.isfinite(vr):
-                LOG.warning("[REGIME] Non-finite variance ratio")
-                return
-
-            # Defensive: Cap extreme variance ratios
-            vr = max(VR_CLAMP_MIN, min(VR_CLAMP_MAX, vr))
-
-            # Map variance ratio to damping ratio
-            # VR > 1 (trending) → low ζ (< 0.7)
-            # VR < 1 (mean-reverting) → high ζ (> 1.3)
-            # VR ≈ 1 (random walk) → ζ ≈ 1.0
-
-            # More sensitive mapping: ζ = 1.0 + 0.6 * (1.0 - vr)
-            # VR=1.5 → ζ=0.7 (trending threshold)
-            # VR=1.0 → ζ=1.0 (neutral)
-            # VR=0.5 → ζ=1.3 (mean-reverting threshold)
-            self.current_zeta = NEUTRAL_ZETA + ZETA_MAP_MULTIPLIER * (1.0 - vr)
-            self.current_zeta = max(ZETA_CLAMP_MIN, min(ZETA_CLAMP_MAX, self.current_zeta))
-
-            # Classify regime based on damping ratio
-            if self.current_zeta < self.TRENDING_THRESHOLD:
-                self.current_regime = "TRENDING"
-            elif self.current_zeta > self.MEAN_REVERTING_THRESHOLD:
-                self.current_regime = "MEAN_REVERTING"
-            else:
-                self.current_regime = "TRANSITIONAL"
-
-            LOG.info(
-                "[REGIME] Updated: ζ=%.3f | %s | VR(2)=%.3f var_1=%.6f var_2=%.6f",
-                self.current_zeta,
-                self.current_regime,
-                vr,
-                var_1,
-                var_2,
-            )
-
-        except Exception as e:
+        except (ValueError, ArithmeticError, RuntimeError) as e:
             LOG.error("[REGIME] Calculation error: %s", e, exc_info=True)
-            # Defensive: Fall back to transitional on error
             self.current_regime = "TRANSITIONAL"
             self.current_zeta = NEUTRAL_ZETA
+
+    def _compute_validated_returns(self) -> np.ndarray | None:
+        """Compute and validate log returns from price buffer."""
+        prices = np.array(self.price_buffer, dtype=np.float64)
+
+        if not np.all(np.isfinite(prices)):
+            LOG.warning("[REGIME] Non-finite prices detected, skipping update")
+            return None
+        if not np.all(prices > 0):
+            LOG.warning("[REGIME] Non-positive prices detected, skipping update")
+            return None
+
+        try:
+            log_prices = np.log(prices)
+            returns = np.diff(log_prices)
+        except (ValueError, RuntimeWarning) as e:
+            LOG.warning("[REGIME] Log calculation failed: %s", e)
+            return None
+
+        if not np.all(np.isfinite(returns)):
+            LOG.warning("[REGIME] Non-finite returns detected, skipping update")
+            return None
+
+        if len(returns) < MIN_RETURNS_REQUIRED:
+            LOG.warning("[REGIME] Insufficient data: %d returns", len(returns))
+            return None
+
+        return returns
+
+    def _get_or_compute_variance(self, returns: np.ndarray) -> float | None:
+        """Get cached variance or compute it."""
+        if self._cache_invalidated or self._cached_var_1 is None:
+            var_1 = float(np.var(returns))
+            self._cached_var_1 = var_1
+            self._cached_returns = returns
+            self._cache_invalidated = False
+        else:
+            var_1 = self._cached_var_1
+        return var_1
+
+    def _compute_variance_ratio(self, returns: np.ndarray, var_1: float) -> float | None:
+        """Compute and validate the variance ratio."""
+        returns_2 = returns[:-1] + returns[1:]
+
+        if not np.all(np.isfinite(returns_2)):
+            LOG.warning("[REGIME] Non-finite 2-period returns, skipping")
+            return None
+
+        var_2 = np.var(returns_2)
+
+        if not np.isfinite(var_2) or var_2 < 0:
+            LOG.warning("[REGIME] Invalid var_2: %s", var_2)
+            return None
+
+        vr = var_2 / (2.0 * var_1)
+
+        if not np.isfinite(vr):
+            LOG.warning("[REGIME] Non-finite variance ratio")
+            return None
+
+        return float(max(VR_CLAMP_MIN, min(VR_CLAMP_MAX, vr)))
+
+    def _classify_regime(self, vr: float, var_1: float):
+        """Map variance ratio to damping ratio and classify regime."""
+        self.current_zeta = NEUTRAL_ZETA + ZETA_MAP_MULTIPLIER * (1.0 - vr)
+        self.current_zeta = max(ZETA_CLAMP_MIN, min(ZETA_CLAMP_MAX, self.current_zeta))
+
+        if self.current_zeta < self.trending_threshold:
+            self.current_regime = "TRENDING"
+        elif self.current_zeta > self.mean_reverting_threshold:
+            self.current_regime = "MEAN_REVERTING"
+        else:
+            self.current_regime = "TRANSITIONAL"
+
+        var_2 = np.var(np.array(self.price_buffer, dtype=np.float64))
+        LOG.info(
+            "[REGIME] Updated: ζ=%.3f | %s | VR(2)=%.3f var_1=%.6f var_2=%.6f",
+            self.current_zeta,
+            self.current_regime,
+            vr,
+            var_1,
+            var_2,
+        )
 
     def _autocorrelation(self, x: np.ndarray, lag: int) -> float:
         """
@@ -243,8 +251,6 @@ class RegimeDetector:
         # Defensive: Handle edge cases
         if len(x) <= lag:
             return 0.0
-
-        len(x)
 
         # Demean the series
         x_mean = np.mean(x)
@@ -262,11 +268,10 @@ class RegimeDetector:
 
         covariance = np.mean(x1 * x2)
 
-        # Autocorrelation = Cov / Var
         autocorr = covariance / variance
 
         # Defensive: Clamp to valid correlation range
-        return max(-1.0, min(1.0, autocorr))
+        return float(max(-1.0, min(1.0, autocorr)))
 
     def get_regime_multiplier(self) -> float:
         """
@@ -337,7 +342,7 @@ def _test_regime_detector():
         noise = rng.normal(0, 20.0)  # Realistic noise
         price = price + drift + noise
         prices_list.append(price)
-        regime, zeta = detector.add_price(price)
+        _, _ = detector.add_price(price)
 
     info = detector.get_regime_info()
     print(f"Regime: {info['regime']}")
@@ -356,7 +361,7 @@ def _test_regime_detector():
         oscillation = 20.0 * np.sin(i * 0.3)  # Sine wave
         noise = rng.normal(0, 5.0)
         price = base_price + oscillation + noise
-        regime, zeta = detector2.add_price(price)
+        _, _ = detector2.add_price(price)
 
     info2 = detector2.get_regime_info()
     print(f"Regime: {info2['regime']}")
@@ -374,7 +379,7 @@ def _test_regime_detector():
         # Random walk (no autocorrelation)
         noise = rng.normal(0, 10.0)
         base_price += noise
-        regime, zeta = detector3.add_price(base_price)
+        _, _ = detector3.add_price(base_price)
 
     info3 = detector3.get_regime_info()
     print(f"Regime: {info3['regime']}")

@@ -11,7 +11,6 @@ Tests 100+ failure scenarios including:
 - Catastrophic failures
 """
 
-import sys
 import time
 import unittest
 from decimal import Decimal
@@ -421,7 +420,7 @@ class TestCatastrophicFailures(unittest.TestCase):
             t.join()
 
         # All should succeed (no race conditions)
-        self.assertTrue(len(results) == 200)
+        self.assertEqual(len(results), 200)
 
     def test_62_float_precision_edge_cases(self):
         """Test float precision edge cases"""
@@ -435,7 +434,7 @@ class TestCatastrophicFailures(unittest.TestCase):
 
         # Test very small numbers
         tiny = sm.to_decimal(1e-8, 8)
-        self.assertTrue(tiny > Decimal("0"))
+        self.assertGreater(tiny, Decimal("0"))
 
     def test_63_extreme_price_volatility(self):
         """Test extreme price movements"""
@@ -478,35 +477,3 @@ class TestCatastrophicFailures(unittest.TestCase):
         # Clean up
         persistence.state_file.unlink()
         persistence.state_dir.rmdir()
-
-
-def run_test_suite():
-    """Run complete test suite"""
-    # Create test suite
-    loader = unittest.TestLoader()
-    suite = unittest.TestSuite()
-
-    # Add all test classes
-    suite.addTests(loader.loadTestsFromTestCase(TestSafeMath))
-    suite.addTests(loader.loadTestsFromTestCase(TestOrderValidator))
-    suite.addTests(loader.loadTestsFromTestCase(TestStatePersistence))
-    suite.addTests(loader.loadTestsFromTestCase(TestCatastrophicFailures))
-
-    # Run tests
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-
-    # Summary
-    print("\n" + "=" * 70)
-    print(f"Tests run: {result.testsRun}")
-    print(f"✓ Passed: {result.testsRun - len(result.failures) - len(result.errors)}")
-    print(f"❌ Failed: {len(result.failures)}")
-    print(f"⚠️  Errors: {len(result.errors)}")
-    print("=" * 70)
-
-    return result.wasSuccessful()
-
-
-if __name__ == "__main__":
-    success = run_test_suite()
-    sys.exit(0 if success else 1)

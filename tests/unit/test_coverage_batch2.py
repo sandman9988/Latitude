@@ -25,12 +25,13 @@ import pytest
 from src.core.order_book import OrderBook, VPINCalculator
 from src.features.feature_tournament import FeatureTournament
 from src.monitoring.activity_monitor import ActivityMonitor
-from src.risk.risk_aware_sac_manager import RiskAwareSAC_Manager as RiskAwareSACManager
+from src.risk.risk_aware_sac_manager import RiskAwareSACManager
 
 
 # ===========================================================================
 # OrderBook – spread non-finite (line 76)
 # ===========================================================================
+
 
 class TestOrderBookGaps:
     def test_spread_crossed_book_returns_zero(self):
@@ -46,8 +47,8 @@ class TestOrderBookGaps:
         ob = OrderBook()
         # Set up a scenario where bid and ask produce non-finite spread
         # bid and ask are sorted dict keys: bids descending, asks ascending
-        ob.bids = {float('inf'): 10.0}
-        ob.asks = {float('inf'): 10.0}
+        ob.bids = {float("inf"): 10.0}
+        ob.asks = {float("inf"): 10.0}
         # bid == ask → crossed book → returns 0.0
         assert ob.spread() == pytest.approx(0.0)
 
@@ -55,6 +56,7 @@ class TestOrderBookGaps:
 # ===========================================================================
 # VPINCalculator – residual carry-over (lines 141-146)
 # ===========================================================================
+
 
 class TestVPINResidualCarryOver:
     def test_sell_dominant_residual(self):
@@ -109,6 +111,7 @@ class TestVPINResidualCarryOver:
 # ===========================================================================
 # FeatureTournament – uncovered lines 158, 188, 214, 220, 227
 # ===========================================================================
+
 
 class TestFeatureTournamentGaps:
     def test_tournament_log_at_modulo_10(self):
@@ -189,6 +192,7 @@ class TestFeatureTournamentGaps:
 # ActivityMonitor – exploration_boost from env (lines 106-108) + _log_metrics
 # ===========================================================================
 
+
 class TestActivityMonitorGaps:
     def test_exploration_boost_from_env_default(self):
         """When exploration_boost is None, blend from env vars (lines 106-108)."""
@@ -230,6 +234,7 @@ class TestActivityMonitorGaps:
 # RiskAwareSACManager – uncovered lines
 # ===========================================================================
 
+
 class TestRiskAwareSACManagerGaps:
     def test_kurtosis_constant_returns_zero(self):
         """Constant returns → std < 1e-12 → kurtosis = 0.0 (line 211)."""
@@ -261,7 +266,7 @@ class TestRiskAwareSACManagerGaps:
         mgr = RiskAwareSACManager(window=100, kurt_max=5.0, vpin_trigger=2.0, collapse_fac=0.1)
 
         mgr.latest_kurtosis = 10.0  # >> kurt_max
-        mgr.latest_vpin_z = 5.0     # >> vpin_trigger
+        mgr.latest_vpin_z = 5.0  # >> vpin_trigger
 
         exposure = mgr._compute_exposure()
         assert exposure == pytest.approx(0.1)
@@ -270,8 +275,8 @@ class TestRiskAwareSACManagerGaps:
         """High vpin_z but low kurtosis → smooth degradation (lines 341-342)."""
         mgr = RiskAwareSACManager(window=100, kurt_max=5.0, vpin_trigger=2.0, collapse_fac=0.1)
 
-        mgr.latest_kurtosis = 1.0   # Below kurt_max
-        mgr.latest_vpin_z = 4.0     # Above vpin_trigger
+        mgr.latest_kurtosis = 1.0  # Below kurt_max
+        mgr.latest_vpin_z = 4.0  # Above vpin_trigger
 
         exposure = mgr._compute_exposure()
         assert mgr.collapse_fac <= exposure < 1.0
@@ -344,6 +349,7 @@ class TestRiskAwareSACManagerGaps:
 # ===========================================================================
 # AtomicPersistence – backup cleanup (lines 186-190)
 # ===========================================================================
+
 
 class TestAtomicPersistenceGaps:
     def test_cleanup_old_backups_removes_excess(self):

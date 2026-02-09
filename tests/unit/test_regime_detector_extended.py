@@ -146,8 +146,14 @@ class TestGetRegimeInfo:
     def test_all_keys_present(self):
         det = RegimeDetector()
         info = det.get_regime_info()
-        for key in ["regime", "damping_ratio", "runway_multiplier",
-                     "trigger_adjustment", "buffer_size", "bars_since_update"]:
+        for key in [
+            "regime",
+            "damping_ratio",
+            "runway_multiplier",
+            "trigger_adjustment",
+            "buffer_size",
+            "bars_since_update",
+        ]:
             assert key in info
 
     def test_values_consistent(self):
@@ -181,8 +187,8 @@ class TestRegimeTransition:
     def test_instrument_volatility_scales_thresholds(self):
         det_low = RegimeDetector(instrument_volatility=0.5)
         det_high = RegimeDetector(instrument_volatility=2.0)
-        assert det_low.TRENDING_THRESHOLD < det_high.TRENDING_THRESHOLD
-        assert det_low.MEAN_REVERTING_THRESHOLD < det_high.MEAN_REVERTING_THRESHOLD
+        assert det_low.trending_threshold < det_high.trending_threshold
+        assert det_low.mean_reverting_threshold < det_high.mean_reverting_threshold
 
     def test_volatility_clamped(self):
         det = RegimeDetector(instrument_volatility=100.0)

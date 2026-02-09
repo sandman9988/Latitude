@@ -1,22 +1,16 @@
 #!/usr/bin/env python3
-import pytest
-
-"""
-Test Suite for RiskManager
-===========================
-Tests portfolio-level risk validation per SYSTEM_FLOW.md design.
-"""
+"""Test Suite for RiskManager - portfolio-level risk validation per SYSTEM_FLOW.md design."""
 
 import sys
 
 import numpy as np
-
-rng = np.random.default_rng(42)
-
+import pytest
 
 from src.risk.circuit_breakers import CircuitBreakerManager
 from src.risk.risk_manager import RiskManager, RiskAssessment
 from src.risk.var_estimator import VaREstimator, RegimeType
+
+rng = np.random.default_rng(42)
 
 
 def create_var_estimator_with_data(window=100, confidence=0.95, seed=42):
@@ -383,7 +377,7 @@ def test_adaptive_updates():
 
     # Test 2: Update confidence thresholds
     print("\n2. Update confidence thresholds")
-    risk_manager.update_confidence_thresholds(entry=0.7, exit=0.6)
+    risk_manager.update_confidence_thresholds(entry=0.7, exit_threshold=0.6)
     assert risk_manager.min_confidence_entry == pytest.approx(0.7), "Entry threshold should be updated"
     assert risk_manager.min_confidence_exit == pytest.approx(0.6), "Exit threshold should be updated"
     print("   ✓ Confidence thresholds updated")
@@ -514,7 +508,7 @@ def test_adaptive_risk_budget():
     # Test 1: Good performance increases budget
     print("\n1. Simulate good performance (10 winning trades)")
     equity = 10000.0
-    for i in range(10):
+    for _ in range(10):
         equity += 20.0
         risk_manager.on_trade_complete(pnl=20.0, equity=equity)
 
@@ -533,7 +527,7 @@ def test_adaptive_risk_budget():
     )
 
     equity = 10000.0
-    for i in range(10):
+    for _ in range(10):
         equity -= 15.0
         risk_manager2.on_trade_complete(pnl=-15.0, equity=equity)
 

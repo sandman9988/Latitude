@@ -41,6 +41,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 
@@ -67,6 +69,15 @@ class PhaseMetrics:
     total_pnl: float
 
 
+@dataclass
+class DemotionThresholds:
+    """Thresholds that trigger production demotion."""
+
+    sharpe: float = 0.2
+    win_rate: float = 0.40
+    drawdown: float = 0.30
+
+
 class ColdStartManager:
     """
     Manages graduated warm-up protocol for RL trading agents.
@@ -91,9 +102,7 @@ class ColdStartManager:
         micro_min_win_rate: float = 0.48,
         micro_min_avg_profit: float = 0.0,  # At least break-even
         # Production monitoring
-        production_demotion_sharpe: float = 0.2,  # Drop below this → demote
-        production_demotion_win_rate: float = 0.40,
-        production_demotion_drawdown: float = 0.30,
+        demotion: Optional[DemotionThresholds] = None,
         # State persistence
         state_file: Optional[Path] = None,
     ):
@@ -108,9 +117,10 @@ class ColdStartManager:
         self.micro_min_sharpe = micro_min_sharpe
         self.micro_min_win_rate = micro_min_win_rate
         self.micro_min_avg_profit = micro_min_avg_profit
-        self.production_demotion_sharpe = production_demotion_sharpe
-        self.production_demotion_win_rate = production_demotion_win_rate
-        self.production_demotion_drawdown = production_demotion_drawdown
+        _demotion = demotion or DemotionThresholds()
+        self.production_demotion_sharpe = _demotion.sharpe
+        self.production_demotion_win_rate = _demotion.win_rate
+        self.production_demotion_drawdown = _demotion.drawdown
 
         # Current state
         self.current_phase = WarmupPhase.OBSERVATION
@@ -187,7 +197,9 @@ class ColdStartManager:
     def _check_observation_graduation(self) -> Optional[WarmupPhase]:
         """Check if observation phase can graduate."""
         if self.bars_in_current_phase >= self.observation_min_bars:
-            logger.info(f"OBSERVATION phase complete ({self.bars_in_current_phase} bars). Graduating to PAPER_TRADING.")
+            logger.info(
+                "OBSERVATION phase complete (%d bars). Graduating to PAPER_TRADING.", self.bars_in_current_phase
+            )
             return WarmupPhase.PAPER_TRADING
         return None
 
@@ -209,17 +221,26 @@ class ColdStartManager:
             and metrics.max_drawdown <= self.paper_max_drawdown
         ):
             logger.info(
-                f"PAPER_TRADING phase complete. "
-                f"Sharpe={metrics.sharpe_ratio:.2f}, WinRate={metrics.win_rate:.1%}, DD={metrics.max_drawdown:.1%}. "
-                f"Graduating to MICRO_POSITIONS."
+                "PAPER_TRADING phase complete. "
+                "Sharpe=%.2f, WinRate=%.1f%%, DD=%.1f%%. "
+                "Graduating to MICRO_POSITIONS.",
+                metrics.sharpe_ratio,
+                metrics.win_rate * 100,
+                metrics.max_drawdown * 100,
             )
             return WarmupPhase.MICRO_POSITIONS
 
         logger.info(
-            f"PAPER_TRADING not ready to graduate. "
-            f"Sharpe={metrics.sharpe_ratio:.2f} (need {self.paper_min_sharpe:.2f}), "
-            f"WinRate={metrics.win_rate:.1%} (need {self.paper_min_win_rate:.1%}), "
-            f"DD={metrics.max_drawdown:.1%} (max {self.paper_max_drawdown:.1%})"
+            "PAPER_TRADING not ready to graduate. "
+            "Sharpe=%.2f (need %.2f), "
+            "WinRate=%.1f%% (need %.1f%%), "
+            "DD=%.1f%% (max %.1f%%)",
+            metrics.sharpe_ratio,
+            self.paper_min_sharpe,
+            metrics.win_rate * 100,
+            self.paper_min_win_rate * 100,
+            metrics.max_drawdown * 100,
+            self.paper_max_drawdown * 100,
         )
         return None
 
@@ -239,18 +260,27 @@ class ColdStartManager:
             and metrics.avg_trade_profit >= self.micro_min_avg_profit
         ):
             logger.warning(
-                f"🎓 MICRO_POSITIONS phase complete. "
-                f"Sharpe={metrics.sharpe_ratio:.2f}, WinRate={metrics.win_rate:.1%}, "
-                f"AvgProfit={metrics.avg_trade_profit:.4f}. "
-                f"🚀 GRADUATING TO PRODUCTION! 🚀"
+                "MICRO_POSITIONS phase complete. "
+                "Sharpe=%.2f, WinRate=%.1f%%, "
+                "AvgProfit=%.4f. "
+                "GRADUATING TO PRODUCTION!",
+                metrics.sharpe_ratio,
+                metrics.win_rate * 100,
+                metrics.avg_trade_profit,
             )
             return WarmupPhase.PRODUCTION
 
         logger.info(
-            f"MICRO_POSITIONS not ready to graduate. "
-            f"Sharpe={metrics.sharpe_ratio:.2f} (need {self.micro_min_sharpe:.2f}), "
-            f"WinRate={metrics.win_rate:.1%} (need {self.micro_min_win_rate:.1%}), "
-            f"AvgProfit={metrics.avg_trade_profit:.4f} (need {self.micro_min_avg_profit:.4f})"
+            "MICRO_POSITIONS not ready to graduate. "
+            "Sharpe=%.2f (need %.2f), "
+            "WinRate=%.1f%% (need %.1f%%), "
+            "AvgProfit=%.4f (need %.4f)",
+            metrics.sharpe_ratio,
+            self.micro_min_sharpe,
+            metrics.win_rate * 100,
+            self.micro_min_win_rate * 100,
+            metrics.avg_trade_profit,
+            self.micro_min_avg_profit,
         )
         return None
 
@@ -272,10 +302,13 @@ class ColdStartManager:
             or metrics.max_drawdown > self.production_demotion_drawdown
         ):
             logger.error(
-                f"⚠️ PRODUCTION DEMOTION! ⚠️ "
-                f"Performance degraded: Sharpe={metrics.sharpe_ratio:.2f}, "
-                f"WinRate={metrics.win_rate:.1%}, DD={metrics.max_drawdown:.1%}. "
-                f"Demoting to MICRO_POSITIONS."
+                "PRODUCTION DEMOTION! "
+                "Performance degraded: Sharpe=%.2f, "
+                "WinRate=%.1f%%, DD=%.1f%%. "
+                "Demoting to MICRO_POSITIONS.",
+                metrics.sharpe_ratio,
+                metrics.win_rate * 100,
+                metrics.max_drawdown * 100,
             )
             return WarmupPhase.MICRO_POSITIONS
 
@@ -296,15 +329,13 @@ class ColdStartManager:
             )
 
         # Sharpe ratio
-        import numpy as np
-
         pnl_array = np.array(self.current_pnls)
         sharpe = 0.0
         if np.std(pnl_array) > 0:
             sharpe = np.mean(pnl_array) / (np.std(pnl_array) + 1e-8)
 
         # Win rate
-        wins = sum(1 for p in self.current_pnls if p > 0)
+        wins = sum(p > 0 for p in self.current_pnls)
         win_rate = wins / len(self.current_pnls) if self.current_pnls else 0.0
 
         # Max drawdown
@@ -347,7 +378,7 @@ class ColdStartManager:
         self.current_trades = []
         self.current_pnls = []
 
-        logger.warning(f"🔄 Phase transition to {new_phase.name}")
+        logger.warning("Phase transition to %s", new_phase.name)
 
     def get_status(self) -> Dict:
         """Get current warmup status."""
@@ -394,7 +425,7 @@ class ColdStartManager:
         }
 
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.state_file, "w") as f:
+        with open(self.state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
 
     def load_state(self) -> bool:
@@ -403,7 +434,7 @@ class ColdStartManager:
             return False
 
         try:
-            with open(self.state_file, "r") as f:
+            with open(self.state_file, "r", encoding="utf-8") as f:
                 state = json.load(f)
 
             self.current_phase = WarmupPhase[state["current_phase"]]
@@ -427,18 +458,16 @@ class ColdStartManager:
                 for h in state.get("phase_history", [])
             ]
 
-            logger.info(f"Loaded ColdStartManager state: Phase={self.current_phase.name}")
+            logger.info("Loaded ColdStartManager state: Phase=%s", self.current_phase.name)
             return True
 
-        except Exception as e:
-            logger.error(f"Failed to load state: {e}")
+        except (json.JSONDecodeError, KeyError, OSError) as e:
+            logger.error("Failed to load state: %s", e)
             return False
 
 
 # Self-test
 if __name__ == "__main__":
-    import numpy as np
-
     logging.basicConfig(level=logging.INFO)
     rng = np.random.default_rng(42)
 
@@ -479,7 +508,7 @@ if __name__ == "__main__":
             f"    Sharpe={status['current_metrics']['sharpe']:.2f}, WinRate={status['current_metrics']['win_rate']:.1%}"
         )
     else:
-        print(f"  ✗ Failed to graduate")
+        print("  ✗ Failed to graduate")
 
     # Test 3: Paper trading with bad performance
     print("\nTest 3: Paper trading with bad performance (no graduation)")
@@ -497,7 +526,7 @@ if __name__ == "__main__":
     if next_phase is None:
         print("  ✓ Correctly blocked graduation due to poor performance")
     else:
-        print(f"  ✗ Should not have graduated")
+        print("  ✗ Should not have graduated")
 
     # Test 4: Position size multipliers
     print("\nTest 4: Position size multipliers")
@@ -522,8 +551,7 @@ if __name__ == "__main__":
     # Test 5: Production demotion
     print("\nTest 5: Production demotion on poor performance")
     mgr5 = ColdStartManager(
-        production_demotion_sharpe=0.5,
-        production_demotion_win_rate=0.45,
+        demotion=DemotionThresholds(sharpe=0.5, win_rate=0.45),
     )
     mgr5.current_phase = WarmupPhase.PRODUCTION
 
@@ -544,7 +572,7 @@ if __name__ == "__main__":
     print("\nTest 6: State persistence")
     import tempfile
 
-    temp_file = Path(tempfile.mktemp(suffix=".json"))
+    temp_file = Path(tempfile.NamedTemporaryFile(suffix=".json", delete=False).name)
     mgr6 = ColdStartManager(state_file=temp_file)
     mgr6.current_phase = WarmupPhase.MICRO_POSITIONS
     mgr6.bars_in_current_phase = 123
@@ -555,7 +583,7 @@ if __name__ == "__main__":
         if mgr6_reload.current_phase == WarmupPhase.MICRO_POSITIONS and mgr6_reload.bars_in_current_phase == 123:
             print("  ✓ State persistence working")
         else:
-            print(f"  ✗ State mismatch")
+            print("  ✗ State mismatch")
     else:
         print("  ✗ Failed to load state")
 

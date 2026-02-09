@@ -17,16 +17,21 @@ Design Philosophy:
 """
 
 import logging
-import numpy as np
 from collections import deque
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any
+
+import numpy as np
 
 from src.risk.circuit_breakers import CircuitBreakerManager
 from src.utils.safe_math import SafeMath
-from src.risk.var_estimator import RegimeType, VaREstimator
+from src.risk.var_estimator import RegimeType, VaREstimator, position_size_from_var
 
 LOG = logging.getLogger(__name__)
+
+# Constant log messages (S1192)
+_ENTRY_REJECTED_MSG = "[RISK] Entry REJECTED: %s"
+_EXIT_REJECTED_MSG = "[RISK] Exit REJECTED: %s"
 
 
 @dataclass
@@ -79,9 +84,9 @@ class CorrelationBreakdown:
 class CompositeProbabilityPredictor:
     """Composite probability prediction combining all agents - MAIN PREDICTION TOOL"""
 
-    trigger_calibration: Dict[float, ProbabilityCalibration]  # TriggerAgent predictions
-    harvester_calibration: Dict[float, ProbabilityCalibration]  # HarvesterAgent predictions
-    composite_calibration: Dict[float, ProbabilityCalibration]  # Combined predictions
+    trigger_calibration: dict[float, ProbabilityCalibration]  # TriggerAgent predictions
+    harvester_calibration: dict[float, ProbabilityCalibration]  # HarvesterAgent predictions
+    composite_calibration: dict[float, ProbabilityCalibration]  # Combined predictions
     trigger_overall_accuracy: float  # Overall win rate for trigger
     harvester_overall_accuracy: float  # Overall win rate for harvester
     best_calibrated_agent: str  # "trigger" or "harvester"
@@ -101,10 +106,10 @@ class RiskAssessment:
     regime_risk_multiplier: float  # Current regime adjustment
     recommendations: list[str]
     # RL & Calibration extensions
-    probability_calibration: Optional[Dict[float, ProbabilityCalibration]] = None
-    composite_predictor: Optional[CompositeProbabilityPredictor] = None  # Main prediction tool
-    correlation_status: Optional[CorrelationBreakdown] = None
-    rl_recommended_thresholds: Optional[Dict[str, float]] = None
+    probability_calibration: dict[float, ProbabilityCalibration] | None = None
+    composite_predictor: CompositeProbabilityPredictor | None = None  # Main prediction tool
+    correlation_status: CorrelationBreakdown | None = None
+    rl_recommended_thresholds: dict[str, float] | None = None
 
 
 class RiskManager:
@@ -166,7 +171,7 @@ class RiskManager:
 
         # Portfolio tracking (for multi-asset expansion)
         self.total_exposure_usd = 0.0
-        self.active_positions = {}  # {symbol: position_size}
+        self.active_positions: dict[str, float] = {}  # {symbol: position_size}
 
         # Statistics
         self.entries_approved = 0
@@ -182,11 +187,15 @@ class RiskManager:
         self.initial_risk_budget = risk_budget_usd
 
         # Risk assessment cache
-        self._last_assessment: Optional[RiskAssessment] = None
+        self._last_assessment: RiskAssessment | None = None
+
+        # Decision metadata for RL feedback
+        self._last_decision_type: str = "entry"
+        self._last_decision_confidence: float = 0.0
 
         # === RL LEARNING COMPONENTS ===
         # Q-table: state -> action -> Q-value
-        self.q_table: Dict[Tuple, Dict[str, float]] = {}
+        self.q_table: dict[tuple, dict[str, float]] = {}
         self.learning_rate: float = 0.1
         self.discount_factor: float = 0.95
         self.exploration_rate: float = 0.15  # epsilon-greedy
@@ -195,7 +204,7 @@ class RiskManager:
 
         # === PROBABILITY CALIBRATION (PER-AGENT) ===
         # Separate tracking for TriggerAgent, HarvesterAgent, and Composite
-        self.calibration_buckets_trigger: Dict[float, List[Tuple[float, bool]]] = {
+        self.calibration_buckets_trigger: dict[float, list[tuple[float, bool]]] = {
             0.5: [],
             0.6: [],
             0.7: [],
@@ -203,7 +212,7 @@ class RiskManager:
             0.9: [],
             1.0: [],
         }
-        self.calibration_buckets_harvester: Dict[float, List[Tuple[float, bool]]] = {
+        self.calibration_buckets_harvester: dict[float, list[tuple[float, bool]]] = {
             0.5: [],
             0.6: [],
             0.7: [],
@@ -211,7 +220,7 @@ class RiskManager:
             0.9: [],
             1.0: [],
         }
-        self.calibration_buckets_composite: Dict[float, List[Tuple[float, bool]]] = {
+        self.calibration_buckets_composite: dict[float, list[tuple[float, bool]]] = {
             0.5: [],
             0.6: [],
             0.7: [],
@@ -223,18 +232,29 @@ class RiskManager:
 
         # === CORRELATION MONITORING ===
         # Multi-symbol returns for correlation calculation
-        self.returns_history: Dict[str, deque] = {}  # symbol -> returns
+        self.returns_history: dict[str, deque] = {}  # symbol -> returns
         self.correlation_window: int = 50  # bars
-        self.correlation_matrix: Optional[np.ndarray] = None
+        self.correlation_matrix: np.ndarray | None = None
         self.last_correlation_check: float = 0.0
         self.flash_crash_threshold: float = 0.85  # avg correlation > 0.85 = warning
 
         LOG.info(
-            "[RISK] Initialized RiskManager (Central Risk Coordinator): budget=$%.2f max_size=%.4f symbol=%s",
+            "[RISK] Initialized RiskManager"
+            " (Central Risk Coordinator):"
+            " budget=$%.2f max_size=%.4f symbol=%s",
             risk_budget_usd,
             max_position_size,
             symbol,
         )
+
+    @staticmethod
+    def _get_tripped_breaker_names(breakers_status: dict) -> list:
+        """Extract names of tripped circuit breakers from status dict."""
+        return [
+            key
+            for key in ("sortino", "kurtosis", "drawdown", "consecutive_losses")
+            if key in breakers_status and breakers_status[key].get("tripped", False)
+        ]
 
     def validate_entry(
         self,
@@ -243,7 +263,7 @@ class RiskManager:
         current_position: float = 0.0,
         regime: RegimeType = RegimeType.CRITICAL,
         vpin_z: float = 0.0,
-        current_vol: Optional[float] = None,
+        current_vol: float | None = None,
         account_balance: float = 10000.0,
         max_leverage: float = 100.0,
     ) -> EntryValidation:
@@ -274,13 +294,9 @@ class RiskManager:
         if self.circuit_breakers.is_any_tripped():
             self.entries_rejected += 1
             breakers_status = self.circuit_breakers.get_status()
-            # Extract tripped breaker names from status dict
-            tripped = []
-            for key in ["sortino", "kurtosis", "drawdown", "consecutive_losses"]:
-                if key in breakers_status and breakers_status[key].get("tripped", False):
-                    tripped.append(key)
+            tripped = self._get_tripped_breaker_names(breakers_status)
             reason = f"Circuit breakers tripped: {', '.join(tripped)}"
-            LOG.warning("[RISK] Entry REJECTED: %s", reason)
+            LOG.warning(_ENTRY_REJECTED_MSG, reason)
             return EntryValidation(approved=False, qty=0.0, reason=reason)
 
         # Step 2: Validate action
@@ -295,20 +311,22 @@ class RiskManager:
             return EntryValidation(approved=False, qty=0.0, reason=reason)
 
         # Step 4: Calculate VaR-based position size
-        var_value = self.var_estimator.estimate_var(regime=regime, vpin_z=vpin_z, current_vol=current_vol)
+        var_value = self.var_estimator.estimate_var(
+            regime=regime,
+            vpin_z=vpin_z,
+            current_vol=current_vol,
+        )
 
         if var_value <= 0:
             self.entries_rejected += 1
             reason = "VaR calculation failed or zero"
-            LOG.error("[RISK] Entry REJECTED: %s", reason)
+            LOG.error(_ENTRY_REJECTED_MSG, reason)
             return EntryValidation(approved=False, qty=0.0, reason=reason)
 
         # Calculate position size from VaR
         # risk_budget_usd = var_value * position_size * contract_value
         # For simplicity: position_size = risk_budget_usd / (var_value * price)
         # Assuming BTCUSD, contract_size = 1 BTC
-        from src.risk.var_estimator import position_size_from_var
-
         qty = position_size_from_var(
             var=var_value,  # Correct parameter name
             risk_budget_usd=self.risk_budget_usd,
@@ -320,7 +338,7 @@ class RiskManager:
         if qty <= 0:
             self.entries_rejected += 1
             reason = "Position size calculation resulted in zero/negative"
-            LOG.error("[RISK] Entry REJECTED: %s", reason)
+            LOG.error(_ENTRY_REJECTED_MSG, reason)
             return EntryValidation(approved=False, qty=0.0, reason=reason)
 
         # Step 5: Check maximum position limits
@@ -338,8 +356,13 @@ class RiskManager:
         new_exposure = abs(current_position) + qty
         if new_exposure > self.max_position_size:
             self.entries_rejected += 1
-            reason = f"Total exposure would exceed limit: current={abs(current_position):.4f} + new={qty:.4f} > max={self.max_position_size:.4f}"
-            LOG.warning("[RISK] Entry REJECTED: %s", reason)
+            reason = (
+                f"Total exposure would exceed limit:"
+                f" current={abs(current_position):.4f}"
+                f" + new={qty:.4f}"
+                f" > max={self.max_position_size:.4f}"
+            )
+            LOG.warning(_ENTRY_REJECTED_MSG, reason)
             return EntryValidation(approved=False, qty=0.0, reason=reason)
 
         # Step 7: APPROVED
@@ -419,70 +442,30 @@ class RiskManager:
             exit_type = "FULL"
             urgency = "EMERGENCY"
             breakers_status = self.circuit_breakers.get_status()
-            # Extract tripped breaker names
-            tripped = []
-            for key in ["sortino", "kurtosis", "drawdown", "consecutive_losses"]:
-                if key in breakers_status and breakers_status[key].get("tripped", False):
-                    tripped.append(key)
+            tripped = self._get_tripped_breaker_names(breakers_status)
             LOG.warning(
                 "[RISK] Circuit breakers tripped: %s → EMERGENCY FULL CLOSE",
                 ", ".join(tripped),
             )
 
         # Step 3: Calculate exit volume
-        if exit_type == "FULL":
-            volume = abs(current_position)
-        elif exit_type == "PARTIAL":
-            # Validate fraction
-            if not (0.0 < fraction <= 1.0):
-                self.exits_rejected += 1
-                reason = f"Invalid partial fraction: {fraction:.3f}"
-                LOG.error("[RISK] Exit REJECTED: %s", reason)
-                return ExitValidation(
-                    approved=False,
-                    volume=0,
-                    urgency=urgency,
-                    reason=reason,
-                )
-
-            volume = abs(current_position) * fraction
-
-            # Check minimum position size after partial
-            remaining = abs(current_position) - volume
-            if 0 < remaining < min_position_size:
-                # Would leave dust position → force FULL close
-                volume = abs(current_position)
-                exit_type = "FULL"
-                LOG.info(
-                    "[RISK] Partial would leave dust (%.4f < %.4f) → upgrading to FULL",
-                    remaining,
-                    min_position_size,
-                )
-        elif exit_type == "TRAILING":
-            # Trailing stop: full close
-            volume = abs(current_position)
-        else:
-            self.exits_rejected += 1
-            reason = f"Unknown exit_type: {exit_type}"
-            LOG.error("[RISK] Exit REJECTED: %s", reason)
-            return ExitValidation(
-                approved=False,
-                volume=0,
-                urgency=urgency,
-                reason=reason,
-            )
+        result = self._calculate_exit_volume(
+            exit_type,
+            current_position,
+            fraction,
+            min_position_size,
+            urgency,
+        )
+        if isinstance(result, ExitValidation):
+            return result
+        volume, exit_type = result
 
         # Step 4: Validate volume
         if volume <= 0:
             self.exits_rejected += 1
             reason = "Calculated volume is zero/negative"
-            LOG.error("[RISK] Exit REJECTED: %s", reason)
-            return ExitValidation(
-                approved=False,
-                volume=0,
-                urgency=urgency,
-                reason=reason,
-            )
+            LOG.error(_EXIT_REJECTED_MSG, reason)
+            return ExitValidation(approved=False, volume=0, urgency=urgency, reason=reason)
 
         # Step 5: APPROVED
         self.exits_approved += 1
@@ -495,7 +478,7 @@ class RiskManager:
             self.exits_approved -= 1
             self.exits_rejected += 1
             reason = f"Volume rounds to zero after lot conversion (raw={volume:.6f})"
-            LOG.error("[RISK] Exit REJECTED: %s", reason)
+            LOG.error(_EXIT_REJECTED_MSG, reason)
             return ExitValidation(
                 approved=False,
                 volume=0,
@@ -516,6 +499,46 @@ class RiskManager:
             urgency=urgency,
             reason=f"{exit_type} exit approved",
         )
+
+    def _calculate_exit_volume(
+        self,
+        exit_type: str,
+        current_position: float,
+        fraction: float,
+        min_position_size: float,
+        urgency: str,
+    ) -> "tuple[float, str] | ExitValidation":
+        """Calculate exit volume based on exit type.
+
+        Returns (volume, exit_type) or ExitValidation on error.
+        """
+        if exit_type in {"FULL", "TRAILING"}:
+            return abs(current_position), exit_type
+
+        if exit_type == "PARTIAL":
+            if not 0.0 < fraction <= 1.0:
+                self.exits_rejected += 1
+                reason = f"Invalid partial fraction: {fraction:.3f}"
+                LOG.error(_EXIT_REJECTED_MSG, reason)
+                return ExitValidation(approved=False, volume=0, urgency=urgency, reason=reason)
+
+            volume = abs(current_position) * fraction
+            remaining = abs(current_position) - volume
+            if 0 < remaining < min_position_size:
+                volume = abs(current_position)
+                exit_type = "FULL"
+                LOG.info(
+                    "[RISK] Partial would leave dust (%.4f < %.4f) → upgrading to FULL",
+                    remaining,
+                    min_position_size,
+                )
+            return volume, exit_type
+
+        # Unknown exit type
+        self.exits_rejected += 1
+        reason = f"Unknown exit_type: {exit_type}"
+        LOG.error(_EXIT_REJECTED_MSG, reason)
+        return ExitValidation(approved=False, volume=0, urgency=urgency, reason=reason)
 
     def update_exposure(self, symbol: str, position_size: float):
         """
@@ -572,7 +595,11 @@ class RiskManager:
         else:
             LOG.error("[RISK] Invalid risk budget: %.2f (must be positive)", new_budget)
 
-    def update_confidence_thresholds(self, entry: Optional[float] = None, exit: Optional[float] = None):
+    def update_confidence_thresholds(
+        self,
+        entry: float | None = None,
+        exit_threshold: float | None = None,
+    ):
         """
         Update confidence thresholds (for adaptive tuning).
 
@@ -585,16 +612,16 @@ class RiskManager:
             self.min_confidence_entry = entry
             LOG.info("[RISK] Entry confidence threshold: %.3f -> %.3f", old, entry)
 
-        if exit is not None and 0.0 <= exit <= 1.0:
+        if exit_threshold is not None and 0.0 <= exit_threshold <= 1.0:
             old = self.min_confidence_exit
-            self.min_confidence_exit = exit
-            LOG.info("[RISK] Exit confidence threshold: %.3f -> %.3f", old, exit)
+            self.min_confidence_exit = exit_threshold
+            LOG.info("[RISK] Exit confidence threshold: %.3f -> %.3f", old, exit_threshold)
 
     # =========================================================================
     # CIRCUIT BREAKER CONTROL - Update breakers on trade completion
     # =========================================================================
 
-    def on_trade_complete(self, pnl: float, equity: float, is_win: Optional[bool] = None):
+    def on_trade_complete(self, pnl: float, equity: float, is_win: bool | None = None):
         """
         Update circuit breakers and performance tracking on trade completion.
 
@@ -619,8 +646,7 @@ class RiskManager:
             self.winning_trades += 1
 
         # Update peak equity
-        if equity > self.peak_equity:
-            self.peak_equity = equity
+        self.peak_equity = max(self.peak_equity, equity)
 
         # Log trade impact
         win_rate = self.winning_trades / max(self.total_trades, 1)
@@ -702,7 +728,7 @@ class RiskManager:
     def assess_risk(
         self,
         current_regime: RegimeType = RegimeType.CRITICAL,
-        current_vol: Optional[float] = None,
+        current_vol: float | None = None,
     ) -> RiskAssessment:
         """
         Provide comprehensive portfolio risk assessment.
@@ -717,108 +743,19 @@ class RiskManager:
         Returns:
             RiskAssessment with comprehensive metrics and recommendations
         """
-        # Calculate total VaR
-        total_var = 0.0
-        for symbol, position_size in self.active_positions.items():
-            if position_size != 0:
-                var_value = self.var_estimator.estimate_var(
-                    regime=current_regime,
-                    vpin_z=0.0,  # Would need per-symbol VPIN
-                    current_vol=current_vol,
-                )
-                total_var += abs(position_size) * var_value
-
-        # Risk utilization
+        total_var = self._calculate_total_var(current_regime, current_vol)
         risk_utilization = SafeMath.safe_div(total_var * 100.0, self.risk_budget_usd, default=0.0)
+        concentration = self._calculate_concentration()
+        regime_mult = self._get_regime_multiplier(current_regime)
 
-        # Position concentration (0 = diversified, 1 = single position)
-        if len(self.active_positions) == 0:
-            concentration = 0.0
-        elif len(self.active_positions) == 1:
-            concentration = 1.0
-        else:
-            # Herfindahl index
-            total_exposure = sum(abs(p) for p in self.active_positions.values())
-            concentration = sum((abs(p) / max(total_exposure, 1e-8)) ** 2 for p in self.active_positions.values())
-
-        # Regime risk multiplier
-        regime_multipliers = {
-            RegimeType.OVERDAMPED: 1.0,
-            RegimeType.CRITICAL: 1.5,
-            RegimeType.UNDERDAMPED: 2.0,
-        }
-        regime_mult = regime_multipliers.get(current_regime, 1.5)
-
-        # Determine portfolio health
         cb_status = self.circuit_breakers.get_status()
         breakers_tripped = cb_status.get("any_tripped", False)
+        health = self._determine_health(breakers_tripped, risk_utilization, concentration)
 
-        if breakers_tripped:
-            health = "CRITICAL"
-        elif risk_utilization > 80 or concentration > 0.8:
-            health = "CAUTION"
-        else:
-            health = "HEALTHY"
-
-        # Generate recommendations
-        recommendations = []
-        if breakers_tripped:
-            recommendations.append("STOP TRADING: Circuit breakers active")
-        if risk_utilization > 90:
-            recommendations.append("Risk budget nearly exhausted - avoid new positions")
-        if concentration > 0.9:
-            recommendations.append("High concentration - consider diversification")
-        if current_regime == RegimeType.UNDERDAMPED:
-            recommendations.append("High volatility regime - reduce position sizes")
-        if len(recommendations) == 0:
-            recommendations.append("Portfolio health normal")
-
-        # === EXTENDED RISK METRICS ===
-        # Composite Probability Predictor - MAIN PREDICTION TOOL
-        try:
-            composite_predictor = self.get_composite_probability_predictor()
-
-            # Add per-agent calibration warnings
-            if composite_predictor.trigger_calibration:
-                for bucket, calib in composite_predictor.trigger_calibration.items():
-                    if not calib.is_well_calibrated and calib.sample_size > 10:
-                        recommendations.append(
-                            f"[TRIGGER] Miscalibrated at {bucket:.0%}: "
-                            f"{calib.predicted_success_rate:.0%} vs {calib.actual_success_rate:.0%}"
-                        )
-
-            if composite_predictor.harvester_calibration:
-                for bucket, calib in composite_predictor.harvester_calibration.items():
-                    if not calib.is_well_calibrated and calib.sample_size > 10:
-                        recommendations.append(
-                            f"[HARVESTER] Miscalibrated at {bucket:.0%}: "
-                            f"{calib.predicted_success_rate:.0%} vs {calib.actual_success_rate:.0%}"
-                        )
-
-            # Add composite recommendation
-            if composite_predictor.recommendation and "Insufficient" not in composite_predictor.recommendation:
-                recommendations.append(f"📊 {composite_predictor.recommendation}")
-        except Exception as e:
-            LOG.debug(f"[RISK] Could not generate composite predictor: {e}")
-            composite_predictor = None
-
-        # Legacy calibration data (for backward compatibility)
-        calibration_data = self.get_probability_calibration("composite")
-
-        # Correlation breakdown check
-        import time
-
-        correlation_status = self.check_correlation_breakdown(current_time=time.time())
-        if correlation_status and correlation_status.breakdown_detected:
-            recommendations.insert(0, f"⚠️  CORRELATION BREAKDOWN: {correlation_status.recommended_action}")
-
-        # RL threshold recommendations
-        rl_thresholds = self.get_rl_recommended_thresholds()
-        if rl_thresholds.get("confidence", 0) > 0.7:
-            recommendations.append(
-                f"RL suggests: entry={rl_thresholds['entry_threshold']:.2f} "
-                f"exit={rl_thresholds['exit_threshold']:.2f}"
-            )
+        recommendations = self._build_base_recommendations(
+            breakers_tripped, risk_utilization, concentration, current_regime
+        )
+        composite_predictor = self._add_extended_metrics(recommendations)
 
         assessment = RiskAssessment(
             total_exposure_usd=self.total_exposure_usd,
@@ -829,11 +766,12 @@ class RiskManager:
             position_concentration=concentration,
             regime_risk_multiplier=regime_mult,
             recommendations=recommendations,
-            # RL & Calibration extensions
-            probability_calibration=calibration_data if calibration_data else None,
-            composite_predictor=composite_predictor,  # Main prediction tool
-            correlation_status=correlation_status,
-            rl_recommended_thresholds=rl_thresholds,
+            probability_calibration=self.get_probability_calibration("composite") or None,
+            composite_predictor=composite_predictor,
+            correlation_status=self.check_correlation_breakdown(
+                current_time=__import__("time").time(),
+            ),
+            rl_recommended_thresholds=self.get_rl_recommended_thresholds(),
         )
 
         self._last_assessment = assessment
@@ -847,6 +785,124 @@ class RiskManager:
         )
 
         return assessment
+
+    def _calculate_total_var(self, regime: RegimeType, current_vol: float | None) -> float:
+        """Calculate total portfolio Value-at-Risk."""
+        total_var = 0.0
+        for _symbol, position_size in self.active_positions.items():
+            if position_size != 0:
+                var_value = self.var_estimator.estimate_var(
+                    regime=regime,
+                    vpin_z=0.0,
+                    current_vol=current_vol,
+                )
+                total_var += abs(position_size) * var_value
+        return total_var
+
+    def _calculate_concentration(self) -> float:
+        """Calculate position concentration (Herfindahl index)."""
+        n = len(self.active_positions)
+        if n == 0:
+            return 0.0
+        if n == 1:
+            return 1.0
+        total_exposure = sum(abs(p) for p in self.active_positions.values())
+        return sum(
+            (abs(p) / max(total_exposure, 1e-8)) ** 2
+            for p in self.active_positions.values()
+        )
+
+    @staticmethod
+    def _get_regime_multiplier(regime: RegimeType) -> float:
+        """Map regime to risk multiplier."""
+        return {
+            RegimeType.OVERDAMPED: 1.0,
+            RegimeType.CRITICAL: 1.5,
+            RegimeType.UNDERDAMPED: 2.0,
+        }.get(regime, 1.5)
+
+    @staticmethod
+    def _determine_health(
+        breakers_tripped: bool,
+        risk_utilization: float,
+        concentration: float,
+    ) -> str:
+        """Determine portfolio health string."""
+        if breakers_tripped:
+            return "CRITICAL"
+        if risk_utilization > 80 or concentration > 0.8:
+            return "CAUTION"
+        return "HEALTHY"
+
+    @staticmethod
+    def _build_base_recommendations(
+        breakers_tripped: bool,
+        risk_utilization: float,
+        concentration: float,
+        regime: RegimeType,
+    ) -> list[str]:
+        """Build baseline risk recommendations."""
+        recs: list[str] = []
+        if breakers_tripped:
+            recs.append("STOP TRADING: Circuit breakers active")
+        if risk_utilization > 90:
+            recs.append("Risk budget nearly exhausted - avoid new positions")
+        if concentration > 0.9:
+            recs.append("High concentration - consider diversification")
+        if regime == RegimeType.UNDERDAMPED:
+            recs.append("High volatility regime - reduce position sizes")
+        if not recs:
+            recs.append("Portfolio health normal")
+        return recs
+
+    def _add_extended_metrics(self, recommendations: list[str]):
+        """Append composite predictor, correlation, and RL recommendations.
+
+        Returns composite_predictor or None.
+        """
+        composite_predictor = self._add_calibration_warnings(recommendations)
+
+        correlation_status = self.check_correlation_breakdown(
+            current_time=__import__("time").time(),
+        )
+        if correlation_status and correlation_status.breakdown_detected:
+            recommendations.insert(
+                0,
+                f"⚠️  CORRELATION BREAKDOWN: {correlation_status.recommended_action}",
+            )
+
+        rl_thresholds = self.get_rl_recommended_thresholds()
+        if rl_thresholds.get("confidence", 0) > 0.7:
+            recommendations.append(
+                f"RL suggests: entry={rl_thresholds['entry_threshold']:.2f} "
+                f"exit={rl_thresholds['exit_threshold']:.2f}"
+            )
+        return composite_predictor
+
+    def _add_calibration_warnings(self, recommendations: list[str]):
+        """Add per-agent calibration warnings. Returns composite_predictor or None."""
+        try:
+            predictor = self.get_composite_probability_predictor()
+        except (ValueError, RuntimeError) as e:
+            LOG.debug("[RISK] Could not generate composite predictor: %s", e)
+            return None
+
+        for label, calibration in [
+            ("TRIGGER", predictor.trigger_calibration),
+            ("HARVESTER", predictor.harvester_calibration),
+        ]:
+            if not calibration:
+                continue
+            recommendations.extend(
+                f"[{label}] Miscalibrated at {bucket:.0%}: "
+                f"{calib.predicted_success_rate:.0%} vs {calib.actual_success_rate:.0%}"
+                for bucket, calib in calibration.items()
+                if not calib.is_well_calibrated and calib.sample_size > 10
+            )
+
+        if predictor.recommendation and "Insufficient" not in predictor.recommendation:
+            recommendations.append(f"📊 {predictor.recommendation}")
+        return predictor
 
     def get_risk_summary(self) -> str:
         """Get human-readable risk summary"""
@@ -891,7 +947,7 @@ class RiskManager:
         decision_type: str,  # "entry" | "exit"
         confidence: float,
         approved: bool,
-        actual_outcome: Optional[bool] = None,  # True = profitable, False = loss
+        actual_outcome: bool | None = None,  # profitable if set, loss if unset
         agent_id: str = "composite",  # "trigger", "harvester", or "composite"
     ) -> None:
         """
@@ -956,7 +1012,10 @@ class RiskManager:
         else:
             return 1.0
 
-    def get_probability_calibration(self, agent_id: str = "composite") -> Dict[float, ProbabilityCalibration]:
+    def get_probability_calibration(
+        self,
+        agent_id: str = "composite",
+    ) -> dict[float, ProbabilityCalibration]:
         """
         Analyze how well-calibrated agent probabilities are.
 
@@ -982,9 +1041,9 @@ class RiskManager:
             if len(outcomes) < 5:  # Need minimum samples
                 continue
 
-            confidences, results = zip(*outcomes)
-            predicted_rate = np.mean(confidences)
-            actual_rate = np.mean([1.0 if r else 0.0 for r in results])
+            confidences, results = zip(*outcomes, strict=True)
+            predicted_rate = float(np.mean(confidences))
+            actual_rate = float(np.mean([1.0 if r else 0.0 for r in results]))
             calibration_error = abs(predicted_rate - actual_rate)
 
             calibration_report[bucket] = ProbabilityCalibration(
@@ -1019,22 +1078,42 @@ class RiskManager:
         composite_calib = self.get_probability_calibration("composite")
 
         # Calculate overall accuracy for each agent
-        trigger_total = sum(len(outcomes) for outcomes in self.calibration_buckets_trigger.values())
+        trigger_total = sum(
+            len(outcomes)
+            for outcomes in self.calibration_buckets_trigger.values()
+        )
         trigger_wins = sum(
-            sum(1 for _, outcome in outcomes if outcome) for outcomes in self.calibration_buckets_trigger.values()
+            1
+            for outcomes in self.calibration_buckets_trigger.values()
+            for _, outcome in outcomes
+            if outcome
         )
         trigger_accuracy = trigger_wins / max(trigger_total, 1)
 
-        harvester_total = sum(len(outcomes) for outcomes in self.calibration_buckets_harvester.values())
+        harvester_total = sum(
+            len(outcomes)
+            for outcomes in self.calibration_buckets_harvester.values()
+        )
         harvester_wins = sum(
-            sum(1 for _, outcome in outcomes if outcome) for outcomes in self.calibration_buckets_harvester.values()
+            1
+            for outcomes in self.calibration_buckets_harvester.values()
+            for _, outcome in outcomes
+            if outcome
         )
         harvester_accuracy = harvester_wins / max(harvester_total, 1)
 
         # Determine best calibrated agent
-        trigger_avg_error = np.mean([c.calibration_error for c in trigger_calib.values()]) if trigger_calib else 1.0
+        trigger_avg_error = (
+            np.mean([c.calibration_error for c in trigger_calib.values()])
+            if trigger_calib
+            else 1.0
+        )
         harvester_avg_error = (
-            np.mean([c.calibration_error for c in harvester_calib.values()]) if harvester_calib else 1.0
+            np.mean(
+                [c.calibration_error for c in harvester_calib.values()],
+            )
+            if harvester_calib
+            else 1.0
         )
 
         best_calibrated = "trigger" if trigger_avg_error < harvester_avg_error else "harvester"
@@ -1045,14 +1124,23 @@ class RiskManager:
         elif trigger_avg_error < 0.1 and harvester_avg_error < 0.1:
             recommendation = "Both agents well-calibrated - trust both equally"
         elif trigger_avg_error < harvester_avg_error * 0.7:
-            recommendation = f"Trust TriggerAgent more (error: {trigger_avg_error:.1%} vs {harvester_avg_error:.1%})"
+            recommendation = (
+                f"Trust TriggerAgent more"
+                f" (error: {trigger_avg_error:.1%}"
+                f" vs {harvester_avg_error:.1%})"
+            )
         elif harvester_avg_error < trigger_avg_error * 0.7:
-            recommendation = f"Trust HarvesterAgent more (error: {harvester_avg_error:.1%} vs {trigger_avg_error:.1%})"
+            recommendation = (
+                f"Trust HarvesterAgent more"
+                f" (error: {harvester_avg_error:.1%}"
+                f" vs {trigger_avg_error:.1%})"
+            )
         else:
             recommendation = "Both agents similarly calibrated - weight equally"
 
         LOG.info(
-            "[COMPOSITE PREDICTOR] Trigger: %.1f%% acc (error=%.1f%%) | Harvester: %.1f%% acc (error=%.1f%%) | Best: %s",
+            "[COMPOSITE PREDICTOR] Trigger: %.1f%% acc (error=%.1f%%)"
+            " | Harvester: %.1f%% acc (error=%.1f%%) | Best: %s",
             trigger_accuracy * 100,
             trigger_avg_error * 100,
             harvester_accuracy * 100,
@@ -1070,7 +1158,13 @@ class RiskManager:
             recommendation=recommendation,
         )
 
-    def _update_q_learning(self, decision_type: str, confidence: float, approved: bool, outcome: bool) -> None:
+    def _update_q_learning(
+        self,
+        _decision_type: str,
+        confidence: float,
+        approved: bool,
+        outcome: bool,
+    ) -> None:
         """
         Update Q-table for threshold optimization.
 
@@ -1079,7 +1173,10 @@ class RiskManager:
         Reward: +1 for correct decision, -1 for incorrect
         """
         # Current state
-        drawdown_pct = ((self.peak_equity - (self.peak_equity + self.total_pnl)) / self.peak_equity) * 100
+        drawdown_pct = (
+            (self.peak_equity - (self.peak_equity + self.total_pnl))
+            / self.peak_equity
+        ) * 100
         drawdown_level = int(drawdown_pct / 5)  # 0-5% = 0, 5-10% = 1, etc.
         win_rate = self.winning_trades / max(self.total_trades, 1)
         win_bucket = int(win_rate * 10)  # 0-10% = 0, 10-20% = 1, etc.
@@ -1092,9 +1189,9 @@ class RiskManager:
             reward = 1.0
         elif not approved and not outcome:  # Rejected and would have lost
             reward = 0.5
-        elif approved and not outcome:  # Approved and lost
+        elif approved:  # Approved but lost (outcome is False here)
             reward = -1.0
-        else:  # not approved and outcome (missed opportunity)
+        else:  # Rejected but would have won (missed opportunity)
             reward = -0.5
 
         # Initialize Q-values for this state if needed
@@ -1137,7 +1234,7 @@ class RiskManager:
             }
         )
 
-    def get_rl_recommended_thresholds(self) -> Dict[str, float]:
+    def get_rl_recommended_thresholds(self) -> dict[str, Any]:
         """
         Get RL-recommended threshold adjustments based on learned Q-values.
 
@@ -1157,18 +1254,27 @@ class RiskManager:
             }
 
         # Aggregate Q-values across all states to find best actions
-        action_scores = {"lower_threshold": [], "keep_threshold": [], "raise_threshold": []}
+        action_scores: dict[str, list[float]] = {
+            "lower_threshold": [],
+            "keep_threshold": [],
+            "raise_threshold": [],
+        }
 
-        for state, actions in self.q_table.items():
+        for _state, actions in self.q_table.items():
             for action, q_val in actions.items():
                 action_scores[action].append(q_val)
 
         # Average Q-value for each action
-        avg_q = {action: np.mean(scores) if scores else 0.0 for action, scores in action_scores.items()}
+        avg_q = {
+            action: np.mean(scores) if scores else 0.0
+            for action, scores in action_scores.items()
+        }
 
         # Best action
-        best_action = max(avg_q, key=avg_q.get)
-        confidence = abs(avg_q[best_action]) / (sum(abs(v) for v in avg_q.values()) + 1e-6)
+        best_action = max(avg_q, key=lambda k: float(avg_q[k]))
+        numerator = float(abs(float(avg_q[best_action])))
+        denominator = sum(float(abs(float(v))) for v in avg_q.values()) + 1e-6
+        confidence = numerator / denominator
 
         # Apply recommendation
         adjustment = 0.0
@@ -1203,7 +1309,7 @@ class RiskManager:
 
         LOG.debug("[CORRELATION] Updated %s return: %.4f", symbol, price_return)
 
-    def check_correlation_breakdown(self, current_time: float) -> Optional[CorrelationBreakdown]:
+    def check_correlation_breakdown(self, current_time: float) -> CorrelationBreakdown | None:
         """
         Detect correlation breakdowns (flash crash indicator).
 
@@ -1220,16 +1326,16 @@ class RiskManager:
             return None
 
         symbols_with_data = [
-            sym for sym, returns in self.returns_history.items() if len(returns) >= min(20, self.correlation_window)
+            sym
+            for sym, returns in self.returns_history.items()
+            if len(returns) >= min(20, self.correlation_window)
         ]
 
         if len(symbols_with_data) < 2:
             return None
 
         # Build returns matrix
-        returns_matrix = []
-        for sym in symbols_with_data:
-            returns_matrix.append(list(self.returns_history[sym]))
+        returns_matrix = [list(self.returns_history[sym]) for sym in symbols_with_data]
 
         # Ensure equal length (use minimum available)
         min_length = min(len(r) for r in returns_matrix)
@@ -1241,16 +1347,17 @@ class RiskManager:
 
         # Get off-diagonal correlations (exclude self-correlation)
         n = len(symbols_with_data)
-        off_diag_correlations = []
-        for i in range(n):
-            for j in range(i + 1, n):
-                off_diag_correlations.append(self.correlation_matrix[i, j])
+        off_diag_correlations = [
+            self.correlation_matrix[i, j]
+            for i in range(n)
+            for j in range(i + 1, n)
+        ]
 
-        avg_correlation = np.mean(np.abs(off_diag_correlations))
-        max_correlation = np.max(np.abs(off_diag_correlations))
+        avg_correlation = float(np.mean(np.abs(off_diag_correlations)))
+        max_correlation = float(np.max(np.abs(off_diag_correlations)))
 
         # Flash crash detection
-        breakdown_detected = avg_correlation > self.flash_crash_threshold
+        breakdown_detected = bool(avg_correlation > self.flash_crash_threshold)
 
         # Risk level
         if avg_correlation > 0.95:
@@ -1288,7 +1395,11 @@ class RiskManager:
 
         return breakdown
 
-    def allocate_capital_by_correlation(self, symbols: List[str], total_capital: float) -> Dict[str, float]:
+    def allocate_capital_by_correlation(
+        self,
+        symbols: list[str],
+        total_capital: float,
+    ) -> dict[str, float]:
         """
         Allocate capital using negative correlation for diversification.
 
@@ -1307,31 +1418,24 @@ class RiskManager:
         if len(symbols) < 2 or self.correlation_matrix is None:
             # Equal allocation fallback
             equal_alloc = total_capital / len(symbols)
-            return {sym: equal_alloc for sym in symbols}
+            return dict.fromkeys(symbols, equal_alloc)
 
         # Calculate diversification score for each symbol
         # Higher score = better diversification (more negative/low correlations)
         symbols_with_data = [
-            sym for sym in symbols if sym in self.returns_history and len(self.returns_history[sym]) >= 20
+            sym
+            for sym in symbols
+            if sym in self.returns_history
+            and len(self.returns_history[sym]) >= 20
         ]
 
         if len(symbols_with_data) < 2:
             equal_alloc = total_capital / len(symbols)
-            return {sym: equal_alloc for sym in symbols}
+            return dict.fromkeys(symbols, equal_alloc)
 
-        # Diversification score: average of (1 - |correlation|) with other assets
+        # Diversification score: average of (1 - correlation) with other assets
         # Higher score = less correlated = better diversification
-        div_scores = {}
-        for i, sym in enumerate(symbols_with_data):
-            correlations_with_others = []
-            for j, other_sym in enumerate(symbols_with_data):
-                if i != j:
-                    corr = self.correlation_matrix[i, j]
-                    # Reward negative correlation, penalize positive correlation
-                    div_score = 1.0 - corr  # Range: [0, 2], higher = better
-                    correlations_with_others.append(div_score)
-
-            div_scores[sym] = np.mean(correlations_with_others)
+        div_scores = self._compute_diversification_scores(symbols_with_data)
 
         # Normalize scores to sum to 1.0
         total_score = sum(div_scores.values())
@@ -1359,3 +1463,16 @@ class RiskManager:
             LOG.info("  %s: $%.2f (div_score=%.3f)", sym, amount, div_score)
 
         return allocation
+
+    def _compute_diversification_scores(self, symbols_with_data: list[str]) -> dict[str, float]:
+        """Compute diversification score for each symbol based on correlation matrix."""
+        if self.correlation_matrix is None:
+            return dict.fromkeys(symbols_with_data, 1.0)
+        corr = self.correlation_matrix
+        div_scores = {}
+        n = len(symbols_with_data)
+        for i, sym in enumerate(symbols_with_data):
+            # Collect (1 - correlation) with every other symbol
+            others = [1.0 - corr[i, j] for j in range(n) if i != j]
+            div_scores[sym] = float(np.mean(others))
+        return div_scores

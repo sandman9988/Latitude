@@ -45,43 +45,7 @@ class EmergencyPositionCloser:
         """
         LOG.warning("🚨 EMERGENCY CLOSE INITIATED: %s", reason)
 
-        success = True
-        positions_closed = 0
-
-        # Method 1: Close by broker tickets (HEDGING MODE - most reliable)
-        if hasattr(self.trade_integration, "position_tickets") and self.trade_integration.position_tickets:
-            LOG.info("[EMERGENCY] Closing %d positions by broker ticket", len(self.trade_integration.position_tickets))
-
-            for ticket, position_id in list(self.trade_integration.position_tickets.items()):
-                if self._close_by_position_id(position_id, reason):
-                    positions_closed += 1
-                else:
-                    success = False
-                    LOG.error("[EMERGENCY] Failed to close position %s (ticket %s)", position_id, ticket)
-
-        # Method 2: Close by MFE/MAE trackers (if tickets not available)
-        elif hasattr(self.app, "mfe_mae_trackers") and self.app.mfe_mae_trackers:
-            LOG.info("[EMERGENCY] Closing %d positions by tracker", len(self.app.mfe_mae_trackers))
-
-            for position_id in list(self.app.mfe_mae_trackers.keys()):
-                if self._close_by_position_id(position_id, reason):
-                    positions_closed += 1
-                else:
-                    success = False
-                    LOG.error("[EMERGENCY] Failed to close position %s", position_id)
-
-        # Method 3: Close net position (NETTING MODE fallback)
-        elif self.trade_integration.trade_manager:
-            position = self.trade_integration.trade_manager.get_position()
-            net_qty = abs(position.net_qty)
-
-            if net_qty > 0.0001:
-                LOG.info("[EMERGENCY] Closing net position: qty=%.6f", net_qty)
-                if self._close_net_position(net_qty, reason):
-                    positions_closed += 1
-                else:
-                    success = False
-                    LOG.error("[EMERGENCY] Failed to close net position")
+        success, positions_closed = self._dispatch_close(reason)
 
         if positions_closed > 0:
             LOG.warning("🚨 EMERGENCY CLOSE: Submitted %d close order(s)", positions_closed)
@@ -89,6 +53,63 @@ class EmergencyPositionCloser:
             LOG.info("[EMERGENCY] No positions to close")
 
         return success
+
+    def _dispatch_close(self, reason: str) -> tuple[bool, int]:
+        """Dispatch to the appropriate close method based on available data."""
+        # Method 1: Close by broker tickets (HEDGING MODE - most reliable)
+        if hasattr(self.trade_integration, "position_tickets") and self.trade_integration.position_tickets:
+            return self._close_by_tickets(reason)
+
+        # Method 2: Close by MFE/MAE trackers (if tickets not available)
+        if hasattr(self.app, "mfe_mae_trackers") and self.app.mfe_mae_trackers:
+            return self._close_by_trackers(reason)
+
+        # Method 3: Close net position (NETTING MODE fallback)
+        if self.trade_integration.trade_manager:
+            return self._close_net_fallback(reason)
+
+        return True, 0
+
+    def _close_by_tickets(self, reason: str) -> tuple[bool, int]:
+        """Close positions by broker ticket IDs (hedging mode)."""
+        LOG.info("[EMERGENCY] Closing %d positions by broker ticket", len(self.trade_integration.position_tickets))
+        success = True
+        closed = 0
+        for ticket, position_id in self.trade_integration.position_tickets.items():
+            if self._close_by_position_id(position_id, reason):
+                closed += 1
+            else:
+                success = False
+                LOG.error("[EMERGENCY] Failed to close position %s (ticket %s)", position_id, ticket)
+        return success, closed
+
+    def _close_by_trackers(self, reason: str) -> tuple[bool, int]:
+        """Close positions by MFE/MAE tracker IDs."""
+        LOG.info("[EMERGENCY] Closing %d positions by tracker", len(self.app.mfe_mae_trackers))
+        success = True
+        closed = 0
+        for position_id in self.app.mfe_mae_trackers.keys():
+            if self._close_by_position_id(position_id, reason):
+                closed += 1
+            else:
+                success = False
+                LOG.error("[EMERGENCY] Failed to close position %s", position_id)
+        return success, closed
+
+    def _close_net_fallback(self, reason: str) -> tuple[bool, int]:
+        """Close net position (netting mode fallback)."""
+        if self.trade_integration.trade_manager is None:
+            LOG.error("[EMERGENCY] trade_manager is None in _close_net_fallback")
+            return False, 0
+        position = self.trade_integration.trade_manager.get_position()
+        net_qty = abs(position.net_qty)
+        if net_qty <= 0.0001:
+            return True, 0
+        LOG.info("[EMERGENCY] Closing net position: qty=%.6f", net_qty)
+        if self._close_net_position(net_qty, reason):
+            return True, 1
+        LOG.error("[EMERGENCY] Failed to close net position")
+        return False, 0
 
     def _close_by_position_id(self, position_id: str, reason: str) -> bool:
         """
@@ -103,11 +124,11 @@ class EmergencyPositionCloser:
         """
         try:
             return self.trade_integration.close_position(position_id=position_id, reason=reason)
-        except Exception as e:
+        except (RuntimeError, OSError) as e:
             LOG.error("[EMERGENCY] Error closing position %s: %s", position_id, e, exc_info=True)
             return False
 
-    def _close_net_position(self, quantity: float, reason: str) -> bool:
+    def _close_net_position(self, _quantity: float, reason: str) -> bool:
         """
         Close net position (netting mode fallback).
 
@@ -120,7 +141,7 @@ class EmergencyPositionCloser:
         """
         try:
             return self.trade_integration.close_position(position_id=None, reason=reason)
-        except Exception as e:
+        except (RuntimeError, OSError) as e:
             LOG.error("[EMERGENCY] Error closing net position: %s", e, exc_info=True)
             return False
 

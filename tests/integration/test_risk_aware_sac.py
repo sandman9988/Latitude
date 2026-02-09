@@ -20,7 +20,7 @@ rng = np.random.default_rng(42)
 
 import matplotlib.pyplot as plt
 from typing import Tuple
-from src.risk.risk_aware_sac_manager import RiskAwareSAC_Manager, rolling_kurtosis, vpin_zscore, truncated_gpd_hazard
+from src.risk.risk_aware_sac_manager import RiskAwareSACManager, rolling_kurtosis, vpin_zscore, truncated_gpd_hazard
 
 
 class SyntheticMarketSimulator:
@@ -115,11 +115,11 @@ class SyntheticMarketSimulator:
 
 
 class TestRiskAwareSACManager:
-    """Test suite for RiskAwareSAC_Manager."""
+    """Test suite for RiskAwareSACManager."""
 
     def test_initialization(self):
         """Test manager initializes with correct parameters."""
-        manager = RiskAwareSAC_Manager(window=100, kurt_max=4.0, vpin_trigger=2.5, collapse_fac=0.15)
+        manager = RiskAwareSACManager(window=100, kurt_max=4.0, vpin_trigger=2.5, collapse_fac=0.15)
 
         assert manager.window == 100
         assert manager.kurt_max == pytest.approx(4.0)
@@ -131,7 +131,7 @@ class TestRiskAwareSACManager:
 
     def test_update_buffers(self):
         """Test that buffers update correctly."""
-        manager = RiskAwareSAC_Manager(window=10)
+        manager = RiskAwareSACManager(window=10)
 
         # Add 15 samples (should keep only last 10)
         for i in range(15):
@@ -156,7 +156,7 @@ class TestRiskAwareSACManager:
     def test_exposure_collapse_on_extreme_conditions(self):
         """Test that exposure collapses when both signals spike."""
         rng = np.random.default_rng(42)
-        manager = RiskAwareSAC_Manager(window=50, kurt_max=3.0, vpin_trigger=2.0, collapse_fac=0.1)
+        manager = RiskAwareSACManager(window=50, kurt_max=3.0, vpin_trigger=2.0, collapse_fac=0.1)
 
         # Feed normal returns first
         for _ in range(40):
@@ -198,7 +198,7 @@ class TestRiskAwareSACManager:
 
     def test_scale_action(self):
         """Test action scaling functionality."""
-        manager = RiskAwareSAC_Manager(window=50)
+        manager = RiskAwareSACManager(window=50)
 
         # Warm up with normal data
         for _ in range(60):
@@ -214,7 +214,7 @@ class TestRiskAwareSACManager:
 
     def test_diagnostics(self):
         """Test diagnostics reporting."""
-        manager = RiskAwareSAC_Manager(window=50)
+        manager = RiskAwareSACManager(window=50)
 
         for i in range(100):
             manager.update(rng.normal(0, 0.01), 0.5)
@@ -241,7 +241,7 @@ class TestSyntheticMarketIntegration:
 
         returns, vpin = sim.get_returns_and_vpin()
 
-        manager = RiskAwareSAC_Manager(window=100, kurt_max=3.0, vpin_trigger=2.0, collapse_fac=0.1)
+        manager = RiskAwareSACManager(window=100, kurt_max=3.0, vpin_trigger=2.0, collapse_fac=0.1)
 
         exposures = []
         hazards = []
@@ -278,7 +278,7 @@ class TestSyntheticMarketIntegration:
 
         returns, vpin = sim.get_returns_and_vpin()
 
-        manager = RiskAwareSAC_Manager(window=100)
+        manager = RiskAwareSACManager(window=100)
 
         exposures = []
         for ret, vp in zip(returns, vpin):
@@ -295,7 +295,7 @@ class TestSyntheticMarketIntegration:
         import time
 
         rng = np.random.default_rng(42)
-        manager = RiskAwareSAC_Manager(window=500)
+        manager = RiskAwareSACManager(window=500)
 
         # Warm up
         for _ in range(500):
@@ -352,7 +352,7 @@ def visualize_crash_response():
 
     returns, vpin = sim.get_returns_and_vpin()
 
-    manager = RiskAwareSAC_Manager(window=200, kurt_max=3.0, vpin_trigger=2.0, collapse_fac=0.1)
+    manager = RiskAwareSACManager(window=200, kurt_max=3.0, vpin_trigger=2.0, collapse_fac=0.1)
 
     exposures = []
     hazards = []

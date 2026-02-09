@@ -6,6 +6,7 @@ Handbook Section 9.4 - Event-Relative Time
 Instead of "Tuesday 14:30", use "30 mins after London open, 6 hours before rollover"
 """
 
+import calendar
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,7 +16,7 @@ from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)
 
-WEEKEND_START_DAY: Final[int] = 5  # Saturday=5, Sunday=6
+WEEKEND_START_DAY: Final[int] = 5
 CACHE_MAX_ENTRIES: Final[int] = 1000
 CACHE_PRUNE_BATCH: Final[int] = 500
 HALF_DAY_MINUTES: Final[int] = 12 * 60
@@ -64,7 +65,7 @@ class EventTimeFeatureEngine:
     ROLLOVER_UTC_HOUR = 22
     ROLLOVER_UTC_MINUTE = 0
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize event time feature engine"""
         self.cache: dict[str, dict] = {}
         self.last_update_minute = -1
@@ -99,12 +100,14 @@ class EventTimeFeatureEngine:
             prefix = session_name.lower()
 
             # Minutes to/from open
-            mins_to_open, mins_from_open = self._calc_session_proximity(dt, session.get_open_minutes())
+            open_minutes = session.get_open_minutes()
+            mins_to_open, mins_from_open = self._calc_session_proximity(dt, open_minutes)
             features[f"{prefix}_mins_to_open"] = self._normalize_minutes(mins_to_open)
             features[f"{prefix}_mins_from_open"] = self._normalize_minutes(mins_from_open)
 
             # Minutes to/from close
-            mins_to_close, mins_from_close = self._calc_session_proximity(dt, session.get_close_minutes())
+            close_minutes = session.get_close_minutes()
+            mins_to_close, mins_from_close = self._calc_session_proximity(dt, close_minutes)
             features[f"{prefix}_mins_to_close"] = self._normalize_minutes(mins_to_close)
             features[f"{prefix}_mins_from_close"] = self._normalize_minutes(mins_from_close)
 
@@ -136,13 +139,13 @@ class EventTimeFeatureEngine:
         features["month_progress"] = self._calc_month_progress(dt)
 
         # Day of week (0-6, where 0=Monday in ISO, but we use 0=Sunday for FX)
-        features["day_of_week"] = float((dt.weekday() + 1) % 7)  # Sunday=0
+        features["day_of_week"] = float((dt.weekday() + 1) % 7)
 
         # Hour of day (0-23)
         features["hour_of_day"] = float(dt.hour)
 
         # Is weekend
-        features["is_weekend"] = float(dt.weekday() >= WEEKEND_START_DAY)  # Saturday=5, Sunday=6
+        features["is_weekend"] = float(dt.weekday() >= WEEKEND_START_DAY)
 
         # Store in cache
         self.cache[cache_key] = features
@@ -217,7 +220,7 @@ class EventTimeFeatureEngine:
         FX week: Sunday 21:00 UTC to Friday 21:00 UTC
         """
         # Convert to minutes since week start (Sunday 21:00 UTC)
-        weekday = (dt.weekday() + 1) % 7  # Sunday=0
+        weekday = (dt.weekday() + 1) % 7
         hour = dt.hour
         minute = dt.minute
 
@@ -240,8 +243,6 @@ class EventTimeFeatureEngine:
 
     def _calc_month_progress(self, dt: datetime) -> float:
         """Calculate progress through month (0-1)"""
-        import calendar
-
         day_of_month = dt.day
         days_in_month = calendar.monthrange(dt.year, dt.month)[1]
 
@@ -256,14 +257,9 @@ class EventTimeFeatureEngine:
         if dt is None:
             dt = datetime.now(UTC)
 
-        active = []
-        for name, session in self.SESSIONS.items():
-            if self._is_session_active(dt, session):
-                active.append(name)
+        return [name for name, session in self.SESSIONS.items() if self._is_session_active(dt, session)]
 
-        return active
-
-    def get_next_major_event(self, dt: datetime | None = None) -> tuple[str, int]:
+    def get_next_major_event(self, dt: datetime | None = None) -> tuple[str, float]:
         """
         Get the next major market event and minutes until it
 
@@ -273,7 +269,6 @@ class EventTimeFeatureEngine:
         if dt is None:
             dt = datetime.now(UTC)
 
-        dt.hour * 60 + dt.minute
         events = []
 
         # Check all session opens/closes
@@ -296,7 +291,7 @@ class EventTimeFeatureEngine:
             events.append(("Rollover", mins_to_rollover))
 
         if not events:
-            return ("None", 0)
+            return ("None", 0.0)
 
         # Return nearest event
         events.sort(key=lambda x: x[1])
@@ -329,7 +324,9 @@ class EventTimeFeatureEngine:
 # TESTING
 # ==============================================================================
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Run event time features test suite."""
     print("=" * 80)
     print("EVENT-RELATIVE TIME FEATURES - TEST SUITE")
     print("=" * 80)
@@ -351,13 +348,11 @@ if __name__ == "__main__":
     print("\nSession Proximity:")
     for session in ["london", "new_york", "tokyo", "sydney"]:
         is_active = features.get(f"{session}_is_active", 0)
-        mins_to_open = features.get(f"{session}_mins_to_open", 0)
-        mins_to_close = features.get(f"{session}_mins_to_close", 0)
+        to_open = features.get(f"{session}_mins_to_open", 0)
+        to_close = features.get(f"{session}_mins_to_close", 0)
 
-        status = "ACTIVE" if is_active else "CLOSED"
-        print(
-            f"  {session.title():12s}: {status:8s} | " f"Open in: {mins_to_open:+.3f} | Close in: {mins_to_close:+.3f}"
-        )
+        label = "ACTIVE" if is_active else "CLOSED"
+        print(f"  {session.title():12s}: {label:8s}" f" | Open in: {to_open:+.3f}" f" | Close in: {to_close:+.3f}")
 
     # Rollover
     print("\nRollover:")
@@ -411,13 +406,13 @@ if __name__ == "__main__":
     # Friday 21:00 UTC (week end)
     fri_end = datetime(2026, 1, 16, 21, 0, tzinfo=UTC)
 
-    for label, dt in [
+    for progress_label, dt in [
         ("Sunday 21:00", sun_start),
         ("Wednesday 12:00", wed_mid),
         ("Friday 21:00", fri_end),
     ]:
         features = engine.calculate_features(dt)
-        print(f"{label:20s}: progress = {features['week_progress']:.3f}")
+        print(f"{progress_label:20s}: progress = {features['week_progress']:.3f}")
 
     # Test 4: Feature count
     print("\n[Test 4] Feature Summary")
@@ -438,3 +433,7 @@ if __name__ == "__main__":
     print("  ✓ Captures market microstructure")
     print("  ✓ Liquidity period detection")
     print("  ✓ Event proximity (rollover, opens, closes)")
+
+
+if __name__ == "__main__":
+    main()

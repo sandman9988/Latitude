@@ -5,182 +5,200 @@ Standalone Emergency Close - Manually close all positions
 Can be run while bot is running or standalone.
 Handles both netting and hedging modes.
 """
-import sys
+import argparse
+import logging
 import os
+import sys
+import time
 from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import logging
-import argparse
+import quickfix as fix  # noqa: E402
+import quickfix44 as fix44  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 LOG = logging.getLogger(__name__)
 
 
 def close_via_running_bot():
-    """Close positions via running bot's TradeManagerIntegration"""
-    try:
-        # Try to import bot module
-        from src.core.ctrader_ddqn_paper import CTraderFixApp
-        from src.risk.emergency_close import create_emergency_closer
+    """Close positions via running bot's TradeManagerIntegration.
 
-        LOG.error("Cannot access running bot instance from external script")
-        LOG.info("Use one of these methods instead:")
-        LOG.info("  1. Set CTRADER_AUTO_CLOSE_ON_BREAKER=1 and trigger circuit breaker")
-        LOG.info("  2. Kill bot and use standalone FIX session method below")
-        return False
+    Not supported from external scripts — logs guidance and returns False.
+    """
+    LOG.error("Cannot access running bot instance from external script")
+    LOG.info("Use one of these methods instead:")
+    LOG.info("  1. Set CTRADER_AUTO_CLOSE_ON_BREAKER=1 and trigger circuit breaker")
+    LOG.info("  2. Kill bot and use standalone FIX session method below")
+    return False
 
-    except Exception as e:
-        LOG.error("Error: %s", e)
-        return False
+
+class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
+    """FIX application that requests positions and submits market close orders."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.session_id = None
+        self.positions = {}
+        self.orders_submitted = 0
+        self.orders_filled = 0
+
+    def onCreate(self, session_id):
+        LOG.info("Session created: %s", session_id)
+        self.session_id = session_id
+
+    def onLogon(self, session_id):
+        LOG.info("Logged on: %s", session_id)
+        self._request_positions(session_id)
+
+    def onLogout(self, session_id):
+        LOG.info("Logged out: %s", session_id)
+
+    def toAdmin(self, message, _session_id):
+        msg_type = fix.MsgType()
+        message.getHeader().getField(msg_type)
+        if msg_type.getValue() == "A":  # Logon
+            username = os.environ.get("CTRADER_USERNAME")
+            password = os.environ.get("CTRADER_PASSWORD_TRADE")
+
+            if not username or not password:
+                LOG.error("Missing CTRADER_USERNAME or" " CTRADER_PASSWORD_TRADE environment variables")
+                sys.exit(1)
+
+            message.setField(fix.Username(username))
+            message.setField(fix.Password(password))
+
+    def fromAdmin(self, _message, _session_id):
+        """No admin message handling needed for emergency close."""
+
+    def toApp(self, _message, _session_id):
+        """No outgoing message processing needed."""
+
+    def fromApp(self, message, _session_id):
+        msg_type = fix.MsgType()
+        message.getHeader().getField(msg_type)
+
+        if msg_type.getValue() == "AP":  # Position Report
+            self._handle_position_report(message)
+        elif msg_type.getValue() == "8":  # Execution Report
+            self._handle_execution_report(message)
+
+    def _request_positions(self, session_id):
+        """Send RequestForPositions to broker."""
+        msg = fix44.RequestForPositions()
+        msg.setField(fix.PosReqID(f"emergency_{int(time.time())}"))
+        msg.setField(fix.PosReqType(0))  # Positions request
+        account = os.environ.get("CTRADER_USERNAME", "5179095")
+        msg.setField(fix.Account(account))
+        msg.setField(fix.AccountType(1))
+        msg.setField(fix.TransactTime())
+
+        fix.Session.sendToTarget(msg, session_id)
+        LOG.info("✓ Requested positions from broker")
+
+    def _handle_position_report(self, message):
+        """Parse position report and submit close orders."""
+        symbol = fix.Symbol()
+        message.getField(symbol)
+
+        if symbol.getValue() != "10028":  # Only BTCUSD
+            return
+
+        long_qty, short_qty = self._parse_quantities(message)
+
+        LOG.info(
+            "Positions: LONG=%s SHORT=%s NET=%s",
+            long_qty,
+            short_qty,
+            long_qty - short_qty,
+        )
+
+        if long_qty > 0:
+            self._submit_close("SELL", long_qty)
+        if short_qty > 0:
+            self._submit_close("BUY", short_qty)
+        if long_qty == 0 and short_qty == 0:
+            LOG.info("✓ No positions to close")
+
+    @staticmethod
+    def _parse_quantities(message) -> tuple[float, float]:
+        """Extract long/short quantities from a PositionReport."""
+        long_qty = 0.0
+        short_qty = 0.0
+
+        num_positions = fix.NoPositions()
+        if not message.isSetField(num_positions):
+            return long_qty, short_qty
+
+        message.getField(num_positions)
+        for i in range(1, num_positions.getValue() + 1):
+            group = fix44.PositionReport().NoPositions()
+            message.getGroup(i, group)
+
+            pos_type = fix.PosType()
+            group.getField(pos_type)
+
+            if pos_type.getValue() != "TQ":  # Total quantity
+                continue
+
+            long_qty_field = fix.LongQty()
+            short_qty_field = fix.ShortQty()
+
+            if group.isSetField(long_qty_field):
+                group.getField(long_qty_field)
+                long_qty = long_qty_field.getValue()
+            if group.isSetField(short_qty_field):
+                group.getField(short_qty_field)
+                short_qty = short_qty_field.getValue()
+
+        return long_qty, short_qty
+
+    def _submit_close(self, side_str, qty):
+        """Submit market order to close position."""
+        clord_id = f"EMERGENCY_{int(time.time() * 1000)}_{self.orders_submitted}"
+
+        msg = fix44.NewOrderSingle()
+        msg.setField(fix.ClOrdID(clord_id))
+        msg.setField(fix.Symbol("10028"))
+        msg.setField(fix.Side("1" if side_str == "BUY" else "2"))
+        msg.setField(fix.TransactTime())
+        msg.setField(fix.OrdType("1"))  # Market
+        msg.setField(fix.OrderQty(round(qty, 2)))
+
+        fix.Session.sendToTarget(msg, self.session_id)
+        self.orders_submitted += 1
+        LOG.warning(
+            "CLOSE ORDER: %s %s units (ClOrdID=%s)",
+            side_str,
+            qty,
+            clord_id,
+        )
+
+    def _handle_execution_report(self, message):
+        """Handle order fill confirmation."""
+        exec_type = fix.ExecType()
+        message.getField(exec_type)
+
+        if exec_type.getValue() == "F":  # Filled
+            cl_ord_id = fix.ClOrdID()
+            message.getField(cl_ord_id)
+
+            avg_px = fix.AvgPx()
+            message.getField(avg_px)
+
+            self.orders_filled += 1
+            LOG.info(
+                "Order filled: %s @ %.2f (%d/%d)",
+                cl_ord_id.getValue(),
+                avg_px.getValue(),
+                self.orders_filled,
+                self.orders_submitted,
+            )
 
 
 def close_via_fix_session():
-    """Close positions using standalone FIX session"""
-    import time
-    import quickfix as fix
-    import quickfix44 as fix44
-    from src.core.trade_manager import Side
-
-    class EmergencyCloseApp(fix.Application):
-        def __init__(self):
-            super().__init__()
-            self.session_id = None
-            self.positions = {}
-            self.orders_submitted = 0
-            self.orders_filled = 0
-
-        def onCreate(self, session_id):
-            LOG.info(f"Session created: {session_id}")
-            self.session_id = session_id
-
-        def onLogon(self, session_id):
-            LOG.info(f"✓ Logged on: {session_id}")
-
-            # Request positions
-            msg = fix44.RequestForPositions()
-            msg.setField(fix.PosReqID(f"emergency_{int(time.time())}"))
-            msg.setField(fix.PosReqType(0))  # 0 = Positions
-            msg.setField(fix.Account(os.environ.get("CTRADER_USERNAME", "5179095")))
-            msg.setField(fix.AccountType(1))
-            msg.setField(fix.TransactTime())
-
-            fix.Session.sendToTarget(msg, session_id)
-            LOG.info("✓ Requested positions from broker")
-
-        def onLogout(self, session_id):
-            LOG.info(f"Logged out: {session_id}")
-
-        def toAdmin(self, message, session_id):
-            msgType = fix.MsgType()
-            message.getHeader().getField(msgType)
-            if msgType.getValue() == "A":  # Logon
-                username = os.environ.get("CTRADER_USERNAME")
-                password = os.environ.get("CTRADER_PASSWORD_TRADE")
-
-                if not username or not password:
-                    LOG.error("Missing CTRADER_USERNAME or CTRADER_PASSWORD_TRADE environment variables")
-                    sys.exit(1)
-
-                message.setField(fix.Username(username))
-                message.setField(fix.Password(password))
-
-        def fromAdmin(self, message, session_id):
-            pass
-
-        def toApp(self, message, session_id):
-            pass
-
-        def fromApp(self, message, session_id):
-            msgType = fix.MsgType()
-            message.getHeader().getField(msgType)
-
-            if msgType.getValue() == "AP":  # Position Report
-                self._handle_position_report(message)
-            elif msgType.getValue() == "8":  # Execution Report
-                self._handle_execution_report(message)
-
-        def _handle_position_report(self, message):
-            """Parse position report and submit close orders"""
-            symbol = fix.Symbol()
-            message.getField(symbol)
-
-            if symbol.getValue() != "10028":  # Only BTCUSD
-                return
-
-            # Parse positions
-            long_qty = 0.0
-            short_qty = 0.0
-
-            numPosAmt = fix.NoPositions()
-            if message.isSetField(numPosAmt):
-                message.getField(numPosAmt)
-                for i in range(1, numPosAmt.getValue() + 1):
-                    group = fix44.PositionReport().NoPositions()
-                    message.getGroup(i, group)
-
-                    posType = fix.PosType()
-                    group.getField(posType)
-
-                    if posType.getValue() == "TQ":  # Total quantity
-                        longQty = fix.LongQty()
-                        shortQty = fix.ShortQty()
-
-                        if group.isSetField(longQty):
-                            group.getField(longQty)
-                            long_qty = longQty.getValue()
-                        if group.isSetField(shortQty):
-                            group.getField(shortQty)
-                            short_qty = shortQty.getValue()
-
-            LOG.info(f"📊 Positions: LONG={long_qty} SHORT={short_qty} NET={long_qty - short_qty}")
-
-            # Submit close orders
-            if long_qty > 0:
-                self._submit_close("SELL", long_qty)
-
-            if short_qty > 0:
-                self._submit_close("BUY", short_qty)
-
-            if long_qty == 0 and short_qty == 0:
-                LOG.info("✓ No positions to close")
-
-        def _submit_close(self, side_str, qty):
-            """Submit market order to close position"""
-            clord_id = f"EMERGENCY_{int(time.time() * 1000)}_{self.orders_submitted}"
-
-            msg = fix44.NewOrderSingle()
-            msg.setField(fix.ClOrdID(clord_id))
-            msg.setField(fix.Symbol("10028"))
-            msg.setField(fix.Side("1" if side_str == "BUY" else "2"))
-            msg.setField(fix.TransactTime())
-            msg.setField(fix.OrdType("1"))  # Market
-            msg.setField(fix.OrderQty(round(qty, 2)))
-
-            fix.Session.sendToTarget(msg, self.session_id)
-            self.orders_submitted += 1
-            LOG.warning(f"🚨 CLOSE ORDER: {side_str} {qty} units (ClOrdID={clord_id})")
-
-        def _handle_execution_report(self, message):
-            """Handle order fill confirmation"""
-            execType = fix.ExecType()
-            message.getField(execType)
-
-            if execType.getValue() == "F":  # Filled
-                clOrdID = fix.ClOrdID()
-                message.getField(clOrdID)
-
-                avgPx = fix.AvgPx()
-                message.getField(avgPx)
-
-                self.orders_filled += 1
-                LOG.info(
-                    f"✓ Order filled: {clOrdID.getValue()} @ {avgPx.getValue():.2f} ({self.orders_filled}/{self.orders_submitted})"
-                )
-
-    # Run FIX session
+    """Close positions using standalone FIX session."""
     try:
         settings = fix.SessionSettings("config/ctrader_trade.cfg")
         app = EmergencyCloseApp()
@@ -189,23 +207,28 @@ def close_via_fix_session():
         initiator = fix.SocketInitiator(app, store_factory, settings, log_factory)
 
         initiator.start()
-        LOG.info("🔌 FIX session started, waiting for positions...")
+        LOG.info("FIX session started, waiting for positions...")
 
         time.sleep(15)  # Wait for positions and closes to execute
 
         initiator.stop()
 
         LOG.info("=" * 80)
-        LOG.info(f"✓ Emergency close complete: {app.orders_filled}/{app.orders_submitted} orders filled")
+        LOG.info(
+            "Emergency close complete: %d/%d orders filled",
+            app.orders_filled,
+            app.orders_submitted,
+        )
         LOG.info("=" * 80)
         return True
 
-    except Exception as e:
-        LOG.error(f"Error: {e}", exc_info=True)
+    except (RuntimeError, OSError) as e:
+        LOG.error("Error: %s", e, exc_info=True)
         return False
 
 
 def main():
+    """Parse arguments and execute emergency position close."""
     parser = argparse.ArgumentParser(description="Emergency position closer")
     parser.add_argument(
         "--method",

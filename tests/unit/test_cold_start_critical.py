@@ -7,16 +7,14 @@ Covers line 186: check_graduation() → _check_production_demotion() when in PRO
 import pytest
 import numpy as np
 
-from src.core.cold_start_manager import ColdStartManager, WarmupPhase
+from src.core.cold_start_manager import ColdStartManager, DemotionThresholds, WarmupPhase
 
 
 @pytest.fixture()
 def production_csm():
     """ColdStartManager already in PRODUCTION phase with enough trades."""
     csm = ColdStartManager(
-        production_demotion_sharpe=0.2,
-        production_demotion_win_rate=0.40,
-        production_demotion_drawdown=0.30,
+        demotion=DemotionThresholds(sharpe=0.2, win_rate=0.40, drawdown=0.30),
     )
     csm.current_phase = WarmupPhase.PRODUCTION
     csm.trades_in_current_phase = 60  # > 50 threshold

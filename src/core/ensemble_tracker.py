@@ -28,24 +28,56 @@ Usage:
     bonus = ensemble.get_exploration_bonus(disagreement)
 """
 
+import contextlib
 import logging
 from collections import deque
-from typing import Final
+from typing import Any, Final, Optional, Protocol, Sequence, TypedDict, runtime_checkable
 
 import numpy as np
+from numpy.random import Generator, default_rng
 
 from src.utils.safe_math import SafeMath
-from numpy.random import Generator, default_rng
+
+try:
+    import torch
+except Exception:  # pragma: no cover - optional dependency
+    torch = None  # type: ignore[assignment]
 
 LOG = logging.getLogger(__name__)
 
 MIN_ENSEMBLE_MODELS: Final[int] = 2
 STATE_BATCH_DIM: Final[int] = 2
-NUM_ACTIONS: Final[int] = 3
-MAX_ACTION_INDEX: Final[int] = NUM_ACTIONS - 1
+# Default fallback if action dimension cannot be inferred
+DEFAULT_NUM_ACTIONS: Final[int] = 3
+MAX_ACTION_INDEX: Final[int] = DEFAULT_NUM_ACTIONS - 1
 UNIT_SUM_TOLERANCE: Final[float] = 1e-6
 EXPECTED_PREDICTIONS_SELF_TEST: Final[int] = 101
 MIN_EXPECTED_EXPLORATIONS: Final[int] = 5
+
+
+@runtime_checkable
+class ModelLike(Protocol):
+    """Protocol for model objects that expose a numpy-style predict API."""
+
+    def predict(self, state: np.ndarray) -> np.ndarray:  # pragma: no cover - structural typing
+        ...
+
+
+class PredictStats(TypedDict):
+    mean_q: float
+    max_q: float
+    min_q: float
+    disagreement_per_action: list[float]
+    selected_action_disagreement: float
+
+
+class EnsembleStats(TypedDict):
+    mean_disagreement: float
+    max_disagreement: float
+    high_disagreement_rate: float
+    total_predictions: int
+    avg_exploration_bonus: float
+    model_weights: list[float]
 
 
 class EnsembleTracker:
@@ -68,6 +100,7 @@ class EnsembleTracker:
         exploration_scale: float = 0.2,
         use_weighted_voting: bool = True,
         rng: Generator | None = None,
+        num_actions: Optional[int] = None,
     ):
         """
         Args:
@@ -75,6 +108,8 @@ class EnsembleTracker:
             disagreement_threshold: Threshold for "high uncertainty" (std > threshold)
             exploration_scale: Bonus multiplier for high disagreement
             use_weighted_voting: Weight models by recent performance
+            rng: Random generator for exploration decisions
+            num_actions: Optional explicit action dimension. If None, will be inferred.
         """
         if n_models < MIN_ENSEMBLE_MODELS:
             raise ValueError(f"Ensemble requires >= {MIN_ENSEMBLE_MODELS} models, got {n_models}")
@@ -84,15 +119,15 @@ class EnsembleTracker:
         self.exploration_scale = exploration_scale
         self.use_weighted_voting = use_weighted_voting
 
-        # Model storage (None = no models loaded yet)
-        self.models: list[object | None] = [None] * n_models
+        # Model storage (empty until models are set)
+        self.models: list[ModelLike | Any] = []
 
         # Model performance tracking (for weighted voting)
         self.model_weights = np.ones(n_models) / n_models
-        self.model_losses = [deque(maxlen=100) for _ in range(n_models)]
+        self.model_losses: list[deque[float]] = [deque(maxlen=100) for _ in range(n_models)]
 
         # Disagreement statistics
-        self.recent_disagreements = deque(maxlen=1000)
+        self.recent_disagreements: deque[float] = deque(maxlen=1000)
         self.high_disagreement_count = 0
         self.total_predictions = 0
 
@@ -100,27 +135,33 @@ class EnsembleTracker:
         self.total_exploration_bonus = 0.0
         self.bonus_count = 0
 
+        # Action space dimension handling
+        self.num_actions: Optional[int] = num_actions
+
         self.rng: Generator = rng if rng is not None else default_rng(42)
 
         LOG.info(
-            f"EnsembleTracker initialized: n_models={n_models}, "
-            f"threshold={disagreement_threshold}, scale={exploration_scale}"
+            "EnsembleTracker initialized: n_models=%d, threshold=%s, scale=%s",
+            n_models,
+            disagreement_threshold,
+            exploration_scale,
         )
+        LOG.debug("Torch available: %s", torch is not None)
 
-    def set_models(self, models: list[object]):
+    def set_models(self, models: Sequence[ModelLike | Any]) -> None:
         """
         Set ensemble models.
 
         Args:
-            models: List of model objects (must have predict/forward method)
+            models: Sequence of model objects (must have predict/forward method)
         """
         if len(models) != self.n_models:
             raise ValueError(f"Expected {self.n_models} models, got {len(models)}")
 
-        self.models = models
-        LOG.info(f"Loaded {self.n_models} models into ensemble")
+        self.models = list(models)
+        LOG.info("Loaded %d models into ensemble", self.n_models)
 
-    def predict(self, state: np.ndarray) -> tuple[int, float, dict[str, float]]:
+    def predict(self, state: np.ndarray) -> tuple[int, float, PredictStats]:
         """
         Get ensemble prediction with disagreement metric.
 
@@ -133,7 +174,7 @@ class EnsembleTracker:
             - disagreement: Std of Q-values across ensemble
             - stats: Additional metrics (mean_q, max_q, etc.)
         """
-        if any(model is None for model in self.models):
+        if len(self.models) != self.n_models:
             return self._fallback_prediction()
 
         q_values_array = self._collect_q_values(state)
@@ -146,14 +187,51 @@ class EnsembleTracker:
 
         return action, disagreement, stats
 
-    def _fallback_prediction(self) -> tuple[int, float, dict[str, float]]:
+    def _fallback_prediction(self) -> tuple[int, float, PredictStats]:
         """Return default prediction when models not loaded."""
-        return 1, 0.0, {"mean_q": 0.0, "max_q": 0.0, "min_q": 0.0}
+        return (
+            1,
+            0.0,
+            {
+                "mean_q": 0.0,
+                "max_q": 0.0,
+                "min_q": 0.0,
+                "disagreement_per_action": [],
+                "selected_action_disagreement": 0.0,
+            },
+        )
 
     def _collect_q_values(self, state: np.ndarray) -> np.ndarray:
-        """Collect Q-values from all models."""
-        q_values_list = [self._get_q_values(model, state) for model in self.models]
-        return np.array(q_values_list)  # (n_models, n_actions)
+        """Collect Q-values from all models with shape sanity checks and harmonization."""
+        q_values_list: list[np.ndarray] = []
+
+        # Collect from each model
+        for model in self.models:
+            q = self._get_q_values(model, state)
+
+            # Determine/validate action dimension
+            if self.num_actions is None:
+                self.num_actions = int(q.shape[-1]) if q.ndim > 0 else DEFAULT_NUM_ACTIONS
+                LOG.debug("Inferred action dimension: %d", self.num_actions)
+
+            expected_n = self.num_actions
+            if expected_n is None:
+                expected_n = DEFAULT_NUM_ACTIONS
+
+            if q.ndim == 0:
+                LOG.error("Received scalar Q-value from model; resizing to length %d", expected_n)
+                q = np.resize(q, expected_n)
+            elif q.shape[-1] != expected_n:
+                LOG.error(
+                    "Model Q-value length mismatch: got %d, expected %d. Coercing via resize.",
+                    q.shape[-1],
+                    expected_n,
+                )
+                q = np.resize(q, expected_n)
+
+            q_values_list.append(q)
+
+        return np.asarray(q_values_list)  # (n_models, n_actions)
 
     def _select_action(self, q_values_array: np.ndarray) -> int:
         """Select action via weighted voting or majority vote."""
@@ -173,18 +251,34 @@ class EnsembleTracker:
 
     def _build_stats(
         self, q_values_array: np.ndarray, disagreement_per_action: np.ndarray, action: int
-    ) -> dict[str, float]:
-        """Build statistics dictionary."""
+    ) -> PredictStats:
+        """Build prediction statistics dictionary."""
         mean_q_values = np.mean(q_values_array, axis=0)
         return {
             "mean_q": float(np.mean(mean_q_values)),
             "max_q": float(np.max(mean_q_values)),
             "min_q": float(np.min(mean_q_values)),
-            "disagreement_per_action": disagreement_per_action.tolist(),
+            "disagreement_per_action": disagreement_per_action.astype(float).tolist(),
             "selected_action_disagreement": float(disagreement_per_action[action]),
         }
 
-    def _get_q_values(self, model: object, state: np.ndarray) -> np.ndarray:
+    def _get_q_values_torch(self, model: Any, state: np.ndarray) -> np.ndarray | None:
+        """Try getting Q-values via PyTorch forward pass. Returns None if not applicable."""
+        if torch is None or not hasattr(model, "forward"):
+            return None
+        with contextlib.suppress(RuntimeError, TypeError, ValueError):
+            with torch.no_grad():
+                if isinstance(state, np.ndarray):
+                    state_tensor = torch.from_numpy(state).float()
+                    if state_tensor.dim() == STATE_BATCH_DIM:
+                        state_tensor = state_tensor.unsqueeze(0)
+                else:
+                    state_tensor = state
+                q_vals = model(state_tensor)
+                return np.asarray(q_vals.squeeze().cpu().numpy())
+        return None
+
+    def _get_q_values(self, model: ModelLike | Any, state: np.ndarray) -> np.ndarray:
         """
         Extract Q-values from model (handles both torch and numpy models).
 
@@ -195,30 +289,24 @@ class EnsembleTracker:
         Returns:
             Q-values array (n_actions,)
         """
-        try:
-            # Try PyTorch model
-            import torch
-
-            if hasattr(model, "forward"):
-                with torch.no_grad():
-                    if isinstance(state, np.ndarray):
-                        state_tensor = torch.from_numpy(state).float()
-                        if state_tensor.dim() == STATE_BATCH_DIM:
-                            state_tensor = state_tensor.unsqueeze(0)
-                    else:
-                        state_tensor = state
-                    q_vals = model(state_tensor)
-                    return q_vals.squeeze().cpu().numpy()
-        except Exception:
-            pass
+        # Try PyTorch model first if available
+        torch_result = self._get_q_values_torch(model, state)
+        if torch_result is not None:
+            return torch_result
 
         # Fallback: assume numpy-based model with predict method
-        if hasattr(model, "predict"):
-            return model.predict(state)
+        if isinstance(model, ModelLike) or hasattr(model, "predict"):
+            try:
+                return np.asarray(model.predict(state))
+            except Exception:
+                LOG.exception("Model predict failed; returning zeros")
+                n_actions = self.num_actions or DEFAULT_NUM_ACTIONS
+                return np.zeros(n_actions)
 
         # Last resort: return zeros
         LOG.warning("Model has no forward or predict method, returning zeros")
-        return np.zeros(NUM_ACTIONS)  # Assume fixed action count
+        n_actions = self.num_actions or DEFAULT_NUM_ACTIONS
+        return np.zeros(n_actions)
 
     def get_exploration_bonus(self, disagreement: float) -> float:
         """
@@ -263,15 +351,15 @@ class EnsembleTracker:
             if len(losses) > 0:
                 avg_losses.append(np.mean(losses))
             else:
-                avg_losses.append(1.0)  # Default
+                avg_losses.append(np.float64(1.0))  # Default
 
         # Inverse weighting: better models get higher weight
         inv_losses = 1.0 / (np.array(avg_losses) + 1e-8)
         self.model_weights = inv_losses / np.sum(inv_losses)
 
-        LOG.debug(f"Updated model weights: {self.model_weights}")
+        LOG.debug("Updated model weights: %s", self.model_weights)
 
-    def get_stats(self) -> dict[str, float]:
+    def get_stats(self) -> EnsembleStats:
         """Get ensemble statistics."""
         if len(self.recent_disagreements) == 0:
             mean_disagreement = 0.0
@@ -290,7 +378,7 @@ class EnsembleTracker:
             "high_disagreement_rate": high_disagreement_rate,
             "total_predictions": self.total_predictions,
             "avg_exploration_bonus": avg_bonus,
-            "model_weights": self.model_weights.tolist(),
+            "model_weights": self.model_weights.astype(float).tolist(),
         }
 
     def should_explore(self, disagreement: float, epsilon: float = 0.1) -> bool:
@@ -314,6 +402,7 @@ class EnsembleTracker:
         return self.rng.random() < adjusted_epsilon
 
     def __repr__(self) -> str:
+        """Human-readable summary of ensemble configuration and key stats."""
         stats = self.get_stats()
         return (
             f"EnsembleTracker(n_models={self.n_models}, "
@@ -335,7 +424,7 @@ if __name__ == "__main__":
     print("Ensemble Tracker Self-Test")
     print("=" * 70)
 
-    rng = default_rng(42)
+    prng = default_rng(42)
 
     # Test 1: Basic ensemble tracking
     print("\n[TEST 1] Basic ensemble with mock models")
@@ -343,45 +432,49 @@ if __name__ == "__main__":
     class MockModel:
         """Mock model for testing"""
 
-        def __init__(self, bias: float = 0.0, rng: Generator | None = None):
+        def __init__(self, bias: float = 0.0, random_gen: Generator | None = None):
             self.bias = bias
-            self.rng = rng if rng is not None else default_rng(42)
+            self.rng = random_gen if random_gen is not None else default_rng(42)
 
-        def predict(self, state: np.ndarray) -> np.ndarray:
+        def predict(self, _state: np.ndarray) -> np.ndarray:
             # Return Q-values with some bias
             base = np.array([0.5, 0.3, 0.7])
             return base + self.bias + self.rng.normal(0, 0.1, 3)
 
-    ensemble = EnsembleTracker(n_models=3, disagreement_threshold=0.2, rng=rng)
+    ensemble = EnsembleTracker(n_models=3, disagreement_threshold=0.2, rng=prng)
 
     # Create diverse models
-    models = [MockModel(bias=0.0, rng=rng), MockModel(bias=0.1, rng=rng), MockModel(bias=-0.1, rng=rng)]
-    ensemble.set_models(models)
+    test_models = [
+        MockModel(bias=0.0, random_gen=prng),
+        MockModel(bias=0.1, random_gen=prng),
+        MockModel(bias=-0.1, random_gen=prng),
+    ]
+    ensemble.set_models(test_models)
 
     # Test prediction
-    state = rng.standard_normal(10)
-    action, disagreement, stats = ensemble.predict(state)
+    test_state = prng.standard_normal(10)
+    test_action, test_disagreement, summary_stats = ensemble.predict(test_state)
 
-    if 0 <= action <= MAX_ACTION_INDEX:
-        print(f"    ✓ Valid action selected: {action}")
+    if 0 <= test_action <= MAX_ACTION_INDEX:
+        print(f"    ✓ Valid action selected: {test_action}")
     else:
-        print(f"    ✗ FAIL: Invalid action {action}")
+        print(f"    ✗ FAIL: Invalid action {test_action}")
         sys.exit(1)
 
-    if disagreement >= 0:
-        print(f"    ✓ Disagreement calculated: {disagreement:.4f}")
+    if test_disagreement >= 0:
+        print(f"    ✓ Disagreement calculated: {test_disagreement:.4f}")
     else:
-        print(f"    ✗ FAIL: Negative disagreement {disagreement}")
+        print(f"    ✗ FAIL: Negative disagreement {test_disagreement}")
         sys.exit(1)
 
     # Test 2: Exploration bonus
     print("\n[TEST 2] Exploration bonus calculation")
 
-    low_disagreement = 0.1
-    high_disagreement = 0.8
+    LOW_DISAGREEMENT = 0.1
+    HIGH_DISAGREEMENT = 0.8
 
-    bonus_low = ensemble.get_exploration_bonus(low_disagreement)
-    bonus_high = ensemble.get_exploration_bonus(high_disagreement)
+    bonus_low = ensemble.get_exploration_bonus(LOW_DISAGREEMENT)
+    bonus_high = ensemble.get_exploration_bonus(HIGH_DISAGREEMENT)
 
     if SafeMath.is_zero(bonus_low):
         print(f"    ✓ No bonus for low disagreement: {bonus_low}")
@@ -399,7 +492,7 @@ if __name__ == "__main__":
     print("\n[TEST 3] Model weight adaptation")
 
     ensemble_weighted = EnsembleTracker(n_models=3, use_weighted_voting=True)
-    ensemble_weighted.set_models(models)
+    ensemble_weighted.set_models(test_models)
 
     # Simulate different model performance
     ensemble_weighted.update_weights(0, 0.1)  # Good model
@@ -425,21 +518,21 @@ if __name__ == "__main__":
 
     # Generate multiple predictions
     for _ in range(100):
-        state = rng.standard_normal(10)
-        ensemble.predict(state)
+        test_state = prng.standard_normal(10)
+        ensemble.predict(test_state)
 
-    stats = ensemble.get_stats()
+    final_overall_stats = ensemble.get_stats()
 
-    if stats["total_predictions"] == EXPECTED_PREDICTIONS_SELF_TEST:  # 1 from test 1 + 100 here
-        print(f"    ✓ Prediction count: {stats['total_predictions']}")
+    if final_overall_stats["total_predictions"] == EXPECTED_PREDICTIONS_SELF_TEST:  # 1 from test 1 + 100 here
+        print(f"    ✓ Prediction count: {final_overall_stats['total_predictions']}")
     else:
-        print(f"    ✗ FAIL: Expected 101 predictions, got {stats['total_predictions']}")
+        print(f"    ✗ FAIL: Expected 101 predictions, got {final_overall_stats['total_predictions']}")
         sys.exit(1)
 
-    if 0 <= stats["high_disagreement_rate"] <= 1:
-        print(f"    ✓ High disagreement rate: {stats['high_disagreement_rate']:.2%}")
+    if 0 <= final_overall_stats["high_disagreement_rate"] <= 1:
+        print(f"    ✓ High disagreement rate: {final_overall_stats['high_disagreement_rate']:.2%}")
     else:
-        print(f"    ✗ FAIL: Invalid rate {stats['high_disagreement_rate']}")
+        print(f"    ✗ FAIL: Invalid rate {final_overall_stats['high_disagreement_rate']}")
         sys.exit(1)
 
     # Test 5: Exploration decision

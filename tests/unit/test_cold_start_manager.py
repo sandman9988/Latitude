@@ -1,10 +1,17 @@
 """Tests for src.core.cold_start_manager."""
 
+# pylint: disable=missing-class-docstring,missing-function-docstring,protected-access
+
 import json
 import pytest
 import numpy as np
 
-from src.core.cold_start_manager import ColdStartManager, PhaseMetrics, WarmupPhase
+from src.core.cold_start_manager import (
+    ColdStartManager,
+    DemotionThresholds,
+    PhaseMetrics,
+    WarmupPhase,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +171,13 @@ class TestObservationGraduation:
 # ---------------------------------------------------------------------------
 class TestPaperGraduation:
     def _make_paper_mgr(self, **kwargs):
-        mgr = ColdStartManager(paper_min_bars=20, paper_min_sharpe=0.3,
-                                paper_min_win_rate=0.45, paper_max_drawdown=0.20,
-                                **kwargs)
+        mgr = ColdStartManager(
+            paper_min_bars=20,
+            paper_min_sharpe=0.3,
+            paper_min_win_rate=0.45,
+            paper_max_drawdown=0.20,
+            **kwargs,
+        )
         mgr.current_phase = WarmupPhase.PAPER_TRADING
         return mgr
 
@@ -212,9 +223,13 @@ class TestPaperGraduation:
 # ---------------------------------------------------------------------------
 class TestMicroGraduation:
     def _make_micro_mgr(self, **kwargs):
-        mgr = ColdStartManager(micro_min_bars=20, micro_min_sharpe=0.3,
-                                micro_min_win_rate=0.45, micro_min_avg_profit=0.0,
-                                **kwargs)
+        mgr = ColdStartManager(
+            micro_min_bars=20,
+            micro_min_sharpe=0.3,
+            micro_min_win_rate=0.45,
+            micro_min_avg_profit=0.0,
+            **kwargs,
+        )
         mgr.current_phase = WarmupPhase.MICRO_POSITIONS
         return mgr
 
@@ -264,9 +279,7 @@ class TestProductionDemotion:
 
     def test_demotion_on_bad_performance(self):
         mgr = ColdStartManager(
-            production_demotion_sharpe=0.2,
-            production_demotion_win_rate=0.40,
-            production_demotion_drawdown=0.30,
+            demotion=DemotionThresholds(sharpe=0.2, win_rate=0.40, drawdown=0.30),
         )
         mgr.current_phase = WarmupPhase.PRODUCTION
         # Many losing trades → low Sharpe, low win rate
@@ -278,8 +291,7 @@ class TestProductionDemotion:
 
     def test_no_demotion_with_good_performance(self):
         mgr = ColdStartManager(
-            production_demotion_sharpe=0.2,
-            production_demotion_win_rate=0.40,
+            demotion=DemotionThresholds(sharpe=0.2, win_rate=0.40),
         )
         mgr.current_phase = WarmupPhase.PRODUCTION
         rng = np.random.default_rng(42)

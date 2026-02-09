@@ -10,6 +10,7 @@ from src.features.regime_detector import RegimeDetector
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _feed_prices(det: RegimeDetector, prices: list[float]):
     """Feed a list of prices into the detector, return final (regime, zeta)."""
     result = ("UNKNOWN", 1.0)
@@ -54,6 +55,7 @@ def _random_walk_prices(n: int = 60, *, seed: int = 42) -> list[float]:
 # Init
 # ---------------------------------------------------------------------------
 
+
 class TestRegimeDetectorInit:
     def test_default_values(self):
         d = RegimeDetector()
@@ -68,12 +70,13 @@ class TestRegimeDetectorInit:
 
     def test_volatility_scaling(self):
         d = RegimeDetector(instrument_volatility=2.0)
-        assert d.TRENDING_THRESHOLD > 0.7  # Scaled up
+        assert d.trending_threshold > 0.7  # Scaled up
 
 
 # ---------------------------------------------------------------------------
 # add_price
 # ---------------------------------------------------------------------------
+
 
 class TestAddPrice:
     def test_invalid_price_skipped(self):
@@ -109,6 +112,7 @@ class TestAddPrice:
 # Regime classification
 # ---------------------------------------------------------------------------
 
+
 class TestRegimeClassification:
     def test_trending_market(self):
         d = RegimeDetector(window_size=50, update_interval=5)
@@ -142,6 +146,7 @@ class TestRegimeClassification:
 # Helper methods
 # ---------------------------------------------------------------------------
 
+
 class TestRegimeHelpers:
     def test_get_regime_multiplier_trending(self):
         d = RegimeDetector()
@@ -171,14 +176,21 @@ class TestRegimeHelpers:
     def test_get_regime_info_keys(self):
         d = RegimeDetector()
         info = d.get_regime_info()
-        for key in ("regime", "damping_ratio", "runway_multiplier",
-                     "trigger_adjustment", "buffer_size", "bars_since_update"):
+        for key in (
+            "regime",
+            "damping_ratio",
+            "runway_multiplier",
+            "trigger_adjustment",
+            "buffer_size",
+            "bars_since_update",
+        ):
             assert key in info
 
 
 # ---------------------------------------------------------------------------
 # Autocorrelation helper
 # ---------------------------------------------------------------------------
+
 
 class TestAutocorrelation:
     def test_lag_exceeds_data(self):

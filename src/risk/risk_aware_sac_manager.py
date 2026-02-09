@@ -39,7 +39,7 @@ import logging
 LOG = logging.getLogger(__name__)
 
 
-class RiskAwareSAC_Manager:
+class RiskAwareSACManager:
     """
     Monitors market tail-risk metrics and scales RL agent actions accordingly.
 
@@ -50,7 +50,7 @@ class RiskAwareSAC_Manager:
     - Non-linear exposure collapse under extreme conditions
 
     Usage:
-        manager = RiskAwareSAC_Manager(window=500)
+        manager = RiskAwareSACManager(window=500)
 
         # Every market tick:
         exposure, hazard = manager.update(return_pct, vpin_metric)
@@ -107,8 +107,8 @@ class RiskAwareSAC_Manager:
         self.enable_logging = enable_logging
 
         # Rolling buffers (using deque for O(1) append/pop)
-        self.ret_buf = deque(maxlen=window)
-        self.vpin_buf = deque(maxlen=window)
+        self.ret_buf: deque[float] = deque(maxlen=window)
+        self.vpin_buf: deque[float] = deque(maxlen=window)
 
         # Latest computed values
         self.latest_exposure: float = 1.0
@@ -123,7 +123,7 @@ class RiskAwareSAC_Manager:
 
         if self.enable_logging:
             LOG.info(
-                "[RISK_AWARE_SAC] Initialized: window=%d, kurt_max=%.2f, " "vpin_trigger=%.2f, collapse=%.2f",
+                "[RISK_AWARE_SAC] Initialized: window=%d, kurt_max=%.2f, vpin_trigger=%.2f, collapse=%.2f",
                 window,
                 kurt_max,
                 vpin_trigger,
@@ -222,7 +222,7 @@ class RiskAwareSAC_Manager:
         # Excess kurtosis
         excess_kurt = kurt - 3.0
 
-        return excess_kurt
+        return float(excess_kurt)
 
     def _compute_vpin_zscore(self) -> float:
         """
@@ -257,7 +257,7 @@ class RiskAwareSAC_Manager:
 
         z_score = (recent_mean - hist_mean) / hist_std
 
-        return z_score
+        return float(z_score)
 
     def _compute_gpd_hazard(self) -> float:
         """
@@ -298,9 +298,9 @@ class RiskAwareSAC_Manager:
             # Clip to valid probability range
             hazard = np.clip(tail_prob, 0.0, 1.0)
 
-            return hazard
+            return float(hazard)
 
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             if self.enable_logging:
                 LOG.debug("[RISK_AWARE_SAC] GPD fit failed: %s", str(e))
             return 0.0
@@ -436,7 +436,7 @@ def rolling_kurtosis(arr: np.ndarray, window: int) -> float:
     m4 = ((x - mean) ** 4).mean()
     kurt = m4 / (var**2)
 
-    return kurt - 3.0
+    return float(kurt - 3.0)
 
 
 def vpin_zscore(vpin_arr: np.ndarray, window: int) -> float:
@@ -466,7 +466,7 @@ def vpin_zscore(vpin_arr: np.ndarray, window: int) -> float:
     if hist_std < 1e-12:
         return 0.0
 
-    return (recent_mean - hist_mean) / hist_std
+    return float((recent_mean - hist_mean) / hist_std)
 
 
 def truncated_gpd_hazard(arr: np.ndarray, shape_par: float = 0.8, tail_percentile: float = 0.95) -> float:
@@ -499,6 +499,6 @@ def truncated_gpd_hazard(arr: np.ndarray, shape_par: float = 0.8, tail_percentil
     try:
         shape, loc, scale = genpareto.fit(exceedances, shape_par)
         tail_prob = genpareto.sf(0, shape, loc, scale)
-        return np.clip(tail_prob, 0.0, 1.0)
-    except:
+        return float(np.clip(tail_prob, 0.0, 1.0))
+    except (RuntimeError, ValueError):
         return 0.0
