@@ -115,15 +115,19 @@ class HarvesterAgent:
         self.last_state = None  # Track state for experience creation
 
         # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
-        self.ddqn = DDQNNetwork(
-            state_dim=window * n_features,  # Flattened state vector
-            n_actions=2,  # HOLD=0, CLOSE=1
-            learning_rate=0.0005,
-            gamma=0.99,
-            tau=0.005,
-            l2_weight=0.0001,
-            grad_clip_norm=1.0,
-        ) if enable_training else None
+        self.ddqn = (
+            DDQNNetwork(
+                state_dim=window * n_features,  # Flattened state vector
+                n_actions=2,  # HOLD=0, CLOSE=1
+                learning_rate=0.0005,
+                gamma=0.99,
+                tau=0.005,
+                l2_weight=0.0001,
+                grad_clip_norm=1.0,
+            )
+            if enable_training
+            else None
+        )
         if enable_training:
             LOG.info("[HARVESTER] DDQNNetwork initialized: state_dim=%d, actions=2", window * n_features)
 
@@ -212,7 +216,7 @@ class HarvesterAgent:
             # Use DDQN network if available and trained, else fallback
             if self.ddqn is not None and self.enable_training and self.training_steps > 0:
                 flat_state = full_state.reshape(1, -1).astype(np.float64)
-                q_values = self.ddqn.predict(flat_state)
+                q_values = self.ddqn.predict(flat_state).flatten()  # flatten (1,N) → (N,)
                 action = int(np.argmax(q_values))
 
                 probs = self._softmax(q_values)
@@ -220,7 +224,10 @@ class HarvesterAgent:
 
                 LOG.debug(
                     "[HARVESTER] DDQN decision: Q=%s, action=%d (%s), conf=%.3f",
-                    q_values, action, "CLOSE" if action == 1 else "HOLD", confidence,
+                    q_values,
+                    action,
+                    "CLOSE" if action == 1 else "HOLD",
+                    confidence,
                 )
                 return action, confidence
             else:
@@ -266,7 +273,9 @@ class HarvesterAgent:
 
             return action, confidence
 
-    def _build_full_state(self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float) -> np.ndarray:
+    def _build_full_state(
+        self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float
+    ) -> np.ndarray:
         """Build full state vector with market features + position stats.
 
         Args:
@@ -284,9 +293,7 @@ class HarvesterAgent:
         mfe_norm = (mfe / entry_price) * PCT_SCALE
         mae_norm = (mae / entry_price) * PCT_SCALE
         ticks_held_norm = min(ticks_held / TICKS_HELD_NORM_DENOM, 1.0)
-        position_features = np.full(
-            (market_state.shape[0], 3), [mfe_norm, mae_norm, ticks_held_norm], dtype=np.float32
-        )
+        position_features = np.full((market_state.shape[0], 3), [mfe_norm, mae_norm, ticks_held_norm], dtype=np.float32)
         return np.hstack([market_state, position_features])
 
     def _fallback_strategy(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> int:
@@ -679,7 +686,8 @@ class HarvesterAgent:
                 td_errors = np.clip(np.abs(rewards), 0, TD_ERROR_CAP)
                 self.buffer.update_priorities(indices, td_errors)
                 metrics = {
-                    "loss": 0.0, "mean_q": 0.0,
+                    "loss": 0.0,
+                    "mean_q": 0.0,
                     "mean_td_error": float(np.mean(td_errors)),
                     "max_td_error": float(np.max(td_errors)),
                     "mean_reward": float(np.mean(rewards)),

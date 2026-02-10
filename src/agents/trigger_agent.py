@@ -339,7 +339,7 @@ class TriggerAgent:
             if self.ddqn is not None and self.enable_training and self.training_steps > 0:
                 # DDQN-based decision (numpy network, trained online)
                 flat_state = state.reshape(1, -1).astype(np.float64)
-                q_values = self.ddqn.predict(flat_state)
+                q_values = self.ddqn.predict(flat_state).flatten()  # flatten (1,N) → (N,)
                 action = int(np.argmax(q_values))
 
                 # Confidence from softmax
