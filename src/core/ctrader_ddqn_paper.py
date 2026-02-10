@@ -632,6 +632,10 @@ class CTraderFixApp(fix.Application):
                 "[POLICY] Using DualPolicy with TriggerAgent + HarvesterAgent + PathGeometry + FrictionCalculator (training=%s)",
                 enable_online_learning,
             )
+
+            # Load checkpoint from previous session (if exists)
+            if enable_online_learning and hasattr(self.policy, "load_checkpoint"):
+                self.policy.load_checkpoint()
         else:
             self.policy = Policy()  # type: ignore[assignment]
             LOG.info("[POLICY] Using simple Policy (DDQN_DUAL_AGENT=0)")
@@ -945,11 +949,7 @@ class CTraderFixApp(fix.Application):
                 # ---- Stale market data watchdog ----
                 # If QUOTE session is alive but no market data for >threshold,
                 # re-subscribe (handles rollover subscription drops)
-                if (
-                    self.quote_sid
-                    and self.last_market_data_time is not None
-                    and self.connection_healthy
-                ):
+                if self.quote_sid and self.last_market_data_time is not None and self.connection_healthy:
                     md_age = time.time() - self.last_market_data_time
                     resubscribe_cooldown = 120  # seconds between resubscribe attempts
                     if (
@@ -1096,15 +1096,15 @@ class CTraderFixApp(fix.Application):
                 except Exception as e:
                     LOG.error("[SHUTDOWN] ✗ Failed to export trades: %s", e, exc_info=True)
 
-            # 3. Save model state
+            # 3. Save training checkpoint (weights + buffers + metadata)
             if hasattr(self, "policy") and self.policy:
-                LOG.info("[SHUTDOWN] Saving model state...")
+                LOG.info("[SHUTDOWN] Saving training checkpoint...")
                 try:
                     if hasattr(self.policy, "save_checkpoint"):
                         self.policy.save_checkpoint()
-                        LOG.info("[SHUTDOWN] Model state saved")
+                        LOG.info("[SHUTDOWN] ✓ Training checkpoint saved")
                 except Exception as e:
-                    LOG.error("[SHUTDOWN] Failed to save model: %s", e)
+                    LOG.error("[SHUTDOWN] Failed to save checkpoint: %s", e)
 
             # 3. Flush trade exports
             if hasattr(self, "trade_exporter"):
@@ -2820,6 +2820,16 @@ class CTraderFixApp(fix.Application):
                             self.adaptive_reg.increase_regularization()
                         elif avg_td < TRAINING_TD_LOW_THRESHOLD:  # Low TD error threshold
                             self.adaptive_reg.decrease_regularization()
+
+                    # Periodic auto-save every 50 training steps
+                    total_steps = getattr(self.policy.trigger, "training_steps", 0) + getattr(
+                        self.policy.harvester, "training_steps", 0
+                    )
+                    if total_steps > 0 and total_steps % 50 == 0:
+                        try:
+                            self.policy.save_checkpoint()
+                        except Exception as e_save:
+                            LOG.warning("[CHECKPOINT] Auto-save failed: %s", e_save)
                 except Exception as e:
                     LOG.error(f"[TRAINING] Training step failed: {e}", exc_info=True)
                     self.bars_since_training = 0  # Reset to prevent repeated attempts

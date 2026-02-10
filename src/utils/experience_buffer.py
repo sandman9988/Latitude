@@ -408,6 +408,154 @@ class ExperienceBuffer:
             "total_priority": self.tree.total(),
         }
 
+    def save(self, filepath: str) -> bool:
+        """Save buffer state to disk for persistence across restarts.
+
+        Serializes all experiences, priorities, and metadata so the buffer
+        can be restored exactly as it was.
+
+        Args:
+            filepath: Path to save the buffer (without extension, .npz added)
+
+        Returns:
+            True if save succeeded
+        """
+        from pathlib import Path
+
+        try:
+            n = self.tree.n_entries
+            if n == 0:
+                LOG.info("[BUFFER] Nothing to save (empty)")
+                return True
+
+            # Collect all valid experiences into arrays
+            states, actions, rewards, next_states, dones = [], [], [], [], []
+            timestamps, regimes, priorities_list = [], [], []
+
+            for i in range(n):
+                exp = self.data[i]
+                if exp is None:
+                    continue
+                states.append(exp.state)
+                actions.append(exp.action)
+                rewards.append(exp.reward)
+                next_states.append(exp.next_state)
+                dones.append(exp.done)
+                timestamps.append(exp.timestamp)
+                regimes.append(exp.regime)
+                # Get priority from tree leaf
+                leaf_idx = i + self.tree.capacity - 1
+                priorities_list.append(self.tree.tree[leaf_idx])
+
+            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                filepath,
+                states=np.array(states),
+                actions=np.array(actions),
+                rewards=np.array(rewards),
+                next_states=np.array(next_states),
+                dones=np.array(dones),
+                timestamps=np.array(timestamps),
+                regimes=np.array(regimes),
+                priorities=np.array(priorities_list),
+                # Metadata
+                write_idx=self.write_idx,
+                total_added=self.total_added,
+                total_sampled=self.total_sampled,
+                beta=self.beta,
+                current_regime=int(self.current_regime),
+            )
+            LOG.info("[BUFFER] Saved %d experiences to %s", n, filepath)
+            return True
+        except Exception as e:
+            LOG.error("[BUFFER] Failed to save: %s", e, exc_info=True)
+            return False
+
+    def load(self, filepath: str) -> bool:
+        """Load buffer state from disk.
+
+        Restores experiences, priorities, and metadata from a previous save.
+
+        Args:
+            filepath: Path to load the buffer from (.npz file)
+
+        Returns:
+            True if load succeeded
+        """
+        from pathlib import Path
+
+        # Handle both with and without .npz extension
+        path = Path(filepath)
+        if not path.exists():
+            npz_path = Path(f"{filepath}.npz")
+            if npz_path.exists():
+                path = npz_path
+            else:
+                LOG.warning("[BUFFER] No saved buffer found at %s", filepath)
+                return False
+
+        try:
+            data = np.load(str(path), allow_pickle=False)
+
+            states = data["states"]
+            actions = data["actions"]
+            rewards = data["rewards"]
+            next_states = data["next_states"]
+            dones = data["dones"]
+            timestamps = data["timestamps"]
+            regimes = data["regimes"]
+            priorities = data["priorities"]
+
+            n = len(states)
+            if n == 0:
+                LOG.info("[BUFFER] Loaded empty buffer from %s", filepath)
+                return True
+
+            if n > self.capacity:
+                LOG.warning("[BUFFER] Saved buffer (%d) exceeds capacity (%d), truncating", n, self.capacity)
+                n = self.capacity
+
+            # Reset tree and data
+            self.tree = SumTree(self.capacity, seed=None)
+            self.data = [None] * self.capacity
+
+            # Re-add all experiences
+            for i in range(n):
+                exp = Experience(
+                    state=states[i],
+                    action=int(actions[i]),
+                    reward=float(rewards[i]),
+                    next_state=next_states[i],
+                    done=bool(dones[i]),
+                    timestamp=float(timestamps[i]),
+                    regime=int(regimes[i]),
+                    priority=float(priorities[i]),
+                )
+                self.data[i] = exp
+
+                # Set priority in tree
+                tree_idx = i + self.tree.capacity - 1
+                self.tree.tree[tree_idx] = float(priorities[i])
+                self.tree.n_entries = i + 1
+                self.tree.write_index = (i + 1) % self.capacity
+
+            # Rebuild tree sums from leaves up
+            for i in range(self.tree.capacity - 2, -1, -1):
+                self.tree.tree[i] = self.tree.tree[2 * i + 1] + self.tree.tree[2 * i + 2]
+
+            # Restore metadata
+            self.write_idx = int(data["write_idx"])
+            self.total_added = int(data["total_added"])
+            self.total_sampled = int(data["total_sampled"])
+            self.beta = float(data["beta"])
+            self.current_regime = RegimeSampling(int(data["current_regime"]))
+
+            LOG.info("[BUFFER] Loaded %d experiences from %s", n, filepath)
+            return True
+        except Exception as e:
+            LOG.error("[BUFFER] Failed to load: %s", e, exc_info=True)
+            return False
+
 
 # ============================================
 # Module Testing

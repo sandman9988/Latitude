@@ -698,6 +698,164 @@ class DualPolicy:
             "enable_training": self.enable_training,
         }
 
+    # ------------------------------------------------------------------
+    # Persistence: save / load training state across restarts
+    # ------------------------------------------------------------------
+    def save_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:
+        """Save full training state: DDQN weights, buffers, epsilon, training_steps.
+
+        Called during graceful shutdown to preserve training progress.
+
+        Args:
+            checkpoint_dir: Directory to store checkpoint files
+
+        Returns:
+            True if all saves succeeded
+        """
+        import json
+        from pathlib import Path
+
+        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        success = True
+
+        # 1. Save DDQN weights
+        if self.trigger.ddqn is not None:
+            try:
+                self.trigger.ddqn.save_weights(f"{checkpoint_dir}/trigger_ddqn_weights.npz")
+            except Exception as e:
+                LOG.error("[CHECKPOINT] Failed to save trigger weights: %s", e)
+                success = False
+
+        if self.harvester.ddqn is not None:
+            try:
+                self.harvester.ddqn.save_weights(f"{checkpoint_dir}/harvester_ddqn_weights.npz")
+            except Exception as e:
+                LOG.error("[CHECKPOINT] Failed to save harvester weights: %s", e)
+                success = False
+
+        # 2. Save experience buffers
+        if self.trigger.buffer is not None:
+            if not self.trigger.buffer.save(f"{checkpoint_dir}/trigger_buffer"):
+                success = False
+
+        if self.harvester.buffer is not None:
+            if not self.harvester.buffer.save(f"{checkpoint_dir}/harvester_buffer"):
+                success = False
+
+        # 3. Save training metadata (epsilon, steps, etc.)
+        metadata = {
+            "trigger_training_steps": self.trigger.training_steps,
+            "trigger_epsilon": self.trigger.epsilon,
+            "harvester_training_steps": self.harvester.training_steps,
+            "trigger_platt_a": getattr(self.trigger, "platt_a", 1.0),
+            "trigger_platt_b": getattr(self.trigger, "platt_b", 0.0),
+        }
+        try:
+            meta_path = Path(checkpoint_dir) / "training_metadata.json"
+            with open(meta_path, "w") as f:
+                json.dump(metadata, f, indent=2)
+            LOG.info("[CHECKPOINT] Saved training metadata: %s", metadata)
+        except Exception as e:
+            LOG.error("[CHECKPOINT] Failed to save metadata: %s", e)
+            success = False
+
+        if success:
+            LOG.info("[CHECKPOINT] ✓ Full checkpoint saved to %s", checkpoint_dir)
+        else:
+            LOG.warning("[CHECKPOINT] Checkpoint saved with some failures to %s", checkpoint_dir)
+
+        return success
+
+    def load_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:
+        """Load training state from a previous checkpoint.
+
+        Called during startup to resume training from where it left off.
+
+        Args:
+            checkpoint_dir: Directory containing checkpoint files
+
+        Returns:
+            True if checkpoint was found and loaded (at least partially)
+        """
+        import json
+        from pathlib import Path
+
+        cp = Path(checkpoint_dir)
+        if not cp.exists():
+            LOG.info("[CHECKPOINT] No checkpoint directory found at %s", checkpoint_dir)
+            return False
+
+        loaded_anything = False
+
+        # 1. Load DDQN weights
+        trigger_weights = cp / "trigger_ddqn_weights.npz"
+        if trigger_weights.exists() and self.trigger.ddqn is not None:
+            try:
+                self.trigger.ddqn.load_weights(str(trigger_weights))
+                loaded_anything = True
+            except Exception as e:
+                LOG.error("[CHECKPOINT] Failed to load trigger weights: %s", e)
+
+        harvester_weights = cp / "harvester_ddqn_weights.npz"
+        if harvester_weights.exists() and self.harvester.ddqn is not None:
+            try:
+                self.harvester.ddqn.load_weights(str(harvester_weights))
+                loaded_anything = True
+            except Exception as e:
+                LOG.error("[CHECKPOINT] Failed to load harvester weights: %s", e)
+
+        # 2. Load experience buffers
+        trigger_buf = cp / "trigger_buffer.npz"
+        if trigger_buf.exists() and self.trigger.buffer is not None:
+            if self.trigger.buffer.load(str(trigger_buf)):
+                loaded_anything = True
+
+        harvester_buf = cp / "harvester_buffer.npz"
+        if harvester_buf.exists() and self.harvester.buffer is not None:
+            if self.harvester.buffer.load(str(harvester_buf)):
+                loaded_anything = True
+
+        # 3. Load training metadata
+        meta_path = cp / "training_metadata.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path) as f:
+                    metadata = json.load(f)
+
+                self.trigger.training_steps = metadata.get("trigger_training_steps", 0)
+                self.trigger.epsilon = metadata.get("trigger_epsilon", self.trigger.epsilon)
+                self.harvester.training_steps = metadata.get("harvester_training_steps", 0)
+
+                # Sync DDQN network training_steps
+                if self.trigger.ddqn is not None:
+                    self.trigger.ddqn.training_steps = self.trigger.training_steps
+                if self.harvester.ddqn is not None:
+                    self.harvester.ddqn.training_steps = self.harvester.training_steps
+
+                # Restore Platt calibration
+                if hasattr(self.trigger, "platt_a"):
+                    self.trigger.platt_a = metadata.get("trigger_platt_a", 1.0)
+                    self.trigger.platt_b = metadata.get("trigger_platt_b", 0.0)
+
+                LOG.info("[CHECKPOINT] Restored metadata: %s", metadata)
+                loaded_anything = True
+            except Exception as e:
+                LOG.error("[CHECKPOINT] Failed to load metadata: %s", e)
+
+        if loaded_anything:
+            LOG.info(
+                "[CHECKPOINT] ✓ Checkpoint loaded — Trigger: steps=%d eps=%.4f buf=%d | Harvester: steps=%d buf=%d",
+                self.trigger.training_steps,
+                self.trigger.epsilon,
+                self.trigger.buffer.size if self.trigger.buffer else 0,
+                self.harvester.training_steps,
+                self.harvester.buffer.size if self.harvester.buffer else 0,
+            )
+        else:
+            LOG.info("[CHECKPOINT] No checkpoint data found in %s", checkpoint_dir)
+
+        return loaded_anything
+
 
 # ============================================================================
 # Self-Test
