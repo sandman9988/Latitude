@@ -1,13 +1,27 @@
 # Start Here: cTrader Adaptive Trading Bot Documentation Index
 
-This page is the recommended entry point for the documentation set. It links to the canonical status document, primary references, operational guides, and verification resources.
+**Last Updated:** February 14, 2026  
+
+This page is the recommended entry point for the documentation set.
 
 ---
 
-## Canonical Status
+## 📌 Essential Documentation (Start Here)
 
-- Consolidated Status and Gap Tracking: ../CONSOLIDATED_DOCUMENTATION_AND_GAPS.md
-- Test Coverage Summary: ../TEST_COVERAGE_SUMMARY.md
+### **Current System Status**
+📄 **[CURRENT_STATE.md](CURRENT_STATE.md)** - **Single source of truth** for latest changes, fixes, and system status  
+📁 **[INDEX.md](INDEX.md)** - **Complete documentation navigation** with all 75+ docs organized by topic
+
+### **Master References**
+- **[MASTER_HANDBOOK.md](MASTER_HANDBOOK.md)** - Authoritative system design (1108 lines)
+- **[README.md](../README.md)** - Project overview and quick start
+
+---
+
+## Legacy Status Documents (Superseded by CURRENT_STATE.md)
+
+- ~~Consolidated Status and Gap Tracking~~ → See [CURRENT_STATE.md](CURRENT_STATE.md)
+- ~~Test Coverage Summary~~ → See [CURRENT_STATE.md](CURRENT_STATE.md) → Testing Checklist
 
 ## Quick Start
 

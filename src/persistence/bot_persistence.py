@@ -159,10 +159,10 @@ class BotPersistenceManager:
 
         # Add metadata
         stats["_metadata"] = {
-            "session_id": session_id,
-            "symbol": symbol,
-            "timeframe": timeframe,
-            \"saved_at\": datetime.now(UTC).isoformat() + \"Z\",
+        "session_id": session_id,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "saved_at": datetime.now(UTC).isoformat() + "Z",
         }
 
         success = self.persistence.save_json(stats, str((stats_dir / session_file).relative_to(self.base_dir)))
@@ -336,7 +336,7 @@ class BotPersistenceManager:
             "checkpoint_name": checkpoint_name,
             "symbol": symbol,
             "timeframe": timeframe,
-            \"saved_at\": datetime.now(UTC).isoformat() + \"Z\",
+            "saved_at": datetime.now(UTC).isoformat() + "Z",
         }
 
         success = self.persistence.save_json(state, str(checkpoint_file.relative_to(self.base_dir)))

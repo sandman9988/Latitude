@@ -46,12 +46,14 @@ class TestActivityBonusPath:
         # Mock the activity monitor to return a positive bonus
         shaper.activity_monitor.get_exploration_bonus = MagicMock(return_value=0.5)
 
-        result = shaper.calculate_total_reward({
-            "exit_pnl": 10.0,
-            "mfe": 20.0,
-            "mae": 5.0,
-            "winner_to_loser": False,
-        })
+        result = shaper.calculate_total_reward(
+            {
+                "exit_pnl": 10.0,
+                "mfe": 20.0,
+                "mae": 5.0,
+                "winner_to_loser": False,
+            }
+        )
 
         assert result["activity_bonus"] == pytest.approx(0.5)
         assert shaper.component_stats["activity"]["sum"] == pytest.approx(0.5)
@@ -61,10 +63,12 @@ class TestActivityBonusPath:
         """When activity bonus is 0, stats are not updated."""
         shaper.activity_monitor.get_exploration_bonus = MagicMock(return_value=0.0)
 
-        result = shaper.calculate_total_reward({
-            "exit_pnl": 10.0,
-            "mfe": 20.0,
-        })
+        result = shaper.calculate_total_reward(
+            {
+                "exit_pnl": 10.0,
+                "mfe": 20.0,
+            }
+        )
 
         assert result["activity_bonus"] == pytest.approx(0.0)
         assert shaper.component_stats["activity"]["count"] == 0
@@ -74,10 +78,12 @@ class TestActivityBonusPath:
         shaper.activity_monitor.get_exploration_bonus = MagicMock(return_value=0.3)
 
         for _ in range(3):
-            shaper.calculate_total_reward({
-                "exit_pnl": 5.0,
-                "mfe": 10.0,
-            })
+            shaper.calculate_total_reward(
+                {
+                    "exit_pnl": 5.0,
+                    "mfe": 10.0,
+                }
+            )
 
         assert shaper.component_stats["activity"]["count"] == 3
         assert shaper.component_stats["activity"]["sum"] == pytest.approx(0.9)
@@ -133,11 +139,13 @@ class TestHarvesterRewardKeyErrors:
             bars_held=10,
         )
 
-        # wtl_mult fallback = 3.0, was_wtl = True → r_wtl = -3.0
-        assert result["wtl_penalty"] == pytest.approx(-3.0)
+        # wtl_mult fallback = 3.0, giveback_ratio = clamp(1 - 80/100, 0.5, 2.0) = 0.5
+        # r_wtl = -3.0 * 0.5 = -1.5
+        assert result["wtl_penalty"] == pytest.approx(-1.5)
 
     def test_both_fallbacks_together(self, shaper):
         """Both capture_multiplier and wtl_multiplier KeyError at once."""
+
         def mock_get_param(name):
             raise KeyError(name)
 
@@ -154,10 +162,10 @@ class TestHarvesterRewardKeyErrors:
 
         # capture: (50/100 - 0.7) * 2.0 = -0.4
         assert result["capture_efficiency"] == pytest.approx(-0.4)
-        # wtl: -3.0
-        assert result["wtl_penalty"] == pytest.approx(-3.0)
-        # timing: -0.5 * (5/20) = -0.125
-        assert result["timing_penalty"] == pytest.approx(-0.125)
+        # wtl: -3.0 * clamp(1 - 50/100, 0.5, 2.0) = -3.0 * 0.5 = -1.5
+        assert result["wtl_penalty"] == pytest.approx(-1.5)
+        # timing: -1.5 * (5/20) = -0.375
+        assert result["timing_penalty"] == pytest.approx(-0.375)
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +175,7 @@ class TestTriggerRewardKeyError:
     def test_runway_multiplier_keyerror_fallback(self, shaper):
         """When _get_param("runway_multiplier") raises KeyError,
         should use RUNWAY_MULT_DEFAULT=2.0."""
+
         def mock_get_param(name):
             raise KeyError(name)
 
@@ -193,8 +202,11 @@ class TestHarvesterRewardQuality:
         """capture_ratio >= 0.8 → quality = EXCELLENT."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
-            exit_pnl=90.0, mfe=100.0, mae=5.0,
-            was_wtl=False, bars_held=10,
+            exit_pnl=90.0,
+            mfe=100.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=10,
         )
         assert result["quality"] == "EXCELLENT"
 
@@ -202,8 +214,11 @@ class TestHarvesterRewardQuality:
         """0.6 <= capture_ratio < 0.8 → quality = GOOD."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
-            exit_pnl=70.0, mfe=100.0, mae=5.0,
-            was_wtl=False, bars_held=10,
+            exit_pnl=70.0,
+            mfe=100.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=10,
         )
         assert result["quality"] == "GOOD"
 
@@ -211,8 +226,11 @@ class TestHarvesterRewardQuality:
         """0.4 <= capture_ratio < 0.6 → quality = FAIR."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
-            exit_pnl=50.0, mfe=100.0, mae=5.0,
-            was_wtl=False, bars_held=10,
+            exit_pnl=50.0,
+            mfe=100.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=10,
         )
         assert result["quality"] == "FAIR"
 
@@ -220,16 +238,22 @@ class TestHarvesterRewardQuality:
         """capture_ratio < 0.4 → quality = POOR."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
-            exit_pnl=10.0, mfe=100.0, mae=5.0,
-            was_wtl=False, bars_held=10,
+            exit_pnl=10.0,
+            mfe=100.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=10,
         )
         assert result["quality"] == "POOR"
 
     def test_zero_mfe_neutral(self, shaper):
         """mfe=0 → capture_ratio=0, r_capture=0."""
         result = shaper.calculate_harvester_reward(
-            exit_pnl=0.0, mfe=0.0, mae=5.0,
-            was_wtl=False, bars_held=10,
+            exit_pnl=0.0,
+            mfe=0.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=10,
         )
         assert result["capture_efficiency"] == pytest.approx(0.0)
         assert result["capture_ratio"] == pytest.approx(0.0)
@@ -238,18 +262,24 @@ class TestHarvesterRewardQuality:
         """bars_from_mfe > 0 → timing penalty calculated."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
-            exit_pnl=80.0, mfe=100.0, mae=5.0,
-            was_wtl=False, bars_held=20,
+            exit_pnl=80.0,
+            mfe=100.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=20,
             bars_from_mfe_to_exit=10,
         )
-        # timing = -0.5 * (10/20) = -0.25
-        assert result["timing_penalty"] == pytest.approx(-0.25)
+        # timing = -1.5 * (10/20) = -0.75
+        assert result["timing_penalty"] == pytest.approx(-0.75)
 
     def test_timing_zero_when_no_bars(self, shaper):
         """bars_held=0 or bars_from_mfe=0 → no timing penalty."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
-            exit_pnl=80.0, mfe=100.0, mae=5.0,
-            was_wtl=False, bars_held=0,
+            exit_pnl=80.0,
+            mfe=100.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=0,
         )
         assert result["timing_penalty"] == pytest.approx(0.0)

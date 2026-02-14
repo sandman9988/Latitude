@@ -179,6 +179,16 @@ class BarBuilder:
 
     def update(self, t: dt.datetime, mid: float):
         LOG.debug("[BARBUILDER] update called: t=%s, mid=%.5f", t, mid)
+
+        # Defensive: Validate inputs
+        if mid is None or mid <= 0:
+            LOG.warning("[BARBUILDER] Invalid mid price: %.5f - skipping update", mid or 0)
+            return None
+
+        if not isinstance(t, dt.datetime):
+            LOG.error("[BARBUILDER] Invalid datetime type: %s", type(t))
+            return None
+
         b = self.bucket_start(t)
         if self.bucket is None:
             LOG.debug("[BARBUILDER] Initializing new bucket: %s mid=%.5f", b, mid)
@@ -187,6 +197,20 @@ class BarBuilder:
             return None
 
         if b != self.bucket:
+            # Defensive: Validate bar data before closing
+            if self.o is None or self.h is None or self.l is None or self.c is None:
+                LOG.error(
+                    "[BARBUILDER] Incomplete bar data - o=%.2f h=%.2f l=%.2f c=%.2f",
+                    self.o or 0,
+                    self.h or 0,
+                    self.l or 0,
+                    self.c or 0,
+                )
+                # Initialize new bucket but don't return invalid bar
+                self.bucket = b
+                self.o = self.h = self.l = self.c = mid
+                return None
+
             closed = (self.bucket, self.o, self.h, self.l, self.c)
             LOG.debug("[BARBUILDER] Closing bar: %s starting new bucket: %s mid=%.5f", closed, b, mid)
             self.bucket = b
@@ -475,8 +499,22 @@ class MFEMAETracker:
 
     def start_tracking(self, entry_price: float, direction: int):
         """direction: 1=long, -1=short"""
-        self.entry_price = entry_price
-        self.direction = direction
+        # Defensive: Validate entry_price
+        if entry_price is None or entry_price <= 0:
+            LOG.error(
+                "[MFE_MAE] Invalid entry_price=%.5f for position %s - cannot track", entry_price or 0, self.position_id
+            )
+            return
+
+        # Defensive: Validate direction
+        if direction not in (1, -1):
+            LOG.warning(
+                "[MFE_MAE] Invalid direction=%d for position %s - defaulting to LONG", direction, self.position_id
+            )
+            direction = 1
+
+        self.entry_price = float(entry_price)
+        self.direction = int(direction)
         self.mfe = 0.0
         self.mae = 0.0
         self.best_profit = 0.0
@@ -485,18 +523,25 @@ class MFEMAETracker:
 
     def update(self, current_price: float):
         """Update with current market price during open position."""
-        if self.entry_price is None:
+        # Defensive: Check entry_price validity
+        if self.entry_price is None or self.entry_price <= 0:
+            LOG.debug("[MFE_MAE] Cannot update position %s - invalid entry_price", self.position_id)
+            return
+
+        # Defensive: Validate current_price
+        if current_price is None or current_price <= 0:
+            LOG.debug(
+                "[MFE_MAE] Cannot update position %s - invalid current_price=%.5f", self.position_id, current_price or 0
+            )
             return
 
         # Ensure both prices are float for safe arithmetic
         try:
             cp = float(current_price)
-        except Exception:
-            cp = 0.0
-        try:
             ep = float(self.entry_price)
-        except Exception:
-            ep = 0.0
+        except (ValueError, TypeError) as e:
+            LOG.warning("[MFE_MAE] Price conversion error for position %s: %s", self.position_id, e)
+            return
 
         # Calculate P&L
         if self.direction == 1:  # long
@@ -545,7 +590,7 @@ class MFEMAETracker:
 # FIX application
 # ----------------------------
 class CTraderFixApp(fix.Application):
-    def __init__(self, symbol_id: int, qty: float, timeframe_minutes: int = 15, symbol: str = "BTCUSD"):
+    def __init__(self, symbol_id: int, qty: float, timeframe_minutes: int = 15, symbol: str = "XAUUSD"):
         super().__init__()
 
         self.symbol = symbol  # Instrument-agnostic: BTCUSD, XAUUSD, etc.
@@ -705,7 +750,7 @@ class CTraderFixApp(fix.Application):
 
         # P0 FIX: Broker execution model for realistic slippage and execution costs
         self.execution_model = BrokerExecutionModel(
-            typical_spread_bps=5.0,  # BTCUSD typical spread
+            typical_spread_bps=5.0,  # Typical spread for configured symbol
             base_slippage_bps=2.0,
             volatile_multiplier=2.0,
             trending_multiplier=1.5,
@@ -1413,7 +1458,7 @@ class CTraderFixApp(fix.Application):
             return
 
         req = fix44.MarketDataRequest()
-        req.setField(fix.MDReqID("BTCUSD_SPOT"))
+        req.setField(fix.MDReqID(f"{self.symbol}_SPOT"))
         req.setField(fix.SubscriptionRequestType("1"))
         req.setField(fix.MarketDepth(1))
         req.setField(fix.MDUpdateType(1))
@@ -1734,28 +1779,38 @@ class CTraderFixApp(fix.Application):
 
         self.order_book.reset()
         for i in range(1, n + 1):
-            g = fix44.MarketDataSnapshotFullRefresh().NoMDEntries()
-            msg.getGroup(i, g)
-
-            et = fix.MDEntryType()
-            px = fix.MDEntryPx()
-            qty = fix.MDEntrySize()
-            if not (g.isSetField(et) and g.isSetField(px)):
-                continue
-
-            g.getField(et)
-            g.getField(px)
-
             try:
+                g = fix44.MarketDataSnapshotFullRefresh().NoMDEntries()
+                msg.getGroup(i, g)
+
+                et = fix.MDEntryType()
+                px = fix.MDEntryPx()
+                qty = fix.MDEntrySize()
+                if not (g.isSetField(et) and g.isSetField(px)):
+                    continue
+
+                g.getField(et)
+                g.getField(px)
+
                 price_f = float(px.getValue())
+
+                # Defensive: Validate price is positive and reasonable
+                if price_f <= 0 or price_f > 1e9:  # Sanity check
+                    LOG.warning("[QUOTE] Suspicious price %.2f in entry %d - skipping", price_f, i)
+                    continue
+
                 size = 0.0
                 if g.isSetField(qty):
                     g.getField(qty)
                     size = float(qty.getValue())
                 if size <= 0:
                     size = 1.0  # cTrader omits size at top-of-book
+
             except (ValueError, TypeError) as e:
                 LOG.warning("[QUOTE] Invalid entry %d: %s", i, e)
+                continue
+            except Exception as e:
+                LOG.error("[QUOTE] Unexpected error parsing entry %d: %s", i, e)
                 continue
 
             entry_type = et.getValue()
@@ -1937,6 +1992,31 @@ class CTraderFixApp(fix.Application):
 
         Hedging mode compatible: tracks which positions have pending close orders.
         """
+        # DEBUG: Log entry to this function once per minute
+        if not hasattr(self, "_last_harvester_debug_log"):
+            self._last_harvester_debug_log = 0
+        now = time.time()
+        if now - self._last_harvester_debug_log > 60:
+            tracker_count = len(self.mfe_mae_trackers) if hasattr(self, "mfe_mae_trackers") else 0
+            LOG.info(
+                "[HARVESTER_DEBUG] Eval tick: bid=%s ask=%s bars=%d trackers=%d",
+                self.best_bid,
+                self.best_ask,
+                len(self.bars) if hasattr(self, "bars") else 0,
+                tracker_count,
+            )
+            if tracker_count > 0:
+                for pos_id, tracker in self.mfe_mae_trackers.items():
+                    LOG.info(
+                        "[HARVESTER_DEBUG] Tracker %s: entry=%.2f dir=%d mfe=%.4f mae=%.4f",
+                        pos_id,
+                        getattr(tracker, "entry_price", 0),
+                        getattr(tracker, "direction", 0),
+                        getattr(tracker, "mfe", 0),
+                        getattr(tracker, "mae", 0),
+                    )
+            self._last_harvester_debug_log = now
+
         # Need valid prices and bars
         if self.best_bid is None or self.best_ask is None:
             return
@@ -2051,6 +2131,54 @@ class CTraderFixApp(fix.Application):
         fix.Session.sendToTarget(req, self.trade_sid)
         LOG.info("[TRADE] Requested positions")
 
+    def _close_foreign_position(self, foreign_symbol_id: str, long_qty: float, short_qty: float, ticket: str | None):
+        """Close a position that belongs to a non-target symbol at startup."""
+        if not self.trade_sid:
+            LOG.warning("[CLEANUP] Cannot close foreign position — no TRADE session")
+            return
+
+        # Close long side
+        if long_qty > 0.001:
+            clord_id = f"CLEANUP_SELL_{int(time.time() * 1000)}"
+            msg = fix44.NewOrderSingle()
+            msg.setField(fix.ClOrdID(clord_id))
+            msg.setField(fix.Symbol(foreign_symbol_id))
+            msg.setField(fix.Side("2"))  # SELL to close long
+            msg.setField(fix.TransactTime())
+            msg.setField(fix.OrdType("1"))  # Market
+            msg.setField(fix.OrderQty(round(long_qty, 2)))
+            if ticket:
+                msg.setField(721, ticket)  # PosMaintRptID for hedging
+            fix.Session.sendToTarget(msg, self.trade_sid)
+            LOG.warning(
+                "[CLEANUP] 🧹 Closing foreign LONG: symbol=%s qty=%.4f ticket=%s clOrdID=%s",
+                foreign_symbol_id,
+                long_qty,
+                ticket,
+                clord_id,
+            )
+
+        # Close short side
+        if short_qty > 0.001:
+            clord_id = f"CLEANUP_BUY_{int(time.time() * 1000)}"
+            msg = fix44.NewOrderSingle()
+            msg.setField(fix.ClOrdID(clord_id))
+            msg.setField(fix.Symbol(foreign_symbol_id))
+            msg.setField(fix.Side("1"))  # BUY to close short
+            msg.setField(fix.TransactTime())
+            msg.setField(fix.OrdType("1"))  # Market
+            msg.setField(fix.OrderQty(round(short_qty, 2)))
+            if ticket:
+                msg.setField(721, ticket)  # PosMaintRptID for hedging
+            fix.Session.sendToTarget(msg, self.trade_sid)
+            LOG.warning(
+                "[CLEANUP] 🧹 Closing foreign SHORT: symbol=%s qty=%.4f ticket=%s clOrdID=%s",
+                foreign_symbol_id,
+                short_qty,
+                ticket,
+                clord_id,
+            )
+
     def on_position_report(self, msg: fix.Message):
         # Route to TradeManager first
         self.trade_integration.handle_position_report(msg)
@@ -2059,10 +2187,54 @@ class CTraderFixApp(fix.Application):
             sym = fix.Symbol()
             if msg.isSetField(sym):
                 msg.getField(sym)
-                if sym.getValue() != str(self.symbol_id):
+                foreign_id = sym.getValue()
+
+                # Defensive: Validate symbol_id is set
+                if not hasattr(self, "symbol_id") or self.symbol_id is None:
+                    LOG.warning("[CLEANUP] symbol_id not set, cannot check foreign positions")
+                    return
+
+                if foreign_id != str(self.symbol_id):
+                    # --- AUTO-CLOSE foreign symbol positions at startup ---
+                    f704 = fix.StringField(704)
+                    f705 = fix.StringField(705)
+                    f_long = 0.0
+                    f_short = 0.0
+                    f_ticket = None
+                    try:
+                        if msg.isSetField(f704):
+                            msg.getField(f704)
+                            f_long = float(f704.getValue())
+                        if msg.isSetField(f705):
+                            msg.getField(f705)
+                            f_short = float(f705.getValue())
+                        f721 = fix.StringField(721)
+                        if msg.isSetField(f721):
+                            msg.getField(f721)
+                            f_ticket = f721.getValue()
+                    except (ValueError, TypeError) as e:
+                        LOG.warning("[CLEANUP] Error parsing foreign position quantities: %s", e)
+
+                    # Defensive: Validate quantities are non-negative and reasonable
+                    if f_long < 0 or f_short < 0:
+                        LOG.error("[CLEANUP] Invalid negative quantities - long=%.4f short=%.4f", f_long, f_short)
+                        return
+
+                    if f_long > 1000 or f_short > 1000:  # Sanity check
+                        LOG.error("[CLEANUP] Suspicious large quantities - long=%.4f short=%.4f", f_long, f_short)
+                        return
+
+                    if f_long > 0.001 or f_short > 0.001:
+                        LOG.warning(
+                            "[CLEANUP] Foreign position detected: symbol=%s long=%.4f short=%.4f — auto-closing",
+                            foreign_id,
+                            f_long,
+                            f_short,
+                        )
+                        self._close_foreign_position(foreign_id, f_long, f_short, f_ticket)
                     return
         except Exception as e:
-            LOG.error("[TRADE] Error parsing position report symbol: %s", e)
+            LOG.error("[TRADE] Error parsing position report symbol: %s", e, exc_info=True)
             return
 
         long_qty = 0.0
@@ -2232,11 +2404,25 @@ class CTraderFixApp(fix.Application):
 
                 if next_state is not None:
                     realized_vol = self._calculate_rs_volatility() if len(self.bars) >= 20 else 0.01
-                    trigger_reward = self._calculate_trigger_reward(
-                        trade_summary=summary,
-                        predicted_runway=self.predicted_runway,
-                        realized_vol=realized_vol,
-                    )
+                    # FIX 7: Use neutral reward for exploration entries to avoid
+                    # training on meaningless prediction-accuracy signals
+                    was_explore = getattr(self, "was_exploration_entry", False)
+                    if was_explore:
+                        # Still add the experience (state→outcome), but with a
+                        # simple outcome-based reward instead of prediction-accuracy
+                        pnl = summary.get("pnl", 0.0)
+                        trigger_reward = float(np.clip(pnl / (realized_vol + 1e-8) / 3.0, -0.5, 0.5))
+                        LOG.info(
+                            "[ONLINE_LEARNING] Exploration entry: using outcome reward=%.4f "
+                            "(skipping prediction-accuracy reward)",
+                            trigger_reward,
+                        )
+                    else:
+                        trigger_reward = self._calculate_trigger_reward(
+                            trade_summary=summary,
+                            predicted_runway=self.predicted_runway,
+                            realized_vol=realized_vol,
+                        )
                     self.policy.add_trigger_experience(
                         state=self.entry_state,
                         action=self.entry_action,
@@ -2248,11 +2434,12 @@ class CTraderFixApp(fix.Application):
                         LOG.info("[BUFFER] TriggerAgent buffer size: %d", self.policy.trigger.buffer.size)
                     LOG.info(
                         "[ONLINE_LEARNING] Added TriggerAgent experience: action=%d reward=%.4f "
-                        "(predicted_mfe=%.4f actual_mfe=%.4f)",
+                        "(predicted_mfe=%.4f actual_mfe=%.4f explore=%s)",
                         self.entry_action,
                         trigger_reward,
                         self.predicted_runway,
                         summary.get("mfe", 0.0),
+                        was_explore,
                     )
 
                 self.entry_state = None
@@ -2556,10 +2743,11 @@ class CTraderFixApp(fix.Application):
         magnitude_bonus = min(norm_mfe / 3.0, 1.0) * 0.5  # Max +0.5 for 3σ+ moves
 
         # Component 3: Penalty for false positives
-        # If trade resulted in loss despite positive prediction, penalize
+        # If trade resulted in loss despite positive prediction, penalize proportionally
         false_positive_penalty = 0.0
         if predicted_runway > 0 and pnl < 0:
-            false_positive_penalty = -0.2  # Penalty for bad prediction
+            loss_severity = min(abs(pnl) / (realized_vol + 1e-8) / 3.0, 1.0)
+            false_positive_penalty = -0.2 - 0.5 * loss_severity  # -0.2 to -0.7
 
         # Combine components
         total_reward = accuracy_reward + magnitude_bonus + false_positive_penalty
@@ -2939,27 +3127,39 @@ class CTraderFixApp(fix.Application):
                     )
                     self.entry_action = action
                     self.predicted_runway = runway  # FIX 1: Store predicted MFE for trigger reward
+                    # FIX 7: Track if entry was exploration (random) so we can use
+                    # a neutral reward instead of prediction-accuracy reward
+                    self.was_exploration_entry = (
+                        hasattr(self.policy, "trigger")
+                        and self.policy.trigger.epsilon > 0.5
+                        and runway <= 0.002  # PREDICTED_RUNWAY_FALLBACK = 0.0015
+                    )
 
                 # FIX 5: Add NO_ENTRY experiences so trigger learns when NOT to trade
                 # This provides negative/neutral examples critical for balanced learning
+                # RATE-LIMITED: Only add 10% of NO_ENTRY bars to prevent buffer flooding
+                # (~288 bars/day would dominate vs ~5-10 actual trades/day)
                 if action == 0 and hasattr(self.policy, "add_trigger_experience"):
-                    trigger_state = (
-                        self.policy.trigger.last_state.copy()
-                        if hasattr(self.policy, "trigger")
-                        and hasattr(self.policy.trigger, "last_state")
-                        and self.policy.trigger.last_state is not None
-                        else None
-                    )
-                    if trigger_state is not None:
-                        # Reward of 0.0 for NO_ENTRY: neutral - neither penalize nor reward inaction
-                        self.policy.add_trigger_experience(
-                            state=trigger_state,
-                            action=0,  # NO_ENTRY
-                            reward=0.0,
-                            next_state=trigger_state,  # Same state (no position change)
-                            done=True,
+                    import random as _rng
+
+                    if _rng.random() < 0.10:  # 10% sampling rate
+                        trigger_state = (
+                            self.policy.trigger.last_state.copy()
+                            if hasattr(self.policy, "trigger")
+                            and hasattr(self.policy.trigger, "last_state")
+                            and self.policy.trigger.last_state is not None
+                            else None
                         )
-                        LOG.debug("[ONLINE_LEARNING] Added NO_ENTRY trigger experience")
+                        if trigger_state is not None:
+                            # Reward of 0.0 for NO_ENTRY: neutral - neither penalize nor reward inaction
+                            self.policy.add_trigger_experience(
+                                state=trigger_state,
+                                action=0,  # NO_ENTRY
+                                reward=0.0,
+                                next_state=trigger_state,  # Same state (no position change)
+                                done=True,
+                            )
+                            LOG.debug("[ONLINE_LEARNING] Added NO_ENTRY trigger experience (sampled)")
 
                 # Get PathGeometry features for logging
                 geom = (

@@ -1,10 +1,3 @@
-RUNWAY_EXCELLENT_MAX: float = 1.2
-RUNWAY_GOOD_MIN: float = 0.5
-RUNWAY_GOOD_MAX: float = 1.5
-RUNWAY_OVERPREDICT_THRESHOLD: float = 0.5
-CAPTURE_QUALITY_EXCELLENT: float = 0.8
-CAPTURE_QUALITY_GOOD: float = 0.6
-CAPTURE_QUALITY_FAIR: float = 0.4
 #!/usr/bin/env python3
 """
 Reward Shaper - Asymmetric component-based reward calculation
@@ -28,7 +21,7 @@ from src.monitoring.activity_monitor import ActivityMonitor, CounterfactualAnaly
 from src.persistence.learned_parameters import LearnedParametersManager
 
 TARGET_CAPTURE_RATIO: float = 0.7
-WTL_THRESHOLD: float = 10.0
+WTL_THRESHOLD: float = 1.0  # Lowered: penalize WTL even on small-dollar trades
 BASELINE_MFE: float = 100.0
 OPPORTUNITY_THRESHOLD: float = 50.0
 OPPORTUNITY_SIGNAL_MIN: float = 0.5
@@ -49,10 +42,20 @@ RUNWAY_GOOD_MIN: float = 0.6
 RUNWAY_FAIR_MIN: float = 0.4
 WTL_MULT_DEFAULT: float = 3.0
 CAPTURE_MULT_FALLBACK: float = 2.0
-TIMING_PENALTY_SCALE: float = -0.5
+TIMING_PENALTY_SCALE: float = -1.5  # Increased from -0.5 for stronger late-exit penalty
 RUNWAY_EXPECTED_GAIN_MULT: float = 2.0
 RUNWAY_EXPECTED_LOSS_MULT: float = 1.0
 FRICTION_COST_MULT: float = 0.1
+
+# Runway quality thresholds (for trigger reward calculation)
+RUNWAY_EXCELLENT_MAX: float = 1.2
+RUNWAY_GOOD_MAX: float = 1.5
+RUNWAY_OVERPREDICT_THRESHOLD: float = 0.5
+
+# Capture quality thresholds (for harvester reward quality assessment)
+CAPTURE_QUALITY_EXCELLENT: float = 0.8
+CAPTURE_QUALITY_GOOD: float = 0.6
+CAPTURE_QUALITY_FAIR: float = 0.4
 
 
 class RewardShaper:
@@ -531,12 +534,22 @@ class RewardShaper:
             capture_ratio = 0.0
             r_capture = 0.0
 
-        # 2. WTL penalty (strong negative signal)
+        # 2. WTL penalty (proportional to profit giveback, not flat)
         try:
             wtl_mult = self._get_param("wtl_multiplier")
         except KeyError:
             wtl_mult = WTL_MULT_DEFAULT  # Default WTL penalty multiplier
-        r_wtl = -wtl_mult if was_wtl else 0.0
+        if was_wtl:
+            # Proportional penalty: worse giveback = worse penalty
+            # If MFE was $10 and exit_pnl is -$2, giveback_ratio = 1.2 (gave back 120% of MFE)
+            if mfe > 0:
+                giveback_ratio = 1.0 - (exit_pnl / mfe)  # 0 = perfect capture, 2 = lost as much as gained
+                giveback_ratio = max(0.5, min(giveback_ratio, 2.0))  # Clamp [0.5, 2.0]
+            else:
+                giveback_ratio = 1.0
+            r_wtl = -wtl_mult * giveback_ratio
+        else:
+            r_wtl = 0.0
 
         # 3. Timing penalty (waited too long after MFE)
         if bars_held > 0 and bars_from_mfe_to_exit > 0:

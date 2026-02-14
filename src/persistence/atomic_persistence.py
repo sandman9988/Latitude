@@ -123,11 +123,21 @@ class AtomicPersistence:
             try:
                 envelope_data = json.loads(envelope_bytes.decode("utf-8"))
 
+                # Defensive: Validate parsed data is not None
+                if envelope_data is None:
+                    logger.error("%s: Parsed JSON is None", filename)
+                    return self._restore_from_backup(filename)
+
                 # Check if it's an envelope (has CRC32) or raw data
                 if isinstance(envelope_data, dict) and "crc32" in envelope_data and "data" in envelope_data:
                     # Envelope format (new)
                     stored_crc = envelope_data["crc32"]
                     data = envelope_data["data"]
+
+                    # Defensive: Validate data structure
+                    if not isinstance(data, dict):
+                        logger.error("%s: Envelope data is not a dict (type: %s)", filename, type(data))
+                        return self._restore_from_backup(filename)
 
                     if verify_crc:
                         # Recalculate CRC on data portion
@@ -146,6 +156,12 @@ class AtomicPersistence:
                 else:
                     # Legacy format (no envelope)
                     logger.warning("%s uses legacy format (no CRC)", filename)
+
+                    # Defensive: Validate legacy data is dict
+                    if not isinstance(envelope_data, dict):
+                        logger.error("%s: Legacy data is not a dict (type: %s)", filename, type(envelope_data))
+                        return None
+
                     return cast(dict[str, Any], envelope_data)
 
             except json.JSONDecodeError as decode_e:

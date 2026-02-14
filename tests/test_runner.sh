@@ -50,13 +50,31 @@ echo "────────────────────────�
 echo "  Baseline Tests"
 echo "─────────────────────────────────────────────────────────────"
 
-run_test "Python syntax check" "python3 -m py_compile ctrader_ddqn_paper.py"
+# Determine main file path
+MAIN_FILE="ctrader_ddqn_paper.py"
+if [ ! -f "$MAIN_FILE" ]; then
+    if [ -f "src/core/ctrader_ddqn_paper.py" ]; then
+        MAIN_FILE="src/core/ctrader_ddqn_paper.py"
+    fi
+fi
+
+run_test "Python syntax check" "python3 -m py_compile $MAIN_FILE"
 
 run_test "Required imports available" "python3 -c 'import quickfix; import numpy; print(\"OK\")'"
 
 run_test "Config files exist" "test -f config/ctrader_quote.cfg && test -f config/ctrader_trade.cfg"
 
-run_test "Log directory writable" "test -w logs/python"
+# Determine log directory
+LOG_DIR=""
+if [ -d "logs/python" ]; then
+    LOG_DIR="logs/python"
+elif [ -d "log" ]; then
+    LOG_DIR="log"
+elif [ -d "ctrader_py_logs" ]; then
+    LOG_DIR="ctrader_py_logs"
+fi
+
+run_test "Log directory writable" "test -n \"$LOG_DIR\" && test -w \"$LOG_DIR\""
 
 run_test "Environment variables set" "test -n \"\$CTRADER_USERNAME\" || echo 'Warning: CTRADER_USERNAME not set' >&2"
 
@@ -64,13 +82,13 @@ run_test "Environment variables set" "test -n \"\$CTRADER_USERNAME\" || echo 'Wa
 # PHASE 1 TESTS (Observability)
 # ═══════════════════════════════════════════════════════════════
 
-if grep -q "class MFEMAETracker" ctrader_ddqn_paper.py 2>/dev/null; then
+if grep -q "class MFEMAETracker" "$MAIN_FILE" 2>/dev/null; then
     echo ""
     echo "─────────────────────────────────────────────────────────────"
     echo "  Phase 1.1: MFE/MAE Tracking"
     echo "─────────────────────────────────────────────────────────────"
     
-    run_test "MFE/MAE tracker class exists" "grep -q 'class MFEMAETracker' ctrader_ddqn_paper.py"
+    run_test "MFE/MAE tracker class exists" "grep -q 'class MFEMAETracker' \"$MAIN_FILE\""
     
     run_test "MFE tracking in logs (if bot ran)" "test ! -f logs/python/ctrader_*.log || grep -q 'MFE' logs/python/ctrader_*.log || echo 'No MFE logs yet'"
 fi
@@ -89,7 +107,7 @@ if [ -n "$BOT_PIDS" ]; then
     echo -e "${GREEN}✓ Bot is RUNNING${NC} (PID: $BOT_PIDS)"
     
     # Check recent activity
-    LATEST_LOG=$(ls -t logs/python/ctrader_*.log 2>/dev/null | head -1)
+    LATEST_LOG=$(ls -t "$LOG_DIR"/ctrader_*.log 2>/dev/null | head -1)
     if [ -n "$LATEST_LOG" ]; then
         LAST_LINE=$(tail -1 "$LATEST_LOG")
         echo "  Last log: $LAST_LINE"

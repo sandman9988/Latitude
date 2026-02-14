@@ -334,6 +334,28 @@ class DualPolicy:
             entry_price: Entry price
             entry_time: Entry bar timestamp
         """
+        # Defensive: Validate inputs
+        if entry_price is None or entry_price <= 0:
+            LOG.error("[DUAL_POLICY] Invalid entry_price=%.5f - cannot open position", entry_price or 0)
+            return
+
+        if direction not in (-1, 1):
+            LOG.error("[DUAL_POLICY] Invalid direction=%d - expected 1 (LONG) or -1 (SHORT)", direction)
+            return
+
+        # Defensive: Check for orphaned position state
+        if self.current_position != 0:
+            LOG.warning(
+                "[DUAL_POLICY] Position state inconsistency - current=%d but opening new position dir=%d @ %.2f",
+                self.current_position,
+                direction,
+                entry_price,
+            )
+            # Reset state before opening new position
+            self.mfe = 0.0
+            self.mae = 0.0
+            self.ticks_held = 0
+
         self.current_position = direction
         self.entry_price = float(entry_price)
         self.entry_bar_time = entry_time
@@ -346,6 +368,36 @@ class DualPolicy:
             entry_price,
         )
 
+    def on_recovery(
+        self, direction: int, entry_price: float, entry_time, mfe: float = 0.0, mae: float = 0.0, ticks_held: int = 0
+    ):
+        """
+        Called when position is recovered from persistence.
+        Unlike on_entry(), this preserves MFE/MAE from the persisted state.
+
+        Args:
+            direction: +1 for LONG, -1 for SHORT
+            entry_price: Entry price
+            entry_time: Entry bar timestamp
+            mfe: Maximum favorable excursion (preserved from persistence)
+            mae: Maximum adverse excursion (preserved from persistence)
+            ticks_held: Number of ticks held (preserved from persistence)
+        """
+        self.current_position = direction
+        self.entry_price = float(entry_price)
+        self.entry_bar_time = entry_time
+        self.mfe = float(mfe)
+        self.mae = float(mae)
+        self.ticks_held = int(ticks_held)
+        LOG.info(
+            "[DUAL_POLICY] Position recovered: %s @ %.2f (MFE=%.4f MAE=%.4f ticks=%d)",
+            "LONG" if direction == 1 else "SHORT",
+            entry_price,
+            self.mfe,
+            self.mae,
+            self.ticks_held,
+        )
+
     def on_exit(self, exit_price: float, capture_ratio: float, was_wtl: bool):
         """
         Called when position is closed.
@@ -355,7 +407,11 @@ class DualPolicy:
             capture_ratio: exit_pnl / MFE
             was_wtl: Was this a winner-to-loser trade?
         """
-        # Update agents with trade outcome
+        # Store MFE percentage for harvester's SL learning
+        if self.entry_price > 0:
+            self.harvester._last_mfe_pct = (self.mfe / self.entry_price) * 100.0
+
+        # Update agents  with trade outcome
         self.trigger.update_from_trade(actual_mfe=self.mfe, predicted_runway=self.predicted_runway)
         self.harvester.update_from_trade(capture_ratio=capture_ratio, was_wtl=was_wtl)
 
@@ -377,18 +433,33 @@ class DualPolicy:
 
     def _update_mfe_mae(self, current_price: float):
         """Update MFE and MAE based on current price."""
+        # Defensive: Validate entry_price
         if SafeMath.is_zero(self.entry_price):
+            return
+
+        # Defensive: Validate current_price
+        if current_price is None or current_price <= 0:
+            LOG.warning("[DUAL_POLICY] Invalid current_price=%.5f for MFE/MAE update", current_price or 0)
+            return
+
+        # Defensive: Validate position direction
+        if self.current_position not in (1, -1):
+            LOG.debug("[DUAL_POLICY] No position to update MFE/MAE (direction=%d)", self.current_position)
             return
 
         # Ensure both prices are float for safe arithmetic
         try:
             cp = float(current_price)
-        except Exception:
-            cp = 0.0
-        try:
             ep = float(self.entry_price)
-        except Exception:
-            ep = 0.0
+
+            # Defensive: Sanity check on prices
+            if cp <= 0 or ep <= 0:
+                LOG.warning("[DUAL_POLICY] Invalid prices - current=%.5f entry=%.5f", cp, ep)
+                return
+
+        except (ValueError, TypeError) as e:
+            LOG.error("[DUAL_POLICY] Price conversion error: %s", e)
+            return
 
         if self.current_position == 1:  # LONG
             profit = cp - ep
@@ -558,10 +629,15 @@ class DualPolicy:
         # Take last window bars
         feats = feats[-self.window :].astype(np.float32)
 
-        # Normalize
+        # Normalize: z-score per feature, but SKIP constant columns (broadcast features)
+        # Constant columns (std=0) like imbalance, vpin_z, geometry, event features
+        # would get zeroed out by (x-mean)/0 = 0, destroying their signal.
+        # Instead, preserve their raw values for the DDQN to learn from.
         mu = feats.mean(axis=0, keepdims=True)
-        sd = feats.std(axis=0, keepdims=True) + 1e-8
-        feats = (feats - mu) / sd
+        sd = feats.std(axis=0, keepdims=True)
+        variable_mask = sd.flatten() > 1e-6  # True for columns with actual variance
+        # Only normalize variable columns; leave constant columns as-is
+        feats[:, variable_mask] = (feats[:, variable_mask] - mu[:, variable_mask]) / (sd[:, variable_mask] + 1e-8)
 
         return feats
 

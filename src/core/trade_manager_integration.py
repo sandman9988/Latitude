@@ -966,17 +966,46 @@ class TradeManagerIntegration:
                 from src.core.ctrader_ddqn_paper import MFEMAETracker
 
                 for pos_id, tracker_data in active_trackers.items():
-                    # Create tracker if doesn't exist
-                    if pos_id not in self.app.mfe_mae_trackers:
-                        self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id)
+                    try:
+                        # Defensive: Validate tracker_data structure
+                        if not isinstance(tracker_data, dict):
+                            LOG.error("[RECOVERY] Invalid tracker_data type for %s - skipping", pos_id)
+                            continue
 
-                    # Restore tracker state
-                    self.app.mfe_mae_trackers[pos_id].start_tracking(
-                        tracker_data["entry_price"], tracker_data["direction"]
-                    )
-                    # Restore MFE/MAE if available
-                    self.app.mfe_mae_trackers[pos_id].mfe = tracker_data.get("mfe", 0.0)
-                    self.app.mfe_mae_trackers[pos_id].mae = tracker_data.get("mae", 0.0)
+                        # Defensive: Validate required fields
+                        entry_price = tracker_data.get("entry_price")
+                        direction = tracker_data.get("direction")
+
+                        if entry_price is None or entry_price <= 0:
+                            LOG.error("[RECOVERY] Invalid entry_price for %s - skipping tracker", pos_id)
+                            continue
+
+                        if direction not in (1, -1):
+                            LOG.warning(
+                                "[RECOVERY] Invalid direction=%s for %s - defaulting to LONG", direction, pos_id
+                            )
+                            direction = 1
+
+                        # Create tracker if doesn't exist
+                        if pos_id not in self.app.mfe_mae_trackers:
+                            self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id)
+
+                        # Restore tracker state
+                        self.app.mfe_mae_trackers[pos_id].start_tracking(entry_price, direction)
+
+                        # Restore MFE/MAE and best/worst if available
+                        mfe_val = float(tracker_data.get("mfe", 0.0))
+                        mae_val = float(tracker_data.get("mae", 0.0))
+                        self.app.mfe_mae_trackers[pos_id].mfe = mfe_val
+                        self.app.mfe_mae_trackers[pos_id].mae = mae_val
+                        # Critical: Also restore best_profit/worst_loss for update() to work correctly
+                        self.app.mfe_mae_trackers[pos_id].best_profit = mfe_val  # MFE is the best profit
+                        self.app.mfe_mae_trackers[pos_id].worst_loss = (
+                            -mae_val
+                        )  # MAE is stored as positive, worst_loss as negative
+                    except Exception as e:
+                        LOG.error("[RECOVERY] Error restoring tracker %s: %s", pos_id, e, exc_info=True)
+                        continue
 
                     LOG.info(
                         "[MULTI-POS] ✓ Recovered tracker %s: entry=%.5f dir=%d MFE=%.4f MAE=%.4f",
@@ -996,12 +1025,16 @@ class TradeManagerIntegration:
                     position_id = ticket_data["position_id"]
 
                     # Create tracker if doesn't exist
-                    if position_id not in self.app.mfe_mae_trackers:
+                    tracker_is_new = position_id not in self.app.mfe_mae_trackers
+                    if tracker_is_new:
                         self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
 
-                    # Restore tracker state
+                    # Restore tracker state (only start_tracking if newly created)
                     tracker = self.app.mfe_mae_trackers[position_id]
-                    tracker.start_tracking(ticket_data["entry_price"], ticket_data["direction"])
+                    if tracker_is_new:
+                        # New tracker - initialize with entry data
+                        tracker.start_tracking(ticket_data["entry_price"], ticket_data["direction"])
+                    # Always restore ticket reference
                     tracker.position_ticket = ticket  # Critical: restore broker ticket reference
 
                     # Restore ticket mapping
@@ -1018,40 +1051,82 @@ class TradeManagerIntegration:
 
                 # CRITICAL: Notify DualPolicy of the LAST recovered position
                 # (DualPolicy still manages one position at a time, but all are monitored)
-                if position_tickets and hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
+                if position_tickets and hasattr(self.app, "policy"):
                     # Use the last ticket (most recent position)
                     last_ticket_data = list(position_tickets.values())[-1]
                     import datetime as dt
 
-                    self.app.policy.on_entry(
-                        direction=last_ticket_data["direction"],
-                        entry_price=last_ticket_data["entry_price"],
-                        entry_time=dt.datetime.now(dt.timezone.utc),
-                    )
+                    # Get MFE/MAE from tracker if available
+                    position_id = last_ticket_data.get("position_id")
+                    mfe, mae, ticks_held = 0.0, 0.0, 0
+                    if position_id and hasattr(self.app, "mfe_mae_trackers"):
+                        tracker = self.app.mfe_mae_trackers.get(position_id)
+                        if tracker:
+                            mfe = getattr(tracker, "mfe", 0.0)
+                            mae = getattr(tracker, "mae", 0.0)
+                            # Estimate ticks_held from time if not stored
+                            # (For now, leave at 0 - will build up from current time)
+
+                    # Use on_recovery() to preserve MFE/MAE
+                    if hasattr(self.app.policy, "on_recovery"):
+                        self.app.policy.on_recovery(
+                            direction=last_ticket_data["direction"],
+                            entry_price=last_ticket_data["entry_price"],
+                            entry_time=dt.datetime.now(dt.timezone.utc),
+                            mfe=mfe,
+                            mae=mae,
+                            ticks_held=ticks_held,
+                        )
+                    else:
+                        # Fallback for older code
+                        self.app.policy.on_entry(
+                            direction=last_ticket_data["direction"],
+                            entry_price=last_ticket_data["entry_price"],
+                            entry_time=dt.datetime.now(dt.timezone.utc),
+                        )
                     LOG.info(
-                        "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d",
+                        "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)",
                         last_ticket_data["entry_price"],
                         last_ticket_data["direction"],
+                        mfe,
+                        mae,
                     )
 
             # Legacy fallback: Restore from active_trackers if position_tickets not present
             elif active_trackers:
                 # CRITICAL: Notify DualPolicy of the LAST recovered position
                 # (DualPolicy still manages one position at a time, but all are monitored)
-                if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
+                if hasattr(self.app, "policy"):
                     # Use the last tracker (most recent position)
                     last_tracker = list(active_trackers.values())[-1]
                     import datetime as dt
 
-                    self.app.policy.on_entry(
-                        direction=last_tracker["direction"],
-                        entry_price=last_tracker["entry_price"],
-                        entry_time=dt.datetime.now(dt.timezone.utc),
-                    )
+                    mfe = last_tracker.get("mfe", 0.0)
+                    mae = last_tracker.get("mae", 0.0)
+
+                    # Use on_recovery() to preserve MFE/MAE
+                    if hasattr(self.app.policy, "on_recovery"):
+                        self.app.policy.on_recovery(
+                            direction=last_tracker["direction"],
+                            entry_price=last_tracker["entry_price"],
+                            entry_time=dt.datetime.now(dt.timezone.utc),
+                            mfe=mfe,
+                            mae=mae,
+                            ticks_held=0,
+                        )
+                    else:
+                        # Fallback for older code
+                        self.app.policy.on_entry(
+                            direction=last_tracker["direction"],
+                            entry_price=last_tracker["entry_price"],
+                            entry_time=dt.datetime.now(dt.timezone.utc),
+                        )
                     LOG.info(
-                        "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d",
+                        "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)",
                         last_tracker["entry_price"],
                         last_tracker["direction"],
+                        mfe,
+                        mae,
                     )
 
             # Legacy: Keep backward compatibility for old state files without active_trackers
@@ -1071,19 +1146,62 @@ class TradeManagerIntegration:
                     )
 
                     # Notify DualPolicy
-                    if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
+                    if hasattr(self.app, "policy"):
                         import datetime as dt
 
-                        self.app.policy.on_entry(
-                            direction=self.position_direction,
-                            entry_price=self.entry_price,
-                            entry_time=dt.datetime.now(dt.timezone.utc),
-                        )
+                        # Get MFE/MAE from tracker if available
+                        mfe, mae = 0.0, 0.0
+                        tracker = self.app.mfe_mae_trackers.get(position_id)
+                        if tracker:
+                            mfe = getattr(tracker, "mfe", 0.0)
+                            mae = getattr(tracker, "mae", 0.0)
+
+                        # Use on_recovery() to preserve MFE/MAE
+                        if hasattr(self.app.policy, "on_recovery"):
+                            self.app.policy.on_recovery(
+                                direction=self.position_direction,
+                                entry_price=self.entry_price,
+                                entry_time=dt.datetime.now(dt.timezone.utc),
+                                mfe=mfe,
+                                mae=mae,
+                                ticks_held=0,
+                            )
+                        else:
+                            # Fallback for older code
+                            self.app.policy.on_entry(
+                                direction=self.position_direction,
+                                entry_price=self.entry_price,
+                                entry_time=dt.datetime.now(dt.timezone.utc),
+                            )
                         LOG.info(
-                            "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d",
+                            "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)",
                             self.entry_price,
                             self.position_direction,
+                            mfe,
+                            mae,
                         )
+
+            # CRITICAL: Force immediate MFE/MAE update after recovery
+            # This ensures stale persisted MAE values get recalculated with current price
+            if hasattr(self.app, "policy") and hasattr(self.app.policy, "_update_mfe_mae"):
+                # Calculate mid_price from best bid/ask if available
+                mid_price = None
+                if hasattr(self.app, "best_bid") and hasattr(self.app, "best_ask"):
+                    if self.app.best_bid and self.app.best_ask:
+                        mid_price = (self.app.best_bid + self.app.best_ask) / 2.0
+
+                if mid_price and mid_price > 0:
+                    try:
+                        self.app.policy._update_mfe_mae(mid_price)
+                        LOG.info(
+                            "[INTEGRATION] ✓ Forced MFE/MAE update after recovery: MFE=%.4f MAE=%.4f",
+                            self.app.policy.mfe,
+                            self.app.policy.mae,
+                        )
+                    except Exception as e:
+                        LOG.warning("[INTEGRATION] Failed to force MFE/MAE update: %s", e)
+                else:
+                    LOG.debug("[INTEGRATION] No market price available yet for forced MFE/MAE update")
 
             if self.trailing_stop_active:
                 LOG.info(

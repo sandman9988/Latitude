@@ -13,13 +13,13 @@ Architecture:
 
 import logging
 import traceback
+from enum import Enum
+
+import numpy as np
 
 # Consensus constants
 MIN_CONFIDENCE_THRESHOLD: float = 0.6
 DEFAULT_CONFIDENCE: float = 0.5
-from enum import Enum
-
-import numpy as np
 
 LOG = logging.getLogger(__name__)
 
@@ -288,7 +288,7 @@ class AgentArena:
             return self._max_confidence_consensus(actions, confidences)
 
         elif self.consensus_mode == ConsensusMode.MIN_RISK:
-            return self._min_risk_consensus(actions, confidences, is_entry)
+            return self._min_risk_consensus(actions, confidences)
 
         else:
             # Fallback to voting
@@ -367,7 +367,7 @@ class AgentArena:
         return consensus_action, consensus_confidence, agreement
 
     def _min_risk_consensus(
-        self, actions: list[int], confidences: list[float], is_entry: bool
+        self, actions: list[int], confidences: list[float]
     ) -> tuple[int, float, float]:
         """
         Conservative consensus: prefer no-action unless strong agreement.

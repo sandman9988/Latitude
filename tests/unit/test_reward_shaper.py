@@ -9,6 +9,7 @@ from src.core.reward_shaper import RewardShaper
 # Fixture – fresh shaper with defaults
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture()
 def shaper():
     return RewardShaper(symbol="BTCUSD", timeframe="M15")
@@ -17,6 +18,7 @@ def shaper():
 # ---------------------------------------------------------------------------
 # Capture efficiency
 # ---------------------------------------------------------------------------
+
 
 class TestCaptureEfficiency:
     def test_above_target(self, shaper):
@@ -41,13 +43,14 @@ class TestCaptureEfficiency:
 # WTL penalty
 # ---------------------------------------------------------------------------
 
+
 class TestWTLPenalty:
     def test_not_wtl(self, shaper):
         assert shaper.calculate_wtl_penalty(was_wtl=False, mfe=200.0, exit_pnl=50.0) == pytest.approx(0.0)
 
     def test_below_threshold(self, shaper):
-        """Small MFE → no penalty even if WTL."""
-        assert shaper.calculate_wtl_penalty(was_wtl=True, mfe=5.0, exit_pnl=-2.0) == pytest.approx(0.0)
+        """Small MFE (below WTL_THRESHOLD=1.0) → no penalty even if WTL."""
+        assert shaper.calculate_wtl_penalty(was_wtl=True, mfe=0.5, exit_pnl=-0.2) == pytest.approx(0.0)
 
     def test_wtl_penalty_negative(self, shaper):
         p = shaper.calculate_wtl_penalty(was_wtl=True, mfe=200.0, exit_pnl=-30.0, bars_from_mfe_to_exit=10)
@@ -62,6 +65,7 @@ class TestWTLPenalty:
 # ---------------------------------------------------------------------------
 # Opportunity cost
 # ---------------------------------------------------------------------------
+
 
 class TestOpportunityCost:
     def test_below_threshold(self, shaper):
@@ -79,12 +83,20 @@ class TestOpportunityCost:
 # Total reward
 # ---------------------------------------------------------------------------
 
+
 class TestTotalReward:
     def test_returns_expected_keys(self, shaper):
         result = shaper.calculate_total_reward({"exit_pnl": 50.0, "mfe": 100.0, "mae": 10.0, "winner_to_loser": False})
-        for key in ("capture_efficiency", "wtl_penalty", "opportunity_cost",
-                     "activity_bonus", "counterfactual_adjustment", "ensemble_bonus",
-                     "total_reward", "components_active"):
+        for key in (
+            "capture_efficiency",
+            "wtl_penalty",
+            "opportunity_cost",
+            "activity_bonus",
+            "counterfactual_adjustment",
+            "ensemble_bonus",
+            "total_reward",
+            "components_active",
+        ):
             assert key in result
 
     def test_components_active_count(self, shaper):
@@ -106,6 +118,7 @@ class TestTotalReward:
 # ---------------------------------------------------------------------------
 # Trigger reward (dual-agent)
 # ---------------------------------------------------------------------------
+
 
 class TestTriggerReward:
     def test_perfect_prediction(self, shaper):
@@ -137,30 +150,50 @@ class TestTriggerReward:
 # Harvester reward (dual-agent)
 # ---------------------------------------------------------------------------
 
+
 class TestHarvesterReward:
     def test_excellent_capture(self, shaper):
         r = shaper.calculate_harvester_reward(
-            exit_pnl=85.0, mfe=100.0, mae=5.0, was_wtl=False, bars_held=20, bars_from_mfe_to_exit=2,
+            exit_pnl=85.0,
+            mfe=100.0,
+            mae=5.0,
+            was_wtl=False,
+            bars_held=20,
+            bars_from_mfe_to_exit=2,
         )
         assert r["quality"] == "EXCELLENT"
         assert r["harvester_reward"] > 0
 
     def test_wtl_penalty(self, shaper):
         r = shaper.calculate_harvester_reward(
-            exit_pnl=-10.0, mfe=100.0, mae=50.0, was_wtl=True, bars_held=30, bars_from_mfe_to_exit=25,
+            exit_pnl=-10.0,
+            mfe=100.0,
+            mae=50.0,
+            was_wtl=True,
+            bars_held=30,
+            bars_from_mfe_to_exit=25,
         )
         assert r["wtl_penalty"] < 0
         assert r["was_wtl"] is True
 
     def test_timing_penalty(self, shaper):
         r = shaper.calculate_harvester_reward(
-            exit_pnl=50.0, mfe=100.0, mae=10.0, was_wtl=False, bars_held=20, bars_from_mfe_to_exit=15,
+            exit_pnl=50.0,
+            mfe=100.0,
+            mae=10.0,
+            was_wtl=False,
+            bars_held=20,
+            bars_from_mfe_to_exit=15,
         )
         assert r["timing_penalty"] < 0
 
     def test_zero_mfe_neutral(self, shaper):
         r = shaper.calculate_harvester_reward(
-            exit_pnl=0.0, mfe=0.0, mae=0.0, was_wtl=False, bars_held=10,
+            exit_pnl=0.0,
+            mfe=0.0,
+            mae=0.0,
+            was_wtl=False,
+            bars_held=10,
         )
         assert r["capture_efficiency"] == pytest.approx(0.0)
 
@@ -169,11 +202,19 @@ class TestHarvesterReward:
 # Dual-agent combined
 # ---------------------------------------------------------------------------
 
+
 class TestDualAgentRewards:
     def test_combined_reward(self, shaper):
         r = shaper.calculate_dual_agent_rewards(
-            actual_mfe=100.0, predicted_runway=100.0, direction=1, entry_price=50000.0,
-            exit_pnl=80.0, mae=10.0, was_wtl=False, bars_held=20, bars_from_mfe_to_exit=3,
+            actual_mfe=100.0,
+            predicted_runway=100.0,
+            direction=1,
+            entry_price=50000.0,
+            exit_pnl=80.0,
+            mae=10.0,
+            was_wtl=False,
+            bars_held=20,
+            bars_from_mfe_to_exit=3,
         )
         assert "total_reward" in r
         assert "trigger_reward" in r
@@ -184,8 +225,14 @@ class TestDualAgentRewards:
     def test_weight_split(self, shaper):
         """Total = 0.4*trigger + 0.6*harvester."""
         r = shaper.calculate_dual_agent_rewards(
-            actual_mfe=100.0, predicted_runway=100.0, direction=1, entry_price=50000.0,
-            exit_pnl=80.0, mae=10.0, was_wtl=False, bars_held=20,
+            actual_mfe=100.0,
+            predicted_runway=100.0,
+            direction=1,
+            entry_price=50000.0,
+            exit_pnl=80.0,
+            mae=10.0,
+            was_wtl=False,
+            bars_held=20,
         )
         expected = 0.4 * r["trigger_reward"] + 0.6 * r["harvester_reward"]
         assert r["total_reward"] == pytest.approx(expected)
@@ -194,6 +241,7 @@ class TestDualAgentRewards:
 # ---------------------------------------------------------------------------
 # Statistics / summary helpers
 # ---------------------------------------------------------------------------
+
 
 class TestStatistics:
     def test_get_statistics(self, shaper):

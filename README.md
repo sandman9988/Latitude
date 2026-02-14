@@ -16,6 +16,18 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 
 ---
 
+## 📚 Documentation
+
+**System Status & Recent Changes:**
+- 📄 [**CURRENT_STATE.md**](docs/CURRENT_STATE.md) - Latest fixes, parameters, and system health (updated Feb 14, 2026)
+- 📁 [**INDEX.md**](docs/INDEX.md) - Complete navigation index for all 75+ documentation files
+
+**Core Documentation:**
+- 📖 [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Authoritative system design and architecture
+- 🚀 [docs/00_START_HERE.md](docs/00_START_HERE.md) - Documentation entry point with organized guides
+
+---
+
 ## Features
 
 - **Dual FIX Sessions**: Separate QUOTE and TRADE sessions for market data and order execution

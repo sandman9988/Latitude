@@ -109,7 +109,7 @@ class TriggerAgent:
         # Epsilon-greedy exploration for training
         self.epsilon = float(os.environ.get("EPSILON_START", "1.0" if self.paper_mode else "0.05"))
         self.epsilon_end = float(os.environ.get("EPSILON_END", "0.1" if self.paper_mode else "0.01"))
-        self.epsilon_decay = float(os.environ.get("EPSILON_DECAY", "0.9995"))
+        self.epsilon_decay = float(os.environ.get("EPSILON_DECAY", "0.998"))
         self.exploration_boost = float(os.environ.get("EXPLORATION_BOOST", "0.5" if self.paper_mode else "0.0"))
         self.force_exploration = os.environ.get("FORCE_EXPLORATION", "0") == "1"
         self.bars_since_trade = 0
@@ -581,8 +581,11 @@ class TriggerAgent:
         """
         Update trigger agent based on trade outcome.
 
-        This is a hook for online learning (Phase 3.5).
-        For now, just log the prediction error.
+        Phase 3.5: Online learning updates:
+        1. Log prediction error
+        2. Update Platt calibration with actual trade outcome
+        3. Update entry confidence threshold based on prediction accuracy
+        4. Update confidence_floor via LearnedParameters
 
         Args:
             actual_mfe: Actual MFE achieved during trade
@@ -597,6 +600,50 @@ class TriggerAgent:
                 actual_mfe,
                 error_pct,
             )
+
+            # Determine if trade was a success (MFE exceeded prediction)
+            # Use 50% of predicted runway as success threshold
+            trade_success = actual_mfe >= (predicted_runway * 0.5)
+            outcome = 1.0 if trade_success else 0.0
+
+            # Update Platt calibration with actual outcome
+            if self.enable_training and hasattr(self, "platt_a"):
+                # Use the last known confidence as predicted probability
+                # (Platt calibration improves over time)
+                predicted_prob = 0.5  # Default if we don't track per-trade confidence
+                self.update_platt_params(predicted_prob, outcome)
+
+            # Update confidence_floor via LearnedParameters
+            if self.param_manager is not None:
+                try:
+                    utilization = actual_mfe / predicted_runway if predicted_runway > 0 else 0.0
+                    if utilization < 0.3:
+                        # Bad entry - raise confidence floor to be more selective
+                        gradient = 0.05
+                    elif utilization > 1.0:
+                        # Great entry - can slightly lower floor to allow more trades
+                        gradient = -0.02
+                    else:
+                        # Moderate - small adjustment toward center
+                        gradient = (0.6 - utilization) * 0.03
+
+                    new_floor = self.param_manager.update(
+                        self.symbol,
+                        "confidence_floor",
+                        gradient,
+                        timeframe=self.timeframe,
+                        broker=self.broker,
+                    )
+                    self.confidence_floor = float(new_floor)
+                    self.param_manager.save()
+                    LOG.debug(
+                        "[TRIGGER] Updated confidence_floor: %.3f (gradient=%.3f, utilization=%.2f)",
+                        self.confidence_floor,
+                        gradient,
+                        utilization,
+                    )
+                except Exception as exc:
+                    LOG.warning("[TRIGGER] Failed to update confidence_floor: %s", exc)
 
     def add_experience(  # noqa: PLR0913
         self,

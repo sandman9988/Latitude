@@ -35,6 +35,7 @@ LOG = logging.getLogger(__name__)
 # Initialization
 # ---------------------------------------------------------------------------
 
+
 class TestHarvesterInit:
 
     def test_default_init(self):
@@ -71,6 +72,7 @@ class TestHarvesterInit:
 # Timeframe scaling
 # ---------------------------------------------------------------------------
 
+
 class TestTimeframeScale:
 
     def test_m1_timeframe(self):
@@ -94,6 +96,7 @@ class TestTimeframeScale:
 # Fallback strategy
 # ---------------------------------------------------------------------------
 
+
 class TestFallbackStrategy:
 
     def test_stop_loss_triggered(self):
@@ -116,8 +119,8 @@ class TestFallbackStrategy:
     def test_hold_when_no_conditions_met(self):
         ha = HarvesterAgent(window=64, n_features=10)
         entry_price = 100.0
-        mfe = entry_price * 0.001  # Small profit, below target
-        mae = entry_price * 0.001  # Small drawdown, below stop
+        mfe = entry_price * 0.0005  # Very small profit (0.05%), below all exit thresholds
+        mae = entry_price * 0.0003  # Very small drawdown, below stop
         action = ha._fallback_strategy(mfe, mae, ticks_held=5, entry_price=entry_price)
         assert action == 0  # HOLD
 
@@ -148,6 +151,7 @@ class TestFallbackStrategy:
 # ---------------------------------------------------------------------------
 # Build full state
 # ---------------------------------------------------------------------------
+
 
 class TestBuildFullState:
 
@@ -189,6 +193,7 @@ class TestBuildFullState:
 # Quick exit check
 # ---------------------------------------------------------------------------
 
+
 class TestQuickExitCheck:
 
     def test_stop_loss_triggers_exit(self):
@@ -220,6 +225,7 @@ class TestQuickExitCheck:
 # ---------------------------------------------------------------------------
 # Friction cost
 # ---------------------------------------------------------------------------
+
 
 class TestFrictionCost:
 
@@ -254,6 +260,7 @@ class TestFrictionCost:
 # Softmax
 # ---------------------------------------------------------------------------
 
+
 class TestHarvesterSoftmax:
 
     def test_softmax_sums_to_one(self):
@@ -270,6 +277,7 @@ class TestHarvesterSoftmax:
 # ---------------------------------------------------------------------------
 # Decide (integration)
 # ---------------------------------------------------------------------------
+
 
 class TestHarvesterDecide:
 
@@ -288,8 +296,7 @@ class TestHarvesterDecide:
         # DDQN is always initialized in numpy mode
         market_state = rng.standard_normal((64, 7)).astype(np.float32)
         entry_price = 100000.0
-        action, conf = ha.decide(market_state, mfe=100.0, mae=50.0, ticks_held=10,
-                                 entry_price=entry_price, direction=1)
+        action, conf = ha.decide(market_state, mfe=100.0, mae=50.0, ticks_held=10, entry_price=entry_price, direction=1)
         assert action in [0, 1]
         assert 0.0 <= conf <= 1.0
 
@@ -297,6 +304,7 @@ class TestHarvesterDecide:
 # ---------------------------------------------------------------------------
 # Update from trade
 # ---------------------------------------------------------------------------
+
 
 class TestHarvesterUpdateFromTrade:
 
@@ -332,6 +340,7 @@ class TestHarvesterUpdateFromTrade:
 # ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
+
 
 class TestHarvesterTraining:
 

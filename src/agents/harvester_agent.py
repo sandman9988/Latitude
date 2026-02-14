@@ -41,8 +41,15 @@ TICKS_HELD_NORM_DENOM: float = 100.0  # Normalize tick count to [0,1] range
 SOFT_TIME_STOP_BARS: int = 200  # Let trades develop (200 ticks ≈ 10-15 min on M5)
 HARD_TIME_STOP_BARS: int = 400  # Hard cap at 400 ticks
 MIN_SOFT_PROFIT_PCT: float = 0.20  # Need at least 20 pips ($2) to soft-exit
-PROFIT_TARGET_PCT_DEFAULT: float = 2.50  # Target 250 pips (~$25 on XAUUSD) - UPDATED_JAN13_2230
-STOP_LOSS_PCT_DEFAULT: float = 0.80  # Allow 80 pips ($8) drawdown
+PROFIT_TARGET_PCT_DEFAULT: float = 0.60  # Target ~60 pips on XAUUSD M5 (realistic for intraday)
+STOP_LOSS_PCT_DEFAULT: float = 0.40  # Allow 40 pips drawdown (tighter, 1.5:1 R:R)
+
+# Trailing stop & profit protection constants
+BREAKEVEN_TRIGGER_PCT: float = 0.20  # Move stop to breakeven after 20 pips profit
+TRAILING_STOP_ACTIVATION_PCT: float = 0.30  # Start trailing after 30 pips
+TRAILING_STOP_DISTANCE_PCT: float = 0.15  # Trail 15 pips behind peak
+CAPTURE_DECAY_THRESHOLD: float = 0.40  # Exit if capture ratio drops below 40% of MFE
+CAPTURE_DECAY_MIN_MFE_PCT: float = 0.10  # Only apply capture decay if MFE > 10 pips
 
 
 class HarvesterAgent:
@@ -208,6 +215,35 @@ class HarvesterAgent:
             - action: 0=HOLD, 1=CLOSE
             - confidence: [0, 1] probability from model
         """
+        LOG.info(
+            "[HARVESTER_DECIDE] use_torch=%s ddqn=%s enable_training=%s training_steps=%d",
+            self.use_torch,
+            self.ddqn is not None,
+            self.enable_training,
+            self.training_steps,
+        )
+
+        # === CRITICAL: Emergency Stop Loss Check (always executed regardless of model) ===
+        # Defensive: Validate inputs before division
+        if entry_price is not None and entry_price > 0:
+            try:
+                mae_pct = (float(mae) / float(entry_price)) * PCT_SCALE
+
+                # Defensive: Validate calculated percentage is reasonable
+                if mae_pct < 0 or mae_pct > 100:
+                    LOG.warning("[HARVESTER_EMERGENCY_SL] Suspicious MAE percentage %.2f%% - recalculating", mae_pct)
+                    mae_pct = min(max(mae_pct, 0), 100)  # Clamp to [0, 100]
+
+                if mae_pct >= self.stop_loss_pct:
+                    LOG.warning(
+                        "[HARVESTER_EMERGENCY_SL] Stop loss TRIGGERED: MAE=%.2f%% >= SL=%.2f%% - CLOSING!",
+                        mae_pct,
+                        self.stop_loss_pct,
+                    )
+                    return 1, 1.0  # CLOSE with full confidence
+            except (ValueError, TypeError, ZeroDivisionError) as e:
+                LOG.error("[HARVESTER_EMERGENCY_SL] Error calculating MAE percentage: %s", e)
+
         if not self.use_torch:
             # Build full state for DDQN (market + position features)
             full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
@@ -300,14 +336,14 @@ class HarvesterAgent:
         """
         Fallback exit strategy when no model loaded.
 
-        Rules (designed for serious MFE development):
-        1. Take profit at target AFTER subtracting friction costs
-        2. Stop loss at -0.8% MAE (-80 pips) - wider cushion for volatility
-        3. Soft time stop: 200 ticks if NET profit > 0 (after friction)
-        4. Hard time stop: 400 ticks (allow full runway for trend capture)
-
-        Critical: Profit targets are friction-adjusted to ensure NET profitability.
-        Raw target of 2.5% - 0.15% friction = 2.35% net target.
+        Rules (designed for profit protection on M5):
+        1. Stop loss at MAE threshold
+        2. Profit target hit → CLOSE
+        3. Trailing stop: once MFE exceeds activation, trail behind peak
+        4. Breakeven stop: once MFE exceeds breakeven trigger, don't let winner become loser
+        5. Capture decay: if current P&L drops below 40% of MFE, exit to protect profits
+        6. Soft time stop: exit if holding too long with diminished profits
+        7. Hard time stop: exit regardless
         """
         # Guard against division by zero (entry_price not set yet)
         if entry_price <= 0:
@@ -320,15 +356,32 @@ class HarvesterAgent:
         mfe_pct = (mfe / entry_price) * PCT_SCALE
         mae_pct = (mae / entry_price) * PCT_SCALE
 
+        # DEBUG: Log SL check values every time
+        LOG.info(
+            "[HARVESTER_FALLBACK] SL Check: mae=%.4f entry=%.2f mae_pct=%.4f stop_loss_pct=%.4f check=%s",
+            mae,
+            entry_price,
+            mae_pct,
+            self.stop_loss_pct,
+            mae_pct >= self.stop_loss_pct,
+        )
+
+        # Current P&L estimate: MFE - MAE gives a rough signed P&L proxy
+        # More precisely: current_pnl_pct ≈ mfe_pct - mae_pct (unsigned excursions)
+        # But we need actual current P&L which is mfe_pct - current_giveback
+        # Since mae tracks the worst, and mfe the best, current profit is between them.
+        # We approximate: current_capture = max(0, mfe_pct - mae_pct)
+        current_profit_pct = max(0.0, mfe_pct - mae_pct)
+
         # Net profit after friction costs
         net_profit_pct = mfe_pct - friction_pct
 
-        # Stop loss (priority)
+        # === 1. STOP LOSS (highest priority) ===
         if mae_pct >= self.stop_loss_pct:
-            LOG.debug("[HARVESTER] Stop loss hit: %.2f%%", mae_pct)
+            LOG.info("[HARVESTER] Stop loss TRIGGERED: MAE=%.2f%% >= SL=%.2f%%", mae_pct, self.stop_loss_pct)
             return 1  # CLOSE
 
-        # Profit target (NET profit must exceed target after friction)
+        # === 2. PROFIT TARGET ===
         if net_profit_pct >= self.profit_target_pct:
             LOG.debug(
                 "[HARVESTER] Profit target hit: MFE=%.2f%%, Friction=%.2f%%, Net=%.2f%% (target=%.2f%%)",
@@ -339,21 +392,67 @@ class HarvesterAgent:
             )
             return 1  # CLOSE
 
-        # Soft time stop (only exit if NET profit is positive after friction)
-        # TODO: Rename self.soft_time_stop_bars -> self.soft_time_stop_ticks in __init__
-        if ticks_held > self.soft_time_stop_bars:
-            if net_profit_pct > 0:  # Any net profit after friction
-                LOG.debug(
-                    "[HARVESTER] Soft time stop: %d ticks, MFE=%.2f%%, Net=%.2f%% (after %.2f%% friction)",
-                    ticks_held,
+        # === 3. TRAILING STOP (once profit exceeds activation threshold) ===
+        trailing_activation = getattr(self, "trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT)
+        trailing_distance = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
+        if mfe_pct >= trailing_activation:
+            # Trail behind peak: if price has retraced more than trailing distance from MFE, exit
+            giveback_pct = mfe_pct - current_profit_pct
+            if giveback_pct >= trailing_distance:
+                LOG.info(
+                    "[HARVESTER] Trailing stop hit: MFE=%.2f%%, giveback=%.2f%% >= trail=%.2f%%",
                     mfe_pct,
-                    net_profit_pct,
+                    giveback_pct,
+                    trailing_distance,
+                )
+                return 1  # CLOSE
+
+        # === 4. BREAKEVEN STOP (protect once meaningful profit achieved) ===
+        breakeven_trigger = getattr(self, "breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT)
+        if mfe_pct >= breakeven_trigger:
+            # Don't let a winner become a loser - exit if we'd lose money after friction
+            if current_profit_pct <= friction_pct:
+                LOG.info(
+                    "[HARVESTER] Breakeven stop: MFE=%.2f%% but current_profit=%.2f%% <= friction=%.2f%%",
+                    mfe_pct,
+                    current_profit_pct,
                     friction_pct,
                 )
                 return 1  # CLOSE
 
-        # Hard time stop (exit regardless to free up capital)
-        # TODO: Rename self.hard_time_stop_bars -> self.hard_time_stop_ticks in __init__
+        # === 5. CAPTURE DECAY (exit if giving back too much of peak profit) ===
+        capture_decay_min = getattr(self, "capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT)
+        capture_decay_thresh = getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)
+        if mfe_pct >= capture_decay_min:
+            capture_ratio = current_profit_pct / mfe_pct if mfe_pct > 0 else 0.0
+            if capture_ratio < capture_decay_thresh:
+                LOG.info(
+                    "[HARVESTER] Capture decay exit: capture=%.1f%% < threshold=%.1f%%, MFE=%.2f%%",
+                    capture_ratio * 100,
+                    capture_decay_thresh * 100,
+                    mfe_pct,
+                )
+                return 1  # CLOSE
+
+        # === 6. SOFT TIME STOP (exit if holding too long with declining capture) ===
+        if ticks_held > self.soft_time_stop_bars:
+            # Instead of just "any net profit", check capture quality
+            if mfe_pct > 0:
+                soft_capture = current_profit_pct / mfe_pct
+                # Exit if capture has deteriorated below 50% of peak OR any net profit
+                if soft_capture < 0.50 or net_profit_pct > 0:
+                    LOG.debug(
+                        "[HARVESTER] Soft time stop: %d ticks, MFE=%.2f%%, capture=%.1f%%, Net=%.2f%%",
+                        ticks_held,
+                        mfe_pct,
+                        soft_capture * 100,
+                        net_profit_pct,
+                    )
+                    return 1  # CLOSE
+            elif net_profit_pct > 0:
+                return 1  # CLOSE
+
+        # === 7. HARD TIME STOP (exit regardless to free capital) ===
         if ticks_held > self.hard_time_stop_bars:
             LOG.debug("[HARVESTER] Hard time stop: %d ticks", ticks_held)
             return 1  # CLOSE
@@ -364,8 +463,8 @@ class HarvesterAgent:
         self, mfe: float, mae: float, entry_price: float, current_price: float, direction: int
     ) -> bool:
         """
-        Fast tick-based exit check for stop loss and profit targets only.
-        Called on every price tick for responsive exit execution.
+        Fast tick-based exit check for stop loss, profit target, trailing stop,
+        breakeven, and capture decay. Called on every price tick.
 
         Args:
             mfe: Maximum Favorable Excursion (absolute)
@@ -383,6 +482,13 @@ class HarvesterAgent:
         friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE
         mfe_pct = (mfe / entry_price) * PCT_SCALE
         mae_pct = (mae / entry_price) * PCT_SCALE
+
+        # Current unrealized P&L in pct
+        if direction == 1:  # LONG
+            current_pnl_pct = ((current_price - entry_price) / entry_price) * PCT_SCALE
+        else:  # SHORT
+            current_pnl_pct = ((entry_price - current_price) / entry_price) * PCT_SCALE
+
         net_profit_pct = mfe_pct - friction_pct
 
         # Stop loss check (immediate exit)
@@ -393,13 +499,53 @@ class HarvesterAgent:
         # Profit target check (NET profit after friction)
         if net_profit_pct >= self.profit_target_pct:
             LOG.info(
-                "[TICK_HARVESTER] Profit target triggered: MFE=%.2f%%, Net=%.2f%% (friction=%.2f%%) >= %.2f%%",
+                "[TICK_HARVESTER] Profit target triggered: MFE=%.2f%%, Net=%.2f%% >= %.2f%%",
                 mfe_pct,
                 net_profit_pct,
-                friction_pct,
                 self.profit_target_pct,
             )
             return True
+
+        # Trailing stop check
+        trailing_activation = getattr(self, "trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT)
+        trailing_distance = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
+        if mfe_pct >= trailing_activation:
+            giveback_pct = mfe_pct - max(0.0, current_pnl_pct)
+            if giveback_pct >= trailing_distance:
+                LOG.info(
+                    "[TICK_HARVESTER] Trailing stop: MFE=%.2f%%, current=%.2f%%, giveback=%.2f%% >= %.2f%%",
+                    mfe_pct,
+                    current_pnl_pct,
+                    giveback_pct,
+                    trailing_distance,
+                )
+                return True
+
+        # Breakeven stop check
+        breakeven_trigger = getattr(self, "breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT)
+        if mfe_pct >= breakeven_trigger:
+            if current_pnl_pct <= friction_pct:
+                LOG.info(
+                    "[TICK_HARVESTER] Breakeven stop: MFE=%.2f%%, current_pnl=%.2f%% <= friction=%.2f%%",
+                    mfe_pct,
+                    current_pnl_pct,
+                    friction_pct,
+                )
+                return True
+
+        # Capture decay check
+        capture_decay_min = getattr(self, "capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT)
+        capture_decay_thresh = getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)
+        if mfe_pct >= capture_decay_min and mfe_pct > 0:
+            capture_ratio = max(0.0, current_pnl_pct) / mfe_pct
+            if capture_ratio < capture_decay_thresh:
+                LOG.info(
+                    "[TICK_HARVESTER] Capture decay: capture=%.1f%% < %.1f%%, MFE=%.2f%%",
+                    capture_ratio * 100,
+                    capture_decay_thresh * 100,
+                    mfe_pct,
+                )
+                return True
 
         return False
 
@@ -521,10 +667,10 @@ class HarvesterAgent:
         """
         Update harvester exit thresholds based on trade outcome.
 
-        Uses gradient-based learning to adapt profit targets and stop losses:
-        - High capture ratio (>0.7) → can afford tighter profit targets
-        - Low capture ratio (<0.3) → need wider profit targets to let winners run
-        - WTL trades → profit target was too loose, tighten it
+        Uses gradient-based learning to adapt:
+        - Profit targets and stop losses
+        - Trailing stop distance
+        - Breakeven trigger level
 
         Args:
             capture_ratio: exit_pnl / MFE (how much of MFE captured)
@@ -534,22 +680,22 @@ class HarvesterAgent:
             return  # No parameter manager, skip updates
 
         try:
-            # Calculate gradients based on trade outcome
+            # === Profit target adjustment ===
             if was_wtl:
                 # WTL: Should have exited earlier → reduce profit target
                 profit_gradient = -0.15  # Reduce by 15% (3x faster)
                 LOG.info("[HARVESTER] WTL trade - reducing profit target")
             elif capture_ratio > 0.7:
-                # Great capture → can tighten profit target
+                # Great capture → can tighten profit target slightly
                 profit_gradient = -0.06  # 3x faster
                 LOG.debug("[HARVESTER] High capture %.2f%% - tightening target", capture_ratio * 100)
             elif capture_ratio < 0.3:
                 # Poor capture → widen profit target to let winners run
-                profit_gradient = 0.15  # 3x faster
+                profit_gradient = 0.10  # Less aggressive widening to prevent oscillation
                 LOG.info("[HARVESTER] Low capture %.2f%% - widening profit target", capture_ratio * 100)
             else:
                 # Moderate capture → small adjustment
-                profit_gradient = (0.5 - capture_ratio) * 0.3  # 3x faster
+                profit_gradient = (0.5 - capture_ratio) * 0.15
                 LOG.debug("[HARVESTER] Capture %.2f%% - minor adjustment", capture_ratio * 100)
 
             # Update profit target parameter
@@ -563,6 +709,63 @@ class HarvesterAgent:
 
             # Update local cached value
             self.profit_target_pct = new_tp * self._get_timeframe_scale()
+
+            # === Trailing stop distance adjustment ===
+            if was_wtl:
+                # WTL: trailing stop was too loose → tighten it
+                trail_gradient = -0.10
+            elif capture_ratio > 0.8:
+                # Excellent capture → trail might be too tight, loosen slightly
+                trail_gradient = 0.03
+            else:
+                trail_gradient = 0.0  # No change
+
+            if trail_gradient != 0.0:
+                # Update trailing distance (not a learned param yet, adjust locally)
+                current_trail = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
+                new_trail = max(0.05, min(0.40, current_trail + trail_gradient * current_trail))
+                self.trailing_stop_distance_pct = new_trail
+                LOG.debug("[HARVESTER] Updated trailing distance: %.2f%%", new_trail)
+
+            # === Stop loss adjustment (adaptive risk management) ===
+            # Only adjust SL if we have clear signal it was inappropriate
+            sl_gradient = 0.0
+
+            if was_wtl:
+                # Winner-to-loser: check if SL was too wide
+                # If trade had significant MFE before becoming loser, SL should be tighter
+                mfe_to_sl_ratio = getattr(self, "_last_mfe_pct", 0.0) / (self.stop_loss_pct + 1e-9)
+                if mfe_to_sl_ratio > 2.0:
+                    # Had MFE > 2x stop loss before going negative → SL too wide
+                    sl_gradient = -0.08  # Tighten by ~8%
+                    LOG.info(
+                        "[HARVESTER] WTL with large MFE (%.2fx SL) → tightening stop loss",
+                        mfe_to_sl_ratio,
+                    )
+                elif mfe_to_sl_ratio < 0.5:
+                    # Had minimal MFE before hitting SL → SL was appropriate, entry was poor
+                    sl_gradient = 0.0
+                    LOG.debug(
+                        "[HARVESTER] WTL with small MFE (%.2fx SL) → SL unchanged",
+                        mfe_to_sl_ratio,
+                    )
+
+            # Apply SL gradient if non-zero
+            if sl_gradient != 0.0:
+                new_sl = self.param_manager.update(
+                    self.symbol,
+                    "harvester_stop_loss_pct",
+                    sl_gradient,
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
+                # Update local cached value (scaling applied on next load)
+                self.stop_loss_pct = new_sl * self._get_timeframe_scale()
+                LOG.info(
+                    "[HARVESTER] Updated stop loss: %.4f%% (gradient=%.3f)",
+                    self.stop_loss_pct,
+                    sl_gradient,
+                )
 
             # Persist updated parameters to disk
             self.param_manager.save()
