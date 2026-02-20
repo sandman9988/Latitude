@@ -451,7 +451,11 @@ class TradeManagerIntegration:
                 len(pending_closes),
             )
         else:
-            expected_direction = 1 if order.side == Side.BUY else -1
+            # Use the already-synced cur_pos as expected direction.
+            # Deriving from order.side (1 if BUY else -1) is wrong in hedging mode:
+            # a BUY that closes a SHORT leaves cur_pos=0, not 1.
+            # cur_pos was just synced from TradeManager above — that IS the ground truth.
+            expected_direction = self.app.cur_pos
             self._validate_position_after_fill(expected_direction, order)
 
         # Request position update for reconciliation (may timeout on cTrader)
@@ -1290,9 +1294,11 @@ class TradeManagerIntegration:
                         "CRITICAL", f"Position validation failed: Expected {expected_direction}, got {actual_direction}"
                     )
             else:
+                direction_str = "LONG" if actual_direction > 0 else ("SHORT" if actual_direction < 0 else "FLAT")
                 LOG.debug(
-                    "[VALIDATION] \u2713 Position confirmed: %s (%.6f lots)",
-                    "LONG" if actual_direction > 0 else "SHORT",
+                    "[VALIDATION] \u2713 Position confirmed: %s=%d (%.6f lots)",
+                    direction_str,
+                    actual_direction,
                     order.filled_qty,
                 )
 
