@@ -241,6 +241,11 @@ class TabbedHUD:
                 self.market_stats["order_book_asks"] = ob.get("order_book_asks", self.market_stats.get("order_book_asks", []))
                 self.market_stats["vpin"] = ob.get("vpin", self.market_stats.get("vpin", 0.0))
                 self.market_stats["vpin_z"] = ob.get("vpin_zscore", self.market_stats.get("vpin_z", 0.0))
+                # Recompute imbalance live so the overview tab shows a fresh value
+                _db = self.market_stats.get("depth_bid", 0.0)
+                _da = self.market_stats.get("depth_ask", 0.0)
+                _tot = _db + _da
+                self.market_stats["imbalance"] = (_db - _da) / _tot if _tot > 0 else 0.0
             except Exception:
                 pass
 
