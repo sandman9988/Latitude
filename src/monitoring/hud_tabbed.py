@@ -1542,7 +1542,8 @@ class TabbedHUD:
 
         signals = []
         if rs_feas < FEASIBILITY_MEDIUM_THRESHOLD:
-            signals.append("\033[91m✗ Low feasibility — agent should HOLD\033[0m")
+            _feas_no_act = "HOLD" if self.position.get("direction") else "NO_ENTRY"
+            signals.append(f"\033[91m✗ Low feasibility — agent should {_feas_no_act}\033[0m")
         if toxic:
             signals.append("\033[91m✗ Toxic flow (VPIN) — stop widening advised\033[0m")
         if gate:
