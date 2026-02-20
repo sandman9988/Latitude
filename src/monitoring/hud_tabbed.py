@@ -239,6 +239,8 @@ class TabbedHUD:
                 self.market_stats["depth_ask"] = ob.get("depth_ask", self.market_stats.get("depth_ask", 0.0))
                 self.market_stats["order_book_bids"] = ob.get("order_book_bids", self.market_stats.get("order_book_bids", []))
                 self.market_stats["order_book_asks"] = ob.get("order_book_asks", self.market_stats.get("order_book_asks", []))
+                self.market_stats["vpin"] = ob.get("vpin", self.market_stats.get("vpin", 0.0))
+                self.market_stats["vpin_z"] = ob.get("vpin_zscore", self.market_stats.get("vpin_z", 0.0))
             except Exception:
                 pass
 

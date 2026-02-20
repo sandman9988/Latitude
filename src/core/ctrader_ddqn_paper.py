@@ -2271,6 +2271,7 @@ class CTraderFixApp(fix.Application):
                 if self.best_bid and self.best_ask
                 else 0.0
             )
+            vpin_s = getattr(self, "last_vpin_stats", {"vpin": 0.0, "zscore": 0.0})
             ob = {
                 "symbol": self.symbol,
                 "spread": spread,
@@ -2278,6 +2279,8 @@ class CTraderFixApp(fix.Application):
                 "order_book_asks": [[p, s] for p, s in list(self.order_book.asks.items())[:5]],
                 "depth_bid": sum(s for _, s in self.order_book.bids.items()),
                 "depth_ask": sum(s for _, s in self.order_book.asks.items()),
+                "vpin": vpin_s.get("vpin", 0.0),
+                "vpin_zscore": vpin_s.get("zscore", 0.0),
             }
             with open(self.hud_data_dir / "order_book.json", "w", encoding="utf-8") as fh:
                 json.dump(ob, fh)
