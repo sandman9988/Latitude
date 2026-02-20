@@ -955,6 +955,7 @@ class CTraderFixApp(fix.Application):
         self._last_trigger_conf = 0.5
         self._last_harvester_conf = 0.5
         self.entry_vpin_z = 0.0       # VPIN z-score at entry time (for regime-conditioned reward)
+        self.current_trade_id: str | None = None  # Correlation ID linking entry → HOLD(s) → CLOSE in decision log
 
         # Prediction-vs-actual convergence tracking (EMA α=0.1 ≈ 10-trade window)
         # runway_delta: (predicted_runway_pts - actual_mfe_pts) → 0 = perfect prediction
@@ -1526,6 +1527,12 @@ class CTraderFixApp(fix.Application):
                 LOG.warning("[STARTUP] Invalid INITIAL_POSITION=%r - ignoring", initial_pos_str)
         else:
             LOG.info("[STARTUP] ✓ Position recovered from persistence - skipping INITIAL_POSITION")
+            # Assign a recovery trade_id so harvester HOLD/CLOSE entries from
+            # a resumed position are still correlated in the audit log.
+            if self.current_trade_id is None:
+                import uuid
+                self.current_trade_id = f"rcv_{str(uuid.uuid4())[:8]}"
+                LOG.info("[STARTUP] Assigned recovery trade_id=%s for persisted position", self.current_trade_id)
 
         # P0 FIX: Handle reconnect recovery (query pending orders, reconcile positions)
         if self.trade_integration.trade_manager:
@@ -3764,6 +3771,11 @@ class CTraderFixApp(fix.Application):
                     if hasattr(self.policy, "path_geometry") and self.policy.path_geometry
                     else {}
                 )
+                # Stamp a new trade_id for LONG/SHORT entries so all subsequent
+                # harvester HOLD/CLOSE entries can be correlated to this trigger.
+                if action != 0:  # LONG or SHORT
+                    import uuid
+                    self.current_trade_id = str(uuid.uuid4())[:8]
                 self.decision_log.log_trigger_decision(
                     decision=decision_str,
                     confidence=confidence,
@@ -3775,6 +3787,7 @@ class CTraderFixApp(fix.Application):
                     predicted_runway=runway,
                     feasibility=geom_temp.get("feasibility", 1.0),
                     circuit_breakers_ok=not self.circuit_breakers.is_any_tripped(),
+                    trade_id=self.current_trade_id,
                 )
 
                 # Store state for online learning (if entry is taken)
@@ -3895,7 +3908,11 @@ class CTraderFixApp(fix.Application):
                     ticks_held=ticks_held,
                     unrealized_pnl=unrealized_pnl,
                     capture_ratio=capture_ratio,
+                    trade_id=self.current_trade_id,
+                    in_position=(self.cur_pos != 0),
                 )
+                if exit_action == 1:
+                    self.current_trade_id = None  # Trade closed — reset correlation ID
 
                 # Update trailing stop (HarvesterAgent controls, TradeManager communicates)
                 if hasattr(self, "trade_integration") and self.trade_integration.trailing_stop_active:

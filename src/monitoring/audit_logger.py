@@ -196,7 +196,8 @@ class DecisionLogger:
         self.session_id = f"session_{int(time.time())}"
 
     def log_decision(
-        self, agent: str, decision: str, confidence: float, context: dict[str, Any], reasoning: dict[str, Any] = None
+        self, agent: str, decision: str, confidence: float, context: dict[str, Any], reasoning: dict[str, Any] = None,
+        trade_id: str | None = None,
     ):
         """
         Log an agent decision.
@@ -207,6 +208,7 @@ class DecisionLogger:
             confidence: Decision confidence [0, 1]
             context: Market context (price, volatility, imbalance, etc.)
             reasoning: Features/factors that influenced decision
+            trade_id: Correlation ID linking entry → hold(s) → close for one trade
         """
         entry = {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -217,6 +219,8 @@ class DecisionLogger:
             "context": context,
             "reasoning": reasoning or {},
         }
+        if trade_id is not None:
+            entry["trade_id"] = trade_id
 
         try:
             with self.lock, open(self.log_file, "a", encoding="utf-8") as f:
@@ -236,6 +240,7 @@ class DecisionLogger:
         predicted_runway: float = 0.0,
         feasibility: float = 1.0,
         circuit_breakers_ok: bool = True,
+        trade_id: str | None = None,
     ):
         """Log TriggerAgent decision with full context."""
         self.log_decision(
@@ -254,6 +259,7 @@ class DecisionLogger:
                 "feasibility": feasibility,
                 "circuit_breakers_ok": circuit_breakers_ok,
             },
+            trade_id=trade_id,
         )
 
     def log_harvester_decision(
@@ -267,8 +273,23 @@ class DecisionLogger:
         ticks_held: int,
         unrealized_pnl: float,
         capture_ratio: float = 0.0,
+        trade_id: str | None = None,
+        in_position: bool = True,
     ):
-        """Log HarvesterAgent decision with position context."""
+        """Log HarvesterAgent decision with position context.
+
+        Args:
+            in_position: Must be True — HOLD/CLOSE are only valid when a position
+                is open.  If False an error is logged and the entry is suppressed
+                so the audit trail is never polluted with ghost HOLD entries.
+        """
+        if not in_position:
+            LOG.error(
+                "[DECISION] BUG: log_harvester_decision called while FLAT "
+                "(decision=%s trade_id=%s) — suppressed",
+                decision, trade_id,
+            )
+            return
         self.log_decision(
             agent="HarvesterAgent",
             decision=decision,
@@ -284,6 +305,7 @@ class DecisionLogger:
                 "ticks_held": ticks_held,
                 "capture_ratio": capture_ratio,
             },
+            trade_id=trade_id,
         )
 
 
