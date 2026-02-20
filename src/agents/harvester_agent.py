@@ -33,8 +33,11 @@ from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 
 LOG = logging.getLogger(__name__)
 
-BUFFER_CAPACITY: int = 50_000
-MIN_EXPERIENCES_DEFAULT: int = 100  # Lowered for faster training
+# Capacity sized to ~20 days of dense bar-level experiences (~500 bars/day while in a
+# position at 100 trades × ~5 bars each).  Staleness halflife = 1 day, so entries older
+# than ~10,000 bars are near-zero weight and only waste memory.
+BUFFER_CAPACITY: int = 10_000
+MIN_EXPERIENCES_DEFAULT: int = 32  # 1 batch – start training as soon as we have enough
 BATCH_SIZE_DEFAULT: int = 64
 CONFIDENCE_FALLBACK: float = 0.7
 PCT_SCALE: float = 100.0

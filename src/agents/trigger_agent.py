@@ -118,9 +118,11 @@ class TriggerAgent:
         self.max_bars_inactive = int(os.environ.get("MAX_BARS_INACTIVE", "10" if self.paper_mode else "1000"))
 
         # Phase 3.5: Experience replay buffer
+        # Capacity sized to ~20 days at ~100 trades/day (staleness halflife = 1 day,
+        # so >2,000 entries are already near-zero weight and waste memory/diversity).
         self.enable_training = enable_training
-        self.buffer = ExperienceBuffer(capacity=50_000) if enable_training else None
-        self.min_experiences = 100  # Minimum before training starts (lowered for faster training)
+        self.buffer = ExperienceBuffer(capacity=2_000) if enable_training else None
+        self.min_experiences = 32  # 1 batch – start training as soon as we have enough
         self.batch_size = 64
         self.training_steps = 0
         self.last_state = None  # Track state for experience creation
