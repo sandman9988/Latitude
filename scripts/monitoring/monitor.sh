@@ -14,9 +14,9 @@ NC='\033[0m'
 
 # Check if bot is running
 check_status() {
-    if pgrep -f "ctrader_ddqn_paper.py" > /dev/null; then
+    if pgrep -f "ctrader_ddqn_paper" > /dev/null; then
         echo -e "${GREEN}●${NC} Bot is RUNNING"
-        PID=$(pgrep -f "ctrader_ddqn_paper.py" | head -1)
+        PID=$(pgrep -f "ctrader_ddqn_paper" | head -1)
         echo -e "  PID: $PID"
     else
         echo -e "${RED}●${NC} Bot is STOPPED"
@@ -39,12 +39,13 @@ show_market_data() {
         return
     fi
     
-    # Get latest market data snapshot - just show the last few updates
+    # Get latest market data snapshot
+    SYMBOL_LABEL="${SYMBOL:-XAUUSD}"
     UPDATES=$(tail -10 "$LOG" | grep "QUOTE.*35=W" | wc -l)
     LAST_TIME=$(tail -10 "$LOG" | grep "QUOTE" | tail -1 | awk '{print $1, $2}')
     
     if [ "$UPDATES" -gt 0 ]; then
-        echo -e "${CYAN}BTC/USD Market Data:${NC}"
+        echo -e "${CYAN}${SYMBOL_LABEL} Market Data:${NC}"
         echo -e "  Status:     ${GREEN}● LIVE${NC}"
         echo -e "  Updates:    $UPDATES in last 10 lines"
         echo -e "  Last seen:  $LAST_TIME UTC"
@@ -94,10 +95,11 @@ show_recent_bars() {
     
     # Look for bar close messages
     BARS=$(tail -100 "$LOG" | grep "\[BAR\]" | tail -3)
+    TF="M${TIMEFRAME_MINUTES:-1}"
     
     if [ -n "$BARS" ]; then
         echo ""
-        echo -e "${CYAN}Recent M15 Bars:${NC}"
+        echo -e "${CYAN}Recent ${TF} Bars:${NC}"
         echo "$BARS" | while read -r line; do
             TIME=$(echo "$line" | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}')
             CLOSE=$(echo "$line" | grep -oP 'C=\K[0-9.]+')
@@ -136,7 +138,7 @@ show_recent_trades() {
             SIDE_COLOR=$GREEN
             [ "$SIDE" = "SELL" ] && SIDE_COLOR=$RED
             
-            echo -e "  $TIME | ${SIDE_COLOR}$SIDE${NC} $QTY BTC"
+            echo -e "  $TIME | ${SIDE_COLOR}$SIDE${NC} $QTY ${SYMBOL:-XAUUSD}"
         done
     fi
 }
@@ -172,8 +174,8 @@ echo ""
 echo "Commands:"
 echo "  ./monitor.sh          - Refresh this status"
 echo "  ./monitor.sh watch    - Live monitoring mode"
-echo "  tail -f logs/python/*.log  - View full logs"
-echo "  pkill -f ctrader_ddqn_paper.py  - Stop bot"
+echo "  tail -f logs/*.log    - View full logs"
+echo "  pkill -f ctrader_ddqn_paper  - Stop bot"
 echo ""
 
 # Watch mode

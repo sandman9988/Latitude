@@ -3,7 +3,8 @@
 # Continuously monitors bot health and restarts if necessary
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR" || exit 1
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
 
 # Configuration
 CHECK_INTERVAL=30  # seconds between health checks
@@ -96,18 +97,18 @@ restart_bot() {
     
     # Kill existing process
     log_info "Stopping existing bot process..."
-    pkill -f "ctrader_ddqn_paper.py" || true
+    pkill -f "ctrader_ddqn_paper" || true
     sleep 2
     
     # Force kill if still running
-    if pgrep -f "ctrader_ddqn_paper.py" > /dev/null; then
+    if pgrep -f "ctrader_ddqn_paper" > /dev/null; then
         log_warn "Process still running, force killing..."
-        pkill -9 -f "ctrader_ddqn_paper.py" || true
+        pkill -9 -f "ctrader_ddqn_paper" || true
         sleep 2
     fi
     
     # Clean up stale PID file
-    rm -f "${SCRIPT_DIR}/.bot.pid"
+    rm -f "${PROJECT_ROOT}/.bot.pid"
     
     # Wait before restart
     log_info "Waiting ${RESTART_DELAY}s before restart..."
@@ -115,7 +116,7 @@ restart_bot() {
     
     # Start bot
     log_info "Starting bot with run.sh..."
-    if bash "${SCRIPT_DIR}/run.sh" >> "$WATCHDOG_LOG" 2>&1; then
+    if bash "${PROJECT_ROOT}/run.sh" --no-hud >> "$WATCHDOG_LOG" 2>&1; then
         local new_count=$(increment_restart_count)
         log_success "Bot restarted successfully (restart #${new_count} this hour)"
         return 0

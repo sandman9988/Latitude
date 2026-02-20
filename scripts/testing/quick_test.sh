@@ -5,7 +5,10 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")"
+# Navigate to project root (two levels up from scripts/testing/)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
 
 # Colors
 GREEN='\033[0;32m'
@@ -33,7 +36,7 @@ echo "Press Ctrl+C to stop..."
 sleep 3
 
 # Stop any running instances
-pkill -f ctrader_ddqn_paper.py 2>/dev/null || true
+pkill -f ctrader_ddqn_paper 2>/dev/null || true
 sleep 2
 
 # Load credentials
@@ -79,9 +82,9 @@ echo -e "${GREEN}Starting bot...${NC}"
 echo -e "Log: ${LOGFILE}"
 echo ""
 
-# Run bot
-python3 ctrader_ddqn_paper.py 2>&1 | tee "$LOGFILE"
+# Run bot via run.sh (handles venv, env check, FIX sessions)
+./run.sh --no-hud 2>&1 | tee "$LOGFILE"
 
 echo ""
 echo -e "${BLUE}Test stopped${NC}"
-echo -e "Analyze results with: ./analyze_trades.sh"
+echo -e "Analyze results with: ./scripts/analyze_trades.sh"

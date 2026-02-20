@@ -39,13 +39,14 @@ echo -e "${RED}⚠ Do NOT run this for more than 4 hours${NC}"
 echo -e "${RED}⚠ After validation passes, move to Phase 1 (live micro)${NC}"
 echo ""
 
-# Navigate to bot directory
+# Navigate to project root (two levels up from scripts/testing/)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR" || exit 1
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$PROJECT_ROOT" || exit 1
 
 # Stop any running instances
 echo -e "\n${BLUE}Stopping any running bot instances...${NC}"
-pkill -f ctrader_ddqn_paper.py 2>/dev/null || true
+pkill -f ctrader_ddqn_paper 2>/dev/null || true
 sleep 2
 
 # Load credentials from .env
@@ -116,7 +117,7 @@ echo -e "${GREEN}═════════════════════
 
 echo -e "\n${YELLOW}Starting validation in 3 seconds...${NC}"
 echo -e "${YELLOW}Monitor with: tail -f ${LOGFILE}${NC}"
-echo -e "${YELLOW}Stop with: Ctrl+C or pkill -f ctrader_ddqn_paper.py${NC}"
+echo -e "${YELLOW}Stop with: Ctrl+C or pkill -f ctrader_ddqn_paper${NC}"
 sleep 3
 
 # Set validation timeout (4 hours max)
@@ -124,13 +125,13 @@ TIMEOUT_SECONDS=$((4 * 60 * 60))
 
 echo -e "\n${GREEN}✓ Launching bot (${TIMEOUT_SECONDS}s timeout)...${NC}\n"
 
-# Launch bot with timeout
-timeout ${TIMEOUT_SECONDS} python3 ctrader_ddqn_paper.py 2>&1 | tee "$LOGFILE" || {
+# Launch bot with timeout via run.sh (handles venv, env vars, FIX sessions)
+timeout ${TIMEOUT_SECONDS} ./run.sh --no-hud 2>&1 | tee "$LOGFILE" || {
     EXIT_CODE=$?
     if [ $EXIT_CODE -eq 124 ]; then
         echo -e "\n${GREEN}✓ Validation timeout reached (4 hours)${NC}"
         echo -e "${GREEN}✓ If no errors above, system is stable${NC}"
-        echo -e "\n${BOLD}NEXT STEP: Launch Phase 1 with ./launch_micro_learning.sh${NC}"
+        echo -e "\n${BOLD}NEXT STEP: Start training with ./start_training.sh${NC}"
     else
         echo -e "\n${RED}✗ Bot exited with code ${EXIT_CODE}${NC}"
         echo -e "${YELLOW}Check log for errors: ${LOGFILE}${NC}"
@@ -156,8 +157,8 @@ echo ""
 if [ $ERRORS -eq 0 ] && [ $CRASHES -eq 0 ]; then
     echo -e "${GREEN}✅ VALIDATION PASSED${NC}"
     echo -e "${GREEN}✅ No critical errors detected${NC}"
-    echo -e "\n${BOLD}Ready for Phase 1: Live Micro-Position Learning${NC}"
-    echo -e "${BOLD}Launch with: ./launch_micro_learning.sh${NC}"
+    echo -e "\n${BOLD}Ready for training: ./start_training.sh${NC}"
+    echo -e "${BOLD}Ready for production: ./start_production.sh${NC}"
 else
     echo -e "${RED}❌ VALIDATION FAILED${NC}"
     echo -e "${RED}Found ${ERRORS} errors and ${CRASHES} crashes${NC}"
