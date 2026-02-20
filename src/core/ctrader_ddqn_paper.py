@@ -2310,6 +2310,13 @@ class CTraderFixApp(fix.Application):
                         (live_price - ep) * live_qty if self.cur_pos > 0
                         else (ep - live_price) * live_qty
                     )
+                    with self._tracker_lock:
+                        _prec = (
+                            next(iter(self.path_recorders.values()), self.path_recorder)
+                            if self.path_recorders
+                            else self.path_recorder
+                        )
+                    live_bars_held = len(_prec.path) if hasattr(_prec, "path") else 0
                     pos_data = {
                         "direction": "LONG" if self.cur_pos > 0 else "SHORT",
                         "entry_price": ep,
@@ -2317,7 +2324,7 @@ class CTraderFixApp(fix.Application):
                         "mfe": float(live_tracker.mfe) * live_qty,
                         "mae": float(live_tracker.mae) * live_qty,
                         "unrealized_pnl": live_pnl,
-                        "bars_held": len(getattr(live_tracker, "bars", [])),
+                        "bars_held": live_bars_held,
                     }
                     with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as fh:
                         json.dump(pos_data, fh)
@@ -4298,7 +4305,7 @@ class CTraderFixApp(fix.Application):
                         if self.path_recorders
                         else self.path_recorder
                     )
-                bars_held = len(position_path_recorder.bars) if hasattr(position_path_recorder, "bars") else 0
+                bars_held = len(position_path_recorder.path) if hasattr(position_path_recorder, "path") else 0
 
             position_data = {
                 "direction": direction,
