@@ -1670,10 +1670,17 @@ class CTraderFixApp(fix.Application):
         if not self.quote_sid:
             return
 
+        # Request as many levels as our OrderBook is configured for.
+        # MarketDepth tag 264: 0=full book, 1=top-of-book, N=N levels.
+        # Pepperstone cTrader offers 5 levels standard; cap there unless the
+        # operator has set CTRADER_ORDERBOOK_DEPTH higher (for future-proofing).
+        _MAX_BROKER_DEPTH = int(os.environ.get("CTRADER_MD_DEPTH_MAX", "5"))
+        requested_depth = min(getattr(self.order_book, "depth", 5), _MAX_BROKER_DEPTH)
+
         req = fix44.MarketDataRequest()
-        req.setField(fix.MDReqID(f"{self.symbol}_SPOT"))
+        req.setField(fix.MDReqID(f"{self.symbol}_L2_{requested_depth}"))
         req.setField(fix.SubscriptionRequestType("1"))
-        req.setField(fix.MarketDepth(1))
+        req.setField(fix.MarketDepth(requested_depth))
         req.setField(fix.MDUpdateType(1))
         req.setField(fix.NoMDEntryTypes(2))
 
@@ -1691,7 +1698,11 @@ class CTraderFixApp(fix.Application):
         req.addGroup(sym)
 
         fix.Session.sendToTarget(req, self.quote_sid)
-        LOG.info("[QUOTE] Subscribed spot for symbolId=%s", self.symbol_id)
+        LOG.info(
+            "[QUOTE] Subscribed L2 market data for symbolId=%s depth=%d levels",
+            self.symbol_id,
+            requested_depth,
+        )
 
     # ----------------------------
     # TRADE: SecurityList (Symbol ID Lookup)
@@ -2098,11 +2109,18 @@ class CTraderFixApp(fix.Application):
                     self.order_book.update_level("BID", price_f, size)
                 elif entry_type == "1":
                     self.order_book.update_level("ASK", price_f, size)
-            elif action == "2":  # delete
+            elif action == "2":  # delete — must use the specific price level
+                if not g.isSetField(px):
+                    continue
+                g.getField(px)
+                try:
+                    price_f = float(px.getValue())
+                except (ValueError, TypeError):
+                    continue
                 if entry_type == "0":
-                    self.order_book.update_level("BID", 0.0, 0.0)
+                    self.order_book.update_level("BID", price_f, 0.0)
                 elif entry_type == "1":
-                    self.order_book.update_level("ASK", 0.0, 0.0)
+                    self.order_book.update_level("ASK", price_f, 0.0)
 
         best_bid, best_ask = self.order_book.best_bid_ask()
         if best_bid is not None and best_ask is not None:
@@ -4280,6 +4298,13 @@ class CTraderFixApp(fix.Application):
                 "depth_levels": depth_levels,
                 "depth_buffer": depth_buffer,
                 "depth_gate_active": depth_gate_active,
+                # Per-level L2 book snapshots (list of [price, size] pairs)
+                "order_book_bids": [
+                    [p, s] for p, s in list(self.order_book.bids.items())[:5]
+                ],
+                "order_book_asks": [
+                    [p, s] for p, s in list(self.order_book.asks.items())[:5]
+                ],
                 "risk_budget_usd": self.risk_budget_usd,
                 "risk_cap_qty": self.last_risk_cap_qty,
                 "risk_requested_qty": self.last_base_qty,

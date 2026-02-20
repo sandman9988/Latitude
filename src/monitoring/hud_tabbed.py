@@ -218,6 +218,8 @@ class TabbedHUD:
                         "imbalance": data.get("imbalance", 0.0),
                         "depth_bid": data.get("depth_bid", 0.0),
                         "depth_ask": data.get("depth_ask", 0.0),
+                        "order_book_bids": data.get("order_book_bids", []),
+                        "order_book_asks": data.get("order_book_asks", []),
                     }
             except Exception as e:
                 if not hasattr(self, "_risk_error_shown"):
@@ -1188,22 +1190,38 @@ class TabbedHUD:
         spread = ms.get("spread", 0)
         depth_bid = ms.get("depth_bid", 0)
         depth_ask = ms.get("depth_ask", 0)
+        bids = ms.get("order_book_bids", [])  # [[price, size], ...]
+        asks = ms.get("order_book_asks", [])  # [[price, size], ...]
+        dec = self._price_decimals(bids[0][0] if bids else asks[0][0] if asks else 0.0)
 
-        print(f"    Bid-Ask Spread:    {spread:>12.5f}")
-        print(f"    Bid Depth:         {depth_bid:>12.2f}")
-        print(f"    Ask Depth:         {depth_ask:>12.2f}")
+        print(f"    Bid-Ask Spread:    {spread:>12.{dec}f}")
+        print()
 
-        # Depth imbalance visualization
-        total_depth = depth_bid + depth_ask
-        if total_depth > 0:
-            bid_pct = depth_bid / total_depth
-            depth_ask / total_depth
-            bar_len = 40
-            bid_bar = int(bar_len * bid_pct)
-            ask_bar = bar_len - bid_bar
-            print(f"\n    Depth: \033[92m{'█' * bid_bar}\033[91m{'█' * ask_bar}\033[0m")
-            print(f"           {'BID':<20}{'ASK':>20}")
+        # L2 order book ladder
+        # Pad to the same number of rows and display asks top-down, bids bottom-up
+        n_levels = max(len(bids), len(asks), 1)
+        padded_asks = (asks + [[0.0, 0.0]] * n_levels)[:n_levels]  # cheapest first
+        padded_bids = (bids + [[0.0, 0.0]] * n_levels)[:n_levels]  # best first
 
+        # Size bar scale: max size across all visible levels
+        all_sizes = [s for _, s in bids + asks if s > 0]
+        max_sz = max(all_sizes) if all_sizes else 1.0
+        BAR = 12
+
+        print(f"    {'SIZE':>8}  {'BID':>{dec+6}}  {'ASK':<{dec+6}}  {'SIZE':<8}")
+        print("    " + "─" * (BAR * 2 + dec * 2 + 18))
+        for ask_row, bid_row in zip(reversed(padded_asks), padded_bids):
+            a_px, a_sz = ask_row
+            b_px, b_sz = bid_row
+            b_bar = int(BAR * b_sz / max_sz) if b_sz > 0 else 0
+            a_bar = int(BAR * a_sz / max_sz) if a_sz > 0 else 0
+            b_str = (f"{b_sz:>6.2f} " + "\033[92m" + "▓" * b_bar + "░" * (BAR - b_bar) + "\033[0m") if b_px else " " * (BAR + 8)
+            a_str = ("\033[91m" + "▓" * a_bar + "░" * (BAR - a_bar) + "\033[0m" + f" {a_sz:<6.2f}") if a_px else " " * (BAR + 8)
+            b_px_str = f"{b_px:.{dec}f}" if b_px else "   —  "
+            a_px_str = f"{a_px:.{dec}f}" if a_px else "   —  "
+            print(f"    {b_str}  {b_px_str}  {a_px_str}  {a_str}")
+        print("    " + "─" * (BAR * 2 + dec * 2 + 18))
+        print(f"    Total: \033[92m{depth_bid:>8.2f}\033[0m              \033[91m{depth_ask:>8.2f}\033[0m")
         print()
 
         # Order flow toxicity
