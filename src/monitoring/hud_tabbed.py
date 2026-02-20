@@ -76,6 +76,7 @@ class TabbedHUD:
         self.market_stats = {}
         self.bot_config = {}
         self.production_metrics = {}
+        self.self_test_results: list = []
         self._metrics_from_trade_log = False
         self.last_update = None
         self.notification = ""
@@ -246,6 +247,15 @@ class TabbedHUD:
                 _da = self.market_stats.get("depth_ask", 0.0)
                 _tot = _db + _da
                 self.market_stats["imbalance"] = (_db - _da) / _tot if _tot > 0 else 0.0
+            except Exception:
+                pass
+
+        # Self-test results (written at startup by run_self_test())
+        st_file = self.data_dir / "self_test.json"
+        if st_file.exists():
+            try:
+                with open(st_file) as f:
+                    self.self_test_results = json.load(f).get("results", [])
             except Exception:
                 pass
 
@@ -901,46 +911,120 @@ class TabbedHUD:
 
         print(f"  Spread: {spread:.5f}  |  VPIN: {vpin:.3f} {vpin_status}  |  Imbalance: {imb:+.3f}")
 
-        # System health summary
-        print("\n\033[1m🏥 SYSTEM HEALTH\033[0m")
-        health_items = []
+        # ── System health (expanded) ──────────────────────────────────────────
+        _G = "\033[92m"; _Y = "\033[93m"; _R = "\033[91m"; _B = "\033[94m"; _DIM = "\033[90m"; _RST = "\033[0m"
 
-        # Check data freshness
+        def _ok(s: str) -> str: return f"{_G}✓ {s}{_RST}"
+        def _warn(s: str) -> str: return f"{_Y}⚡ {s}{_RST}"
+        def _bad(s: str) -> str: return f"{_R}✗ {s}{_RST}"
+        def _lbl(s: str) -> str: return f"\033[1m{s}\033[0m"
+
+        print(f"\n{_lbl('🏥 SYSTEM HEALTH')}")
+
+        # ── Row 1: Connectivity ───────────────────────────────────────────────
+        _age_str = "n/a"
         if self.last_update:
-            age = (datetime.now(UTC) - self.last_update).total_seconds()
-            if age < 5:
-                health_items.append("\033[92m✓ Data Fresh\033[0m")
-            elif age < 10:
-                health_items.append("\033[93m⚡ Data OK\033[0m")
-            else:
-                health_items.append("\033[91m✗ Data Stale\033[0m")
-
-        # Check circuit breaker
-        if self.risk_stats.get("circuit_breaker", "INACTIVE") == "ACTIVE":
-            health_items.append("\033[91m⚠️ CB Active\033[0m")
+            _age = (datetime.now(UTC) - self.last_update).total_seconds()
+            _age_str = f"{_age:.1f}s"
+            _data_item = _ok(f"Data {_age_str}") if _age < 5 else (_warn(f"Data {_age_str}") if _age < 15 else _bad(f"Data {_age_str}"))
         else:
-            health_items.append("\033[92m✓ CB OK\033[0m")
+            _data_item = _bad("No data")
 
-        # Check training buffers
-        trig_buf = self.training_stats.get("trigger_buffer_size", 0)
-        harv_buf = self.training_stats.get("harvester_buffer_size", 0)
-        if trig_buf > 500 and harv_buf > 500:
-            health_items.append("\033[92m✓ Buffers OK\033[0m")
-        elif trig_buf > 100 and harv_buf > 100:
-            health_items.append("\033[93m⚡ Buffers Low\033[0m")
-        else:
-            health_items.append("\033[91m✗ Buffers Critical\033[0m")
+        _cb = self.risk_stats.get("circuit_breaker", "INACTIVE")
+        _cb_item = _bad("CB ACTIVE") if _cb == "ACTIVE" else _ok("CB OK")
 
-        # Check volatility
-        vol = self.risk_stats.get("realized_vol", 0) * 100
-        if vol < 1.0:
-            health_items.append("\033[92m✓ Vol Normal\033[0m")
-        elif vol < 2.0:
-            health_items.append("\033[93m⚡ Vol Elevated\033[0m")
-        else:
-            health_items.append("\033[91m⚠️ Vol High\033[0m")
+        _depth_gate = self.risk_stats.get("depth_gate_active", False)
+        _gate_item = _warn("Depth gate") if _depth_gate else _ok("Gate open")
 
-        print(f"  {' | '.join(health_items)}")
+        _feas = float(self.risk_stats.get("feasibility", 0.5))
+        _feas_col = _G if _feas > FEASIBILITY_HIGH_THRESHOLD else (_Y if _feas > FEASIBILITY_MEDIUM_THRESHOLD else _R)
+        _feas_item = f"Feas: {_feas_col}{_feas:.2f}{_RST}"
+
+        print(f"  {_data_item}  │  {_cb_item}  │  {_gate_item}  │  {_feas_item}")
+
+        # ── Row 2: Risk ───────────────────────────────────────────────────────
+        _vol = float(self.risk_stats.get("realized_vol", 0)) * 100
+        _vol_col = _G if _vol < 1.0 else (_Y if _vol < 2.0 else _R)
+        _vol_item = f"Vol: {_vol_col}{_vol:.2f}%{_RST}"
+
+        _var = float(self.risk_stats.get("var", 0)) * 100
+        _var_col = _G if _var < 1.5 else (_Y if _var < 3.0 else _R)
+        _var_item = f"VaR: {_var_col}{_var:.2f}%{_RST}"
+
+        _budget = float(self.risk_stats.get("risk_budget_usd", 0))
+        _budget_col = _G if _budget > 10 else (_Y if _budget > 0 else _R)
+        _budget_item = f"Budget: {_budget_col}${_budget:.2f}{_RST}"
+
+        _eff = float(self.risk_stats.get("efficiency", 0))
+        _eff_col = _G if _eff > 0.6 else (_Y if _eff > 0.3 else _R)
+        _eff_item = f"Eff: {_eff_col}{_eff:.2f}{_RST}"
+
+        print(f"  {_vol_item}  │  {_var_item}  │  {_budget_item}  │  {_eff_item}")
+
+        # ── Row 3: Buffers ────────────────────────────────────────────────────
+        _TRIG_CAP = 2_000; _HARV_CAP = 10_000
+        _trig_buf = self.training_stats.get("trigger_buffer_size", 0)
+        _harv_buf = self.training_stats.get("harvester_buffer_size", 0)
+        _trig_pct = _trig_buf / _TRIG_CAP * 100
+        _harv_pct = _harv_buf / _HARV_CAP * 100
+        _trig_rdy = self.training_stats.get("trigger_ready", False)
+        _harv_rdy = self.training_stats.get("harvester_ready", False)
+        _trig_col = _G if _trig_pct > 50 else (_Y if _trig_pct > 10 else _R)
+        _harv_col = _G if _harv_pct > 50 else (_Y if _harv_pct > 10 else _R)
+        _rdy_icon = lambda r: f"{_G}✓{_RST}" if r else f"{_Y}…{_RST}"
+        print(
+            f"  Trig buf: {_trig_col}{_trig_buf:,}/{_TRIG_CAP:,} ({_trig_pct:.0f}%){_RST} {_rdy_icon(_trig_rdy)}  │  "
+            f"Harv buf: {_harv_col}{_harv_buf:,}/{_HARV_CAP:,} ({_harv_pct:.0f}%){_RST} {_rdy_icon(_harv_rdy)}"
+        )
+
+        # ── Row 4: Model ──────────────────────────────────────────────────────
+        _eps = float(self.training_stats.get("trigger_epsilon", 1.0))
+        _beta = float(self.training_stats.get("harvester_beta", 0.4))
+        _trig_steps = self.training_stats.get("trigger_training_steps", 0)
+        _harv_steps = self.training_stats.get("harvester_training_steps", 0)
+        _trig_loss = self.training_stats.get("trigger_loss", None)
+        _harv_loss = self.training_stats.get("harvester_loss", None)
+        _eps_col = _G if _eps < 0.05 else (_Y if _eps < 0.2 else _R)
+        _eps_lbl = "HOT" if _eps < 0.05 else ("WARM" if _eps < 0.2 else "COLD")
+        _loss_str = lambda v: (f"{v:.4f}" if v is not None else "n/a")
+        print(
+            f"  ε={_eps_col}{_eps:.4f} {_eps_lbl}{_RST}  steps={_trig_steps:,}  loss={_loss_str(_trig_loss)}  │  "
+            f"β={_beta:.4f}  steps={_harv_steps:,}  loss={_loss_str(_harv_loss)}"
+        )
+
+        # ── Row 5: Market microstructure ──────────────────────────────────────
+        _spread = float(self.market_stats.get("spread", 0))
+        _vpin = float(self.market_stats.get("vpin", 0))
+        _vpin_z = float(self.market_stats.get("vpin_z", 0))
+        _runway = float(self.risk_stats.get("runway", 0))
+        _spread_col = _G if _spread < 0.0002 else (_Y if _spread < 0.0005 else _R)
+        _vpin_col = _R if abs(_vpin_z) > 2.0 else (_Y if abs(_vpin_z) > 1.5 else _G)
+        _runway_col = _G if _runway > 3 else (_Y if _runway > 1 else _R)
+        print(
+            f"  Spread: {_spread_col}{_spread:.5f}{_RST}  │  "
+            f"VPIN: {_vpin_col}{_vpin:.3f} (z={_vpin_z:+.1f}){_RST}  │  "
+            f"Runway: {_runway_col}{_runway:.1f} bars{_RST}"
+        )
+
+        # Self-test results
+        if self.self_test_results:
+            _sev_col  = {"PASS": "\033[92m", "INFO": "\033[94m", "WARNING": "\033[93m", "CRITICAL": "\033[91m"}
+            _sev_icon = {"PASS": "✓", "INFO": "ℹ", "WARNING": "⚠", "CRITICAL": "✗"}
+            n_crit = sum(1 for r in self.self_test_results if r["sev"] == "CRITICAL")
+            n_warn = sum(1 for r in self.self_test_results if r["sev"] == "WARNING")
+            status = "\033[91m🔴 FAILED\033[0m" if n_crit else ("\033[93m🟡 DEGRADED\033[0m" if n_warn else "\033[92m🟢 CLEAR\033[0m")
+            n_pass = sum(1 for r in self.self_test_results if r["sev"] in ("PASS", "INFO"))
+            print(f"\n\033[1m🔍 STARTUP SELF-TEST\033[0m  {status}  "
+                  f"\033[90m({n_pass} OK, {n_warn} warn, {n_crit} crit)\033[0m")
+            only_fails = n_crit > 0 or n_warn > 0
+            for r in self.self_test_results:
+                sev = r["sev"]
+                if only_fails and sev in ("PASS", "INFO"):
+                    continue  # show only problems when there are any
+                col  = _sev_col.get(sev, "")
+                icon = _sev_icon.get(sev, "?")
+                detail = f"  \033[90m{r['detail']}\033[0m" if r.get("detail") else ""
+                print(f"  {col}{icon} {r['name']}\033[0m{detail}")
 
     def _render_performance(self):
         """Render detailed performance metrics"""

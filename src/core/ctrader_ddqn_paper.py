@@ -136,6 +136,7 @@ from src.risk.emergency_close import create_emergency_closer
 from src.utils.safe_math import SafeMath
 from src.monitoring.trade_exporter import TradeExporter
 from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator, position_size_from_var
+from src.core.self_test import run_self_test
 
 # Feature calculation constants
 MIN_BARS_FOR_FEATURES: int = 70
@@ -4829,6 +4830,12 @@ def main():
     LOG.info("cfg_quote=%s", cfg_quote)
     LOG.info("cfg_trade=%s", cfg_trade)
     LOG.info("CTRADER_USERNAME=%s", user)
+
+    # ── Startup self-test ─────────────────────────────────────────────────────
+    # Runs before any FIX session is created.  CRITICAL failures abort cleanly;
+    # WARNINGs are logged and the bot continues in degraded/cold-start mode.
+    run_self_test()
+    # ────────────────────────────────────────────────────────────────────────────
 
     # Persist lightweight runtime profile for control panel / HUD
     try:
