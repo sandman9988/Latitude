@@ -2314,8 +2314,8 @@ class CTraderFixApp(fix.Application):
                         "direction": "LONG" if self.cur_pos > 0 else "SHORT",
                         "entry_price": ep,
                         "current_price": live_price,
-                        "mfe": float(live_tracker.mfe),
-                        "mae": float(live_tracker.mae),
+                        "mfe": float(live_tracker.mfe) * live_qty,
+                        "mae": float(live_tracker.mae) * live_qty,
                         "unrealized_pnl": live_pnl,
                         "bars_held": len(getattr(live_tracker, "bars", [])),
                     }
@@ -4234,6 +4234,7 @@ class CTraderFixApp(fix.Application):
                 "bar_count": self.bar_count,
                 "training_enabled": os.environ.get("DDQN_ONLINE_LEARNING", "1") == "1",
                 "starting_equity": self.starting_equity,
+                "qty": self.qty,
             }
             with open(self.hud_data_dir / "bot_config.json", "w", encoding="utf-8") as f:
                 json.dump(bot_config, f, indent=2)
@@ -4283,6 +4284,9 @@ class CTraderFixApp(fix.Application):
                 if self.trade_integration and self.trade_integration.trade_manager:
                     pos = self.trade_integration.trade_manager.get_position()
                     actual_qty = float(abs(pos.net_qty)) if abs(pos.net_qty) > 0 else self.qty
+                # Convert MFE / MAE from raw price-points → USD (same unit as unrealized_pnl)
+                mfe *= actual_qty
+                mae *= actual_qty
                 if self.cur_pos > 0:  # LONG
                     unrealized_pnl = (current_price - entry_price) * actual_qty
                 else:  # SHORT

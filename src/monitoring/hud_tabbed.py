@@ -817,7 +817,22 @@ class TabbedHUD:
             mae = self.position.get("mae", 0.0)
             mfe_color = "\033[92m" if mfe > 0 else "\033[93m"
             mae_color = "\033[91m" if mae > 0 else "\033[93m"
-            print(f"  MFE: {mfe_color}{mfe:+.4f}\033[0m  |  MAE: {mae_color}{mae:+.4f}\033[0m")
+            # MFE is max favourable excursion (positive = profit)
+            # MAE is max adverse excursion stored as magnitude — display negated
+            print(f"  MFE: {mfe_color}+{mfe:.2f}\033[0m  |  MAE: {mae_color}-{mae:.2f}\033[0m  (USD, excl. spread)")
+
+        # Account balance / equity
+        print("\n\033[1m💰 ACCOUNT\033[0m")
+        _starting = float(self.bot_config.get("starting_equity", 10_000.0))
+        _lifetime_pnl = float(self.lifetime_metrics.get("total_pnl", 0.0))
+        _unreal = float(self.position.get("unrealized_pnl", 0.0))
+        _balance = _starting + _lifetime_pnl
+        _equity  = _balance + _unreal
+        print(
+            f"  Balance: {self._pnl_color(_balance - _starting)}{_balance:>10.2f}\033[0m  |  "
+            f"Equity:  {self._pnl_color(_equity  - _starting)}{_equity:>10.2f}\033[0m  |  "
+            f"Unrealized: {self._pnl_color(_unreal)}{_unreal:+.2f}\033[0m"
+        )
 
         # Quick metrics
         print("\n\033[1m📈 TODAY'S STATS\033[0m")
@@ -846,9 +861,16 @@ class TabbedHUD:
             if feas > FEASIBILITY_HIGH_THRESHOLD
             else ("\033[93m" if feas > FEASIBILITY_MEDIUM_THRESHOLD else "\033[91m")
         )
+        _regime_colors = {
+            "TRENDING": "\033[92m",
+            "MEAN_REVERTING": "\033[93m",
+            "TRANSITIONAL": "\033[94m",
+            "UNKNOWN": "\033[90m",
+        }
+        regime_color = _regime_colors.get(regime, "\033[90m")
 
         print(
-            f"  Circuit: {cb_status}  |  Regime: {regime}  |  Vol: {vol:.2f}%  |  "
+            f"  Circuit: {cb_status}  |  Regime: {regime_color}{regime}\033[0m  |  Vol: {vol:.2f}%  |  "
             f"Feasibility: {feas_color}{feas:.2f}\033[0m"
         )
 

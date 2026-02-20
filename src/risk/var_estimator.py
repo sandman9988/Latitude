@@ -214,6 +214,15 @@ class VaREstimator:
         """
         # Defensive: Minimum sample size
         if len(self.returns) < MIN_VAR_SAMPLE:
+            # Fallback: normal approximation from vol so the HUD shows a
+            # meaningful estimate instead of 0 during the warm-up period.
+            # z_{0.95} ≈ 1.645 for a one-tailed normal distribution.
+            _vol = (
+                current_vol if (current_vol and current_vol > 0)
+                else (self._reference_vol if self._reference_vol and self._reference_vol > 0 else 0.0)
+            )
+            if _vol > 0:
+                return float(_vol * 1.645)
             logger.debug("Insufficient data for VaR, returning 0")
             return 0.0
 
