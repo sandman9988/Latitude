@@ -388,6 +388,7 @@ class TabbedHUD:
                 "avg_loss": avg_loss,
                 "max_consec_wins": max_cw,
                 "max_consec_losses": max_cl,
+                "recent_pnl_sequence": pnls,
             }
 
         def _parse_dt(s: str):
@@ -757,8 +758,6 @@ class TabbedHUD:
         _sp = _spark(self._trig_loss_hist)
         if _sp:
             print(f"    Hist:   {_sp}")
-        if trig_td > 0:
-            print(f"    TD-Err: {trig_td:.6f}")
         _cc = _G if 0.55 < trig_conf < 0.85 else (_Y if 0.50 < trig_conf <= 0.55 else _R)
         print(f"    Conf:   {_cc}{trig_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
         print()
@@ -784,8 +783,6 @@ class TabbedHUD:
         _sp = _spark(self._harv_loss_hist)
         if _sp:
             print(f"    Hist:   {_sp}")
-        if harv_td > 0:
-            print(f"    TD-Err: {harv_td:.6f}")
         _cc = _G if 0.55 < harv_conf < 0.85 else (_Y if 0.50 < harv_conf <= 0.55 else _R)
         print(f"    Conf:   {_cc}{harv_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
         print(f"    Min-hold: {harv_min_hold} ticks")
@@ -984,11 +981,17 @@ class TabbedHUD:
         print(f"\n{_lbl('🏥 SYSTEM HEALTH')}")
 
         # ── Row 1: Connectivity ───────────────────────────────────────────────
+        # Freshness of the bot's most recent data write — use order_book.json mtime
+        # (written ~1s by FIX handler). Falls back to bot_config.json mtime.
         _age_str = "n/a"
-        if self.last_update:
-            _age = (datetime.now(UTC) - self.last_update).total_seconds()
-            _age_str = f"{_age:.1f}s"
-            _data_item = _ok(f"Data {_age_str}") if _age < 5 else (_warn(f"Data {_age_str}") if _age < 15 else _bad(f"Data {_age_str}"))
+        _ob_path = self.data_dir / "order_book.json"
+        _bc_path = self.data_dir / "bot_config.json"
+        _ref_path = _ob_path if _ob_path.exists() else (_bc_path if _bc_path.exists() else None)
+        if _ref_path is not None:
+            import os as _os
+            _file_age = time.time() - _os.path.getmtime(_ref_path)
+            _age_str = f"{_file_age:.0f}s"
+            _data_item = _ok(f"Data {_age_str}") if _file_age < 5 else (_warn(f"Data {_age_str}") if _file_age < 15 else _bad(f"Bot silent {_age_str}"))
         else:
             _data_item = _bad("No data")
 
@@ -1561,15 +1564,19 @@ class TabbedHUD:
         print("\n" + "─" * 80)
         print("  [1-6] Tabs  |  [Tab] Next  |  [Shift+Tab] Prev  |  [h] Help  |  [s] Presets  |  [q/^X] Quit")
 
-        # Data freshness indicator
-        if self.last_update:
-            age = (datetime.now(UTC) - self.last_update).total_seconds()
-            if age > 10:
-                freshness = f"\033[91m⚠️  Data stale ({age:.0f}s old)\033[0m"
-            elif age > 5:
-                freshness = f"\033[93m⚡ Data aging ({age:.0f}s old)\033[0m"
+        # Data freshness — use order_book.json mtime (written ~1s by FIX handler)
+        _ob = self.data_dir / "order_book.json"
+        _bc = self.data_dir / "bot_config.json"
+        _fp = _ob if _ob.exists() else (_bc if _bc.exists() else None)
+        if _fp is not None:
+            import os as _os2
+            _fage = time.time() - _os2.path.getmtime(_fp)
+            if _fage > 15:
+                freshness = f"\033[91m⚠️  Bot silent ({_fage:.0f}s)\033[0m"
+            elif _fage > 5:
+                freshness = f"\033[93m⚡ Data aging ({_fage:.0f}s)\033[0m"
             else:
-                freshness = f"\033[92m✓ Data fresh ({age:.1f}s old)\033[0m"
+                freshness = f"\033[92m✓ Data fresh ({_fage:.1f}s)\033[0m"
         else:
             freshness = "\033[90m⏳ Waiting for data...\033[0m"
 

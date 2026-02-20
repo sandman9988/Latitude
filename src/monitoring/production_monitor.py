@@ -57,6 +57,13 @@ class TradingMetrics:
     harvester_confidence_avg: float
     last_trade_mins_ago: float
 
+    # Prediction convergence (EMA-10 trades)
+    runway_delta_ema: float = 0.0
+    runway_accuracy_ema: float = 0.5
+    conf_calib_err_ema: float = 0.5
+    platt_a: float = 1.0
+    platt_b: float = 0.0
+
     # Circuit breakers
     circuit_breakers_tripped: int
     circuit_breaker_names: list[str]
@@ -150,6 +157,12 @@ class ProductionMonitor:
             trigger_confidence_avg=kwargs.get("trigger_confidence_avg", 0.0),
             harvester_confidence_avg=kwargs.get("harvester_confidence_avg", 0.0),
             last_trade_mins_ago=kwargs.get("last_trade_mins_ago", 0.0),
+            # Prediction convergence
+            runway_delta_ema=kwargs.get("runway_delta_ema", 0.0),
+            runway_accuracy_ema=kwargs.get("runway_accuracy_ema", 0.5),
+            conf_calib_err_ema=kwargs.get("conf_calib_err_ema", 0.5),
+            platt_a=kwargs.get("platt_a", 1.0),
+            platt_b=kwargs.get("platt_b", 0.0),
             # Circuit breakers
             circuit_breakers_tripped=kwargs.get("circuit_breakers_tripped", 0),
             circuit_breaker_names=kwargs.get("circuit_breaker_names") or [],
