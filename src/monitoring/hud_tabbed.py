@@ -1124,48 +1124,45 @@ class TabbedHUD:
                 f"{sharpe:>7.2f} {omega:>7.2f} {dd_color}{maxdd:>7.2f}%\033[0m"
             )
 
-        # Additional stats if available
-        print("\n\033[1m📊 ADDITIONAL METRICS\033[0m\n")
+        # ── Trade quality ─────────────────────────────────────────────────
+        print("\n\033[1m📊 TRADE QUALITY\033[0m\n")
 
         lt = self.lifetime_metrics
-        print(f"  Sortino Ratio:    {lt.get('sortino_ratio', 0):.3f}")
-        print(f"  Best Trade:       {lt.get('best_trade', 0):+.2f}")
-        print(f"  Worst Trade:      {lt.get('worst_trade', 0):+.2f}")
-        print(f"  Avg Trade:        {lt.get('avg_trade', 0):+.2f}")
-        print(f"  Profit Factor:    {lt.get('profit_factor', 0):.2f}")
-        print(f"  Expectancy:       {lt.get('expectancy', 0):+.4f}")
-        print(f"  Avg Win:          {lt.get('avg_win', 0):+.2f}")
-        print(f"  Avg Loss:         {lt.get('avg_loss', 0):+.2f}")
-        print(f"  Consecutive Wins: {lt.get('max_consec_wins', 0)}")
-        print(f"  Consecutive Loss: {lt.get('max_consec_losses', 0)}")
+        avg_win  = lt.get("avg_win", 0.0)
+        avg_loss = lt.get("avg_loss", 0.0)   # stored as negative
+        profit_f = lt.get("profit_factor", 0.0)
+        expect   = lt.get("expectancy", 0.0)
+        sortino  = lt.get("sortino_ratio", 0.0)
+        best     = lt.get("best_trade", 0.0)
+        worst    = lt.get("worst_trade", 0.0)
 
-        # ── Production Metrics (from production_metrics.json) ─────────────
+        # Payoff ratio: avg_win / |avg_loss| — the core RL reward sanity check.
+        # >1 means wins are larger than losses; target ≥ 1.5 for positive EV.
+        abs_loss = abs(avg_loss)
+        payoff   = avg_win / abs_loss if abs_loss > 1e-9 else 0.0
+        pay_col  = "\033[92m" if payoff >= 1.5 else ("\033[93m" if payoff >= 1.0 else "\033[91m")
+        exp_col  = "\033[92m" if expect > 0 else "\033[91m"
+        pf_col   = "\033[92m" if profit_f >= 1.2 else ("\033[93m" if profit_f >= 1.0 else "\033[91m")
+
+        print(f"  Payoff ratio:     {pay_col}{payoff:>7.2f}x\033[0m  \033[90m(avg_win/|avg_loss|  target ≥1.5)\033[0m")
+        print(f"  Avg W / Avg L:    {avg_win:>+8.2f} / {avg_loss:>+8.2f}")
+        print(f"  Profit factor:    {pf_col}{profit_f:>7.2f}\033[0m  \033[90m(gross_profit/gross_loss  target ≥1.2)\033[0m")
+        print(f"  Expectancy/trade: {exp_col}{expect:>+8.4f}\033[0m")
+        print(f"  Sortino ratio:    {sortino:>7.3f}")
+        print(f"  Best / Worst:     {best:>+8.2f} / {worst:>+8.2f}")
+
+        # ── Trade timing ──────────────────────────────────────────────────
         pm = self.production_metrics.get("metrics", {})
         if pm:
-            print("\n\033[1m🤖 AGENT CONFIDENCE (Live)\033[0m\n")
-            trig_conf = pm.get("trigger_confidence_avg", 0.0)
-            harv_conf = pm.get("harvester_confidence_avg", 0.0)
-            avg_dur = pm.get("avg_trade_duration_mins", 0.0)
-            last_trade = pm.get("last_trade_mins_ago", 0.0)
-
-            trig_col = "\033[92m" if trig_conf > 0.6 else ("\033[93m" if trig_conf > 0.4 else "\033[91m")
-            harv_col = "\033[92m" if harv_conf > 0.6 else ("\033[93m" if harv_conf > 0.4 else "\033[91m")
-
-            print(f"  Trigger Conf Avg:  {trig_col}{trig_conf:.3f}\033[0m")
-            print(f"  Harvester Conf Avg:{harv_col}{harv_conf:.3f}\033[0m")
-
             def _fmt_dur(mins: float) -> str:
-                """Format minutes as 'Xm', 'X.Xh', or 'X.Xd' for readability."""
-                if mins <= 0:
-                    return "—"
-                if mins < 90:
-                    return f"{mins:.0f}m"
-                if mins < 1440:
-                    return f"{mins / 60:.1f}h"
+                if mins <= 0: return "—"
+                if mins < 90: return f"{mins:.0f}m"
+                if mins < 1440: return f"{mins / 60:.1f}h"
                 return f"{mins / 1440:.1f}d"
-
-            print(f"  Avg Trade Duration:{_fmt_dur(avg_dur):>8} ")
-            print(f"  Last Trade:        {_fmt_dur(last_trade):>8} ago")
+            avg_dur    = pm.get("avg_trade_duration_mins", 0.0)
+            last_trade = pm.get("last_trade_mins_ago", 0.0)
+            print(f"\n  Avg hold time:    {_fmt_dur(avg_dur):>8}")
+            print(f"  Last trade:       {_fmt_dur(last_trade):>8} ago")
 
             # ── Prediction convergence block ───────────────────────────────
             rw_delta  = pm.get("runway_delta_ema", 0.0)
@@ -1232,6 +1229,14 @@ class TabbedHUD:
                 f"  {'Time':<8} {'Agent':<10} {'Decision':<10} {'Conf':>6} {'Rnwy$':>6} {'VPIN-z':>7} {'Price':>10}"
             )
             print(header)
+            # Decision distribution for last N entries
+            _counts: dict[str, int] = {}
+            for _e in entries_jsonl:
+                _d = _e.get("decision", "?").upper()
+                _counts[_d] = _counts.get(_d, 0) + 1
+            _dist = "  ".join(f"{k}:{v}" for k, v in sorted(_counts.items()))
+            print(f"  Distribution (last {len(entries_jsonl)}): {_dist}\n")
+            print(header)
             print("  " + "─" * 60)
             for entry in entries_jsonl:
                 ts_raw = entry.get("timestamp", "?")
@@ -1267,7 +1272,6 @@ class TabbedHUD:
                     f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} {price:>10.{dec}f}"
                 )
             print("  " + "─" * 60)
-            print(f"\n  Source: {jsonl_file}  |  Total lines visible: {len(entries_jsonl)}")
             return
 
         # ── Fallback: legacy data/decision_log.json ────────────────────────
@@ -1336,23 +1340,25 @@ class TabbedHUD:
         else:
             print("  \033[92m✓ Circuit Breaker: INACTIVE\033[0m\n")
 
-        # VaR and tail risk
+        # Tail risk
         print("  \033[1m📉 TAIL RISK\033[0m")
-        var = rs.get("var", 0)
+        var      = rs.get("var", 0) * 100   # express as %
         kurtosis = rs.get("kurtosis", 0)
+        vol      = rs.get("realized_vol", 0) * 100
 
-        kurt_color = "\033[91m" if kurtosis > KURTOSIS_FAT_TAIL_THRESHOLD else "\033[92m"
+        kurt_col = "\033[91m" if kurtosis > KURTOSIS_FAT_TAIL_THRESHOLD else "\033[92m"
+        var_col  = "\033[91m" if var > 3.0 else ("\033[93m" if var > 1.5 else "\033[92m")
+        vol_col  = "\033[91m" if vol > 2.0 else ("\033[93m" if vol > 1.0 else "\033[92m")
 
-        print(f"    VaR (95%):         {var:>12.6f}")
-        print(f"    Kurtosis:          {kurt_color}{kurtosis:>12.2f}\033[0m (>3 = fat tails)")
-
+        print(f"    VaR 95%:           {var_col}{var:>9.3f}%\033[0m  \033[90m(position loss at 95th pct)\033[0m")
+        print(f"    Realized vol:      {vol_col}{vol:>9.3f}%\033[0m")
+        print(f"    Kurtosis:          {kurt_col}{kurtosis:>9.2f}\033[0m  \033[90m(>3 = fat tails → wider stops)\033[0m")
         print()
 
-        # Volatility and regime
-        print("  \033[1m📊 VOLATILITY & REGIME\033[0m")
-        vol = rs.get("realized_vol", 0) * 100
+        # Regime
+        print("  \033[1m🌐 REGIME\033[0m")
         regime = rs.get("regime", "UNKNOWN")
-        zeta = rs.get("regime_zeta", 1.0)
+        zeta   = rs.get("regime_zeta", 1.0)
 
         regime_colors = {
             "TRENDING": "\033[92m",
@@ -1360,32 +1366,37 @@ class TabbedHUD:
             "TRANSITIONAL": "\033[94m",
             "UNKNOWN": "\033[90m",
         }
+        _regime_tips = {
+            "TRENDING":      "trend-follow; let winners run",
+            "MEAN_REVERTING":"fade extremes; tighten target",
+            "TRANSITIONAL":  "reduce size; wait for clarity",
+            "UNKNOWN":       "cold-start; use fallback rules",
+        }
         regime_color = regime_colors.get(regime, "\033[90m")
-
-        print(f"    Realized Vol (RS): {vol:>10.2f}%")
-        print(f"    Market Regime:     {regime_color}{regime}\033[0m")
-        print(f"    Regime Confidence: {zeta:>10.2f} (ζ)")
+        print(f"    Regime:            {regime_color}{regime}\033[0m  \033[90m({_regime_tips.get(regime, '')})\033[0m")
+        print(f"    Confidence (ζ):    {zeta:>10.2f}  \033[90m(1.0 = full confidence)\033[0m")
 
         print()
 
-        # Path geometry
-        print("  \033[1m📐 PATH GEOMETRY\033[0m")
-        eff = rs.get("efficiency", 0)
-        gamma = rs.get("gamma", 0)
-        jerk = rs.get("jerk", 0)
+        # Path geometry — these are features fed directly to the RL agents
+        print("  \033[1m📐 PATH GEOMETRY  \033[90m(RL feature inputs)\033[0m")
+        eff    = rs.get("efficiency", 0)
+        gamma  = rs.get("gamma", 0)
         runway = rs.get("runway", 0.5)
-        feas = rs.get("feasibility", 0.5)
+        feas   = rs.get("feasibility", 0.5)
 
         feas_color = (
             "\033[92m"
             if feas > FEASIBILITY_HIGH_THRESHOLD
             else ("\033[93m" if feas > FEASIBILITY_MEDIUM_THRESHOLD else "\033[91m")
         )
+        eff_col = "\033[92m" if eff > 0.6 else ("\033[93m" if eff > 0.3 else "\033[91m")
+        gam_col = "\033[92m" if gamma > 0 else "\033[91m"
+        rwy_col = "\033[92m" if runway > 3 else ("\033[93m" if runway > 1 else "\033[91m")
 
-        print(f"    Efficiency:        {eff:>10.3f} (path directness)")
-        print(f"    Gamma (γ):         {gamma:>+10.3f} (acceleration)")
-        print(f"    Jerk:              {jerk:>+10.3f} (accel change rate)")
-        print(f"    Runway:            {runway:>10.3f} (1/vol pressure)")
+        print(f"    Efficiency:        {eff_col}{eff:>10.3f}\033[0m  \033[90m(path directness; 1=straight trend)\033[0m")
+        print(f"    Gamma (γ):         {gam_col}{gamma:>+10.3f}\033[0m  \033[90m(price acceleration; +ve favours longs)\033[0m")
+        print(f"    Runway:            {rwy_col}{runway:>10.3f}\033[0m  \033[90m(bars before vol kills the move)\033[0m")
         print(f"    Entry Feasibility: {feas_color}{feas:>10.3f}\033[0m")
 
         # Feasibility gauge
@@ -1407,13 +1418,17 @@ class TabbedHUD:
 
         qty_color = "\033[92m" if risk_final_qty == risk_req_qty else "\033[93m"
 
-        print(f"    Risk Budget:       {risk_budget:>10.2f} USD")
-        print(f"    Requested Qty:     {risk_req_qty:>10.4f}")
-        print(f"    Final Qty:         {qty_color}{risk_final_qty:>10.4f}\033[0m")
-        if risk_req_qty > 0 and risk_final_qty < risk_req_qty:
-            print("    \033[93m⚡ Qty capped by vol/risk constraints\033[0m")
-        print(f"    Vol Cap:           {vol_cap * 100:>9.2f}%")
-        print(f"    Vol Reference:     {vol_ref * 100:>9.3f}%")
+        # % of budget consumed by this sizing decision
+        budget_used_pct = (risk_final_qty / risk_req_qty * 100) if risk_req_qty > 1e-9 else 100.0
+        capped = risk_req_qty > 1e-9 and risk_final_qty < risk_req_qty * 0.999
+
+        print(f"    Risk budget:       {risk_budget:>10.2f} USD")
+        print(f"    Requested qty:     {risk_req_qty:>10.4f}")
+        print(f"    Final qty:         {qty_color}{risk_final_qty:>10.4f}\033[0m  ({budget_used_pct:.0f}% of request)")
+        if capped:
+            print("    \033[93m⚡ Qty capped — vol or depth constraint active\033[0m")
+        print(f"    Vol cap:           {vol_cap * 100:>9.2f}%  \033[90m(max position vol allowed)\033[0m")
+        print(f"    Vol reference:     {vol_ref * 100:>9.3f}%  \033[90m(baseline for cap calc)\033[0m")
 
     def _render_market(self):
         """Render market microstructure"""
@@ -1471,9 +1486,9 @@ class TabbedHUD:
         else:
             vpin_status = "\033[92m✓ NORMAL\033[0m"
 
-        print(f"    VPIN Value:        {vpin:>12.4f}")
         print(f"    VPIN Z-Score:      {vpin_z:>+12.2f}")
         print(f"    Status:            {vpin_status}")
+        print(f"                       \033[90mHigh +z = informed sellers active → widen stops / reduce size\033[0m")
 
         # VPIN gauge
         bar_len = 40
@@ -1514,6 +1529,36 @@ class TabbedHUD:
 
         print(f"\n    [{bar}]")
         print("     SELL              ↕              BUY")
+
+        # ── Signal synthesis ──────────────────────────────────────────────
+        # Combine regime + VPIN + imbalance into a one-line advisory
+        # so the operator can immediately sanity-check agent decisions.
+        print()
+        print("  \033[1m🧭 SIGNAL SYNTHESIS\033[0m")
+        rs_regime = self.risk_stats.get("regime", "UNKNOWN")
+        rs_feas   = float(self.risk_stats.get("feasibility", 0.5))
+        rs_runway = float(self.risk_stats.get("runway", 0.0))
+        toxic     = abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD
+        gate      = self.risk_stats.get("depth_gate_active", False)
+
+        signals = []
+        if rs_feas < FEASIBILITY_MEDIUM_THRESHOLD:
+            signals.append("\033[91m✗ Low feasibility — agent should HOLD\033[0m")
+        if toxic:
+            signals.append("\033[91m✗ Toxic flow (VPIN) — stop widening advised\033[0m")
+        if gate:
+            signals.append("\033[91m✗ Depth gate active — no new entries\033[0m")
+        if rs_regime == "TRENDING" and not toxic and rs_feas > FEASIBILITY_HIGH_THRESHOLD:
+            dir_hint = "LONG" if imbalance > 0.1 else ("SHORT" if imbalance < -0.1 else "either direction")
+            signals.append(f"\033[92m✓ Trending + clean flow → favours {dir_hint}\033[0m")
+        if rs_regime == "MEAN_REVERTING" and not toxic:
+            signals.append("\033[93m⚡ Mean-reverting — shorter hold, tighter target\033[0m")
+        if rs_runway < 1.0:
+            signals.append("\033[93m⚡ Short runway — harvester may exit early\033[0m")
+        if not signals:
+            signals.append("\033[90m— No strong signals; model discretion applies\033[0m")
+        for s in signals:
+            print(f"    {s}")
 
     def _render_footer(self):
         """Render footer with controls and data freshness"""
