@@ -1073,6 +1073,7 @@ class HarvesterAgent:
             "total_sampled": buffer_stats["total_sampled"],
             "beta": buffer_stats["beta"],
             "ready_to_train": buffer_stats["size"] >= self.min_experiences,
+            "min_hold_ticks": self.min_hold_ticks,
         }
 
 

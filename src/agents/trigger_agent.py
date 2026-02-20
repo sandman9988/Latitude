@@ -911,6 +911,7 @@ class TriggerAgent:
             "total_sampled": buffer_stats["total_sampled"],
             "beta": buffer_stats["beta"],
             "ready_to_train": buffer_stats["size"] >= self.min_experiences,
+            "epsilon": self.epsilon,
         }
 
 

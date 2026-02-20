@@ -109,7 +109,7 @@ class ProductionMonitor:
         self.alert_memory_pct = alert_memory_pct
         self.alert_error_rate_1h = alert_error_rate_1h
 
-        self.metrics_file = metrics_file or Path("data/production_metrics.json")
+        self.metrics_file = Path(metrics_file) if metrics_file else Path("data/production_metrics.json")
 
         # Current metrics
         self.metrics: Optional[TradingMetrics] = None

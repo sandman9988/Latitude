@@ -831,7 +831,7 @@ class CTraderFixApp(fix.Application):
         self._tracker_lock = threading.Lock()  # Protects mfe_mae_trackers & path_recorders across FIX callbacks
         self.performance = PerformanceTracker()
         self.prod_monitor = ProductionMonitor(
-            metrics_file="data/production_metrics.json",
+            metrics_file=Path("data/production_metrics.json"),
             alert_drawdown_pct=0.10,
             http_enabled=False,
         )
@@ -932,6 +932,9 @@ class CTraderFixApp(fix.Application):
         self.predicted_runway = 0.0  # FIX 1: Track predicted MFE for backward compatibility
         self.entry_confidence = 0.5  # Calibrated confidence at entry (for Platt update at close)
         self.entry_var = 0.0          # VaR at entry time (for regime-conditioned reward)
+        # EMA-averaged confidence for HUD production_metrics export (α=0.1 ≈ 10-trade window)
+        self._last_trigger_conf = 0.5
+        self._last_harvester_conf = 0.5
         self.entry_vpin_z = 0.0       # VPIN z-score at entry time (for regime-conditioned reward)
 
         # Harvester experience tracking (dense feedback every bar)
@@ -1064,7 +1067,7 @@ class CTraderFixApp(fix.Application):
                 fix_connected=self.connection_healthy,
             )
         except Exception as e:
-            LOG.debug("[METRICS] Failed to flush production metrics: %s", e)
+            LOG.warning("[METRICS] Failed to flush production metrics: %s", e)
 
     def _monitor_connection_health(self):
         """
@@ -3386,6 +3389,7 @@ class CTraderFixApp(fix.Application):
                     )
                     self.entry_action = action
                     self.entry_confidence = confidence  # Store for Platt calibration at trade close
+                    self._last_trigger_conf = 0.9 * self._last_trigger_conf + 0.1 * confidence
                     self.predicted_runway = runway  # FIX 1: Store predicted MFE for trigger reward
                     # Store market-condition snapshot at entry for regime-conditioned reward shaping
                     self.entry_vpin_z = vpin_zscore
@@ -3469,14 +3473,7 @@ class CTraderFixApp(fix.Application):
                         depth_ratio=depth_ratio,
                         event_features=event_features,
                     )
-                # exit_action: 0=HOLD, 1=CLOSE
-                desired = 0 if exit_action == 1 else self.cur_pos
-
-                # GAP 10.1: Log harvester decision
-                pos_metrics = self.policy.get_position_metrics() if hasattr(self.policy, "get_position_metrics") else {}
-                entry_price = pos_metrics.get("entry_price", 0.0)
-                mfe = pos_metrics.get("mfe", 0.0)
-                mae = pos_metrics.get("mae", 0.0)
+                self._last_harvester_conf = 0.9 * self._last_harvester_conf + 0.1 * exit_conf
                 ticks_held = pos_metrics.get("ticks_held", 0)
                 unrealized_pnl = (c - entry_price) * self.cur_pos if entry_price > 0 else 0.0
                 capture_ratio = (unrealized_pnl / mfe) if mfe > 0 else 0.0
@@ -4011,6 +4008,11 @@ class CTraderFixApp(fix.Application):
             harvester_loss = getattr(self, "last_harvester_loss", 0.0)
             trigger_training_steps = 0
             harvester_training_steps = 0
+            trigger_epsilon = 0.0
+            harvester_beta = 0.4
+            trigger_ready = False
+            harvester_ready = False
+            harvester_min_hold = 10
             total_agents = 0
             arena_diversity = {"trigger_diversity": 0.0, "harvester_diversity": 0.0}
             last_agreement = 1.0
@@ -4024,6 +4026,11 @@ class CTraderFixApp(fix.Application):
                 harvester_buffer_size = h_stats.get("buffer_size", 0)
                 trigger_training_steps = t_stats.get("training_steps", 0)
                 harvester_training_steps = h_stats.get("training_steps", 0)
+                trigger_epsilon = t_stats.get("epsilon", 0.0)
+                harvester_beta = h_stats.get("beta", 0.4)
+                trigger_ready = t_stats.get("ready_to_train", False)
+                harvester_ready = h_stats.get("ready_to_train", False)
+                harvester_min_hold = h_stats.get("min_hold_ticks", 10)
             else:
                 # Fallback: direct attribute access using correct name (.buffer not .replay_buffer)
                 if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "buffer"):
@@ -4053,6 +4060,11 @@ class CTraderFixApp(fix.Application):
                 "harvester_buffer_size": harvester_buffer_size,
                 "trigger_training_steps": trigger_training_steps,
                 "harvester_training_steps": harvester_training_steps,
+                "trigger_epsilon": trigger_epsilon,
+                "harvester_beta": harvester_beta,
+                "trigger_ready": trigger_ready,
+                "harvester_ready": harvester_ready,
+                "harvester_min_hold_ticks": harvester_min_hold,
                 "total_agents": total_agents,
                 "arena_diversity": arena_diversity,
                 "last_agreement_score": last_agreement,
@@ -4091,8 +4103,12 @@ class CTraderFixApp(fix.Application):
             if hasattr(self.policy, "current_zeta"):
                 regime_zeta = self.policy.current_zeta
 
-            # Path geometry features
-            geom = self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
+            # Path geometry features — recompute fresh from current bars so HUD
+            # always reflects live market state, not just the last entry/exit call.
+            if len(self.bars) >= 3 and realized_vol > 0:
+                geom = self.path_geometry.update(self.bars, realized_vol)
+            else:
+                geom = self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
             efficiency = geom.get("efficiency", 1.0)
             gamma = geom.get("gamma", 0.0)
             jerk = geom.get("jerk", 0.0)

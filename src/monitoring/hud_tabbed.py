@@ -18,6 +18,7 @@ Note: Ctrl+C is ignored to prevent accidental termination when copying text.
 
 import contextlib
 import json
+import math
 import os
 import select
 import sys
@@ -74,6 +75,8 @@ class TabbedHUD:
         self.risk_stats = {}
         self.market_stats = {}
         self.bot_config = {}
+        self.production_metrics = {}
+        self._metrics_from_trade_log = False
         self.last_update = None
         self.notification = ""
         self.notification_expiry = datetime.min
@@ -192,6 +195,15 @@ class TabbedHUD:
         # Training stats
         self._load_json("training_stats.json", "training_stats")
 
+        # Production metrics
+        self._load_json("production_metrics.json", "production_metrics")
+
+        # Always compute from trade_log.jsonl (complete persistent history).
+        # performance_snapshot resets on each bot restart so it only reflects
+        # the current session — trade log is always the authoritative source.
+        self._compute_metrics_from_trade_log()
+        self._metrics_from_trade_log = bool(self.lifetime_metrics.get("total_trades"))
+
         # Risk metrics
         risk_file = self.data_dir / "risk_metrics.json"
         if risk_file.exists():
@@ -243,6 +255,110 @@ class TabbedHUD:
                     }
                 )
         return profiles
+
+    def _compute_metrics_from_trade_log(self):
+        """Compute performance metrics directly from trade_log.jsonl when snapshot is empty"""
+        trade_file = Path("data/trade_log.jsonl")
+        if not trade_file.exists():
+            return
+        try:
+            trades = []
+            with open(trade_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        trades.append(json.loads(line))
+        except Exception:
+            return
+        if not trades:
+            return
+
+        def _period_metrics(pts: list) -> dict:
+            if not pts:
+                return {}
+            pnls = [t.get("pnl", 0.0) for t in pts]
+            wins = [p for p in pnls if p > 0]
+            losses = [p for p in pnls if p < 0]
+            n = len(pnls)
+            total_pnl = sum(pnls)
+            win_rate = len(wins) / n
+            avg_win = sum(wins) / len(wins) if wins else 0.0
+            avg_loss = sum(losses) / len(losses) if losses else 0.0
+            profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
+            expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+            mean_p = total_pnl / n
+            variance = sum((p - mean_p) ** 2 for p in pnls) / n
+            std_p = math.sqrt(variance) if variance > 0 else 0.0
+            sharpe = mean_p / std_p if std_p > 0 else 0.0
+            down_var = sum(p ** 2 for p in pnls if p < 0) / n
+            sortino = mean_p / math.sqrt(down_var) if down_var > 0 else 0.0
+            # Max drawdown from cumulative PnL series (ratio vs peak equity)
+            cum = peak_eq = max_dd = 0.0
+            for p in pnls:
+                cum += p
+                if cum > peak_eq:
+                    peak_eq = cum
+                if peak_eq > 0:
+                    dd = (peak_eq - cum) / peak_eq
+                    if dd > max_dd:
+                        max_dd = dd
+            max_dd = min(max_dd, 1.0)  # cap at 100%
+            # Consecutive streaks
+            max_cw = max_cl = cw = cl = 0
+            for p in pnls:
+                if p > 0:
+                    cw += 1; cl = 0
+                else:
+                    cl += 1; cw = 0
+                max_cw = max(max_cw, cw)
+                max_cl = max(max_cl, cl)
+            return {
+                "total_trades": n,
+                "win_rate": win_rate,
+                "total_pnl": total_pnl,
+                "sharpe_ratio": sharpe,
+                "sortino_ratio": sortino,
+                "omega_ratio": min(profit_factor, 99.0),
+                "max_drawdown": max_dd,
+                "best_trade": max(pnls),
+                "worst_trade": min(pnls),
+                "avg_trade": mean_p,
+                "profit_factor": min(profit_factor, 99.0),
+                "expectancy": expectancy,
+                "avg_win": avg_win,
+                "avg_loss": avg_loss,
+                "max_consec_wins": max_cw,
+                "max_consec_losses": max_cl,
+            }
+
+        def _parse_dt(s: str):
+            try:
+                return datetime.fromisoformat(s.replace("Z", "+00:00"))
+            except Exception:
+                return None
+
+        now = datetime.now(UTC)
+        today = now.date()
+        week_start = today - timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
+
+        daily, weekly, monthly = [], [], []
+        for t in trades:
+            dt = _parse_dt(t.get("entry_time", ""))
+            if dt is None:
+                continue
+            d = dt.date()
+            if d == today:
+                daily.append(t)
+            if d >= week_start:
+                weekly.append(t)
+            if d >= month_start:
+                monthly.append(t)
+
+        self.daily_metrics = _period_metrics(daily)
+        self.weekly_metrics = _period_metrics(weekly)
+        self.monthly_metrics = _period_metrics(monthly)
+        self.lifetime_metrics = _period_metrics(trades)
 
     def _load_json(self, filename: str, attr: str):
         """Load JSON file into attribute"""
@@ -480,6 +596,18 @@ class TabbedHUD:
         print("\n\033[1m🧠 AGENT TRAINING STATUS\033[0m\n")
 
         ts = self.training_stats
+        BUFFER_CAPACITY = 50_000  # Actual PrioritizedReplayBuffer capacity
+        BAR_LEN = 30
+
+        def _buf_bar(size: int) -> str:
+            pct = min(size / BUFFER_CAPACITY, 1.0)
+            filled = int(BAR_LEN * pct)
+            return f"[{'█' * filled}{'░' * (BAR_LEN - filled)}] {pct * 100:.1f}%"
+
+        def _eps_bar(eps: float) -> str:
+            pct = max(0.0, min(eps, 1.0))
+            filled = int(BAR_LEN * pct)
+            return f"[{'█' * filled}{'░' * (BAR_LEN - filled)}] {eps:.4f}"
 
         # Arena info
         total_agents = ts.get("total_agents", 0)
@@ -498,64 +626,63 @@ class TabbedHUD:
             print(f"    Harvester Div:    {harv_div:.3f}")
             print()
 
-        # Trigger agents
-        print("  \033[1m🎯 TRIGGER AGENTS (Entry)\033[0m")
+        # ── Trigger Agent ────────────────────────────────────────────────────
+        print("  \033[1m🎯 TRIGGER AGENT (Entry)\033[0m")
         trig_buf = ts.get("trigger_buffer_size", 0)
-        trig_loss = ts.get("trigger_loss", 0)
-        trig_td = ts.get("trigger_td_error", 0)
-        trig_eps = ts.get("trigger_epsilon", 0)
+        trig_steps = ts.get("trigger_training_steps", 0)
+        trig_loss = ts.get("trigger_loss", 0.0)
+        trig_td = ts.get("trigger_td_error", 0.0)
+        trig_eps = ts.get("trigger_epsilon", 0.0)
+        trig_ready = ts.get("trigger_ready", False)
 
         buf_color = (
             "\033[92m"
             if trig_buf > BUFFER_HIGH_THRESHOLD
             else ("\033[93m" if trig_buf > BUFFER_MEDIUM_THRESHOLD else "\033[91m")
         )
+        ready_str = "\033[92m✓ Ready\033[0m" if trig_ready else "\033[93m⏳ Filling…\033[0m"
 
-        print(f"    Experience Buffer: {buf_color}{trig_buf:>8,}\033[0m")
+        print(f"    Training Steps:    {trig_steps:>10,}")
+        print(f"    Experience Buffer: {buf_color}{trig_buf:>8,}\033[0m / {BUFFER_CAPACITY:,}   ({ready_str})")
+        print(f"    Buffer Fill:       {_buf_bar(trig_buf)}")
+        print(f"    ε (Exploration):   {_eps_bar(trig_eps)}")
         print(f"    Training Loss:     {trig_loss:>12.6f}")
         if trig_td > 0:
             print(f"    TD-Error:          {trig_td:>12.6f}")
-        if trig_eps > 0:
-            print(f"    Epsilon:           {trig_eps:>12.4f}")
-
-        # Progress bar for buffer
-        max_buf = 10000
-        pct = min(trig_buf / max_buf, 1.0)
-        bar_len = 30
-        filled = int(bar_len * pct)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"    Buffer Fill:       [{bar}] {pct*100:.0f}%")
-
         print()
 
-        # Harvester agents
-        print("  \033[1m🌾 HARVESTER AGENTS (Exit)\033[0m")
+        # ── Harvester Agent ──────────────────────────────────────────────────
+        print("  \033[1m🌾 HARVESTER AGENT (Exit)\033[0m")
         harv_buf = ts.get("harvester_buffer_size", 0)
-        harv_loss = ts.get("harvester_loss", 0)
-        harv_td = ts.get("harvester_td_error", 0)
-        harv_eps = ts.get("harvester_epsilon", 0)
+        harv_steps = ts.get("harvester_training_steps", 0)
+        harv_loss = ts.get("harvester_loss", 0.0)
+        harv_td = ts.get("harvester_td_error", 0.0)
+        harv_beta = ts.get("harvester_beta", 0.4)
+        harv_ready = ts.get("harvester_ready", False)
+        harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
 
         buf_color = (
             "\033[92m"
             if harv_buf > BUFFER_HIGH_THRESHOLD
             else ("\033[93m" if harv_buf > BUFFER_MEDIUM_THRESHOLD else "\033[91m")
         )
+        ready_str = "\033[92m✓ Ready\033[0m" if harv_ready else "\033[93m⏳ Filling…\033[0m"
 
-        print(f"    Experience Buffer: {buf_color}{harv_buf:>8,}\033[0m")
+        print(f"    Training Steps:    {harv_steps:>10,}")
+        print(f"    Experience Buffer: {buf_color}{harv_buf:>8,}\033[0m / {BUFFER_CAPACITY:,}   ({ready_str})")
+        print(f"    Buffer Fill:       {_buf_bar(harv_buf)}")
+        # IS β annealing bar (0.4 → 1.0 over training)
+        beta_pct = max(0.0, min((harv_beta - 0.4) / 0.6, 1.0))
+        beta_filled = int(BAR_LEN * beta_pct)
+        beta_bar = f"[{'█' * beta_filled}{'░' * (BAR_LEN - beta_filled)}] {harv_beta:.4f}"
+        print(f"    β (IS annealing):  {beta_bar}")
         print(f"    Training Loss:     {harv_loss:>12.6f}")
         if harv_td > 0:
             print(f"    TD-Error:          {harv_td:>12.6f}")
-        if harv_eps > 0:
-            print(f"    Epsilon:           {harv_eps:>12.4f}")
-
-        pct = min(harv_buf / max_buf, 1.0)
-        filled = int(bar_len * pct)
-        bar = "█" * filled + "░" * (bar_len - filled)
-        print(f"    Buffer Fill:       [{bar}] {pct*100:.0f}%")
-
+        print(f"    Min-Hold Ticks:    {harv_min_hold:>10}")
         print()
 
-        # Training status
+        # ── Training Schedule ────────────────────────────────────────────────
         last_train = ts.get("last_training_time", "Never")
         print("  \033[1m⏱  TRAINING SCHEDULE\033[0m")
         print(f"    Last Training:     {last_train}")
@@ -631,6 +758,13 @@ class TabbedHUD:
             f"PnL: {pnl_color}{pnl:+.2f}\033[0m  |  Bars: {bars}"
         )
 
+        if direction != "FLAT":
+            mfe = self.position.get("mfe", 0.0)
+            mae = self.position.get("mae", 0.0)
+            mfe_color = "\033[92m" if mfe > 0 else "\033[93m"
+            mae_color = "\033[91m" if mae > 0 else "\033[93m"
+            print(f"  MFE: {mfe_color}{mfe:+.4f}\033[0m  |  MAE: {mae_color}{mae:+.4f}\033[0m")
+
         # Quick metrics
         print("\n\033[1m📈 TODAY'S STATS\033[0m")
         d = self.daily_metrics
@@ -668,12 +802,17 @@ class TabbedHUD:
         print("\n\033[1m🧠 AGENT STATUS\033[0m")
         trig_buf = self.training_stats.get("trigger_buffer_size", 0)
         harv_buf = self.training_stats.get("harvester_buffer_size", 0)
+        trig_steps = self.training_stats.get("trigger_training_steps", 0)
+        harv_steps = self.training_stats.get("harvester_training_steps", 0)
+        trig_eps = self.training_stats.get("trigger_epsilon", 0.0)
+        harv_beta = self.training_stats.get("harvester_beta", 0.4)
         total_agents = self.training_stats.get("total_agents", 0)
 
         if total_agents > 0:
             print(f"  Arena: {total_agents} agents  |  Trigger: {trig_buf:,} exp  |  Harvester: {harv_buf:,} exp")
         else:
-            print(f"  Trigger Buffer: {trig_buf:,}  |  Harvester Buffer: {harv_buf:,}")
+            print(f"  Trigger:   {trig_buf:,} exp  |  {trig_steps:,} steps  |  ε={trig_eps:.4f}")
+            print(f"  Harvester: {harv_buf:,} exp  |  {harv_steps:,} steps  |  β={harv_beta:.4f}")
 
         # Market snapshot
         print("\n\033[1m🔬 MARKET\033[0m")
@@ -729,39 +868,40 @@ class TabbedHUD:
 
     def _render_performance(self):
         """Render detailed performance metrics"""
-        print("\n\033[1m📈 PERFORMANCE METRICS\033[0m\n")
+        src = "  \033[90m(source: trade_log.jsonl)\033[0m" if self._metrics_from_trade_log else ""
+        print(f"\n\033[1m📈 PERFORMANCE METRICS\033[0m{src}\n")
 
         # Column headers
         print(
-            f"  {'Period':<10} {'Trades':>8} {'Win%':>8} {'PnL':>12} {'Sharpe':>8} {'Sortino':>8} {'Omega':>8} {'MaxDD':>10}"
+            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL':>11} {'Sharpe':>7} {'Omega':>7} {'MaxDD':>8}"
         )
-        print("  " + "─" * 76)
+        print("  " + "─" * 60)
 
         for label, metrics in [
-            ("📅 Daily", self.daily_metrics),
-            ("📆 Weekly", self.weekly_metrics),
-            ("🗓️ Monthly", self.monthly_metrics),
-            ("∞ Lifetime", self.lifetime_metrics),
+            ("Daily", self.daily_metrics),
+            ("Weekly", self.weekly_metrics),
+            ("Monthly", self.monthly_metrics),
+            ("Lifetime", self.lifetime_metrics),
         ]:
             trades = metrics.get("total_trades", 0)
             wr = metrics.get("win_rate", 0) * 100
             pnl = metrics.get("total_pnl", 0)
             sharpe = metrics.get("sharpe_ratio", 0)
-            sortino = metrics.get("sortino_ratio", 0)
             omega = metrics.get("omega_ratio", 0)
             maxdd = metrics.get("max_drawdown", 0) * 100
 
             pnl_color = self._pnl_color(pnl)
 
             print(
-                f"  {label:<10} {trades:>8} {wr:>7.1f}% {pnl_color}{pnl:>+11.2f}\033[0m "
-                f"{sharpe:>8.2f} {sortino:>8.2f} {omega:>8.2f} {maxdd:>9.2f}%"
+                f"  {label:<9} {trades:>7} {wr:>6.1f}% {pnl_color}{pnl:>+10.2f}\033[0m "
+                f"{sharpe:>7.2f} {omega:>7.2f} {maxdd:>7.2f}%"
             )
 
         # Additional stats if available
         print("\n\033[1m📊 ADDITIONAL METRICS\033[0m\n")
 
         lt = self.lifetime_metrics
+        print(f"  Sortino Ratio:    {lt.get('sortino_ratio', 0):.3f}")
         print(f"  Best Trade:       {lt.get('best_trade', 0):+.2f}")
         print(f"  Worst Trade:      {lt.get('worst_trade', 0):+.2f}")
         print(f"  Avg Trade:        {lt.get('avg_trade', 0):+.2f}")
@@ -772,15 +912,91 @@ class TabbedHUD:
         print(f"  Consecutive Wins: {lt.get('max_consec_wins', 0)}")
         print(f"  Consecutive Loss: {lt.get('max_consec_losses', 0)}")
 
+        # ── Production Metrics (from production_metrics.json) ─────────────
+        pm = self.production_metrics.get("metrics", {})
+        if pm:
+            print("\n\033[1m🤖 AGENT CONFIDENCE (Live)\033[0m\n")
+            trig_conf = pm.get("trigger_confidence_avg", 0.0)
+            harv_conf = pm.get("harvester_confidence_avg", 0.0)
+            avg_dur = pm.get("avg_trade_duration_mins", 0.0)
+            last_trade = pm.get("last_trade_mins_ago", 0.0)
+
+            trig_col = "\033[92m" if trig_conf > 0.6 else ("\033[93m" if trig_conf > 0.4 else "\033[91m")
+            harv_col = "\033[92m" if harv_conf > 0.6 else ("\033[93m" if harv_conf > 0.4 else "\033[91m")
+
+            print(f"  Trigger Conf Avg:  {trig_col}{trig_conf:.3f}\033[0m")
+            print(f"  Harvester Conf Avg:{harv_col}{harv_conf:.3f}\033[0m")
+            print(f"  Avg Trade Duration:{avg_dur:>8.1f} min")
+            print(f"  Last Trade:        {last_trade:>8.1f} min ago")
+
     def _render_decision_log(self):
         """Render the Decision Log tab (Tab 6)"""
-        log_file = self.data_dir / "decision_log.json"
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
 
+        # ── Try rich JSONL source first ────────────────────────────────────
+        jsonl_file = Path("log/decisions.jsonl")
+        entries_jsonl: list[dict] = []
+        if jsonl_file.exists():
+            try:
+                with open(jsonl_file, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                for line in lines[-20:]:
+                    line = line.strip()
+                    if line:
+                        entries_jsonl.append(json.loads(line))
+            except Exception:
+                entries_jsonl = []
+
+        if entries_jsonl:
+            # Rich JSONL format: timestamp | agent | decision | conf | runway($) | vpin_z | price
+            header = (
+                f"  {'Time':<8} {'Agent':<10} {'Decision':<10} {'Conf':>6} {'Rnwy$':>6} {'VPIN-z':>7} {'Price':>10}"
+            )
+            print(header)
+            print("  " + "─" * 60)
+            for entry in entries_jsonl:
+                ts_raw = entry.get("timestamp", "?")
+                try:
+                    ts_str = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+                except Exception:
+                    ts_str = str(ts_raw)[:8]
+
+                agent = entry.get("agent", "?")[:9]
+                decision = entry.get("decision", "?")[:9]
+                conf = entry.get("confidence", 0.0)
+                ctx = entry.get("context", {})
+                reasoning = entry.get("reasoning", {})
+                price = ctx.get("price", 0.0)
+                vpin_z = ctx.get("vpin_z", 0.0)
+                runway_pct = reasoning.get("predicted_runway", 0.0)
+                # Convert fractional runway to price delta (e.g. 0.002 * 2900 = $5.80)
+                runway_usd = runway_pct * price if price > 0 else runway_pct
+
+                if decision.upper() in ("BUY", "LONG", "ENTER"):
+                    color = "\033[92m"
+                elif decision.upper() in ("SELL", "SHORT", "EXIT", "CLOSE"):
+                    color = "\033[91m"
+                elif decision.upper() == "HOLD":
+                    color = "\033[93m"
+                else:
+                    color = "\033[0m"
+
+                vpin_flag = "\033[91m⚠\033[0m" if abs(vpin_z) > 2.0 else " "
+                print(
+                    f"  {ts_str:<8} {agent:<10} {color}{decision:<10}\033[0m "
+                    f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} {price:>10.4f}"
+                )
+            print("  " + "─" * 60)
+            print(f"\n  Source: {jsonl_file}  |  Total lines visible: {len(entries_jsonl)}")
+            return
+
+        # ── Fallback: legacy data/decision_log.json ────────────────────────
+        log_file = self.data_dir / "decision_log.json"
         if not log_file.exists():
             print("  ⚠️  No decision log found.")
-            print("\n  The decision log will appear here once the bot starts making trading decisions.")
-            print("  Expected file: data/decision_log.json")
+            print("\n  Expected files:")
+            print("    log/decisions.jsonl  (rich — primary)")
+            print("    data/decision_log.json  (legacy — fallback)")
             return
 
         try:
@@ -794,8 +1010,7 @@ class TabbedHUD:
             print("  No entries yet. Waiting for bot decisions...")
             return
 
-        # Show last 20 entries with better formatting
-        print(f"  Showing {len(entries[-20:])} most recent decisions:\n")
+        print(f"  Showing {len(entries[-20:])} most recent decisions (legacy format):\n")
         print("  " + "─" * 76)
 
         for entry in entries[-20:]:
@@ -803,7 +1018,6 @@ class TabbedHUD:
             event = entry.get("event", "?")
             details = entry.get("details", {})
 
-            # Format details as readable string
             if isinstance(details, dict):
                 pos = details.get("cur_pos", "?")
                 action = details.get("action", "?")
@@ -813,15 +1027,14 @@ class TabbedHUD:
             else:
                 details_str = str(details)
 
-            # Color code by event type
             if "OPEN" in event.upper() or "entry" in event.lower():
-                color = "\033[92m"  # Green for entries
+                color = "\033[92m"
             elif "CLOSE" in event.upper() or "exit" in event.lower():
-                color = "\033[91m"  # Red for exits
+                color = "\033[91m"
             elif "HOLD" in event.upper():
-                color = "\033[93m"  # Yellow for holds
+                color = "\033[93m"
             else:
-                color = "\033[0m"  # Default
+                color = "\033[0m"
 
             print(f"  [{ts}] {color}{event}\033[0m: {details_str}")
 
@@ -902,6 +1115,25 @@ class TabbedHUD:
         bar = "█" * filled + "░" * (bar_len - filled)
         print(f"\n    [{bar}]")
         print("     LOW                                HIGH")
+
+        # ── Position Sizing ───────────────────────────────────────────────
+        print()
+        print("  \033[1m💰 POSITION SIZING\033[0m")
+        risk_budget = rs.get("risk_budget_usd", 0.0)
+        risk_req_qty = rs.get("risk_requested_qty", 0.0)
+        risk_final_qty = rs.get("risk_final_qty", 0.0)
+        vol_cap = rs.get("vol_cap", 0.0)
+        vol_ref = rs.get("vol_reference", 0.0)
+
+        qty_color = "\033[92m" if risk_final_qty == risk_req_qty else "\033[93m"
+
+        print(f"    Risk Budget:       {risk_budget:>10.2f} USD")
+        print(f"    Requested Qty:     {risk_req_qty:>10.4f}")
+        print(f"    Final Qty:         {qty_color}{risk_final_qty:>10.4f}\033[0m")
+        if risk_req_qty > 0 and risk_final_qty < risk_req_qty:
+            print("    \033[93m⚡ Qty capped by vol/risk constraints\033[0m")
+        print(f"    Vol Cap:           {vol_cap * 100:>9.2f}%")
+        print(f"    Vol Reference:     {vol_ref * 100:>9.3f}%")
 
     def _render_market(self):
         """Render market microstructure"""
