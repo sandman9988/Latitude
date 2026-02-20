@@ -411,7 +411,7 @@ class Policy:
 
                 self.torch = torch
                 self.model = QNet(_window=self.window, n_features=4, n_actions=3)
-                self.model.load_state_dict(torch.load(model_path, map_location="cpu"))
+                self.model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
                 self.model.eval()
                 self.use_torch = True
                 LOG.info("[POLICY] Loaded DDQN model: %s", model_path)
@@ -3817,7 +3817,7 @@ class CTraderFixApp(fix.Application):
                 if (
                     action == 0
                     and hasattr(self.policy, "add_trigger_experience")
-                    and random.random() < EXPLORATION_SAMPLE_RATE  # Sample a fraction of NO_ENTRY bars
+                    and random.random() < EXPLORATION_SAMPLE_RATE  # nosonar: non-crypto sampling, PRNG is intentional
                 ):
                         trigger_state = (
                             self.policy.trigger.last_state.copy()
