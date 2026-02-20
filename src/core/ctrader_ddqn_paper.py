@@ -4095,6 +4095,14 @@ class CTraderFixApp(fix.Application):
             )
             circuit_breaker = "ACTIVE" if self.kurtosis_monitor.is_breaker_active else "INACTIVE"
 
+            # Seed regime detector from historical bars if still UNKNOWN after restart
+            if (
+                hasattr(self.policy, "seed_regime_from_bars")
+                and getattr(self.policy, "current_regime", "UNKNOWN") == "UNKNOWN"
+                and len(self.bars) >= 10
+            ):
+                self.policy.seed_regime_from_bars(self.bars)
+
             # Regime from dual policy
             regime = "UNKNOWN"
             regime_zeta = 1.0

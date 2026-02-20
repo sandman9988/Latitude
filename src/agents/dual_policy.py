@@ -645,6 +645,33 @@ class DualPolicy:
         self.current_regime, self.current_zeta = self.regime_detector.add_price(close_price)
         self._sync_replay_buffer_regime()
 
+    def seed_regime_from_bars(self, bars) -> None:
+        """Pre-seed regime detector from historical bar close prices.
+
+        Called once when the regime is still UNKNOWN but historical bars are
+        available (e.g. after a restart). Feeds up to ``window_size`` close
+        prices so the regime is immediately classified rather than waiting
+        50+ bars of live data.
+        """
+        if not self.regime_detector or self.current_regime != "UNKNOWN":
+            return
+        window = getattr(self.regime_detector, "window_size", 50)
+        seed_bars = list(bars)[-window:]
+        if len(seed_bars) < 3:
+            return
+        for bar in seed_bars:
+            try:
+                close = bar[4]  # OHLCV index 4 = close
+                if close and close > 0:
+                    self.current_regime, self.current_zeta = self.regime_detector.add_price(close)
+            except (IndexError, TypeError):
+                continue
+        self._sync_replay_buffer_regime()
+        LOG.info(
+            "[REGIME] Seeded from %d historical bars → regime=%s zeta=%.3f",
+            len(seed_bars), self.current_regime, self.current_zeta,
+        )
+
     def _sync_replay_buffer_regime(self):
         """Align replay buffer sampling with current regime classification."""
         regime_map = {
@@ -831,6 +858,22 @@ class DualPolicy:
             LOG.error("[CHECKPOINT] Failed to save metadata: %s", e)
             success = False
 
+        # 4. Save regime detector state (price buffer) so regime survives restarts
+        if self.regime_detector:
+            try:
+                regime_state = {
+                    "price_buffer": list(self.regime_detector.price_buffer),
+                    "current_regime": self.current_regime,
+                    "current_zeta": self.current_zeta,
+                }
+                regime_path = Path(checkpoint_dir) / "regime_state.json"
+                with open(regime_path, "w") as f:
+                    json.dump(regime_state, f)
+                LOG.debug("[CHECKPOINT] Saved regime state: regime=%s, %d prices",
+                          self.current_regime, len(self.regime_detector.price_buffer))
+            except Exception as e:
+                LOG.warning("[CHECKPOINT] Failed to save regime state: %s", e)
+
         if success:
             LOG.info("[CHECKPOINT] ✓ Full checkpoint saved to %s", checkpoint_dir)
         else:
@@ -913,6 +956,26 @@ class DualPolicy:
                 loaded_anything = True
             except Exception as e:
                 LOG.error("[CHECKPOINT] Failed to load metadata: %s", e)
+
+        # 4. Restore regime detector price buffer so regime is immediately available
+        regime_path = cp / "regime_state.json"
+        if regime_path.exists() and self.regime_detector:
+            try:
+                with open(regime_path) as f:
+                    regime_state = json.load(f)
+                prices = regime_state.get("price_buffer", [])
+                if prices:
+                    self.regime_detector.price_buffer = list(prices)
+                    # Force a regime recalculation from restored buffer
+                    self.regime_detector._update_regime()
+                    self.current_regime = self.regime_detector.current_regime
+                    self.current_zeta = self.regime_detector.current_zeta
+                    self._sync_replay_buffer_regime()
+                    LOG.info("[CHECKPOINT] Restored regime state: regime=%s zeta=%.3f (%d prices)",
+                             self.current_regime, self.current_zeta, len(prices))
+                    loaded_anything = True
+            except Exception as e:
+                LOG.warning("[CHECKPOINT] Failed to restore regime state: %s", e)
 
         if loaded_anything:
             LOG.info(
