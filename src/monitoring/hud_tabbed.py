@@ -17,6 +17,7 @@ Note: Ctrl+C is ignored to prevent accidental termination when copying text.
 """
 
 import contextlib
+from collections import deque
 import json
 import math
 import os
@@ -78,6 +79,12 @@ class TabbedHUD:
         self.production_metrics = {}
         self.self_test_results: list = []
         self._metrics_from_trade_log = False
+        # Loss history for trend / sparkline (non-zero samples only)
+        self._trig_loss_hist: deque = deque(maxlen=40)
+        self._harv_loss_hist: deque = deque(maxlen=40)
+        # Step-time pairs for training velocity: (wall_time, steps)
+        self._trig_step_hist: deque = deque(maxlen=12)
+        self._harv_step_hist: deque = deque(maxlen=12)
         self.last_update = None
         self.notification = ""
         self.notification_expiry = datetime.min
@@ -195,6 +202,20 @@ class TabbedHUD:
 
         # Training stats
         self._load_json("training_stats.json", "training_stats")
+        # Accumulate loss / step history for trend display
+        _tl = self.training_stats.get("trigger_loss", 0.0)
+        _hl = self.training_stats.get("harvester_loss", 0.0)
+        _now = time.time()
+        if _tl > 0:
+            self._trig_loss_hist.append(_tl)
+        if _hl > 0:
+            self._harv_loss_hist.append(_hl)
+        _ts = self.training_stats.get("trigger_training_steps", 0)
+        _hs = self.training_stats.get("harvester_training_steps", 0)
+        if _ts > 0:
+            self._trig_step_hist.append((_now, _ts))
+        if _hs > 0:
+            self._harv_step_hist.append((_now, _hs))
 
         # Production metrics
         self._load_json("production_metrics.json", "production_metrics")
@@ -660,97 +681,142 @@ class TabbedHUD:
         print("\n\033[1m🧠 AGENT TRAINING STATUS\033[0m\n")
 
         ts = self.training_stats
-        BUFFER_CAPACITY = 50_000  # Actual PrioritizedReplayBuffer capacity
-        BAR_LEN = 30
+        pm = self.production_metrics.get("metrics", {})
+        TRIG_CAP = 2_000
+        HARV_CAP = 10_000
+        BAR_LEN = 26
 
-        def _buf_bar(size: int) -> str:
-            pct = min(size / BUFFER_CAPACITY, 1.0)
+        _G = "\033[92m"; _Y = "\033[93m"; _R = "\033[91m"
+        _B = "\033[94m"; _DIM = "\033[90m"; _RST = "\033[0m"
+
+        def _pct_bar(val: int, cap: int) -> str:
+            pct = min(val / cap, 1.0) if cap > 0 else 0.0
             filled = int(BAR_LEN * pct)
-            return f"[{'█' * filled}{'░' * (BAR_LEN - filled)}] {pct * 100:.1f}%"
+            col = _G if pct > 0.5 else (_Y if pct > 0.1 else _R)
+            return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}]{_RST} {pct * 100:5.1f}%"
 
         def _eps_bar(eps: float) -> str:
             pct = max(0.0, min(eps, 1.0))
             filled = int(BAR_LEN * pct)
-            return f"[{'█' * filled}{'░' * (BAR_LEN - filled)}] {eps:.4f}"
+            bracket = f"{_R}COLD{_RST}" if eps > 0.2 else (f"{_Y}WARM{_RST}" if eps > 0.05 else f"{_G}HOT{_RST}")
+            col = _R if eps > 0.2 else (_Y if eps > 0.05 else _G)
+            return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}] {eps:.4f}{_RST} {bracket}"
 
-        # Arena info
+        def _beta_bar(beta: float) -> str:
+            pct = max(0.0, min((beta - 0.4) / 0.6, 1.0))
+            filled = int(BAR_LEN * pct)
+            col = _G if beta > 0.8 else (_Y if beta > 0.6 else _DIM)
+            return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}] {beta:.4f}{_RST}  (0.4 cold→1.0 fully corrected)"
+
+        def _trend(hist: deque) -> str:
+            vals = [v for v in list(hist) if v > 0]
+            if len(vals) < 6:
+                return f"{_DIM}→ — (need more samples){_RST}"
+            half = len(vals) // 2
+            old_mean = sum(vals[:half]) / half
+            new_mean = sum(vals[half:]) / (len(vals) - half)
+            delta_pct = (new_mean - old_mean) / old_mean * 100 if old_mean > 0 else 0
+            if delta_pct < -3:
+                return f"{_G}↓ {abs(delta_pct):.1f}% IMPROVING{_RST}"
+            elif delta_pct > 3:
+                return f"{_R}↑ +{delta_pct:.1f}% DEGRADING{_RST}"
+            else:
+                return f"{_Y}→ {delta_pct:+.1f}% STABLE{_RST}"
+
+        def _spark(hist: deque) -> str:
+            vals = [v for v in list(hist) if v > 0]
+            if len(vals) < 2:
+                return ""
+            return self._create_sparkline(vals[-20:])
+
+        def _velocity(step_hist: deque) -> str:
+            pairs = list(step_hist)
+            if len(pairs) < 2:
+                return f"{_DIM}—{_RST}"
+            dt = pairs[-1][0] - pairs[0][0]
+            ds = pairs[-1][1] - pairs[0][1]
+            if dt <= 0 or ds <= 0:
+                return f"{_DIM}0 steps/min{_RST}"
+            rate = ds / dt * 60
+            col = _G if rate > 5 else (_Y if rate > 1 else _DIM)
+            return f"{col}{rate:.1f} steps/min{_RST}"
+
+        # ── Trigger Agent ─────────────────────────────────────────────────────
+        trig_buf   = ts.get("trigger_buffer_size", 0)
+        trig_steps = ts.get("trigger_training_steps", 0)
+        trig_loss  = ts.get("trigger_loss", 0.0)
+        trig_eps   = ts.get("trigger_epsilon", 0.0)
+        trig_ready = ts.get("trigger_ready", False)
+        trig_td    = ts.get("trigger_td_error", 0.0)
+        trig_conf  = pm.get("trigger_confidence_avg", 0.5)
+
+        ready_t = f"{_G}✓ Ready{_RST}" if trig_ready else f"{_Y}⏳ Filling…{_RST}"
+        print(f"  \033[1m🎯 TRIGGER AGENT  (Entry)\033[0m  {ready_t}")
+        print(f"    Steps:  {trig_steps:>10,}   Velocity: {_velocity(self._trig_step_hist)}")
+        print(f"    Buffer: {_pct_bar(trig_buf, TRIG_CAP)}  {trig_buf:,}/{TRIG_CAP:,}")
+        print(f"    ε:      {_eps_bar(trig_eps)}")
+        _tl_str = f"{trig_loss:.6f}" if trig_loss > 0 else f"{_DIM}0.000000 (idle/no training event){_RST}"
+        print(f"    Loss:   {_tl_str}")
+        print(f"    Trend:  {_trend(self._trig_loss_hist)}")
+        _sp = _spark(self._trig_loss_hist)
+        if _sp:
+            print(f"    Hist:   {_sp}")
+        if trig_td > 0:
+            print(f"    TD-Err: {trig_td:.6f}")
+        _cc = _G if 0.55 < trig_conf < 0.85 else (_Y if 0.50 < trig_conf <= 0.55 else _R)
+        print(f"    Conf:   {_cc}{trig_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
+        print()
+
+        # ── Harvester Agent ───────────────────────────────────────────────────
+        harv_buf      = ts.get("harvester_buffer_size", 0)
+        harv_steps    = ts.get("harvester_training_steps", 0)
+        harv_loss     = ts.get("harvester_loss", 0.0)
+        harv_beta     = ts.get("harvester_beta", 0.4)
+        harv_ready    = ts.get("harvester_ready", False)
+        harv_td       = ts.get("harvester_td_error", 0.0)
+        harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
+        harv_conf     = pm.get("harvester_confidence_avg", 0.5)
+
+        ready_h = f"{_G}✓ Ready{_RST}" if harv_ready else f"{_Y}⏳ Filling…{_RST}"
+        print(f"  \033[1m🌾 HARVESTER AGENT  (Exit)\033[0m  {ready_h}")
+        print(f"    Steps:  {harv_steps:>10,}   Velocity: {_velocity(self._harv_step_hist)}")
+        print(f"    Buffer: {_pct_bar(harv_buf, HARV_CAP)}  {harv_buf:,}/{HARV_CAP:,}")
+        print(f"    β IS:   {_beta_bar(harv_beta)}")
+        _hl_str = f"{harv_loss:.6f}" if harv_loss > 0 else f"{_DIM}0.000000 (idle/no training event){_RST}"
+        print(f"    Loss:   {_hl_str}")
+        print(f"    Trend:  {_trend(self._harv_loss_hist)}")
+        _sp = _spark(self._harv_loss_hist)
+        if _sp:
+            print(f"    Hist:   {_sp}")
+        if harv_td > 0:
+            print(f"    TD-Err: {harv_td:.6f}")
+        _cc = _G if 0.55 < harv_conf < 0.85 else (_Y if 0.50 < harv_conf <= 0.55 else _R)
+        print(f"    Conf:   {_cc}{harv_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
+        print(f"    Min-hold: {harv_min_hold} ticks")
+        print()
+
+        # ── Arena ─────────────────────────────────────────────────────────────
         total_agents = ts.get("total_agents", 0)
         if total_agents > 0:
             diversity = ts.get("arena_diversity", {})
-            trig_div = diversity.get("trigger_diversity", 0) if isinstance(diversity, dict) else 0
-            harv_div = diversity.get("harvester_diversity", 0) if isinstance(diversity, dict) else 0
+            trig_div  = diversity.get("trigger_diversity", 0) if isinstance(diversity, dict) else 0
+            harv_div  = diversity.get("harvester_diversity", 0) if isinstance(diversity, dict) else 0
             agreement = ts.get("last_agreement_score", 0)
             consensus = ts.get("consensus_mode", "unknown")
-
-            print("  \033[1m🤖 MULTI-AGENT ARENA\033[0m")
-            print(f"    Total Agents:     {total_agents}")
-            print(f"    Consensus Mode:   {consensus}")
-            print(f"    Agreement Score:  {agreement:.3f}")
-            print(f"    Trigger Diversity:{trig_div:.3f}")
-            print(f"    Harvester Div:    {harv_div:.3f}")
+            print("  \033[1m🤖 ARENA\033[0m")
+            print(f"    Agents: {total_agents}   Consensus: {consensus}   Agreement: {agreement:.3f}")
+            print(f"    Diversity — Trig: {trig_div:.3f}   Harv: {harv_div:.3f}")
             print()
 
-        # ── Trigger Agent ────────────────────────────────────────────────────
-        print("  \033[1m🎯 TRIGGER AGENT (Entry)\033[0m")
-        trig_buf = ts.get("trigger_buffer_size", 0)
-        trig_steps = ts.get("trigger_training_steps", 0)
-        trig_loss = ts.get("trigger_loss", 0.0)
-        trig_td = ts.get("trigger_td_error", 0.0)
-        trig_eps = ts.get("trigger_epsilon", 0.0)
-        trig_ready = ts.get("trigger_ready", False)
-
-        buf_color = (
-            "\033[92m"
-            if trig_buf > BUFFER_HIGH_THRESHOLD
-            else ("\033[93m" if trig_buf > BUFFER_MEDIUM_THRESHOLD else "\033[91m")
-        )
-        ready_str = "\033[92m✓ Ready\033[0m" if trig_ready else "\033[93m⏳ Filling…\033[0m"
-
-        print(f"    Training Steps:    {trig_steps:>10,}")
-        print(f"    Experience Buffer: {buf_color}{trig_buf:>8,}\033[0m / {BUFFER_CAPACITY:,}   ({ready_str})")
-        print(f"    Buffer Fill:       {_buf_bar(trig_buf)}")
-        print(f"    ε (Exploration):   {_eps_bar(trig_eps)}")
-        print(f"    Training Loss:     {trig_loss:>12.6f}")
-        if trig_td > 0:
-            print(f"    TD-Error:          {trig_td:>12.6f}")
-        print()
-
-        # ── Harvester Agent ──────────────────────────────────────────────────
-        print("  \033[1m🌾 HARVESTER AGENT (Exit)\033[0m")
-        harv_buf = ts.get("harvester_buffer_size", 0)
-        harv_steps = ts.get("harvester_training_steps", 0)
-        harv_loss = ts.get("harvester_loss", 0.0)
-        harv_td = ts.get("harvester_td_error", 0.0)
-        harv_beta = ts.get("harvester_beta", 0.4)
-        harv_ready = ts.get("harvester_ready", False)
-        harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
-
-        buf_color = (
-            "\033[92m"
-            if harv_buf > BUFFER_HIGH_THRESHOLD
-            else ("\033[93m" if harv_buf > BUFFER_MEDIUM_THRESHOLD else "\033[91m")
-        )
-        ready_str = "\033[92m✓ Ready\033[0m" if harv_ready else "\033[93m⏳ Filling…\033[0m"
-
-        print(f"    Training Steps:    {harv_steps:>10,}")
-        print(f"    Experience Buffer: {buf_color}{harv_buf:>8,}\033[0m / {BUFFER_CAPACITY:,}   ({ready_str})")
-        print(f"    Buffer Fill:       {_buf_bar(harv_buf)}")
-        # IS β annealing bar (0.4 → 1.0 over training)
-        beta_pct = max(0.0, min((harv_beta - 0.4) / 0.6, 1.0))
-        beta_filled = int(BAR_LEN * beta_pct)
-        beta_bar = f"[{'█' * beta_filled}{'░' * (BAR_LEN - beta_filled)}] {harv_beta:.4f}"
-        print(f"    β (IS annealing):  {beta_bar}")
-        print(f"    Training Loss:     {harv_loss:>12.6f}")
-        if harv_td > 0:
-            print(f"    TD-Error:          {harv_td:>12.6f}")
-        print(f"    Min-Hold Ticks:    {harv_min_hold:>10}")
-        print()
-
-        # ── Training Schedule ────────────────────────────────────────────────
+        # ── Learning health summary ───────────────────────────────────────────
         last_train = ts.get("last_training_time", "Never")
-        print("  \033[1m⏱  TRAINING SCHEDULE\033[0m")
-        print(f"    Last Training:     {last_train}")
-        print(f"    Training Enabled:  {self.bot_config.get('training_enabled', False)}")
+        train_on   = self.bot_config.get("training_enabled", False)
+        train_str  = f"{_G}ON{_RST}" if train_on else f"{_R}OFF{_RST}"
+        trig_ok = f"{_G}✓{_RST}" if trig_ready else f"{_Y}⏳{_RST}"
+        harv_ok = f"{_G}✓{_RST}" if harv_ready else f"{_Y}⏳{_RST}"
+        print(f"  \033[1m📊 LEARNING HEALTH\033[0m")
+        print(f"    Training: {train_str}   Last event: {last_train}")
+        print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
 
     def _render_header(self):
         """Render header"""
