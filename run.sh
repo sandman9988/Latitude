@@ -180,6 +180,12 @@ check_configs() {
 setup_logging() {
     mkdir -p logs/python ctrader_py_logs data store exports
     log "${GREEN}✓ Log directories ready${NC}"
+    # Rotate logs on every startup (size-based, no-op when under threshold)
+    local rotate_script
+    rotate_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/rotate_logs.sh"
+    if [[ -x "$rotate_script" ]]; then
+        "$rotate_script" 2>/dev/null || true
+    fi
 }
 
 # Kill any existing bot processes
