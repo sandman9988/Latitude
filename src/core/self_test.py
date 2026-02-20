@@ -347,7 +347,7 @@ def _chk_platt_sanity() -> tuple[Sev, str]:
             return Sev.WARNING, f"non-finite Platt params a={a} b={b} — will reset"
         if abs(a) > 50 or abs(b) > 50:
             return Sev.WARNING, f"extreme Platt params a={a:.2f} b={b:.2f} — may over/undergate"
-        if a == 1.0 and b == 0.0:
+        if math.isclose(a, 1.0) and math.isclose(b, 0.0):
             return Sev.INFO, "Platt at defaults (not yet adapted)"
         return Sev.PASS, f"a={a:.4f} b={b:+.4f}"
     except Exception as e:

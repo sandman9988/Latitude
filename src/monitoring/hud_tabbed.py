@@ -112,7 +112,7 @@ class TabbedHUD:
                 self.old_settings = termios.tcgetattr(sys.stdin)
                 tty.setcbreak(sys.stdin.fileno())
                 self.raw_mode_enabled = True
-        except:
+        except Exception:  # noqa: BLE001 — terminal may not support raw mode
             pass
 
         self.thread = threading.Thread(target=self._update_loop, daemon=True)
@@ -151,7 +151,7 @@ class TabbedHUD:
                     self._handle_symbol_selection()
                 elif key.lower() == "h":
                     self._show_help()
-        except:
+        except Exception:  # noqa: BLE001 — ignore terminal read errors silently
             pass
 
     def _update_loop(self):
@@ -452,7 +452,7 @@ class TabbedHUD:
             try:
                 with open(filepath) as f:
                     setattr(self, attr, json.load(f))
-            except:
+            except Exception:  # noqa: BLE001 — stale/partial JSON; keep last good value
                 pass
 
     def _disable_raw_mode(self):
@@ -468,7 +468,7 @@ class TabbedHUD:
             try:
                 tty.setcbreak(sys.stdin.fileno())
                 self.raw_mode_enabled = True
-            except:
+            except Exception:  # noqa: BLE001 — terminal may lose raw-mode capability
                 pass
 
     def _show_help(self):

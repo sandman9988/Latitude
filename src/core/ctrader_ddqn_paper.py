@@ -385,8 +385,10 @@ class Policy:
         if model_path and TORCH_AVAILABLE:
             try:
                 # Type guards: nn is not None when TORCH_AVAILABLE is True
-                assert nn is not None, "nn module should be available"
-                assert torch is not None, "torch module should be available"
+                if nn is None:
+                    raise RuntimeError("nn module unavailable despite TORCH_AVAILABLE=True")
+                if torch is None:
+                    raise RuntimeError("torch module unavailable despite TORCH_AVAILABLE=True")
 
                 class QNet(nn.Module):
                     def __init__(self, _window: int, n_features: int, n_actions: int = 3):
@@ -471,8 +473,10 @@ class Policy:
             return 1
 
         # Type guard: ensure torch is available
-        assert self.torch is not None, "torch should be available when use_torch=True"
-        assert self.model is not None, "model should be loaded when use_torch=True"
+        if self.torch is None:
+            raise RuntimeError("torch is None but use_torch=True — model load must have failed")
+        if self.model is None:
+            raise RuntimeError("model is None but use_torch=True — model load must have failed")
         with self.torch.no_grad():
             t = self.torch.from_numpy(x).unsqueeze(0)
             q = self.model(t).squeeze(0).numpy()

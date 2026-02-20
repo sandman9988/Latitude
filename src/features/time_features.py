@@ -350,9 +350,6 @@ class TimeFeatures:
                 "minute_of_hour": 0.0,
             }
 
-        # mypy: current_time is non-None beyond this point
-        assert current_time is not None
-
         # Clear stale cache
         self._clear_cache_if_stale(current_time)
 
