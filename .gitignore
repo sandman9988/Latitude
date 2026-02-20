@@ -19,6 +19,7 @@ ENV/
 logs/
 log/
 ctrader_py_logs/
+ctrader_py_logs */
 
 # Data & Exports
 data/
@@ -41,9 +42,7 @@ store/
 # Archives
 archive/
 
-# Temporary
-cmd
-To
+# Temporary / one-time scripts
 *.tmp
 *.bak
 *.pid
@@ -52,3 +51,14 @@ check_positions.py
 close_all_hedged_positions.py
 emergency_close_all.py
 data/checkpoints/
+
+# Backup archives (docs snapshots, etc.)
+*.tar.gz
+*.tar.bz2
+*.zip
+REORGANIZE_PROJECT.py
+
+# Duplicate dependencies inside scripts/
+scripts/requirements.txt
+scripts/.env
+scripts/.env.example

@@ -1,17 +1,17 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** February 14, 2026 18:50 UTC  
+**Last Updated:** February 20, 2026 (code-review session)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
-**Status:** ✅ Operational (Markets Closed - Weekend)  
+**Status:** ✅ Operational — production readiness gaps addressed  
 **Audience:** All
 
 ---
 
 ## 🎯 Executive Summary
 
-XAUUSD M1 trading bot using dual-agent DDQN reinforcement learning. Currently in **training mode** with paper trading. Recent critical fixes applied to stop loss configuration (67% risk reduction) and defensive programming enhancements.
+XAUUSD M1 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Full production-readiness audit performed this session — all high/medium severity gaps closed.
 
-**Current Position:** LONG @ 5045.21 (MAE 2.05 points = 0.04%, well within SL threshold)
+**Test Suite:** 2 331 passing, 4 skipped, 0 failures (124 test files, 46.76 s)
 
 **Trading Status:**
 - **Symbol:** XAUUSD (Gold Spot)
@@ -21,6 +21,25 @@ XAUUSD M1 trading bot using dual-agent DDQN reinforcement learning. Currently in
 - **Session:** QUOTE + TRADE dual FIX sessions
 
 ---
+
+## 🔧 Production Readiness Fixes (Feb 20, 2026 session)
+
+### GAP-1 — Log flood eliminated (HIGH)
+24 `LOG.info()` diagnostic lines demoted to `LOG.debug()` in `src/core/ctrader_ddqn_paper.py`.  
+Tags demoted: `[DEBUG]`, `[DIAG]`, `[BAR]`, `[FLOW-TRACE]`, `[FLOW-ABORT] No action needed`, `[POLICY-CHECK]`, `[FLAT: Check for entry]`, `[HARVESTER_DEBUG]`.  
+Operationally meaningful tags remain at INFO: `[TRIGGER]`, `[HARVESTER]`, `[CIRCUIT-BREAKER]`, `[ORDER]`, `[ENTRY]`, `[EXIT]`, `[RECONNECT]`, `[SAFETY]`.
+
+### GAP-3 — Model weight load verification (MEDIUM)
+`_chk_model_weights()` in `src/core/self_test.py` now calls `torch.load()` to verify the checkpoint is actually loadable, not just that the file exists. Missing torch is surfaced as WARNING rather than silently letting the bot fall back to the heuristic.
+
+### GAP-4 — QuickFIX importable check (MEDIUM → CRITICAL)
+New `_chk_quickfix_importable()` self-test check added (severity CRITICAL). QuickFIX must be built from source and is not on PyPI — this check surfaces the missing dependency before the FIX session fails to start.
+
+### GAP-6 — Circuit breaker schema key bug (MEDIUM)
+`_chk_circuit_breakers()` was reading `.get("tripped")` but `CircuitBreakers.save_state()` writes `"is_tripped"`. Fix applied: now checks `v.get("is_tripped") or v.get("tripped")` (backwards-compatible). Also validates that the present keys match the known schema to catch future drift.
+
+---
+
 
 ## 🔴 Critical Fixes Applied (Feb 14, 2026)
 

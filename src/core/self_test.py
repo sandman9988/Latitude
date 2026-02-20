@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        #!/usr/bin/env python3
 """
 Startup Self-Test
 =================
@@ -13,7 +13,7 @@ INFO      – diagnostic-only; no action required.
 
 Usage
 -----
-    from src.core.self_test import run_self_test
+    from src.core.self_test import run_self_test                                                                                                                                                                                                                                                                
     run_self_test()          # raises SystemExit(1) on any CRITICAL failure
 """
 
@@ -22,10 +22,12 @@ import logging
 import math
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Callable
+
+import numpy as np
 
 LOG = logging.getLogger(__name__)
 
@@ -37,6 +39,13 @@ _R  = "\033[91m"  if _IS_TTY else ""   # red
 _B  = "\033[94m"  if _IS_TTY else ""   # blue/cyan
 _W  = "\033[0m"   if _IS_TTY else ""   # reset
 _BD = "\033[1m"   if _IS_TTY else ""   # bold
+
+# ── check constants ────────────────────────────────────────────────────────────
+_MAX_QTY_LOTS        = 100    # position size (lots) considered suspiciously large
+_MAX_CORRUPT_LINES   = 5      # max corrupt trade-log lines before WARNING
+_STALE_POSITION_SECS = 3600   # 1 h — stale position data threshold
+_STALE_DAY_SECS      = 86400  # 24 h — generic one-day staleness threshold
+_MAX_PLATT_PARAM     = 50     # abs(a) or abs(b) above this is considered extreme
 
 
 class Sev(IntEnum):
@@ -95,13 +104,12 @@ class SelfTestReport:
             print(str(r))
 
         print(f"{_BD}{'─' * 60}{_W}")
-        status_str = (
-            f"{_R}{_BD}FAILED ({n_crit} critical){_W}"
-            if n_crit else
-            f"{_Y}DEGRADED ({n_warn} warnings){_W}"
-            if n_warn else
-            f"{_G}{_BD}ALL CLEAR{_W}"
-        )
+        if n_crit:
+            status_str = f"{_R}{_BD}FAILED ({n_crit} critical){_W}"
+        elif n_warn:
+            status_str = f"{_Y}DEGRADED ({n_warn} warnings){_W}"
+        else:
+            status_str = f"{_G}{_BD}ALL CLEAR{_W}"
         print(
             f"  Checks: {n}  "
             f"{_G}✓{n_pass}{_W}  "
@@ -177,8 +185,8 @@ def _chk_qty() -> tuple[Sev, str]:
         return Sev.CRITICAL, "CTRADER_QTY is not a valid float"
     if qty <= 0:
         return Sev.CRITICAL, f"qty={qty} must be > 0"
-    if qty > 100:
-        return Sev.CRITICAL, f"qty={qty} suspiciously large (>100 lots)"
+    if qty > _MAX_QTY_LOTS:
+        return Sev.CRITICAL, f"qty={qty} suspiciously large (>{_MAX_QTY_LOTS} lots)"
     if qty > 1.0:
         return Sev.WARNING, f"qty={qty} — confirm this is intentional (>1 lot)"
     return Sev.PASS, f"qty={qty}"
@@ -221,16 +229,16 @@ def _chk_trade_log() -> tuple[Sev, str]:
         valid = 0
         corrupt = 0
         for line in lines[-50:]:   # spot-check last 50 lines only
-            line = line.strip()
-            if not line:
+            stripped = line.strip()
+            if not stripped:
                 continue
             try:
-                json.loads(line)
+                json.loads(stripped)
                 valid += 1
             except json.JSONDecodeError:
                 corrupt += 1
         total = len(lines)
-        if corrupt > 5:
+        if corrupt > _MAX_CORRUPT_LINES:
             return Sev.WARNING, f"{total} entries, {corrupt} corrupt in last 50 — check trade_log.jsonl"
         return Sev.PASS, f"{total} entries ({valid} of last 50 valid)"
     except Exception as e:
@@ -243,9 +251,19 @@ def _chk_circuit_breakers() -> tuple[Sev, str]:
         return Sev.INFO, "no state file — all breakers start open"
     try:
         data = json.loads(p.read_text())
-        tripped = [k for k, v in data.items() if isinstance(v, dict) and v.get("tripped")]
+        # Schema uses "is_tripped" (matches CircuitBreakers.save_state())
+        # Guard against both old schema ("tripped") and missing keys gracefully.
+        tripped = [
+            k for k, v in data.items()
+            if isinstance(v, dict) and (v.get("is_tripped") or v.get("tripped"))
+        ]
         if tripped:
             return Sev.WARNING, f"tripped from previous session: {tripped}"
+        # Verify schema version matches what save_state() writes
+        expected_keys = {"sortino", "kurtosis", "drawdown", "consecutive_losses"}
+        present_keys = {k for k in data if k != "timestamp"}
+        if present_keys and not present_keys.issubset(expected_keys | {"timestamp"}):
+            return Sev.WARNING, f"unexpected CB schema keys {present_keys - expected_keys} — schema drift?"
         return Sev.PASS, "none tripped"
     except Exception as e:
         return Sev.WARNING, f"unreadable ({e}) — will reset"
@@ -260,7 +278,7 @@ def _chk_current_position() -> tuple[Sev, str]:
         pos  = data.get("position", 0)
         price = data.get("entry_price", 0)
         age   = time.time() - (data.get("timestamp") or 0)
-        if pos != 0 and age > 3600:
+        if pos != 0 and age > _STALE_POSITION_SECS:
             return Sev.WARNING, (
                 f"stale position data ({age/3600:.1f}h old): "
                 f"pos={pos} entry={price} — verify via FIX"
@@ -300,7 +318,20 @@ def _chk_model_weights() -> tuple[Sev, str]:
         if not p.exists():
             return Sev.WARNING, f"{label} model path configured but not found: {path}"
         kb = p.stat().st_size // 1024
-        results.append(f"{label}={p.name} ({kb}KB)")
+        # GAP-3: Verify torch is installed and the file is actually loadable.
+        # Without this check the bot silently falls back to the MA/VPIN heuristic
+        # while the operator believes the learned model is active.
+        try:
+            import torch as _torch  # noqa: PLC0415
+            _torch.load(p, map_location="cpu", weights_only=True)
+        except ImportError:
+            return Sev.WARNING, (
+                f"{label}: file exists ({kb}KB) but torch not installed "
+                "— falling back to DDQN numpy / heuristic"
+            )
+        except Exception as e:
+            return Sev.WARNING, f"{label}: file exists ({kb}KB) but torch.load failed: {e}"
+        results.append(f"{label}={p.name} ({kb}KB, loadable)")
     return Sev.PASS, ", ".join(results)
 
 
@@ -313,9 +344,9 @@ def _chk_risk_metrics() -> tuple[Sev, str]:
         var  = data.get("var_95", 0)
         vol  = data.get("realized_vol", 0)
         age  = time.time() - (data.get("timestamp") or 0)
-        return Sev.PASS if age < 86400 else Sev.WARNING, (
+        return Sev.PASS if age < _STALE_DAY_SECS else Sev.WARNING, (
             f"VaR={var:.4f} vol={vol:.4f} age={age/3600:.1f}h"
-            + (" (stale)" if age >= 86400 else "")
+            + (" (stale)" if age >= _STALE_DAY_SECS else "")
         )
     except Exception as e:
         return Sev.WARNING, f"corrupt ({e})"
@@ -345,7 +376,7 @@ def _chk_platt_sanity() -> tuple[Sev, str]:
         b = float(data.get("platt_b", 0.0))
         if not (math.isfinite(a) and math.isfinite(b)):
             return Sev.WARNING, f"non-finite Platt params a={a} b={b} — will reset"
-        if abs(a) > 50 or abs(b) > 50:
+        if abs(a) > _MAX_PLATT_PARAM or abs(b) > _MAX_PLATT_PARAM:
             return Sev.WARNING, f"extreme Platt params a={a:.2f} b={b:.2f} — may over/undergate"
         if math.isclose(a, 1.0) and math.isclose(b, 0.0):
             return Sev.INFO, "Platt at defaults (not yet adapted)"
@@ -354,9 +385,26 @@ def _chk_platt_sanity() -> tuple[Sev, str]:
         return Sev.WARNING, f"could not read: {e}"
 
 
+def _chk_quickfix_importable() -> tuple[Sev, str]:
+    """Verify QuickFIX Python bindings are importable.
+
+    QuickFIX is not on PyPI and must be installed manually from the
+    vendor source tree.  If import fails the bot cannot create FIX
+    sessions at all, so this is CRITICAL.
+    """
+    try:
+        import quickfix  # noqa: PLC0415, F401
+        version = getattr(quickfix, "__version__", "unknown")
+        return Sev.PASS, f"quickfix {version}"
+    except ImportError as e:
+        return Sev.CRITICAL, (
+            f"quickfix not importable: {e} — run: "
+            "cd ../quickfix && pip install -e ."
+        )
+
+
 def _chk_numpy_sanity() -> tuple[Sev, str]:
     """Quick sanity: numpy basic ops work and give finite results."""
-    import numpy as np
     x = np.array([1.0, 2.0, 3.0])
     if not math.isfinite(float(np.mean(x))):
         return Sev.CRITICAL, "numpy mean returned non-finite value"
@@ -388,12 +436,13 @@ def _chk_symbol_specs() -> tuple[Sev, str]:
 # is_critical_check=False means even CRITICAL is downgraded to WARNING.
 _CHECKS: list[tuple[str, Callable[[], tuple[Sev, str]], bool]] = [
     # ── Hard requirements ─────────────────────────────────────────────────
-    ("Environment variables",     _chk_env_vars,          True),
-    ("FIX config files",          _chk_fix_configs,       True),
-    ("Data directory writable",   _chk_data_dir,          True),
-    ("Log directories",           _chk_log_dir,           True),
-    ("Position size (qty)",       _chk_qty,               True),
-    ("NumPy arithmetic",          _chk_numpy_sanity,      True),
+    ("Environment variables",     _chk_env_vars,             True),
+    ("QuickFIX importable",        _chk_quickfix_importable,  True),
+    ("FIX config files",           _chk_fix_configs,          True),
+    ("Data directory writable",    _chk_data_dir,             True),
+    ("Log directories",            _chk_log_dir,              True),
+    ("Position size (qty)",        _chk_qty,                  True),
+    ("NumPy arithmetic",           _chk_numpy_sanity,         True),
     # ── Soft requirements (warn, don't abort) ─────────────────────────────
     ("Learned parameters",        _chk_learned_params,    False),
     ("Bars cache",                _chk_bars_cache,        False),
@@ -408,6 +457,39 @@ _CHECKS: list[tuple[str, Callable[[], tuple[Sev, str]], bool]] = [
     ("Symbol specs",              _chk_symbol_specs,      False),
     ("Platt calibration params",  _chk_platt_sanity,      False),
 ]
+
+
+def _persist_results(report: SelfTestReport) -> None:
+    """Write data/self_test.json for the HUD; silently swallowed on failure."""
+    try:
+        export = {
+            "timestamp": time.time(),
+            "results": [
+                {"name": r.name, "sev": r.sev.name, "detail": r.detail}
+                for r in report.results
+            ],
+            "summary": {
+                "pass":     sum(1 for r in report.results if r.sev == Sev.PASS),
+                "info":     sum(1 for r in report.results if r.sev == Sev.INFO),
+                "warnings": len(report.warnings),
+                "critical": len(report.critical_failures),
+            },
+        }
+        Path("data").mkdir(exist_ok=True)
+        Path("data/self_test.json").write_text(json.dumps(export, indent=2))
+    except Exception:  # noqa: BLE001
+        pass  # never let JSON export block startup
+
+
+def _log_results(report: SelfTestReport) -> None:
+    """Emit per-result log lines at the appropriate level."""
+    for r in report.results:
+        if r.sev == Sev.CRITICAL:
+            LOG.error("[SELF_TEST] CRITICAL: %s — %s", r.name, r.detail)
+        elif r.sev == Sev.WARNING:
+            LOG.warning("[SELF_TEST] WARNING: %s — %s", r.name, r.detail)
+        else:
+            LOG.info("[SELF_TEST] %s: %s — %s", r.sev.name, r.name, r.detail)
 
 
 def run_self_test(*, abort_on_critical: bool = True) -> SelfTestReport:
@@ -438,36 +520,8 @@ def run_self_test(*, abort_on_critical: bool = True) -> SelfTestReport:
             report.add(name, sev, f"unhandled exception: {exc}")
 
     report.print_banner()
-
-    # Persist results so the HUD overview tab can display them
-    try:
-        import time as _time
-        _export = {
-            "timestamp": _time.time(),
-            "results": [
-                {"name": r.name, "sev": r.sev.name, "detail": r.detail}
-                for r in report.results
-            ],
-            "summary": {
-                "pass":     sum(1 for r in report.results if r.sev == Sev.PASS),
-                "info":     sum(1 for r in report.results if r.sev == Sev.INFO),
-                "warnings": len(report.warnings),
-                "critical": len(report.critical_failures),
-            },
-        }
-        Path("data").mkdir(exist_ok=True)
-        Path("data/self_test.json").write_text(json.dumps(_export, indent=2))
-    except Exception:  # noqa: BLE001
-        pass  # never let JSON export block startup
-
-    # Log summary
-    for r in report.results:
-        if r.sev == Sev.CRITICAL:
-            LOG.error("[SELF_TEST] CRITICAL: %s — %s", r.name, r.detail)
-        elif r.sev == Sev.WARNING:
-            LOG.warning("[SELF_TEST] WARNING: %s — %s", r.name, r.detail)
-        else:
-            LOG.info("[SELF_TEST] %s: %s — %s", r.sev.name, r.name, r.detail)
+    _persist_results(report)
+    _log_results(report)
 
     if abort_on_critical and report.critical_failures:
         names = ", ".join(r.name for r in report.critical_failures)

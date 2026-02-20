@@ -1606,7 +1606,7 @@ class CTraderFixApp(fix.Application):
             return
 
         qual = self._qual(session_id)
-        LOG.info(f"[DEBUG] toAdmin called for session: {session_id}, qual: {qual}")
+        LOG.debug(f"[DEBUG] toAdmin called for session: {session_id}, qual: {qual}")
 
         # Reset seq nums
         message.setField(fix.ResetSeqNumFlag(True))
@@ -1615,11 +1615,11 @@ class CTraderFixApp(fix.Application):
         if qual == "QUOTE":
             pwd = os.environ.get("CTRADER_PASSWORD_QUOTE", "").strip()
             message.getHeader().setField(fix.TargetSubID("QUOTE"))
-            LOG.info("[DEBUG] Set TargetSubID=QUOTE in logon header")
+            LOG.debug("[DEBUG] Set TargetSubID=QUOTE in logon header")
         else:
             pwd = os.environ.get("CTRADER_PASSWORD_TRADE", "").strip()
             message.getHeader().setField(fix.TargetSubID("TRADE"))
-            LOG.info("[DEBUG] Set TargetSubID=TRADE in logon header")
+            LOG.debug("[DEBUG] Set TargetSubID=TRADE in logon header")
 
         if user:
             message.setField(fix.Username(user))
@@ -2233,13 +2233,13 @@ class CTraderFixApp(fix.Application):
             series.mark_bar_opened()
 
     def try_bar_update(self):
-        LOG.info(f"[DIAG] try_bar_update called. best_bid={self.best_bid}, best_ask={self.best_ask}")
+        LOG.debug(f"[DIAG] try_bar_update called. best_bid={self.best_bid}, best_ask={self.best_ask}")
         if self.best_bid is None or self.best_ask is None:
-            LOG.info("[BAR] Skipping bar update: best_bid or best_ask is None")
+            LOG.debug("[BAR] Skipping bar update: best_bid or best_ask is None")
             return
 
         mid = (self.best_bid + self.best_ask) / 2.0
-        LOG.info(f"[DIAG] Calculated mid={mid}")
+        LOG.debug(f"[DIAG] Calculated mid={mid}")
         self.current_bar_tick_count += 1
         self._update_vpin(mid)
 
@@ -2260,14 +2260,14 @@ class CTraderFixApp(fix.Application):
 
         closed = self.builder.update(utc_now(), mid)
         if closed:
-            LOG.info(f"[BAR] Closed bar: {closed}")
+            LOG.debug(f"[BAR] Closed bar: {closed}")
             tick_count = self.current_bar_tick_count
             self.current_bar_tick_count = 0
             self._update_non_repaint_series(closed, tick_count)
             self._mark_non_repaint_closed()
             self.close_stats.update(closed[4])
             self.bars.append(closed)
-            LOG.info(f"[BAR] Appended to self.bars (len now {len(self.bars)})")
+            LOG.debug(f"[BAR] Appended to self.bars (len now {len(self.bars)})")
             self._save_bars_cache()
             self.on_bar_close(closed)
             self._mark_non_repaint_opened()
@@ -2461,7 +2461,7 @@ class CTraderFixApp(fix.Application):
         now = time.time()
         if now - self._last_harvester_debug_log > HARVESTER_DEBUG_INTERVAL:
             tracker_count = len(self.mfe_mae_trackers) if hasattr(self, "mfe_mae_trackers") else 0
-            LOG.info(
+            LOG.debug(
                 "[HARVESTER_DEBUG] Eval tick: bid=%s ask=%s bars=%d trackers=%d",
                 self.best_bid,
                 self.best_ask,
@@ -2470,7 +2470,7 @@ class CTraderFixApp(fix.Application):
             )
             if tracker_count > 0:
                 for pos_id, tracker in self.mfe_mae_trackers.items():
-                    LOG.info(
+                    LOG.debug(
                         "[HARVESTER_DEBUG] Tracker %s: entry=%.2f dir=%d mfe=%.4f mae=%.4f",
                         pos_id,
                         getattr(tracker, "entry_price", 0),
@@ -3474,7 +3474,7 @@ class CTraderFixApp(fix.Application):
     def on_bar_close(self, bar):
         t, o, h, low_price, c = bar
 
-        LOG.info(f"[BAR] on_bar_close called: t={t}, o={o}, h={h}, l={low_price}, c={c}")
+        LOG.debug(f"[BAR] on_bar_close called: t={t}, o={o}, h={h}, l={low_price}, c={c}")
 
         # Initialize decision variables for logging (will be populated later)
         action = None
@@ -3678,23 +3678,23 @@ class CTraderFixApp(fix.Application):
 
         # Phase 3: Use DualPolicy if available
         has_decide_entry = hasattr(self.policy, "decide_entry")
-        LOG.info("[POLICY-CHECK] policy type=%s, has_decide_entry=%s", type(self.policy).__name__, has_decide_entry)
+        LOG.debug("[POLICY-CHECK] policy type=%s, has_decide_entry=%s", type(self.policy).__name__, has_decide_entry)
         if has_decide_entry:
             # Dual-agent architecture
             # HEDGING MODE: Check if ANY positions exist (not just net=0)
             has_positions = self.trade_integration.has_any_open_positions()
-            LOG.info("[FLAT: Check for entry] has_positions=%s, cur_pos=%d", has_positions, self.cur_pos)
-            LOG.info("[FLOW-TRACE] Step 1: Position check complete, proceeding to entry decision")
+            LOG.debug("[FLAT: Check for entry] has_positions=%s, cur_pos=%d", has_positions, self.cur_pos)
+            LOG.debug("[FLOW-TRACE] Step 1: Position check complete, proceeding to entry decision")
             if not has_positions:
                 # Handbook: Check circuit breakers BEFORE any entry decision
-                LOG.info("[FLOW-TRACE] Step 2: Checking circuit breakers")
+                LOG.debug("[FLOW-TRACE] Step 2: Checking circuit breakers")
                 if self.circuit_breakers.is_any_tripped():
                     tripped = self.circuit_breakers.get_tripped_breakers()
                     LOG.warning("[CIRCUIT-BREAKER] Trading halted: %s", ", ".join([b.name for b in tripped]))
                     LOG.error("[FLOW-ABORT] Stopped at circuit breaker check")
                     self._export_hud_data()
                     return
-                LOG.info("[FLOW-TRACE] Step 2 PASSED: No circuit breakers tripped")
+                LOG.debug("[FLOW-TRACE] Step 2 PASSED: No circuit breakers tripped")
 
                 # Log key time features
                 if len(self.bars) % 10 == 0:  # Every 10 bars
@@ -3726,10 +3726,10 @@ class CTraderFixApp(fix.Application):
                     self._export_hud_data()
                     return
                 self.last_depth_gate = False
-                LOG.info("[FLOW-TRACE] Step 3 PASSED: Depth check OK")
+                LOG.debug("[FLOW-TRACE] Step 3 PASSED: Depth check OK")
 
                 # FLAT: Check for entry (pass event features if policy accepts them)
-                LOG.info("[FLOW-TRACE] Step 4: Calling policy.decide_entry()")
+                LOG.debug("[FLOW-TRACE] Step 4: Calling policy.decide_entry()")
                 action, confidence, runway = self.policy.decide_entry(
                     self.bars,
                     imbalance=imbalance,
@@ -3856,7 +3856,7 @@ class CTraderFixApp(fix.Application):
                 # Skip if tick-level harvester already issued a close for this position
                 _already_closing = hasattr(self, "_pending_closes") and len(self._pending_closes) > 0
                 if _already_closing:
-                    LOG.info("[BAR] Tick harvester already issued close — skipping bar-level exit check")
+                    LOG.debug("[BAR] Tick harvester already issued close — skipping bar-level exit check")
                     exit_action = 0
                     exit_conf = 0.0
                 else:
@@ -4053,16 +4053,16 @@ class CTraderFixApp(fix.Application):
             self._export_hud_data()  # Still export HUD even without trade session
             return
         if desired == self.cur_pos:
-            LOG.info("[FLOW-ABORT] No action needed (desired=%s equals cur_pos=%s)", desired, self.cur_pos)
+            LOG.debug("[FLOW-ABORT] No action needed (desired=%s equals cur_pos=%s)", desired, self.cur_pos)
             self._export_hud_data()  # Still export HUD even when no action
             return
-        LOG.info("[FLOW-TRACE] Step 5 PASSED: Execution preconditions met")
+        LOG.debug("[FLOW-TRACE] Step 5 PASSED: Execution preconditions met")
 
         # Phase 3.5: VaR circuit breaker check before new entries
-        LOG.info("[FLOW-TRACE] Step 6: Entry validation (cur_pos=%s, desired=%s)", self.cur_pos, desired)
+        LOG.debug("[FLOW-TRACE] Step 6: Entry validation (cur_pos=%s, desired=%s)", self.cur_pos, desired)
         if self.cur_pos == 0 and desired != 0:
             # Only check VaR for new position entries
-            LOG.info("[FLOW-TRACE] Step 6a: Checking kurtosis breaker")
+            LOG.debug("[FLOW-TRACE] Step 6a: Checking kurtosis breaker")
             if self.kurtosis_monitor.is_breaker_active:
                 LOG.warning(
                     "[CIRCUIT_BREAKER] Kurtosis breaker ACTIVE (kurtosis=%.2f) - skipping entry",
@@ -4071,7 +4071,7 @@ class CTraderFixApp(fix.Application):
                 LOG.error("[FLOW-ABORT] Stopped at kurtosis check")
                 self._export_hud_data()  # Export even on circuit breaker
                 return
-            LOG.info("[FLOW-TRACE] Step 6a PASSED: Kurtosis OK")
+            LOG.debug("[FLOW-TRACE] Step 6a PASSED: Kurtosis OK")
 
             # Calculate current VaR with regime-aware multiplier
             current_var = self.var_estimator.estimate_var(
@@ -4151,7 +4151,7 @@ class CTraderFixApp(fix.Application):
         delta = desired - self.cur_pos
         side = "1" if delta > 0 else "2"
 
-        LOG.info("[FLOW-TRACE] Step 7: Computing order (delta=%s, side=%s)", delta, side)
+        LOG.debug("[FLOW-TRACE] Step 7: Computing order (delta=%s, side=%s)", delta, side)
         # Handbook: Apply circuit breaker position size multiplier (reduces size during high risk)
         size_multiplier = self.circuit_breakers.get_position_size_multiplier()
         order_qty = self._compute_order_qty(abs(delta), size_multiplier, self.cur_pos == 0 and desired != 0)
@@ -4168,7 +4168,7 @@ class CTraderFixApp(fix.Application):
             self._export_hud_data()
             return
 
-        LOG.info("[FLOW-TRACE] Step 8: EXECUTING ORDER side=%s qty=%.6f", side, order_qty)
+        LOG.debug("[FLOW-TRACE] Step 8: EXECUTING ORDER side=%s qty=%.6f", side, order_qty)
         self.send_market_order(side=side, qty=order_qty)
 
     def send_market_order(self, side: str, qty: float):
