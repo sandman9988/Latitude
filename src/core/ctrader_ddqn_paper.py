@@ -951,6 +951,14 @@ class CTraderFixApp(fix.Application):
         self._last_harvester_conf = 0.5
         self.entry_vpin_z = 0.0       # VPIN z-score at entry time (for regime-conditioned reward)
 
+        # Prediction-vs-actual convergence tracking (EMA α=0.1 ≈ 10-trade window)
+        # runway_delta: (predicted_runway_pts - actual_mfe_pts) → 0 = perfect prediction
+        # runway_accuracy: [0,1] → 1 = perfect prediction
+        # conf_calib_err: |confidence - actual_win| → 0 = well-calibrated probability
+        self._runway_delta_ema: float = 0.0
+        self._runway_accuracy_ema: float = 0.5
+        self._conf_calib_err_ema: float = 0.5
+
         # Trade timing — persistent across sessions via trade_log.jsonl
         # Seeded from trade_log at startup (see _seed_trade_timing_from_log).
         self._last_trade_close_ts: float | None = None  # epoch seconds of last trade close
@@ -1086,6 +1094,11 @@ class CTraderFixApp(fix.Application):
                 ),
                 trigger_confidence_avg=getattr(self, "_last_trigger_conf", 0.0),
                 harvester_confidence_avg=getattr(self, "_last_harvester_conf", 0.0),
+                runway_delta_ema=getattr(self, "_runway_delta_ema", 0.0),
+                runway_accuracy_ema=getattr(self, "_runway_accuracy_ema", 0.5),
+                conf_calib_err_ema=getattr(self, "_conf_calib_err_ema", 0.5),
+                platt_a=getattr(getattr(getattr(self, "policy", None), "trigger", None), "platt_a", 1.0),
+                platt_b=getattr(getattr(getattr(self, "policy", None), "trigger", None), "platt_b", 0.0),
                 circuit_breakers_tripped=len(tripped_names),
                 circuit_breaker_names=tripped_names,
                 fix_connected=self.connection_healthy,
@@ -2972,6 +2985,23 @@ class CTraderFixApp(fix.Application):
                         summary.get("mfe", 0.0),
                         was_explore,
                     )
+
+                # ── Prediction-vs-actual convergence tracking ──────────────────
+                # Update EMAs regardless of exploration flag (outcomes are real).
+                _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
+                _pred_pts = self.predicted_runway * _ep_price  # fractional → price-pts
+                _actual_mfe = float(summary.get("mfe", 0.0))
+                _runway_delta = _pred_pts - _actual_mfe
+                # Accuracy: 1 - normalised abs error (same formula as _calculate_trigger_reward)
+                _max_err = max(abs(_actual_mfe), abs(_pred_pts), 1.0)
+                _runway_acc = 1.0 - min(abs(_runway_delta) / _max_err, 1.0)
+                _actual_win = 1.0 if pnl > 0 else 0.0
+                _conf_err = abs(self.entry_confidence - _actual_win)
+                _alpha = 0.1
+                self._runway_delta_ema = (1 - _alpha) * self._runway_delta_ema + _alpha * _runway_delta
+                self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * _runway_acc
+                self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * _conf_err
+                # ─────────────────────────────────────────────────────────────────
 
                 self.entry_state = None
                 self.predicted_runway = 0.0

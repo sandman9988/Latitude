@@ -1017,6 +1017,47 @@ class TabbedHUD:
             print(f"  Avg Trade Duration:{_fmt_dur(avg_dur):>8} ")
             print(f"  Last Trade:        {_fmt_dur(last_trade):>8} ago")
 
+            # ── Prediction convergence block ───────────────────────────────
+            rw_delta  = pm.get("runway_delta_ema", 0.0)
+            rw_acc    = pm.get("runway_accuracy_ema", 0.5)
+            cc_err    = pm.get("conf_calib_err_ema", 0.5)
+            platt_a   = pm.get("platt_a", 1.0)
+            platt_b   = pm.get("platt_b", 0.0)
+
+            # Runway delta: green when |delta| < 1pt, yellow < 3pt, red otherwise
+            delta_col = ("\033[92m" if abs(rw_delta) < 1.0
+                         else ("\033[93m" if abs(rw_delta) < 3.0 else "\033[91m"))
+            # Runway accuracy: green > 0.7, yellow > 0.4, red otherwise
+            acc_col   = ("\033[92m" if rw_acc > 0.70
+                         else ("\033[93m" if rw_acc > 0.40 else "\033[91m"))
+            # Calibration error: green < 0.15, yellow < 0.30, red otherwise
+            cc_col    = ("\033[92m" if cc_err < 0.15
+                         else ("\033[93m" if cc_err < 0.30 else "\033[91m"))
+            # Platt params: grey = default (1.0/0.0), blue = adapted
+            pa_col = "\033[94m" if abs(platt_a - 1.0) > 0.05 or abs(platt_b) > 0.05 else "\033[90m"
+
+            print("\n\033[1m🎯 PREDICTION CONVERGENCE\033[0m  \033[90m(EMA-10 trades)\033[0m\n")
+            print(
+                f"  Runway Δ (pred−actual):   "
+                f"{delta_col}{rw_delta:>+7.2f} pts\033[0m  "
+                f"\033[90m→ 0 = perfect\033[0m"
+            )
+            print(
+                f"  Runway Accuracy:          "
+                f"{acc_col}{rw_acc:>7.3f}\033[0m      "
+                f"\033[90m→ 1 = perfect\033[0m"
+            )
+            print(
+                f"  Conf Calibration Error:   "
+                f"{cc_col}{cc_err:>7.3f}\033[0m      "
+                f"\033[90m→ 0 = calibrated\033[0m"
+            )
+            print(
+                f"  Platt  a={pa_col}{platt_a:.4f}\033[0m  "
+                f"b={pa_col}{platt_b:+.4f}\033[0m  "
+                f"\033[90m(grey=default, blue=adapted)\033[0m"
+            )
+
     def _render_decision_log(self):
         """Render the Decision Log tab (Tab 6)"""
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
