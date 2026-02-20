@@ -131,7 +131,7 @@ class RegimeDetector:
             self.price_buffer.pop(0)  # Remove oldest
 
         # Performance: Invalidate cache
-        self._cache_invalidated = True  # noqa: attribute defined in __init__
+        self._cache_invalidated = True  # attribute defined in __init__
 
         self.bars_since_update += 1
 
@@ -366,7 +366,7 @@ def _test_regime_detector():
     print("-" * 60)
     price = 100000.0
     prices_list = []
-    for i in range(60):
+    for _i in range(60):
         # Uptrend with persistence (positive autocorrelation)
         drift = 10.0  # Upward drift
         noise = rng.normal(0, 20.0)  # Realistic noise
@@ -405,7 +405,7 @@ def _test_regime_detector():
     print("-" * 60)
     detector3 = RegimeDetector(window_size=50, update_interval=5)
     base_price = 100000.0
-    for i in range(60):
+    for _i in range(60):
         # Random walk (no autocorrelation)
         noise = rng.normal(0, 10.0)
         base_price += noise

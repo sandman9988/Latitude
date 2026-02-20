@@ -49,9 +49,9 @@ import json
 import logging
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import Literal
 
 from src.utils.safe_math import SafeMath
 
@@ -66,8 +66,8 @@ class StalenessSnapshot:
 
     bar_num: int
     timestamp: str
-    parameters: Dict[str, float]
-    performance: Dict[str, float]
+    parameters: dict[str, float]
+    performance: dict[str, float]
     regime: str
 
 
@@ -77,7 +77,7 @@ class StalenessSignal:
 
     signal_type: str  # "performance_decay", "regime_shift", "parameter_drift", "confidence_collapse"
     severity: float  # 0.0 to 1.0
-    evidence: Dict[str, any]
+    evidence: dict[str, any]
     recommendation: str
 
 
@@ -108,7 +108,7 @@ class ParameterStalenessDetector:
         regime_stability_bars: int = 50,
         parameter_drift_window: int = 100,
         staleness_threshold: float = 0.6,
-        persistence_path: Optional[Path] = None,
+        persistence_path: Path | None = None,
     ):
         """
         Initialize staleness detector.
@@ -131,20 +131,20 @@ class ParameterStalenessDetector:
         self.regime_history: deque = deque(maxlen=regime_stability_bars * 2)
 
         # Baseline performance (first 500 bars after initialization)
-        self.baseline_win_rate: Optional[float] = None
-        self.baseline_sharpe: Optional[float] = None
-        self.baseline_confidence: Optional[float] = None
+        self.baseline_win_rate: float | None = None
+        self.baseline_sharpe: float | None = None
+        self.baseline_confidence: float | None = None
         self.baseline_established: bool = False
         self.bars_for_baseline = min(500, performance_window)
 
         # Current staleness state
         self.staleness_score: float = 0.0
         self.is_stale: bool = False
-        self.staleness_signals: List[StalenessSignal] = []
+        self.staleness_signals: list[StalenessSignal] = []
 
         # State tracking
         self.last_bar_num: int = 0
-        self.staleness_start_bar: Optional[int] = None
+        self.staleness_start_bar: int | None = None
 
         LOG.info(
             "ParameterStalenessDetector initialized: window=%d, regime_bars=%d, threshold=%.2f",
@@ -156,8 +156,8 @@ class ParameterStalenessDetector:
     def update(
         self,
         bar_num: int,
-        parameters: Dict[str, float],
-        performance_metrics: Dict[str, float],
+        parameters: dict[str, float],
+        performance_metrics: dict[str, float],
         regime: RegimeType,
     ) -> None:
         """
@@ -179,7 +179,7 @@ class ParameterStalenessDetector:
         # Create snapshot
         snapshot = StalenessSnapshot(
             bar_num=bar_num,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             parameters=parameters.copy(),
             performance=performance_metrics.copy(),
             regime=regime,
@@ -299,7 +299,7 @@ class ParameterStalenessDetector:
             LOG.info("Parameter staleness cleared after %d bars", bars_stale)
             self.staleness_start_bar = None
 
-    def _check_performance_decay(self) -> Optional[StalenessSignal]:
+    def _check_performance_decay(self) -> StalenessSignal | None:
         """
         Check if performance has decayed significantly vs. baseline.
 
@@ -349,7 +349,7 @@ class ParameterStalenessDetector:
 
         return None
 
-    def _check_regime_shift(self) -> Optional[StalenessSignal]:
+    def _check_regime_shift(self) -> StalenessSignal | None:
         """
         Check if market regime has shifted and stayed shifted.
 
@@ -388,7 +388,7 @@ class ParameterStalenessDetector:
 
         return None
 
-    def _check_parameter_drift(self) -> Optional[StalenessSignal]:
+    def _check_parameter_drift(self) -> StalenessSignal | None:
         """
         Check if parameters are changing rapidly (unstable learning).
 
@@ -443,7 +443,7 @@ class ParameterStalenessDetector:
 
         return None
 
-    def _check_confidence_collapse(self) -> Optional[StalenessSignal]:
+    def _check_confidence_collapse(self) -> StalenessSignal | None:
         """
         Check if agent confidence has collapsed and stayed low.
 
@@ -478,7 +478,7 @@ class ParameterStalenessDetector:
 
         return None
 
-    def check_staleness(self) -> Dict[str, any]:
+    def check_staleness(self) -> dict[str, any]:
         """
         Get current staleness status.
 
@@ -548,7 +548,7 @@ class ParameterStalenessDetector:
             self.baseline_confidence,
         )
 
-    def save_state(self, path: Optional[Path] = None) -> None:
+    def save_state(self, path: Path | None = None) -> None:
         """Save detector state to JSON."""
         path = path or self.persistence_path
         if not path:
@@ -574,7 +574,7 @@ class ParameterStalenessDetector:
 
         LOG.info("Staleness detector state saved to %s", path)
 
-    def load_state(self, path: Optional[Path] = None) -> bool:
+    def load_state(self, path: Path | None = None) -> bool:
         """Load detector state from JSON."""
         path = path or self.persistence_path
         if not path or not path.exists():
@@ -582,7 +582,7 @@ class ParameterStalenessDetector:
             return False
 
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 state = json.load(f)
 
             self.baseline_win_rate = state.get("baseline_win_rate")

@@ -34,9 +34,9 @@ import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 LOG = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class TradeAuditLogger:
         # Log session start
         self._write_entry("SESSION_START", {"session_id": self.session_id}, "INFO")
 
-    def _write_entry(self, event_type: str, data: dict[str, Any], severity: str = "INFO", ticket: Optional[str] = None):
+    def _write_entry(self, event_type: str, data: dict[str, Any], severity: str = "INFO", ticket: str | None = None):
         """
         Write an immutable audit log entry.
 
@@ -90,7 +90,7 @@ class TradeAuditLogger:
             self.sequence += 1
 
             entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "sequence": self.sequence,
                 "session": self.session_id,
                 "event_type": event_type,
@@ -120,8 +120,8 @@ class TradeAuditLogger:
         order_id: str,
         side: str,
         quantity: float,
-        price: Optional[float] = None,
-        ticket: Optional[str] = None,
+        price: float | None = None,
+        ticket: str | None = None,
         symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
         order_type: str = "MARKET",
     ):
@@ -150,7 +150,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_order_accept(self, order_id: str, broker_order_id: Optional[str] = None, ticket: Optional[str] = None):
+    def log_order_accept(self, order_id: str, broker_order_id: str | None = None, ticket: str | None = None):
         """Log order accepted by broker."""
         self._write_entry(
             "ORDER_ACCEPT",
@@ -161,7 +161,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_order_reject(self, order_id: str, reason: str, reject_code: Optional[str] = None):
+    def log_order_reject(self, order_id: str, reason: str, reject_code: str | None = None):
         """Log order rejection."""
         self._write_entry(
             "ORDER_REJECT",
@@ -179,7 +179,7 @@ class TradeAuditLogger:
         fill_price: float,
         fill_qty: float,
         ticket: str,
-        fill_id: Optional[str] = None,
+        fill_id: str | None = None,
         is_partial: bool = False,
     ):
         """
@@ -205,7 +205,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_order_cancel(self, order_id: str, reason: str = "User requested", ticket: Optional[str] = None):
+    def log_order_cancel(self, order_id: str, reason: str = "User requested", ticket: str | None = None):
         """Log order cancellation."""
         self._write_entry(
             "ORDER_CANCEL",
@@ -313,7 +313,7 @@ class TradeAuditLogger:
         self,
         ticket: str,
         position_id: str,
-        order_id: Optional[str] = None,
+        order_id: str | None = None,
         symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
     ):
         """
@@ -365,7 +365,7 @@ class TradeAuditLogger:
     # STATE PERSISTENCE
     # ==========================================================================
 
-    def log_state_save(self, state_file: str, num_tickets: int, net_position: float, checksum: Optional[str] = None):
+    def log_state_save(self, state_file: str, num_tickets: int, net_position: float, checksum: str | None = None):
         """Log state persistence event."""
         self._write_entry(
             "STATE_SAVE",
@@ -424,7 +424,7 @@ class TradeAuditLogger:
         )
 
     def log_error(
-        self, error_type: str, error_message: str, context: Optional[dict] = None, ticket: Optional[str] = None
+        self, error_type: str, error_message: str, context: dict | None = None, ticket: str | None = None
     ):
         """Log trade-related error."""
         self._write_entry(
@@ -443,7 +443,7 @@ class TradeAuditLogger:
 # SINGLETON INSTANCE
 # ==============================================================================
 
-_audit_logger_instance: Optional[TradeAuditLogger] = None
+_audit_logger_instance: TradeAuditLogger | None = None
 _audit_lock = threading.Lock()
 
 
@@ -534,7 +534,7 @@ if __name__ == "__main__":
 
         print(f"\n✓ {len(entries)} audit entries written")
         print(f"✓ Sequence numbers: 1 → {entries[-1]['sequence']}")
-        print(f"✓ All entries immutable and chronological")
+        print("✓ All entries immutable and chronological")
 
         # Display sample entries
         print("\nSample Entries:")

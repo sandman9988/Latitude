@@ -29,7 +29,6 @@ from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ class TradingMetrics:
 
     # Circuit breakers
     circuit_breakers_tripped: int
-    circuit_breaker_names: List[str]
+    circuit_breaker_names: list[str]
 
     # System health
     uptime_hours: float
@@ -99,7 +98,7 @@ class ProductionMonitor:
         alert_memory_pct: float = 0.80,
         alert_error_rate_1h: int = 20,
         # Metrics file
-        metrics_file: Optional[Path] = None,
+        metrics_file: Path | None = None,
         # HTTP server
         http_enabled: bool = True,
         http_port: int = 8765,
@@ -112,14 +111,14 @@ class ProductionMonitor:
         self.metrics_file = Path(metrics_file) if metrics_file else Path("data/production_metrics.json")
 
         # Current metrics
-        self.metrics: Optional[TradingMetrics] = None
-        self.active_alerts: List[Alert] = []
+        self.metrics: TradingMetrics | None = None
+        self.active_alerts: list[Alert] = []
 
         # HTTP server
         self.http_enabled = http_enabled
         self.http_port = http_port
-        self.http_server: Optional[HTTPServer] = None
-        self.http_thread: Optional[Thread] = None
+        self.http_server: HTTPServer | None = None
+        self.http_thread: Thread | None = None
 
         # Start time
         self.start_time = time.time()

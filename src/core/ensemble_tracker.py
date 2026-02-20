@@ -31,7 +31,8 @@ Usage:
 import contextlib
 import logging
 from collections import deque
-from typing import Any, Final, Optional, Protocol, Sequence, TypedDict, runtime_checkable
+from collections.abc import Sequence
+from typing import Any, Final, Protocol, TypedDict, runtime_checkable
 
 import numpy as np
 from numpy.random import Generator, default_rng
@@ -101,7 +102,7 @@ class EnsembleTracker:
         exploration_scale: float = 0.2,
         use_weighted_voting: bool = True,
         rng: Generator | None = None,
-        num_actions: Optional[int] = None,
+        num_actions: int | None = None,
     ):
         """
         Args:
@@ -137,7 +138,7 @@ class EnsembleTracker:
         self.bonus_count = 0
 
         # Action space dimension handling
-        self.num_actions: Optional[int] = num_actions
+        self.num_actions: int | None = num_actions
 
         self.rng: Generator = rng if rng is not None else default_rng(42)
 
@@ -267,16 +268,15 @@ class EnsembleTracker:
         """Try getting Q-values via PyTorch forward pass. Returns None if not applicable."""
         if torch is None or not hasattr(model, "forward"):
             return None
-        with contextlib.suppress(RuntimeError, TypeError, ValueError):
-            with torch.no_grad():
-                if isinstance(state, np.ndarray):
-                    state_tensor = torch.from_numpy(state).float()
-                    if state_tensor.dim() == STATE_BATCH_DIM:
-                        state_tensor = state_tensor.unsqueeze(0)
-                else:
-                    state_tensor = state
-                q_vals = model(state_tensor)
-                return np.asarray(q_vals.squeeze().cpu().numpy())
+        with contextlib.suppress(RuntimeError, TypeError, ValueError), torch.no_grad():
+            if isinstance(state, np.ndarray):
+                state_tensor = torch.from_numpy(state).float()
+                if state_tensor.dim() == STATE_BATCH_DIM:
+                    state_tensor = state_tensor.unsqueeze(0)
+            else:
+                state_tensor = state
+            q_vals = model(state_tensor)
+            return np.asarray(q_vals.squeeze().cpu().numpy())
         return None
 
     def _get_q_values(self, model: ModelLike | Any, state: np.ndarray) -> np.ndarray:

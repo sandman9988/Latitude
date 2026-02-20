@@ -17,7 +17,6 @@ Note: Ctrl+C is ignored to prevent accidental termination when copying text.
 """
 
 import contextlib
-from collections import deque
 import json
 import math
 import os
@@ -27,6 +26,7 @@ import termios
 import threading
 import time
 import tty
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -143,9 +143,7 @@ class TabbedHUD:
                         if seq == "[Z":  # Shift+Tab
                             idx = self.TAB_ORDER.index(self.current_tab)
                             self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
-                elif key.lower() == "q":
-                    self.running = False
-                elif key == "\x18":  # Ctrl+X
+                elif key.lower() == "q" or key == "\x18":
                     self.running = False
                 elif key.lower() == "s":
                     self._handle_symbol_selection()
@@ -320,7 +318,7 @@ class TabbedHUD:
         starting_equity = float(self.bot_config.get("starting_equity", 10_000.0))
         try:
             trades = []
-            with open(trade_file, "r", encoding="utf-8") as f:
+            with open(trade_file, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -360,12 +358,10 @@ class TabbedHUD:
             for p in pnls:
                 cum += p
                 equity = starting_equity + cum
-                if equity > peak_equity:
-                    peak_equity = equity
+                peak_equity = max(peak_equity, equity)
                 if peak_equity > 0:
                     dd_pct = (peak_equity - equity) / peak_equity * 100.0
-                    if dd_pct > max_dd_pct:
-                        max_dd_pct = dd_pct
+                    max_dd_pct = max(max_dd_pct, dd_pct)
             # Consecutive streaks
             max_cw = max_cl = cw = cl = 0
             for p in pnls:
@@ -814,7 +810,7 @@ class TabbedHUD:
         train_str  = f"{_G}ON{_RST}" if train_on else f"{_R}OFF{_RST}"
         trig_ok = f"{_G}✓{_RST}" if trig_ready else f"{_Y}⏳{_RST}"
         harv_ok = f"{_G}✓{_RST}" if harv_ready else f"{_Y}⏳{_RST}"
-        print(f"  \033[1m📊 LEARNING HEALTH\033[0m")
+        print("  \033[1m📊 LEARNING HEALTH\033[0m")
         print(f"    Training: {train_str}   Last event: {last_train}")
         print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
 
@@ -1214,7 +1210,7 @@ class TabbedHUD:
         entries_jsonl: list[dict] = []
         if jsonl_file.exists():
             try:
-                with open(jsonl_file, "r", encoding="utf-8") as f:
+                with open(jsonl_file, encoding="utf-8") as f:
                     lines = f.readlines()
                 for line in lines[-20:]:
                     line = line.strip()
@@ -1284,7 +1280,7 @@ class TabbedHUD:
             return
 
         try:
-            with open(log_file, "r", encoding="utf-8") as f:
+            with open(log_file, encoding="utf-8") as f:
                 entries = json.load(f)
         except Exception as e:
             print(f"  ❌ Error reading decision log: {e}")
@@ -1488,7 +1484,7 @@ class TabbedHUD:
 
         print(f"    VPIN Z-Score:      {vpin_z:>+12.2f}")
         print(f"    Status:            {vpin_status}")
-        print(f"                       \033[90mHigh +z = informed sellers active → widen stops / reduce size\033[0m")
+        print("                       \033[90mHigh +z = informed sellers active → widen stops / reduce size\033[0m")
 
         # VPIN gauge
         bar_len = 40

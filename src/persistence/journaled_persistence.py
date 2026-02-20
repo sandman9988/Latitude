@@ -36,7 +36,7 @@ import json
 import logging
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +139,7 @@ class Journal:
         """
         entry = JournalEntry(
             seq=self.sequence_num,
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             op=operation,
             data=data,
         )
@@ -230,7 +230,7 @@ class Journal:
         try:
             checkpoint_data = {
                 "seq": self.sequence_num,
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "operations_since_last": self.operations_since_checkpoint,
                 "last_checkpoint_seq": self.last_checkpoint_seq,
             }

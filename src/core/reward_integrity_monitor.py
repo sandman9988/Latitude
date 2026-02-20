@@ -32,7 +32,8 @@ Usage:
 import logging
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import numpy as np
 
 LOG = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ class RewardIntegrityMonitor:
 
         # Create pair
         pair = RewardPnLPair(
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=datetime.now(UTC).isoformat(),
             reward=reward,
             pnl=pnl,
             components=reward_components or {},
@@ -209,7 +210,7 @@ class RewardIntegrityMonitor:
 
             # Log gaming alert
             alert = {
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
                 "status": status,
                 "correlation": correlation,
                 "outliers_count": len(outliers),
@@ -364,7 +365,7 @@ if __name__ == "__main__":
 
     # Test 1: Good correlation (reward follows P&L)
     print("\n--- Test 1: Good Correlation ---")
-    for i in range(50):
+    for _i in range(50):
         pnl = rng.standard_normal() * 10  # Random P&L
         reward = pnl + rng.standard_normal() * 2  # Reward correlated with P&L
 
@@ -383,7 +384,7 @@ if __name__ == "__main__":
     print("\n--- Test 2: Poor Correlation (Gaming) ---")
     monitor.reset()
 
-    for i in range(50):
+    for _i in range(50):
         pnl = rng.standard_normal() * 10
         reward = rng.standard_normal() * 5  # Reward UNCORRELATED with P&L
 
@@ -398,7 +399,7 @@ if __name__ == "__main__":
     print("\n--- Test 3: Sign Mismatches ---")
     monitor.reset()
 
-    for i in range(30):
+    for _i in range(30):
         pnl = 10.0  # Positive P&L
         reward = -5.0  # Negative reward (mismatch!)
 

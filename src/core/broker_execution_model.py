@@ -17,7 +17,7 @@ Reference: Almgren & Chriss (2000) "Optimal Execution of Portfolio Transactions"
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal, Optional
+from typing import Literal
 
 from src.utils.safe_math import SafeMath
 
@@ -116,7 +116,7 @@ class BrokerExecutionModel:
         side: OrderSide,
         quantity: float,
         mid_price: float,
-        spread_bps: Optional[float] = None,
+        spread_bps: float | None = None,
         regime: RegimeType = "UNKNOWN",
         typical_quantity: float = 0.10,
     ) -> ExecutionCosts:
@@ -211,7 +211,7 @@ class BrokerExecutionModel:
         side: OrderSide,
         target_quantity: float,
         mid_price: float,
-        spread_bps: Optional[float] = None,
+        spread_bps: float | None = None,
         regime: RegimeType = "UNKNOWN",
     ) -> float:
         """

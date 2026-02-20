@@ -24,8 +24,8 @@ from typing import Any
 import numpy as np
 
 from src.risk.circuit_breakers import CircuitBreakerManager
-from src.utils.safe_math import SafeMath
 from src.risk.var_estimator import RegimeType, VaREstimator, position_size_from_var
+from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)
 

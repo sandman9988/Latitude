@@ -25,7 +25,7 @@ class SafeMath:
     @staticmethod
     def to_decimal(value, digits: int):
         """Convert value to Decimal with instrument-specific digits."""
-        from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
         try:
             dec = Decimal(str(value))
@@ -37,7 +37,7 @@ class SafeMath:
     @staticmethod
     def quantize(value, digits: int):
         """Quantize an existing Decimal to instrument-specific digits."""
-        from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
         try:
             quant = Decimal("1").scaleb(-digits)

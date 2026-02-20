@@ -20,7 +20,6 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ class FeedbackLoopSignal:
     loop_type: str  # "no_trades", "circuit_breaker", "performance_decay", "exploration_collapse"
     severity: float  # 0.0 to 1.0
     duration_bars: int
-    evidence: Dict[str, any]
+    evidence: dict[str, any]
     suggested_intervention: str
 
 
@@ -68,7 +67,7 @@ class FeedbackLoopBreaker:
         min_exploration_rate: float = 0.05,
         # Intervention settings
         intervention_cooldown_bars: int = 500,  # Don't intervene too frequently
-        state_file: Optional[Path] = None,
+        state_file: Path | None = None,
     ):
         self.no_trade_window_bars = no_trade_window_bars
         self.min_volatility_threshold = min_volatility_threshold
@@ -83,14 +82,14 @@ class FeedbackLoopBreaker:
         self.bars_since_trade = 0
         self.bars_since_circuit_breaker_trip = 0
         self.circuit_breaker_tripped = False
-        self.recent_volatilities: List[float] = []
-        self.recent_sharpes: List[float] = []
-        self.recent_win_rates: List[float] = []
-        self.recent_action_entropies: List[float] = []
+        self.recent_volatilities: list[float] = []
+        self.recent_sharpes: list[float] = []
+        self.recent_win_rates: list[float] = []
+        self.recent_action_entropies: list[float] = []
         self.bars_since_intervention = 999999  # Large number initially
 
         # Intervention history
-        self.interventions: List[Dict] = []
+        self.interventions: list[dict] = []
 
         # Persistence
         self.state_file = state_file or Path("data/feedback_loop_breaker.json")
@@ -100,11 +99,11 @@ class FeedbackLoopBreaker:
         bars_since_last_trade: int,
         current_volatility: float,
         circuit_breakers_tripped: bool,
-        recent_sharpe: Optional[float] = None,
-        recent_win_rate: Optional[float] = None,
-        action_entropy: Optional[float] = None,
-        exploration_rate: Optional[float] = None,
-    ) -> Optional[FeedbackLoopSignal]:
+        recent_sharpe: float | None = None,
+        recent_win_rate: float | None = None,
+        action_entropy: float | None = None,
+        exploration_rate: float | None = None,
+    ) -> FeedbackLoopSignal | None:
         """
         Update loop detection with current state.
 
@@ -166,7 +165,7 @@ class FeedbackLoopBreaker:
 
         return None
 
-    def _detect_circuit_breaker_loop(self) -> Optional[FeedbackLoopSignal]:
+    def _detect_circuit_breaker_loop(self) -> FeedbackLoopSignal | None:
         """Detect stuck circuit breakers."""
         if not self.circuit_breaker_tripped:
             return None
@@ -188,7 +187,7 @@ class FeedbackLoopBreaker:
             suggested_intervention="reset_circuit_breakers",
         )
 
-    def _detect_no_trade_loop(self) -> Optional[FeedbackLoopSignal]:
+    def _detect_no_trade_loop(self) -> FeedbackLoopSignal | None:
         """Detect no trades despite market opportunities."""
         if self.bars_since_trade < self.no_trade_window_bars:
             return None
@@ -217,7 +216,7 @@ class FeedbackLoopBreaker:
             suggested_intervention="increase_exploration" if severity < 0.7 else "inject_synthetic_experiences",
         )
 
-    def _detect_performance_decay_loop(self) -> Optional[FeedbackLoopSignal]:
+    def _detect_performance_decay_loop(self) -> FeedbackLoopSignal | None:
         """Detect deteriorating performance spiral."""
         if len(self.recent_sharpes) < 5:
             return None  # Not enough history
@@ -248,7 +247,7 @@ class FeedbackLoopBreaker:
             suggested_intervention="restore_earlier_checkpoint" if severity > 0.5 else "increase_exploration",
         )
 
-    def _detect_exploration_collapse(self, exploration_rate: Optional[float]) -> Optional[FeedbackLoopSignal]:
+    def _detect_exploration_collapse(self, exploration_rate: float | None) -> FeedbackLoopSignal | None:
         """Detect collapsed exploration (agent stuck in local minimum)."""
         if len(self.recent_action_entropies) < 50:
             return None
@@ -280,7 +279,7 @@ class FeedbackLoopBreaker:
             suggested_intervention="force_exploration",
         )
 
-    def apply_intervention(self, signal: FeedbackLoopSignal) -> Dict[str, any]:
+    def apply_intervention(self, signal: FeedbackLoopSignal) -> dict[str, any]:
         """
         Apply intervention to break feedback loop.
 
@@ -366,7 +365,7 @@ class FeedbackLoopBreaker:
             return False
 
         try:
-            with open(self.state_file, "r") as f:
+            with open(self.state_file) as f:
                 state = json.load(f)
 
             self.bars_since_trade = state.get("bars_since_trade", 0)

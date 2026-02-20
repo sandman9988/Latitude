@@ -83,7 +83,7 @@ except ImportError:
         def fromApp(self, message, session_id):  # NOSONAR
             """QuickFIX Application callback stub – no-op."""
 
-        def send(self, message, session_id=None):  # noqa: stub
+        def send(self, message, session_id=None):  # stub
             """QuickFIX Application callback stub – no-op."""
 
     class fix(metaclass=_FixStubMeta):  # type: ignore[no-redef]
@@ -112,31 +112,31 @@ except ImportError:
     nn = None  # type: ignore[assignment]
     TORCH_AVAILABLE = False
 
-from src.monitoring.activity_monitor import ActivityMonitor
-from src.monitoring.production_monitor import ProductionMonitor
-from src.core.adaptive_regularization import AdaptiveRegularization
-from src.monitoring.audit_logger import DecisionLogger, TransactionLogger
-from src.core.broker_execution_model import BrokerExecutionModel, OrderSide
-from src.risk.circuit_breakers import CircuitBreakerManager
 from src.agents.dual_policy import DualPolicy
-from src.features.event_time_features import EventTimeFeatureEngine
-from src.risk.friction_costs import FrictionCalculator
-from src.persistence.learned_parameters import LearnedParametersManager
-from src.utils.non_repaint_guards import NonRepaintBarAccess
+from src.core.adaptive_regularization import AdaptiveRegularization
+from src.core.broker_execution_model import BrokerExecutionModel, OrderSide
 from src.core.order_book import OrderBook, VPINCalculator
-from src.risk.path_geometry import PathGeometry
-from src.monitoring.performance_tracker import PerformanceTracker
 from src.core.reward_shaper import RewardShaper
-from src.core.trade_manager_integration import TradeManagerIntegration
+from src.core.self_test import run_self_test
 from src.core.trade_manager import Side
-from src.utils.ring_buffer import RollingStats
+from src.core.trade_manager_integration import TradeManagerIntegration
+from src.features.event_time_features import EventTimeFeatureEngine
+from src.monitoring.activity_monitor import ActivityMonitor
+from src.monitoring.audit_logger import DecisionLogger, TransactionLogger
+from src.monitoring.performance_tracker import PerformanceTracker
+from src.monitoring.production_monitor import ProductionMonitor
+from src.monitoring.trade_exporter import TradeExporter
+from src.persistence.learned_parameters import LearnedParametersManager
+from src.risk.circuit_breakers import CircuitBreakerManager
 from src.risk.emergency_close import create_emergency_closer
+from src.risk.friction_costs import FrictionCalculator
+from src.risk.path_geometry import PathGeometry
+from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator, position_size_from_var
+from src.utils.non_repaint_guards import NonRepaintBarAccess
+from src.utils.ring_buffer import RollingStats
 
 # Handbook components - Phase 1
 from src.utils.safe_math import SafeMath
-from src.monitoring.trade_exporter import TradeExporter
-from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator, position_size_from_var
-from src.core.self_test import run_self_test
 
 # Feature calculation constants
 MIN_BARS_FOR_FEATURES: int = 70
@@ -1045,7 +1045,7 @@ class CTraderFixApp(fix.Application):
         # Audit logging for transaction trail and decision debugging
         self.transaction_log = TransactionLogger(log_dir="log", filename="transactions.jsonl")
         self.decision_log = DecisionLogger(log_dir="log", filename="decisions.jsonl")
-        
+
         LOG.info("[INIT] ✓ Bot initialized: %s (ID:%d) M%d | Contract=%.0f | Online learning=%s",
             symbol, symbol_id, timeframe_minutes, self.contract_size, enable_online_learning)
 
@@ -1436,7 +1436,7 @@ class CTraderFixApp(fix.Application):
                 buf_size = min(file_size, 64 * 1024)
                 fh.seek(-buf_size, 2)
                 raw = fh.read(buf_size).decode("utf-8", errors="replace")
-                lines = [l for l in raw.splitlines() if l.strip()][-50:]
+                lines = [ln for ln in raw.splitlines() if ln.strip()][-50:]
 
             trades: list[dict] = []
             for line in lines:
@@ -3869,6 +3869,16 @@ class CTraderFixApp(fix.Application):
                         event_features=event_features,
                     )
                 self._last_harvester_conf = 0.9 * self._last_harvester_conf + 0.1 * exit_conf
+                # Resolve position metrics from the active MFE/MAE tracker
+                _active_tracker = (
+                    next(iter(self.mfe_mae_trackers.values()), self.mfe_mae_tracker)
+                    if self.mfe_mae_trackers
+                    else self.mfe_mae_tracker
+                )
+                pos_metrics = _active_tracker.get_summary()
+                entry_price = _active_tracker.entry_price or 0.0
+                mfe = _active_tracker.mfe
+                mae = _active_tracker.mae
                 ticks_held = pos_metrics.get("ticks_held", 0)
                 unrealized_pnl = (c - entry_price) * self.cur_pos if entry_price > 0 else 0.0
                 capture_ratio = (unrealized_pnl / mfe) if mfe > 0 else 0.0

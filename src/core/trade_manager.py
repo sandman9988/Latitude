@@ -25,8 +25,8 @@ import logging
 import time
 import uuid
 from collections import deque
+from collections.abc import Callable
 from enum import Enum
-from typing import Callable
 
 try:
     import quickfix as fix
@@ -60,8 +60,8 @@ except ImportError:
         OrderCancelRequest = _make_stub("OrderCancelRequest")  # NOSONAR
 
 from src.monitoring.trade_audit_logger import get_trade_audit_logger
-from src.utils.safe_utils import utc_now
 from src.utils.safe_math import SafeMath
+from src.utils.safe_utils import utc_now
 
 LOG = logging.getLogger(__name__)
 

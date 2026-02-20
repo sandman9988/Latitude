@@ -39,7 +39,6 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -102,9 +101,9 @@ class ColdStartManager:
         micro_min_win_rate: float = 0.48,
         micro_min_avg_profit: float = 0.0,  # At least break-even
         # Production monitoring
-        demotion: Optional[DemotionThresholds] = None,
+        demotion: DemotionThresholds | None = None,
         # State persistence
-        state_file: Optional[Path] = None,
+        state_file: Path | None = None,
     ):
         # Phase thresholds
         self.observation_min_bars = observation_min_bars
@@ -128,11 +127,11 @@ class ColdStartManager:
         self.trades_in_current_phase = 0
 
         # Performance tracking
-        self.phase_history: List[PhaseMetrics] = []
+        self.phase_history: list[PhaseMetrics] = []
 
         # Temporary storage for current phase metrics
-        self.current_trades: List[Dict] = []
-        self.current_pnls: List[float] = []
+        self.current_trades: list[dict] = []
+        self.current_pnls: list[float] = []
 
         # Persistence
         self.state_file = state_file or Path("data/cold_start_manager.json")
@@ -140,7 +139,7 @@ class ColdStartManager:
     def update(
         self,
         new_bar: bool = False,
-        trade_completed: Optional[Dict] = None,
+        trade_completed: dict | None = None,
     ):
         """
         Update cold start state.
@@ -178,7 +177,7 @@ class ColdStartManager:
         else:  # PRODUCTION
             return 1.0  # Full size
 
-    def check_graduation(self) -> Optional[WarmupPhase]:
+    def check_graduation(self) -> WarmupPhase | None:
         """
         Check if current phase can graduate to next phase.
 
@@ -194,7 +193,7 @@ class ColdStartManager:
             return self._check_production_demotion()
         return None
 
-    def _check_observation_graduation(self) -> Optional[WarmupPhase]:
+    def _check_observation_graduation(self) -> WarmupPhase | None:
         """Check if observation phase can graduate."""
         if self.bars_in_current_phase >= self.observation_min_bars:
             logger.info(
@@ -203,7 +202,7 @@ class ColdStartManager:
             return WarmupPhase.PAPER_TRADING
         return None
 
-    def _check_paper_graduation(self) -> Optional[WarmupPhase]:
+    def _check_paper_graduation(self) -> WarmupPhase | None:
         """Check if paper trading phase can graduate."""
         if self.bars_in_current_phase < self.paper_min_bars:
             return None  # Not enough bars
@@ -244,7 +243,7 @@ class ColdStartManager:
         )
         return None
 
-    def _check_micro_graduation(self) -> Optional[WarmupPhase]:
+    def _check_micro_graduation(self) -> WarmupPhase | None:
         """Check if micro positions phase can graduate."""
         if self.bars_in_current_phase < self.micro_min_bars:
             return None
@@ -284,7 +283,7 @@ class ColdStartManager:
         )
         return None
 
-    def _check_production_demotion(self) -> Optional[WarmupPhase]:
+    def _check_production_demotion(self) -> WarmupPhase | None:
         """
         Check if production should be demoted back to micro positions.
 
@@ -380,7 +379,7 @@ class ColdStartManager:
 
         logger.warning("Phase transition to %s", new_phase.name)
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         """Get current warmup status."""
         current_metrics = self._calculate_current_metrics()
 
@@ -434,7 +433,7 @@ class ColdStartManager:
             return False
 
         try:
-            with open(self.state_file, "r", encoding="utf-8") as f:
+            with open(self.state_file, encoding="utf-8") as f:
                 state = json.load(f)
 
             self.current_phase = WarmupPhase[state["current_phase"]]
@@ -476,7 +475,7 @@ if __name__ == "__main__":
     # Test 1: Observation phase
     print("Test 1: Observation phase graduation")
     mgr = ColdStartManager(observation_min_bars=10)
-    for i in range(15):
+    for _i in range(15):
         mgr.update(new_bar=True)
         next_phase = mgr.check_graduation()
         if next_phase:

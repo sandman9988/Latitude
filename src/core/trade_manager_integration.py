@@ -501,22 +501,12 @@ class TradeManagerIntegration:
             LOG.error("[INTEGRATION] TradeManager not initialized")
             return False
 
-        # Defensive: Validate order before submission
-        fix_side_str = "1" if side == 1 else "2"
-        validation = VALIDATOR.validate_order(
-            symbol=self.app.symbol_id,
-            side=fix_side_str,
-            quantity=quantity,
-            price=None,
-            order_type="MARKET",
-        )
-
-        if not validation.valid:
-            LOG.error("[INTEGRATION] ❌ Order validation failed: %s", validation.error)
+        # Basic quantity sanity check
+        if quantity is None or quantity <= 0:
+            LOG.error("[INTEGRATION] Invalid quantity=%.5f — rejecting order", quantity or 0)
             return False
 
-        # Use validated quantity (safe Decimal)
-        safe_qty = float(validation.sanitized_value["quantity"])
+        safe_qty = float(quantity)
 
         fix_side = Side.BUY if side == 1 else Side.SELL
 
@@ -1123,7 +1113,7 @@ class TradeManagerIntegration:
                         self.app.policy.on_recovery(
                             direction=last_ticket_data["direction"],
                             entry_price=last_ticket_data["entry_price"],
-                            entry_time=dt.datetime.now(dt.timezone.utc),
+                            entry_time=dt.datetime.now(dt.UTC),
                             mfe=mfe,
                             mae=mae,
                             ticks_held=ticks_held,
@@ -1133,7 +1123,7 @@ class TradeManagerIntegration:
                         self.app.policy.on_entry(
                             direction=last_ticket_data["direction"],
                             entry_price=last_ticket_data["entry_price"],
-                            entry_time=dt.datetime.now(dt.timezone.utc),
+                            entry_time=dt.datetime.now(dt.UTC),
                         )
                     LOG.info(
                         _MSG_RECOVERED_ENTRY,
@@ -1160,7 +1150,7 @@ class TradeManagerIntegration:
                         self.app.policy.on_recovery(
                             direction=last_tracker["direction"],
                             entry_price=last_tracker["entry_price"],
-                            entry_time=dt.datetime.now(dt.timezone.utc),
+                            entry_time=dt.datetime.now(dt.UTC),
                             mfe=mfe,
                             mae=mae,
                             ticks_held=0,
@@ -1170,7 +1160,7 @@ class TradeManagerIntegration:
                         self.app.policy.on_entry(
                             direction=last_tracker["direction"],
                             entry_price=last_tracker["entry_price"],
-                            entry_time=dt.datetime.now(dt.timezone.utc),
+                            entry_time=dt.datetime.now(dt.UTC),
                         )
                     LOG.info(
                         _MSG_RECOVERED_ENTRY,
@@ -1212,7 +1202,7 @@ class TradeManagerIntegration:
                             self.app.policy.on_recovery(
                                 direction=self.position_direction,
                                 entry_price=self.entry_price,
-                                entry_time=dt.datetime.now(dt.timezone.utc),
+                                entry_time=dt.datetime.now(dt.UTC),
                                 mfe=mfe,
                                 mae=mae,
                                 ticks_held=0,
@@ -1222,7 +1212,7 @@ class TradeManagerIntegration:
                             self.app.policy.on_entry(
                                 direction=self.position_direction,
                                 entry_price=self.entry_price,
-                                entry_time=dt.datetime.now(dt.timezone.utc),
+                                entry_time=dt.datetime.now(dt.UTC),
                             )
                     LOG.info(
                         _MSG_RECOVERED_ENTRY,

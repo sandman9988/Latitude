@@ -649,14 +649,14 @@ class CircuitBreakerManager:
             True if state restored, False if file not found
         """
         import json
-        from pathlib import Path
         from collections import deque
+        from pathlib import Path
 
         if not Path(filepath).exists():
             return False
 
         try:
-            with open(filepath, "r") as f:
+            with open(filepath) as f:
                 state = json.load(f)
 
             # Restore sortino breaker
@@ -709,7 +709,7 @@ if __name__ == "__main__":
 
     # Simulate good trades
     print("Simulating 10 profitable trades:")
-    for i in range(10):
+    for _i in range(10):
         sortino_demo.update(0.02)  # +2% returns
 
     current_sortino = sortino_demo.get_current_sortino()
@@ -718,7 +718,7 @@ if __name__ == "__main__":
 
     # Simulate bad trades
     print("\nSimulating 5 large losses:")
-    for i in range(5):
+    for _i in range(5):
         sortino_demo.update(-0.05)  # -5% losses
 
     current_sortino = sortino_demo.get_current_sortino()

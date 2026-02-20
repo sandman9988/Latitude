@@ -16,12 +16,12 @@ from collections import deque
 
 import numpy as np
 
-from src.utils.experience_buffer import RegimeSampling
 from src.agents.harvester_agent import HarvesterAgent
-from src.persistence.learned_parameters import LearnedParametersManager
-from src.features.regime_detector import RegimeDetector  # Phase 3.4
-from src.utils.safe_math import SafeMath
 from src.agents.trigger_agent import TriggerAgent
+from src.features.regime_detector import RegimeDetector  # Phase 3.4
+from src.persistence.learned_parameters import LearnedParametersManager
+from src.utils.experience_buffer import RegimeSampling
+from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)
 
@@ -1040,8 +1040,8 @@ if __name__ == "__main__":
     bars = deque(maxlen=100)
     for i in range(100):
         t = dt.datetime.now()
-        o = h = l = c = 100000.0 + i * 10
-        bars.append((t, o, h, l, c))
+        o = h = lo = c = 100000.0 + i * 10
+        bars.append((t, o, h, lo, c))
 
     action, conf, runway = policy.decide_entry(bars, imbalance=0.1)
     assert action in [0, 1, 2]

@@ -8,7 +8,7 @@ Prevents NaN/Inf propagation, division by zero, and array bounds errors
 import logging
 import math
 from collections import deque
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)

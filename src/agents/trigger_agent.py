@@ -29,8 +29,8 @@ import random
 import numpy as np
 
 from src.core.ddqn_network import DDQNNetwork
-from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 from src.persistence.learned_parameters import LearnedParametersManager
+from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 
 LOG = logging.getLogger(__name__)
 

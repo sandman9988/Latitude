@@ -15,7 +15,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -62,7 +62,7 @@ class TransactionLogger:
             severity: Event severity (INFO, WARNING, ERROR, CRITICAL)
         """
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "session": self.session_id,
             "event_type": event_type,
             "severity": severity,
@@ -70,9 +70,8 @@ class TransactionLogger:
         }
 
         try:
-            with self.lock:
-                with open(self.log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, default=str) + "\n")
+            with self.lock, open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
         except Exception as e:
             LOG.error("[AUDIT] Failed to write transaction log: %s", e)
 
@@ -210,7 +209,7 @@ class DecisionLogger:
             reasoning: Features/factors that influenced decision
         """
         entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "session": self.session_id,
             "agent": agent,
             "decision": decision,
@@ -220,9 +219,8 @@ class DecisionLogger:
         }
 
         try:
-            with self.lock:
-                with open(self.log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, default=str) + "\n")
+            with self.lock, open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, default=str) + "\n")
         except Exception as e:
             LOG.error("[DECISION] Failed to write decision log: %s", e)
 

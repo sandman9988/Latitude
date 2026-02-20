@@ -30,11 +30,11 @@ Author: Generated from blueprint specification
 Date: 2026-01-11
 """
 
-import numpy as np
-from typing import Tuple
-from collections import deque
-from scipy.stats import genpareto
 import logging
+from collections import deque
+
+import numpy as np
+from scipy.stats import genpareto
 
 LOG = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ class RiskAwareSACManager:
                 collapse_fac,
             )
 
-    def update(self, new_return: float, new_vpin: float) -> Tuple[float, float]:
+    def update(self, new_return: float, new_vpin: float) -> tuple[float, float]:
         """
         Update all risk metrics with new market data.
 
@@ -348,7 +348,7 @@ class RiskAwareSACManager:
 
         return exposure
 
-    def scale_action(self, raw_action: float) -> Tuple[float, float]:
+    def scale_action(self, raw_action: float) -> tuple[float, float]:
         """
         Scale a raw agent action by current exposure factor.
 
