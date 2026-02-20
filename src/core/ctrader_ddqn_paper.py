@@ -3868,6 +3868,8 @@ class CTraderFixApp(fix.Application):
                         depth_ratio=depth_ratio,
                         event_features=event_features,
                     )
+                # Set desired: 0 = close, or keep current position to hold
+                desired = 0 if exit_action == 1 else self.cur_pos
                 self._last_harvester_conf = 0.9 * self._last_harvester_conf + 0.1 * exit_conf
                 # Resolve position metrics from the active MFE/MAE tracker
                 _active_tracker = (
