@@ -1213,11 +1213,10 @@ class TabbedHUD:
         print(f"    Bid-Ask Spread:    {spread:>12.{dec}f}")
         print()
 
-        # L2 order book ladder
-        # Pad to the same number of rows and display asks top-down, bids bottom-up
-        n_levels = max(len(bids), len(asks), 1)
-        padded_asks = (asks + [[0.0, 0.0]] * n_levels)[:n_levels]  # cheapest first
-        padded_bids = (bids + [[0.0, 0.0]] * n_levels)[:n_levels]  # best first
+        # L2 order book ladder — always 5 rows so layout never shifts
+        N = 5
+        padded_asks = (asks + [[0.0, 0.0]] * N)[:N]  # cheapest first
+        padded_bids = (bids + [[0.0, 0.0]] * N)[:N]  # best first
 
         # Size bar scale: max size across all visible levels
         all_sizes = [s for _, s in bids + asks if s > 0]
@@ -1268,9 +1267,10 @@ class TabbedHUD:
 
         print()
 
-        # Order imbalance
+        # Order imbalance — compute live from fresh depth values
         print("  \033[1m⚖️  ORDER IMBALANCE\033[0m")
-        imbalance = ms.get("imbalance", 0)
+        total_depth = depth_bid + depth_ask
+        imbalance = (depth_bid - depth_ask) / total_depth if total_depth > 0 else ms.get("imbalance", 0)
 
         if imbalance > IMBALANCE_BUY_THRESHOLD:
             imb_status = "\033[92m🔺 BUY PRESSURE\033[0m"
