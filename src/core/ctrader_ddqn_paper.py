@@ -916,6 +916,8 @@ class CTraderFixApp(fix.Application):
         except ValueError:
             order_book_depth = 10
         self.order_book = OrderBook(depth=order_book_depth)
+        # Maps MDEntryID (tag 278) → (side, price) so delete-by-ID can resolve price.
+        self._md_entry_id_map: dict[str, tuple[str, float]] = {}
         self.vpin_calculator = VPINCalculator(bucket_volume=max(self.vpin_bucket_volume, 1e-6), window=50)
         self.last_vpin_stats = {"vpin": 0.0, "mean": 0.0, "std": 0.0, "zscore": 0.0}
         self.last_vpin_mid: float | None = None
@@ -1670,17 +1672,14 @@ class CTraderFixApp(fix.Application):
         if not self.quote_sid:
             return
 
-        # Request as many levels as our OrderBook is configured for.
-        # MarketDepth tag 264: 0=full book, 1=top-of-book, N=N levels.
-        # Pepperstone cTrader offers 5 levels standard; cap there unless the
-        # operator has set CTRADER_ORDERBOOK_DEPTH higher (for future-proofing).
-        _MAX_BROKER_DEPTH = int(os.environ.get("CTRADER_MD_DEPTH_MAX", "5"))
-        requested_depth = min(getattr(self.order_book, "depth", 5), _MAX_BROKER_DEPTH)
-
+        # Pepperstone cTrader FIX only accepts MarketDepth 0 (full book) or 1
+        # (top-of-book). Use 0 to receive all available levels; the OrderBook
+        # object (depth=5 by default) will keep only the top-N we care about.
+        # CTRADER_MD_DEPTH_MAX is still honoured at the OrderBook level.
         req = fix44.MarketDataRequest()
-        req.setField(fix.MDReqID(f"{self.symbol}_L2_{requested_depth}"))
+        req.setField(fix.MDReqID(f"{self.symbol}_L2_FULL"))
         req.setField(fix.SubscriptionRequestType("1"))
-        req.setField(fix.MarketDepth(requested_depth))
+        req.setField(fix.MarketDepth(0))   # 0 = full book
         req.setField(fix.MDUpdateType(1))
         req.setField(fix.NoMDEntryTypes(2))
 
@@ -1699,9 +1698,9 @@ class CTraderFixApp(fix.Application):
 
         fix.Session.sendToTarget(req, self.quote_sid)
         LOG.info(
-            "[QUOTE] Subscribed L2 market data for symbolId=%s depth=%d levels",
+            "[QUOTE] Subscribed full L2 market data for symbolId=%s (OrderBook depth=%d)",
             self.symbol_id,
-            requested_depth,
+            getattr(self.order_book, "depth", 5),
         )
 
     # ----------------------------
@@ -2000,6 +1999,7 @@ class CTraderFixApp(fix.Application):
             return
 
         self.order_book.reset()
+        self._md_entry_id_map.clear()  # ID map is stale after a full snapshot
         for i in range(1, n + 1):
             try:
                 g = fix44.MarketDataSnapshotFullRefresh().NoMDEntries()
@@ -2081,12 +2081,29 @@ class CTraderFixApp(fix.Application):
             px = fix.MDEntryPx()
             qty = fix.MDEntrySize()
 
-            if g.isSetField(et):
+            et_set = g.isSetField(et)
+            if et_set:
                 g.getField(et)
             if g.isSetField(sym):
                 g.getField(sym)
 
             if sym.getValue() and sym.getValue() != str(self.symbol_id):
+                continue
+
+            # Read MDEntryID (tag 278) — used for delete-by-ID resolution.
+            md_id_field = fix.MDEntryID()
+            md_id = None
+            if g.isSetField(md_id_field):
+                g.getField(md_id_field)
+                md_id = md_id_field.getValue()
+
+            if not et_set:
+                # Delete-by-ID: broker omits MDEntryType — look up price from map.
+                if action == "2" and md_id is not None:
+                    entry = self._md_entry_id_map.pop(md_id, None)
+                    if entry is not None:
+                        side, price_f = entry
+                        self.order_book.update_level(side, price_f, 0.0)
                 continue
 
             entry_type = et.getValue()
@@ -2105,22 +2122,35 @@ class CTraderFixApp(fix.Application):
                 except (ValueError, TypeError):
                     continue
 
-                if entry_type == "0":
-                    self.order_book.update_level("BID", price_f, size)
-                elif entry_type == "1":
-                    self.order_book.update_level("ASK", price_f, size)
-            elif action == "2":  # delete — must use the specific price level
+                side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
+                if side is None:
+                    continue
+                # If this ID was previously mapped to a different price, remove old level.
+                if md_id is not None and action == "1":
+                    old = self._md_entry_id_map.get(md_id)
+                    if old is not None and old[1] != price_f:
+                        self.order_book.update_level(old[0], old[1], 0.0)
+                self.order_book.update_level(side, price_f, size)
+                if md_id is not None:
+                    self._md_entry_id_map[md_id] = (side, price_f)
+            elif action == "2":  # delete with MDEntryType — price-keyed delete
                 if not g.isSetField(px):
+                    # No price either — try ID map as fallback.
+                    if md_id is not None:
+                        entry = self._md_entry_id_map.pop(md_id, None)
+                        if entry is not None:
+                            self.order_book.update_level(entry[0], entry[1], 0.0)
                     continue
                 g.getField(px)
                 try:
                     price_f = float(px.getValue())
                 except (ValueError, TypeError):
                     continue
-                if entry_type == "0":
-                    self.order_book.update_level("BID", price_f, 0.0)
-                elif entry_type == "1":
-                    self.order_book.update_level("ASK", price_f, 0.0)
+                side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
+                if side is not None:
+                    self.order_book.update_level(side, price_f, 0.0)
+                if md_id is not None:
+                    self._md_entry_id_map.pop(md_id, None)
 
         best_bid, best_ask = self.order_book.best_bid_ask()
         if best_bid is not None and best_ask is not None:
