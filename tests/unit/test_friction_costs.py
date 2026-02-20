@@ -164,7 +164,7 @@ class TestFrictionCalculator:
         """Create FrictionCalculator with tmp persistence to avoid file side-effects."""
         from src.persistence.learned_parameters import LearnedParametersManager
         pm = LearnedParametersManager(persistence_path=tmp_path / "params.json")
-        return FrictionCalculator(param_manager=pm)
+        return FrictionCalculator(symbol="BTCUSD", param_manager=pm)
 
     # -- normalize_quantity --
     def test_normalize_quantity_normal(self, calc):

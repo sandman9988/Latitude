@@ -124,57 +124,41 @@ class ProductionMonitor:
         # Start time
         self.start_time = time.time()
 
-    def update_metrics(
-        self,
-        # P&L
-        realized_pnl_day: float = 0.0,
-        realized_pnl_total: float = 0.0,
-        unrealized_pnl: float = 0.0,
-        drawdown_current: float = 0.0,
-        drawdown_max: float = 0.0,
-        # Trade stats
-        trades_today: int = 0,
-        trades_total: int = 0,
-        win_rate: float = 0.0,
-        avg_profit: float = 0.0,
-        avg_loss: float = 0.0,
-        avg_trade_duration_mins: float = 0.0,
-        # Agent stats
-        trigger_confidence_avg: float = 0.0,
-        harvester_confidence_avg: float = 0.0,
-        last_trade_mins_ago: float = 0.0,
-        # Circuit breakers
-        circuit_breakers_tripped: int = 0,
-        circuit_breaker_names: Optional[List[str]] = None,
-        # System health
-        memory_usage_pct: float = 0.0,
-        error_count_1h: int = 0,
-        fix_connected: bool = True,
-    ):
-        """Update current metrics."""
+    def update_metrics(self, **kwargs) -> None:
+        """Update current metrics.
+
+        Accepts the same keyword arguments as ``TradingMetrics`` fields.
+        Defaults mirror the field defaults so callers need only supply
+        the values that changed.
+        """
         uptime_hours = (time.time() - self.start_time) / 3600
 
         self.metrics = TradingMetrics(
-            realized_pnl_day=realized_pnl_day,
-            realized_pnl_total=realized_pnl_total,
-            unrealized_pnl=unrealized_pnl,
-            drawdown_current=drawdown_current,
-            drawdown_max=drawdown_max,
-            trades_today=trades_today,
-            trades_total=trades_total,
-            win_rate=win_rate,
-            avg_profit=avg_profit,
-            avg_loss=avg_loss,
-            avg_trade_duration_mins=avg_trade_duration_mins,
-            trigger_confidence_avg=trigger_confidence_avg,
-            harvester_confidence_avg=harvester_confidence_avg,
-            last_trade_mins_ago=last_trade_mins_ago,
-            circuit_breakers_tripped=circuit_breakers_tripped,
-            circuit_breaker_names=circuit_breaker_names or [],
+            # P&L
+            realized_pnl_day=kwargs.get("realized_pnl_day", 0.0),
+            realized_pnl_total=kwargs.get("realized_pnl_total", 0.0),
+            unrealized_pnl=kwargs.get("unrealized_pnl", 0.0),
+            drawdown_current=kwargs.get("drawdown_current", 0.0),
+            drawdown_max=kwargs.get("drawdown_max", 0.0),
+            # Trade stats
+            trades_today=kwargs.get("trades_today", 0),
+            trades_total=kwargs.get("trades_total", 0),
+            win_rate=kwargs.get("win_rate", 0.0),
+            avg_profit=kwargs.get("avg_profit", 0.0),
+            avg_loss=kwargs.get("avg_loss", 0.0),
+            avg_trade_duration_mins=kwargs.get("avg_trade_duration_mins", 0.0),
+            # Agent stats
+            trigger_confidence_avg=kwargs.get("trigger_confidence_avg", 0.0),
+            harvester_confidence_avg=kwargs.get("harvester_confidence_avg", 0.0),
+            last_trade_mins_ago=kwargs.get("last_trade_mins_ago", 0.0),
+            # Circuit breakers
+            circuit_breakers_tripped=kwargs.get("circuit_breakers_tripped", 0),
+            circuit_breaker_names=kwargs.get("circuit_breaker_names") or [],
+            # System health
             uptime_hours=uptime_hours,
-            memory_usage_pct=memory_usage_pct,
-            error_count_1h=error_count_1h,
-            fix_connected=fix_connected,
+            memory_usage_pct=kwargs.get("memory_usage_pct", 0.0),
+            error_count_1h=kwargs.get("error_count_1h", 0),
+            fix_connected=kwargs.get("fix_connected", True),
             timestamp=time.time(),
         )
 
@@ -373,7 +357,7 @@ if __name__ == "__main__":
     )
 
     metrics_json = json.loads(monitor.get_metrics_json())
-    if metrics_json["metrics"]["realized_pnl_day"] == 150.50:
+    if abs(metrics_json["metrics"]["realized_pnl_day"] - 150.50) < 0.01:
         print("  ✓ Metrics updated correctly")
     else:
         print("  ✗ Metrics update failed")
@@ -425,7 +409,8 @@ if __name__ == "__main__":
     print("\nTest 6: Metrics file persistence")
     import tempfile
 
-    temp_file = Path(tempfile.mktemp(suffix=".json"))
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as _tmp:
+        temp_file = Path(_tmp.name)
     monitor6 = ProductionMonitor(metrics_file=temp_file, http_enabled=False)
     monitor6.update_metrics(trades_total=42)
 

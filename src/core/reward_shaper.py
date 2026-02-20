@@ -21,9 +21,14 @@ from src.monitoring.activity_monitor import ActivityMonitor, CounterfactualAnaly
 from src.persistence.learned_parameters import LearnedParametersManager
 
 TARGET_CAPTURE_RATIO: float = 0.7
-WTL_THRESHOLD: float = 1.0  # Lowered: penalize WTL even on small-dollar trades
-BASELINE_MFE: float = 100.0
-OPPORTUNITY_THRESHOLD: float = 50.0
+WTL_THRESHOLD: float = 1.0  # Relative: penalize WTL on any scale
+# BASELINE_MFE and OPPORTUNITY_THRESHOLD were formerly hardcoded (100.0, 50.0).
+# They are now learned per-instrument via LearnedParametersManager so the
+# reward shaper is instrument-agnostic (works on XAUUSD, EURUSD, BTC, etc.).
+# The values below are used only during the very first trades before live data
+# has been observed. After ~20 trades they will have fully self-calibrated.
+BASELINE_MFE_SEED: float = 10.0  # Neutral seed — updated by first real trades
+OPPORTUNITY_THRESHOLD_SEED: float = 15.0  # Neutral seed
 OPPORTUNITY_SIGNAL_MIN: float = 0.5
 OPPORTUNITY_SCALE: float = 0.3
 WEIGHT_CAPTURE: float = 1.0
@@ -69,7 +74,7 @@ class RewardShaper:
 
     def __init__(
         self,
-        symbol: str = "BTCUSD",
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
         timeframe: str = "M15",
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
@@ -134,10 +139,14 @@ class RewardShaper:
         capture_mult = self._get_param("capture_multiplier")
         target_capture = TARGET_CAPTURE_RATIO  # Principled default from handbook: aim for 70% MFE capture
 
-        capture_ratio = exit_pnl / mfe
+        # Clamp ratio to prevent explosion when mfe is tiny or pnl/mfe have different scales.
+        # A ratio outside [-5, 5] carries no additional discriminative signal for the DDQN
+        # (both -5 and -355 mean "catastrophic loss relative to MFE").
+        raw_ratio = exit_pnl / mfe
+        capture_ratio = max(-5.0, min(5.0, raw_ratio))
 
-        # Reward = difference from target × multiplier
-        reward = (capture_ratio - target_capture) * capture_mult
+        # Reward = difference from target × multiplier, bounded for DDQN stability
+        reward = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult))
 
         # Track statistics
         self.component_stats["capture"]["sum"] += reward
@@ -169,8 +178,10 @@ class RewardShaper:
         """
         # Get adaptive parameters
         wtl_penalty_mult = self._get_param("wtl_penalty_multiplier")
-        wtl_threshold = WTL_THRESHOLD  # Principled default: minimum MFE to trigger WTL penalty
-        baseline_mfe = BASELINE_MFE  # Principled default: typical MFE for normalization
+        wtl_threshold = WTL_THRESHOLD  # Relative: independent of instrument scale
+        # Self-calibrating baseline: median MFE observed on this instrument.
+        # Starts at BASELINE_MFE_SEED and updates each trade via update_baselines().
+        baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 1.0)
 
         if not was_wtl or mfe < wtl_threshold:
             return 0.0
@@ -211,10 +222,11 @@ class RewardShaper:
         """
         # Get adaptive parameters
         opportunity_mult = self._get_param("opportunity_multiplier")
-        opportunity_threshold = (
-            OPPORTUNITY_THRESHOLD  # Principled default: minimum potential profit to count as missed opportunity
-        )
-        baseline_mfe = BASELINE_MFE  # Principled default
+        # Self-calibrating threshold: p75 of MFE seen on this instrument.
+        # Ensures "missed opportunity" only fires when the move is large
+        # relative to what this instrument typically produces.
+        opportunity_threshold = self._get_param("opportunity_p75_baseline", OPPORTUNITY_THRESHOLD_SEED)
+        baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 1.0)
 
         if potential_mfe < opportunity_threshold or signal_strength < OPPORTUNITY_SIGNAL_MIN:
             return 0.0
@@ -252,7 +264,6 @@ class RewardShaper:
         # Extract trade data
         exit_pnl = trade_data.get("exit_pnl", 0.0)
         mfe = trade_data.get("mfe", 0.0)
-        trade_data.get("mae", 0.0)
         was_wtl = trade_data.get("winner_to_loser", False)
         bars_from_mfe = trade_data.get("bars_from_mfe", 0)
         potential_mfe = trade_data.get("potential_mfe", 0.0)
@@ -278,7 +289,7 @@ class RewardShaper:
         # NEW: Counterfactual reward (penalty for early exits)
         r_counterfactual = 0.0
         if entry_price > 0 and exit_price > 0 and mfe > 0:
-            r_counterfactual, cf_metrics = self.counterfactual.analyze_exit(
+            r_counterfactual, _ = self.counterfactual.analyze_exit(
                 entry_price, exit_price, mfe, mfe_bar_offset, direction
             )
             self.component_stats["counterfactual"]["sum"] += r_counterfactual
@@ -310,6 +321,11 @@ class RewardShaper:
 
         self.total_rewards_calculated += 1
 
+        # After each closed trade, soft-update the MFE baselines so they
+        # stay calibrated to this instrument's typical move size.
+        if mfe > 0:
+            self.update_baselines(mfe)
+
         return {
             "capture_efficiency": r_capture,
             "wtl_penalty": r_wtl,
@@ -330,6 +346,50 @@ class RewardShaper:
             ),
         }
 
+    def update_baselines(self, mfe: float):
+        """
+        Soft-update the per-instrument MFE baselines after each trade.
+
+        Uses an exponential moving average with alpha=0.05 (slow decay so the
+        baseline tracks the instrument's typical move scale without overreacting
+        to individual outliers).
+
+        Uses `set_value()` (direct assignment) rather than the gradient/momentum
+        `update()` path because the tanh sigmoid in AdaptiveParam is designed for
+        gradient descent and produces distorted results when used to write absolute
+        EMA values with wide bounds like [0.01, 100000].
+
+        This is the mechanism that makes the reward shaper instrument-agnostic:
+        after ~20 trades on a new instrument the baselines will have converged
+        to the right scale and no manual tuning is required.
+
+        Args:
+            mfe: Actual Maximum Favorable Excursion for the closed trade
+        """
+        if mfe <= 0:
+            return
+
+        alpha = 0.05  # EMA smoothing — slow enough to avoid single-trade whiplash
+
+        # p50 baseline (median proxy via EMA)
+        current_p50 = self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED)
+        new_p50 = (1 - alpha) * current_p50 + alpha * mfe
+        self.param_manager.set_value(
+            self.symbol, "mfe_p50_baseline", new_p50,
+            timeframe=self.timeframe, broker=self.broker
+        )
+
+        # p75 baseline (high-end proxy: EMA with upward bias on large moves)
+        # Large MFEs pull the baseline up faster than small ones pull it down,
+        # giving an approximate upper-quartile tracker.
+        current_p75 = self._get_param("opportunity_p75_baseline", OPPORTUNITY_THRESHOLD_SEED)
+        p75_alpha = 0.10 if mfe > current_p75 else 0.03
+        new_p75 = (1 - p75_alpha) * current_p75 + p75_alpha * mfe
+        self.param_manager.set_value(
+            self.symbol, "opportunity_p75_baseline", new_p75,
+            timeframe=self.timeframe, broker=self.broker
+        )
+
     def adapt_weights(self, performance_delta: float):
         """
         Adjust reward component weights based on performance feedback.
@@ -344,7 +404,6 @@ class RewardShaper:
         """
         # Weights are now fixed at principled defaults (1.0, 1.0, 0.5)
         # Adaptation happens via the component multipliers in LearnedParametersManager
-        pass
 
     def get_statistics(self) -> dict:
         """Return statistics about reward components."""
@@ -408,10 +467,13 @@ class RewardShaper:
     # ========================================================================
 
     def calculate_trigger_reward(
-        self, actual_mfe: float, predicted_runway: float, direction: int, entry_price: float
+        self,
+        actual_mfe: float,
+        predicted_runway: float,
+        direction: int = 1,       # noqa: ARG002  # NOSONAR
+        entry_price: float = 0.0,  # noqa: ARG002  # NOSONAR
     ) -> dict[str, float]:
-        """
-        Calculate reward for TriggerAgent (entry specialist).
+        """Calculate reward for TriggerAgent (entry specialist).
 
         Measures runway utilization: How well did we predict MFE?
 
@@ -427,8 +489,6 @@ class RewardShaper:
         Args:
             actual_mfe: Actual maximum favorable excursion achieved
             predicted_runway: Predicted MFE from TriggerAgent
-            direction: Trade direction (+1 LONG, -1 SHORT)
-            entry_price: Entry price for percentage calculation
 
         Returns:
             Dict with 'runway_reward', 'utilization', 'error_pct'
@@ -490,13 +550,12 @@ class RewardShaper:
         self,
         exit_pnl: float,
         mfe: float,
-        mae: float,
-        was_wtl: bool,
-        bars_held: int,
+        was_wtl: bool = False,
+        bars_held: int = 0,
         bars_from_mfe_to_exit: int = 0,
+        mae: float = 0.0,  # noqa: ARG002  # NOSONAR
     ) -> dict[str, float]:
-        """
-        Calculate reward for HarvesterAgent (exit specialist).
+        """Calculate reward for HarvesterAgent (exit specialist).
 
         Combines:
         1. Capture efficiency (how much of MFE captured)
@@ -512,7 +571,6 @@ class RewardShaper:
         Args:
             exit_pnl: Final P&L at exit
             mfe: Maximum favorable excursion
-            mae: Maximum adverse excursion
             was_wtl: Winner-to-loser flag
             bars_held: Total bars position was held
             bars_from_mfe_to_exit: Bars between MFE and exit
@@ -522,13 +580,16 @@ class RewardShaper:
         """
         # 1. Capture efficiency
         if mfe > 0:
-            capture_ratio = exit_pnl / mfe
+            # Clamp ratio to [-5, 5] — same guard as calculate_capture_efficiency_reward.
+            # Prevents explosion when mfe is tiny relative to a large adverse pnl.
+            raw_ratio = exit_pnl / mfe
+            capture_ratio = max(-5.0, min(5.0, raw_ratio))
             target_capture = TARGET_CAPTURE_RATIO  # Aim for 70% of MFE
             try:
                 capture_mult = self._get_param("capture_multiplier")
             except KeyError:
                 capture_mult = CAPTURE_MULT_FALLBACK  # Default
-            r_capture = (capture_ratio - target_capture) * capture_mult
+            r_capture = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult))
         else:
             # No favorable movement - neutral
             capture_ratio = 0.0
@@ -562,14 +623,7 @@ class RewardShaper:
         total_reward = r_capture + r_wtl + r_timing
 
         # Quality assessment
-        if capture_ratio >= CAPTURE_QUALITY_EXCELLENT:
-            quality = "EXCELLENT"
-        elif capture_ratio >= CAPTURE_QUALITY_GOOD:
-            quality = "GOOD"
-        elif capture_ratio >= CAPTURE_QUALITY_FAIR:
-            quality = "FAIR"
-        else:
-            quality = "POOR"
+        quality = self._harvest_quality(capture_ratio)
 
         return {
             "harvester_reward": total_reward,
@@ -581,18 +635,29 @@ class RewardShaper:
             "was_wtl": was_wtl,
         }
 
+    @staticmethod
+    def _harvest_quality(capture_ratio: float) -> str:
+        """Classify harvest capture quality from the capture ratio."""
+        if capture_ratio >= CAPTURE_QUALITY_EXCELLENT:
+            return "EXCELLENT"
+        if capture_ratio >= CAPTURE_QUALITY_GOOD:
+            return "GOOD"
+        if capture_ratio >= CAPTURE_QUALITY_FAIR:
+            return "FAIR"
+        return "POOR"
+
     def calculate_dual_agent_rewards(
         self,
         # Trigger data
         actual_mfe: float,
         predicted_runway: float,
-        direction: int,
-        entry_price: float,
+        direction: int = 1,
+        entry_price: float = 0.0,
         # Harvester data
-        exit_pnl: float,
-        mae: float,
-        was_wtl: bool,
-        bars_held: int,
+        exit_pnl: float = 0.0,
+        mae: float = 0.0,
+        was_wtl: bool = False,
+        bars_held: int = 0,
         bars_from_mfe_to_exit: int = 0,
     ) -> dict[str, float]:
         """
@@ -608,13 +673,12 @@ class RewardShaper:
                 - All component breakdowns
         """
         # Calculate individual agent rewards
-        trigger_result = self.calculate_trigger_reward(actual_mfe, predicted_runway, direction, entry_price)
-
-        harvester_result = self.calculate_harvester_reward(
-            exit_pnl, actual_mfe, mae, was_wtl, bars_held, bars_from_mfe_to_exit
+        trigger_result = self.calculate_trigger_reward(
+            actual_mfe, predicted_runway, direction, entry_price
         )
-
-        # Combined total (weighted average)
+        harvester_result = self.calculate_harvester_reward(
+            exit_pnl, actual_mfe, was_wtl, bars_held, bars_from_mfe_to_exit, mae
+        )
         # Trigger: 40% weight (entry quality)
         # Harvester: 60% weight (exit execution is harder)
         total_reward = 0.4 * trigger_result["runway_reward"] + 0.6 * harvester_result["harvester_reward"]
@@ -677,8 +741,6 @@ if __name__ == "__main__":
     trigger_result = shaper.calculate_trigger_reward(
         actual_mfe=0.0025,  # 25 pips achieved
         predicted_runway=0.0025,  # 25 pips predicted
-        direction=1,
-        entry_price=100000.0,
     )
     print(f"Runway Reward: {trigger_result['runway_reward']:+.4f}")
     print(f"Utilization: {trigger_result['utilization']:.2f}x")
@@ -690,8 +752,6 @@ if __name__ == "__main__":
     trigger_result2 = shaper.calculate_trigger_reward(
         actual_mfe=0.0040,  # 40 pips achieved
         predicted_runway=0.0025,  # 25 pips predicted (underpredicted)
-        direction=1,
-        entry_price=100000.0,
     )
     print(f"Runway Reward: {trigger_result2['runway_reward']:+.4f}")
     print(f"Utilization: {trigger_result2['utilization']:.2f}x")
@@ -703,8 +763,6 @@ if __name__ == "__main__":
     trigger_result3 = shaper.calculate_trigger_reward(
         actual_mfe=0.0010,  # 10 pips achieved
         predicted_runway=0.0025,  # 25 pips predicted (overpredicted)
-        direction=1,
-        entry_price=100000.0,
     )
     print(f"Runway Reward: {trigger_result3['runway_reward']:+.4f}")
     print(f"Utilization: {trigger_result3['utilization']:.2f}x")
@@ -716,7 +774,6 @@ if __name__ == "__main__":
     harvester_result = shaper.calculate_harvester_reward(
         exit_pnl=0.0034,  # 34 pips captured
         mfe=0.0040,  # 40 pips MFE
-        mae=0.0005,  # 5 pips MAE
         was_wtl=False,
         bars_held=15,
         bars_from_mfe_to_exit=3,
@@ -734,7 +791,6 @@ if __name__ == "__main__":
     harvester_result2 = shaper.calculate_harvester_reward(
         exit_pnl=-0.0010,  # -10 pips (loss)
         mfe=0.0040,  # Had 40 pips profit
-        mae=0.0050,  # 50 pips adverse
         was_wtl=True,
         bars_held=30,
         bars_from_mfe_to_exit=25,  # Waited 25 bars after MFE
@@ -750,11 +806,8 @@ if __name__ == "__main__":
         # Trigger: predicted 25 pips, got 30 pips
         actual_mfe=0.0030,
         predicted_runway=0.0025,
-        direction=1,
-        entry_price=100000.0,
         # Harvester: captured 75% of MFE
         exit_pnl=0.0022,
-        mae=0.0008,
         was_wtl=False,
         bars_held=20,
         bars_from_mfe_to_exit=5,

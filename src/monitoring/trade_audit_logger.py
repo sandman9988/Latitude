@@ -73,8 +73,6 @@ class TradeAuditLogger:
         self.session_id = f"session_{int(time.time())}"
         self.sequence = 0  # Monotonic sequence number within session
 
-        LOG.info("[TRADE_AUDIT] Initialized: %s", self.log_file)
-
         # Log session start
         self._write_entry("SESSION_START", {"session_id": self.session_id}, "INFO")
 
@@ -124,7 +122,7 @@ class TradeAuditLogger:
         quantity: float,
         price: Optional[float] = None,
         ticket: Optional[str] = None,
-        symbol: str = "BTCUSD",
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
         order_type: str = "MARKET",
     ):
         """
@@ -223,7 +221,13 @@ class TradeAuditLogger:
     # ==========================================================================
 
     def log_position_open(
-        self, position_id: str, direction: str, quantity: float, entry_price: float, ticket: str, symbol: str = "BTCUSD"
+        self,
+        position_id: str,
+        direction: str,
+        quantity: float,
+        entry_price: float,
+        ticket: str,
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
     ):
         """
         Log position opening.
@@ -306,7 +310,11 @@ class TradeAuditLogger:
     # ==========================================================================
 
     def log_ticket_assigned(
-        self, ticket: str, position_id: str, order_id: Optional[str] = None, symbol: str = "BTCUSD"
+        self,
+        ticket: str,
+        position_id: str,
+        order_id: Optional[str] = None,
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
     ):
         """
         Log broker ticket assignment to position.

@@ -90,21 +90,21 @@ class TestPositionSizeZeroRejectsEntry:
 
     def test_position_size_returns_zero(self, rm):
         rm.var_estimator.estimate_var = MagicMock(return_value=0.01)
-        with patch("src.risk.var_estimator.position_size_from_var", return_value=0.0):
+        with patch("src.risk.risk_manager.position_size_from_var", return_value=0.0):
             result = rm.validate_entry(action=1, confidence=0.9, current_position=0.0)
         assert result.approved is False
         assert "zero" in result.reason.lower() or "negative" in result.reason.lower()
 
     def test_position_size_returns_negative(self, rm):
         rm.var_estimator.estimate_var = MagicMock(return_value=0.01)
-        with patch("src.risk.var_estimator.position_size_from_var", return_value=-0.1):
+        with patch("src.risk.risk_manager.position_size_from_var", return_value=-0.1):
             result = rm.validate_entry(action=1, confidence=0.9, current_position=0.0)
         assert result.approved is False
 
     def test_rejected_increments_counter(self, rm):
         rm.var_estimator.estimate_var = MagicMock(return_value=0.01)
         before = rm.entries_rejected
-        with patch("src.risk.var_estimator.position_size_from_var", return_value=0.0):
+        with patch("src.risk.risk_manager.position_size_from_var", return_value=0.0):
             rm.validate_entry(action=1, confidence=0.9, current_position=0.0)
         assert rm.entries_rejected == before + 1
 

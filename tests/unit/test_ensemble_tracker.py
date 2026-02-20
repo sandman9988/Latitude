@@ -21,7 +21,7 @@ class TestEnsembleTrackerInit:
         et = EnsembleTracker(n_models=3)
         assert et.n_models == 3
         assert et.total_predictions == 0
-        assert len(et.models) == 3
+        assert len(et.models) == 0  # models are registered via set_models()
 
     def test_minimum_models_enforced(self):
         with pytest.raises(ValueError):

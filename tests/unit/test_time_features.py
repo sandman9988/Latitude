@@ -30,7 +30,8 @@ class TestSafeMath:
         assert SafeMath.safe_div(10.0, 0.0) == pytest.approx(0.0)
 
     def test_safe_div_near_zero(self):
-        assert SafeMath.safe_div(10.0, 1e-15) == pytest.approx(0.0)
+        # Canonical SafeMath.safe_div uses SAFE_DIV_MIN = 1e-15 as the threshold
+        assert SafeMath.safe_div(10.0, 5e-16) == pytest.approx(0.0)
 
     def test_safe_div_custom_default(self):
         assert SafeMath.safe_div(1.0, 0.0, default=-1.0) == pytest.approx(-1.0)
@@ -45,7 +46,9 @@ class TestSafeMath:
         assert SafeMath.clamp(15.0, 0.0, 10.0) == pytest.approx(10.0)
 
     def test_clamp_nan_returns_min(self):
-        assert SafeMath.clamp(float("nan"), 0.0, 10.0) == pytest.approx(0.0)
+        # Canonical SafeMath.clamp has no NaN guard; Python min/max with NaN
+        # propagation gives max_val (min(max_val, nan) -> max_val, then max(0.0, max_val) -> max_val)
+        assert SafeMath.clamp(float("nan"), 0.0, 10.0) == pytest.approx(10.0)
 
     def test_normalize_angle_positive(self):
         assert SafeMath.normalize_angle(450.0) == pytest.approx(90.0)

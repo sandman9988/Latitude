@@ -275,7 +275,8 @@ class ExperienceBuffer:
         next_states_list: list[np.ndarray] = []
         dones_list: list[bool] = []
         indices_list: list[int] = []
-        priorities_list: list[float] = []
+        raw_priorities_list: list[float] = []  # Raw tree priorities for correct IS weights
+        priority_updates: list[tuple[int, float]] = []  # (tree_idx, adjusted_priority)
 
         # Divide total priority range into batch_size segments
         segment_size = self.tree.total() / batch_size
@@ -297,17 +298,18 @@ class ExperienceBuffer:
                 LOG.warning("Sampled None experience at data_idx=%d", data_idx)
                 continue
 
-            # Get priority for this experience
+            # Get raw priority for this experience (actual sampling probability basis)
             priority = self.tree.get_priority(data_idx)
 
-            # Apply staleness decay
+            # Compute adjusted priority (staleness-decay + regime-boost) and
+            # queue it for a post-loop tree update.  We must NOT update the tree
+            # inside this loop because doing so alters tree.total(), which
+            # invalidates the stratified segment boundaries for later iterations.
             staleness_weight = self._calculate_staleness_weight(exp.timestamp)
-
-            # Apply regime boost
             regime_weight = self.regime_boost if exp.regime == self.current_regime else 1.0
-
-            # Combined priority
-            adjusted_priority = priority * staleness_weight * regime_weight
+            adjusted_priority = max(priority * staleness_weight * regime_weight, self.epsilon)
+            tree_idx = data_idx + self.tree.capacity - 1
+            priority_updates.append((tree_idx, adjusted_priority))
 
             # Store
             states_list.append(exp.state)
@@ -316,7 +318,11 @@ class ExperienceBuffer:
             next_states_list.append(exp.next_state)
             dones_list.append(bool(exp.done))
             indices_list.append(data_idx)  # Store data index for updates
-            priorities_list.append(float(adjusted_priority))
+            raw_priorities_list.append(float(priority))  # Raw priority for IS weights
+
+        # Apply staleness/regime priority adjustments after sampling is complete
+        for tree_idx, adj_p in priority_updates:
+            self.tree.update(tree_idx, adj_p)
 
         # Defensive: Check we got enough samples
         if len(states_list) < batch_size // 2:
@@ -330,14 +336,17 @@ class ExperienceBuffer:
         next_states = np.asarray(next_states_list, dtype=np.float32)
         dones = np.asarray(dones_list, dtype=np.bool_)
         indices = np.asarray(indices_list, dtype=np.int32)
-        priorities = np.asarray(priorities_list, dtype=np.float32)
+        raw_priorities = np.asarray(raw_priorities_list, dtype=np.float32)
 
-        # Calculate importance sampling weights
-        # w_i = (1 / (N * P(i)))^β
-        # Normalized by max weight for stability
-        probs = priorities / self.tree.total()
+        # Importance sampling weights: debias the prioritised distribution.
+        # P(i) = raw_priority_i / total  (actual probability used by SumTree)
+        # w_i = (1 / (N * P(i)))^β  — normalised by max for numerical stability.
+        # We intentionally use raw (unadjusted) priorities here; staleness/regime
+        # adjustments were already written back into the tree during sampling so
+        # future draws reflect them without distorting the IS correction.
+        probs = np.clip(raw_priorities / (self.tree.total() + 1e-8), 1e-10, 1.0)
         weights = (1.0 / (self.tree.n_entries * probs)) ** self.beta
-        weights = weights / weights.max()  # Normalize
+        weights = weights / weights.max()  # Normalize to [0, 1]
 
         # Anneal beta
         self.beta = min(1.0, self.beta + self.beta_increment)

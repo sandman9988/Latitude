@@ -34,7 +34,7 @@ class TestResolveParam:
         inst = pm.get_instrument("BTCUSD", timeframe="M15", broker="default")
         inst.params["sortino_threshold"].value = 1.5  # Override default
 
-        mgr = CircuitBreakerManager(param_manager=pm)
+        mgr = CircuitBreakerManager(param_manager=pm, symbol="BTCUSD", timeframe="M15")
         # Should pick up the learned value
         assert mgr.sortino_threshold == pytest.approx(1.5)
 

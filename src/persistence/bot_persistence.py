@@ -51,8 +51,6 @@ class BotPersistenceManager:
         # Atomic persistence handler
         self.persistence = AtomicPersistence(base_dir=str(self.base_dir))
 
-        LOG.info(f"[PERSISTENCE] Initialized: {self.base_dir}")
-
     def get_instrument_dir(self, symbol: str, timeframe: str) -> Path:
         """Get directory for specific instrument/timeframe"""
         inst_dir = self.base_dir / symbol / timeframe

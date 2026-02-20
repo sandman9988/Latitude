@@ -10,7 +10,12 @@ Enhanced with defense-in-depth safety layer and state persistence.
 import logging
 from typing import TYPE_CHECKING
 
-import quickfix as fix
+try:
+    import quickfix as fix
+except ImportError:
+    class fix:  # type: ignore[no-redef]
+        class Message:
+            pass
 
 from src.core.trade_manager import Order, Side, TradeManager
 from src.monitoring.trade_audit_logger import get_trade_audit_logger
@@ -21,6 +26,8 @@ if TYPE_CHECKING:
     from src.core.ctrader_ddqn_paper import CTraderFixApp
 
 LOG = logging.getLogger(__name__)
+
+_MSG_RECOVERED_ENTRY = "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)"
 
 
 class TradeManagerIntegration:
@@ -51,7 +58,7 @@ class TradeManagerIntegration:
         self.highest_price_since_entry: float | None = None  # For LONG
         self.lowest_price_since_entry: float | None = None  # For SHORT
         self.entry_price: float | None = None
-        self.position_direction: int = 0  # 1=LONG, -1=SHORT, 0=FLAT
+        self.position_direction: int = 0
 
         # Position recovery tracking
         self.position_recovered: bool = False
@@ -210,7 +217,7 @@ class TradeManagerIntegration:
                 # Scan for tracker with this ticket
                 position_id_to_remove = None
                 with self.app._tracker_lock:
-                    for pos_id, tracker in list(self.app.mfe_mae_trackers.items()):
+                    for pos_id, tracker in self.app.mfe_mae_trackers.items():
                         if getattr(tracker, "position_ticket", None) == closed_ticket:
                             position_id_to_remove = pos_id
                             break
@@ -221,13 +228,29 @@ class TradeManagerIntegration:
                     mfe = tracker_summary.get("mfe", 0.0)
                     mae = tracker_summary.get("mae", 0.0)
                     entry_price = tracker_summary.get("entry_price", 0.0)
-                    pnl = (order.avg_price - entry_price) if tracker.direction > 0 else (entry_price - order.avg_price)
+
+                    # Calculate P&L: price_diff * quantity * contract_size
+                    # Note: Use bot's _calculate_position_pnl for consistency if available
+                    direction = "LONG" if tracker.direction > 0 else "SHORT"
+                    if hasattr(self.app, "_calculate_position_pnl"):
+                        pnl = self.app._calculate_position_pnl(
+                            entry_price=entry_price,
+                            exit_price=order.avg_price,
+                            direction=direction,
+                            quantity=order.filled_qty,
+                        )
+                    else:
+                        # Fallback: Simple calculation
+                        direction_sign = 1 if tracker.direction > 0 else -1
+                        pnl = (
+                            (order.avg_price - entry_price) * direction_sign * order.filled_qty * self.app.contract_size
+                        )
 
                     # Audit log: Position closed
                     self.audit.log_position_close(
                         position_id=position_id_to_remove,
                         exit_price=order.avg_price,
-                        pnl=pnl * order.filled_qty if order.filled_qty > 0 else 0.0,
+                        pnl=pnl,  # Already includes quantity in calculation above
                         mfe=mfe,
                         mae=mae,
                         ticket=closed_ticket,
@@ -249,19 +272,42 @@ class TradeManagerIntegration:
                     # CRITICAL: Notify DualPolicy that position was closed
                     # Without this, DualPolicy.current_position stays stale and blocks epsilon exploration
                     if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_exit"):
+                        # FIX: DualPolicy.mfe/mae are updated tick-by-tick in decide() and hold
+                        # the real excursion values.  The MFEMAETracker was never receiving tick
+                        # updates (key mismatch), so tracker_summary always had mfe=0.  Capture
+                        # policy.mfe/mae HERE, before on_exit() resets them to 0, and promote
+                        # them into tracker_summary so _process_trade_completion sees real values.
+                        policy_mfe = getattr(self.app.policy, "mfe", 0.0) or 0.0
+                        policy_mae = getattr(self.app.policy, "mae", 0.0) or 0.0
+                        if policy_mfe > mfe:
+                            mfe = policy_mfe
+                            tracker_summary["mfe"] = mfe
+                            LOG.debug(
+                                "[INTEGRATION] Using policy.mfe=%.4f (tracker had %.4f)",
+                                policy_mfe,
+                                tracker_summary.get("mfe", 0.0),
+                            )
+                        if policy_mae > mae:
+                            mae = policy_mae
+                            tracker_summary["mae"] = mae
+                        # Recalculate winner_to_loser with accurate MFE
+                        was_wtl = mfe > 0 and pnl < 0
+                        tracker_summary["winner_to_loser"] = was_wtl
                         # Calculate capture ratio
                         capture_ratio = (pnl / mfe) if mfe > 0 else 0.0
-                        was_wtl = mfe > 0 and pnl < 0  # Winner-to-loser: had profit, closed at loss
                         self.app.policy.on_exit(
                             exit_price=order.avg_price,
                             capture_ratio=capture_ratio,
                             was_wtl=was_wtl,
+                            entry_confidence=getattr(self.app, "entry_confidence", 0.5),
                         )
                         LOG.info(
-                            "[INTEGRATION] ✓ Notified DualPolicy of exit @ %.5f capture=%.2f%% wtl=%s",
+                            "[INTEGRATION] ✓ Notified DualPolicy of exit @ %.5f capture=%.2f%% wtl=%s mfe=%.4f mae=%.4f",
                             order.avg_price,
                             capture_ratio * 100,
                             was_wtl,
+                            mfe,
+                            mae,
                         )
 
             # Remove ticket mapping
@@ -744,12 +790,8 @@ class TradeManagerIntegration:
             LOG.info("[INTEGRATION] Closing net position: %s %.6f (reason=%s)", exit_side.name, self.app.qty, reason)
         return order is not None
 
-    def exit_position(self, quantity: float) -> bool:
-        """
-        Exit position using TradeManager (legacy method).
-
-        Args:
-            quantity: Quantity to close
+    def exit_position(self) -> bool:
+        """Exit position using TradeManager (legacy method).
 
         Returns:
             True if order submitted, False otherwise
@@ -926,18 +968,27 @@ class TradeManagerIntegration:
                 # Only treat as position if we have trackers/tickets (not just non-zero qty)
                 if has_position and (has_trackers or has_tickets):
                     self.trade_manager.position = recovered_pos
-                    self.app.cur_pos = 1 if recovered_pos.net_qty > 0 else (-1 if recovered_pos.net_qty < 0 else 0)
+                    if recovered_pos.net_qty > 0:
+                        self.app.cur_pos = 1
+                    elif recovered_pos.net_qty < 0:
+                        self.app.cur_pos = -1
+                    else:
+                        self.app.cur_pos = 0
                     position_recovered = True
+                    if self.app.cur_pos == 1:
+                        _recovered_dir = "LONG"
+                    elif self.app.cur_pos == -1:
+                        _recovered_dir = "SHORT"
+                    elif has_position:
+                        _recovered_dir = "HEDGED"
+                    else:
+                        _recovered_dir = "FLAT"
                     LOG.info(
                         "[INTEGRATION] 🔄 POSITION RECOVERED: long=%.6f short=%.6f net=%.6f direction=%s trackers=%d tickets=%d (persisted_at=%s)",
                         recovered_pos.long_qty,
                         recovered_pos.short_qty,
                         recovered_pos.net_qty,
-                        (
-                            "LONG"
-                            if self.app.cur_pos == 1
-                            else "SHORT" if self.app.cur_pos == -1 else "HEDGED" if has_position else "FLAT"
-                        ),
+                        _recovered_dir,
                         len(state.get("active_trackers", {})),
                         len(state.get("position_tickets", {})),
                         state.get("persisted_at", "unknown"),
@@ -1085,7 +1136,7 @@ class TradeManagerIntegration:
                             entry_time=dt.datetime.now(dt.timezone.utc),
                         )
                     LOG.info(
-                        "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)",
+                        _MSG_RECOVERED_ENTRY,
                         last_ticket_data["entry_price"],
                         last_ticket_data["direction"],
                         mfe,
@@ -1122,7 +1173,7 @@ class TradeManagerIntegration:
                             entry_time=dt.datetime.now(dt.timezone.utc),
                         )
                     LOG.info(
-                        "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)",
+                        _MSG_RECOVERED_ENTRY,
                         last_tracker["entry_price"],
                         last_tracker["direction"],
                         mfe,
@@ -1173,13 +1224,13 @@ class TradeManagerIntegration:
                                 entry_price=self.entry_price,
                                 entry_time=dt.datetime.now(dt.timezone.utc),
                             )
-                        LOG.info(
-                            "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)",
-                            self.entry_price,
-                            self.position_direction,
-                            mfe,
-                            mae,
-                        )
+                    LOG.info(
+                        _MSG_RECOVERED_ENTRY,
+                        self.entry_price,
+                        self.position_direction,
+                        mfe,
+                        mae,
+                    )
 
             # CRITICAL: Force immediate MFE/MAE update after recovery
             # This ensures stale persisted MAE values get recalculated with current price
@@ -1309,55 +1360,6 @@ class TradeManagerIntegration:
             self.app.path_recorders.pop(position_id, None)
             LOG.debug("[MULTI-POS] Removed path recorder for: %s", position_id)
 
-
-# Example: How to integrate into CTraderFixApp
-"""
-# In ctrader_ddqn_paper.py:
-
-from trade_manager_example import TradeManagerIntegration
-
-class CTraderFixApp(fix.Application):
-    def __init__(self, symbol_id, qty, timeframe_minutes=15, symbol="BTCUSD"):
-        # ... existing init ...
-        
-        # Add TradeManager integration
-        self.trade_integration = TradeManagerIntegration(self)
-    
-    def onCreate(self, session_id):
-        # ... existing onCreate ...
-        
-        qual = self._qual(session_id)
-        if qual == "TRADE":
-            # Initialize TradeManager after TRADE session connected
-            self.trade_integration.initialize_trade_manager()
-    
-    def fromApp(self, message, session_id):
-        # ... existing fromApp ...
-        
-        if t == "8":  # ExecutionReport
-            self.trade_integration.handle_execution_report(message)
-        elif t == "AP":  # PositionReport
-            self.trade_integration.handle_position_report(message)
-    
-    def on_bar_close(self, bar):
-        # ... existing logic ...
-        
-        # Replace send_market_order() calls:
-        # OLD:
-        # self.send_market_order(side="1", qty=order_qty)
-        
-        # NEW:
-        side = 1 if action == 1 else 2
-        self.trade_integration.enter_position(side=side, quantity=order_qty)
-        
-        # For exits:
-        # OLD:
-        # exit_side = "2" if self.cur_pos > 0 else "1"
-        # self.send_market_order(side=exit_side, qty=self.qty)
-        
-        # NEW:
-        self.trade_integration.exit_position(quantity=self.qty)
-"""
 
 if __name__ == "__main__":
     print("TradeManager Integration Example")

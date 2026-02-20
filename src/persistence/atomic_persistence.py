@@ -35,7 +35,6 @@ class AtomicPersistence:
     def __init__(self, base_dir: str = "."):
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("AtomicPersistence initialized: %s", self.base_dir)
 
     def save_json(self, data: dict[str, Any], filename: str, create_backup: bool = True) -> bool:
         """

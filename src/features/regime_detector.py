@@ -43,9 +43,16 @@ ZETA_CLAMP_MAX: float = 2.0
 RUNWAY_MULT_TRENDING: float = 1.3
 RUNWAY_MULT_MEAN_REVERTING: float = 0.7
 RUNWAY_MULT_NEUTRAL: float = 1.0
-TRIGGER_ADJUST_TRENDING: float = -0.0002
-TRIGGER_ADJUST_MEAN_REVERTING: float = 0.0003
-TRIGGER_ADJUST_NEUTRAL: float = 0.0
+# Regime threshold adjustment — expressed as a FRACTIONAL scale, not an
+# absolute price delta. The trigger agent applies:
+#   adjusted_threshold = base_threshold * (1 + regime_adj)
+# This makes the regime detector instrument-agnostic: the same ±15% signal
+# works for XAUUSD ($5000), EURUSD (1.08), BTC ($90k), etc.
+# Previously this was -0.0002 / +0.0003 (raw price) which only worked for
+# EURUSD-scale instruments.
+REGIME_ADJ_TRENDING: float = -0.15   # 15% easier to trigger in trending regime
+REGIME_ADJ_MEAN_REVERTING: float = 0.15  # 15% harder to trigger in choppy regime
+REGIME_ADJ_NEUTRAL: float = 0.0
 
 LOG = logging.getLogger(__name__)
 
@@ -294,18 +301,40 @@ class RegimeDetector:
         """
         Get trigger threshold adjustment based on regime.
 
+        Returns a FRACTIONAL scale factor. The caller should apply it as:
+            adjusted_threshold = base_threshold * (1 + regime_adj)
+
+        This is instrument-agnostic: the same fraction works regardless of
+        whether the base threshold is 0.0003 (EURUSD) or 3.0 (XAUUSD).
+
         Returns:
-            float: Additive adjustment to trigger threshold
-            - TRENDING: -0.0002 (easier to trigger, ride momentum)
-            - MEAN_REVERTING: +0.0003 (harder to trigger, avoid whipsaws)
-            - TRANSITIONAL/UNKNOWN: 0.0 (no adjustment)
+            float: Fractional adjustment in range [-0.15, +0.15]
+            - TRENDING:       -0.15 (15% easier to trigger — ride momentum)
+            - MEAN_REVERTING: +0.15 (15% harder to trigger — avoid whipsaws)
+            - TRANSITIONAL/UNKNOWN: 0.0 (neutral)
         """
         if self.current_regime == "TRENDING":
-            return TRIGGER_ADJUST_TRENDING  # Lower threshold → more entries
+            return REGIME_ADJ_TRENDING
         elif self.current_regime == "MEAN_REVERTING":
-            return TRIGGER_ADJUST_MEAN_REVERTING  # Higher threshold → fewer entries
+            return REGIME_ADJ_MEAN_REVERTING
         else:
-            return TRIGGER_ADJUST_NEUTRAL
+            return REGIME_ADJ_NEUTRAL
+
+    def update_adj_scale(self, scale: float):
+        """
+        Allow an external learner (e.g. the trigger agent) to widen or narrow
+        the regime adjustment magnitude based on observed benefit. The scale
+        is clamped to [0.0, 0.50] to prevent degenerate gating.
+
+        In practice this is driven by LearnedParametersManager via the
+        `regime_adj_scale` parameter which the trigger agent updates after
+        each trade outcome. The RegimeDetector reads it on the next call to
+        get_trigger_threshold_adjustment().
+        """
+        global REGIME_ADJ_TRENDING, REGIME_ADJ_MEAN_REVERTING
+        scale = max(0.0, min(0.50, abs(scale)))
+        REGIME_ADJ_TRENDING = -scale
+        REGIME_ADJ_MEAN_REVERTING = scale
 
     def get_regime_info(self) -> dict:
         """Get current regime information for logging/debugging."""
@@ -314,6 +343,7 @@ class RegimeDetector:
             "damping_ratio": self.current_zeta,
             "runway_multiplier": self.get_regime_multiplier(),
             "trigger_adjustment": self.get_trigger_threshold_adjustment(),
+            "trigger_adj_note": "fractional scale (multiply base_threshold by (1+adj))",
             "buffer_size": len(self.price_buffer),
             "bars_since_update": self.bars_since_update,
         }
@@ -393,9 +423,9 @@ def _test_regime_detector():
     print("✅ Regime detection tests complete!")
     print()
     print("Expected behavior:")
-    print("  • TRENDING: ζ < 0.7, runway 1.3x, trigger -0.0002")
-    print("  • MEAN_REVERTING: ζ > 1.3, runway 0.7x, trigger +0.0003")
-    print("  • TRANSITIONAL: 0.7 ≤ ζ ≤ 1.3, runway 1.0x, trigger 0.0")
+    print("  • TRENDING: ζ < 0.7, runway 1.3x, trigger adj -0.15 (fractional: 15% easier)")
+    print("  • MEAN_REVERTING: ζ > 1.3, runway 0.7x, trigger adj +0.15 (fractional: 15% harder)")
+    print("  • TRANSITIONAL: 0.7 ≤ ζ ≤ 1.3, runway 1.0x, trigger adj 0.0")
     print()
 
 

@@ -306,6 +306,33 @@ python3 emergency_close_all.py
 
 ---
 
+## 🧪 Feature Engineering Lessons Applied
+
+**New Resources (Feb 14, 2026):**
+- 📄 [FEATURE_ENGINEERING_LESSONS.md](FEATURE_ENGINEERING_LESSONS.md) - Lessons from trend_sniper v3.5-v3.9 experiments
+- 🔧 [scripts/analyze_feature_importance.py](../scripts/analyze_feature_importance.py) - L1 weight analysis tool
+
+**Key Lessons from External Experiments:**
+1. **Subtraction > Addition:** Removing 3 noise features (+95 reward) beat adding best new feature
+2. **Small Samples Lie:** 27 trades showed opposite pattern vs 173-trade truth  
+3. **Wait for 500+ Trades:** Current ~100-200 trades insufficient for reliable analysis
+4. **L1 Weight Analysis:** Reveals which features network actually uses (vs ignores)
+5. **Greedy Elimination:** Stepwise removal finds optimal feature set efficiently
+
+**Applicable to This Bot:**
+- TriggerAgent has 7 obs features (entry specialist)
+- HarvesterAgent has 10 obs features (7 market + 3 position)
+- After 500+ trades, run L1 analysis to identify noise features (candidates: L1 < 0.08)
+- Consider ablation study: remove low-weight features, retrain, compare performance
+
+**Action Items:**
+- ⏳ **Accumulate 500+ closed trades** before optimization (currently ~100-200 estimated)
+- 📊 **Run** `python scripts/analyze_feature_importance.py` after milestone
+- 🔍 **Cross-reference** L1 weights with win/loss discrimination (Cohen's d > 0.30)
+- ✂️ **Test removal** of features with L1 < 0.08 AND d < 0.15 (noise candidates)
+
+---
+
 ## 🔄 Recent History
 
 ### Feb 14, 2026 (Today)

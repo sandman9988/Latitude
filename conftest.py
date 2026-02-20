@@ -13,3 +13,4 @@ collect_ignore_glob = [
     "tests/validation/test_decision_log_format.py",
     "scripts/testing/*",
 ]
+

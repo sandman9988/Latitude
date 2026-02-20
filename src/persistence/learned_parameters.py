@@ -150,7 +150,7 @@ class InstrumentParameters:
             last_update_time=time.time(),
         )
         logger.debug(
-            f"Added parameter '{name}' for {self.symbol}: " f"{initial_value} (bounds: [{min_bound}, {max_bound}])"
+            f"Added parameter '{name}' for {self.symbol}: {initial_value} (bounds: [{min_bound}, {max_bound}])"
         )
 
     def get(self, name: str, default: float | None = None) -> float:
@@ -240,8 +240,6 @@ class LearnedParametersManager:
 
         # Default parameter specifications
         self.param_specs = self._get_default_specs()
-
-        logger.info(f"LearnedParametersManager initialized (persistence: {self.persistence_path})")
 
         # Load saved parameters if they exist
         self.load()
@@ -518,6 +516,46 @@ class LearnedParametersManager:
                 "momentum": 0.9,
                 "description": "Risk budget in USD",
             },
+            # Self-calibrating instrument baselines (replace magic numbers)
+            # These update via EMA from real trade data so the system adapts
+            # to any instrument scale (XAUUSD, EURUSD, BTC, etc.) automatically.
+            "mfe_p50_baseline": {
+                "default": 10.0,
+                "min": 0.01,
+                "max": 100000.0,
+                "learning_rate": 0.05,
+                "momentum": 0.95,
+                "description": "EMA-tracked p50 of trade MFE — instrument-agnostic replacement for BASELINE_MFE magic number",
+            },
+            "opportunity_p75_baseline": {
+                "default": 15.0,
+                "min": 0.01,
+                "max": 100000.0,
+                "learning_rate": 0.05,
+                "momentum": 0.95,
+                "description": "EMA-tracked p75 of trade MFE — instrument-agnostic opportunity cost threshold",
+            },
+            # Regime adjustment: fractional scale, not absolute price delta.
+            # ±scale% applied to whatever base threshold is in use.
+            # Self-adjusts: if regime-aware gating improves profits, scale grows.
+            "regime_adj_scale": {
+                "default": 0.15,
+                "min": 0.0,
+                "max": 0.50,
+                "learning_rate": 0.005,
+                "momentum": 0.9,
+                "description": "Fractional regime threshold adjustment magnitude (instrument-agnostic, replaces TRIGGER_ADJUST_* constants)",
+            },
+            # Fallback MA-diff threshold — learned per instrument instead of
+            # hardcoded LIVE_BASE_THRESHOLD / PAPER_BASE_THRESHOLD constants.
+            "fallback_base_threshold": {
+                "default": 0.3,
+                "min": 0.01,
+                "max": 2.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "MA-diff fallback strategy base threshold (learned per instrument)",
+            },
         }
 
     def get_instrument(self, symbol: str, timeframe: str = "M1", broker: str = "default") -> InstrumentParameters:
@@ -551,6 +589,25 @@ class LearnedParametersManager:
 
             self.instruments[key] = instrument
             logger.info(f"Created parameter set for {key} with {len(self.param_specs)} parameters")
+        else:
+            # Backfill any params added to param_specs after initial creation.
+            # This handles schema evolution: new learned params introduced in
+            # later versions are seeded with their defaults on existing instruments.
+            instrument = self.instruments[key]
+            added = []
+            for param_name, spec in self.param_specs.items():
+                if param_name not in instrument.params:
+                    instrument.add_param(
+                        name=param_name,
+                        initial_value=spec["default"],
+                        min_bound=spec["min"],
+                        max_bound=spec["max"],
+                        learning_rate=spec["learning_rate"],
+                        momentum=spec["momentum"],
+                    )
+                    added.append(param_name)
+            if added:
+                logger.info(f"Backfilled {len(added)} new param(s) for {key}: {added}")
 
         return self.instruments[key]
 
@@ -578,9 +635,51 @@ class LearnedParametersManager:
         instrument = self.get_instrument(symbol, timeframe, broker)
         new_value = instrument.update(param_name, gradient)
 
-        logger.debug(f"Updated {symbol} {param_name}: {new_value:.4f} " f"(gradient: {gradient:.4f})")
+        logger.debug(f"Updated {symbol} {param_name}: {new_value:.4f} (gradient: {gradient:.4f})")
 
         return new_value
+
+    def set_value(
+        self,
+        symbol: str,
+        param_name: str,
+        value: float,
+        timeframe: str = "M1",
+        broker: str = "default",
+    ) -> float:
+        """
+        Directly set a parameter value, bypassing the momentum/gradient mechanism.
+
+        Use this for EMA-style self-calibrating baselines (e.g. mfe_p50_baseline)
+        where the caller manages the smoothing and just wants to write the result.
+        The value is soft-clamped to the parameter's (min, max) bounds but does
+        NOT go through the tanh sigmoid — that sigmoid is designed for gradient
+        descent and produces distorted results when used to set absolute values
+        on params with wide bounds.
+
+        Args:
+            symbol: Trading symbol
+            param_name: Parameter name
+            value: New value to set (will be clamped to bounds)
+            timeframe: Timeframe
+            broker: Broker identifier
+
+        Returns:
+            Clamped value actually stored
+        """
+        instrument = self.get_instrument(symbol, timeframe, broker)
+        if param_name not in instrument.params:
+            raise KeyError(f"Parameter '{param_name}' not found for {symbol}")
+        param = instrument.params[param_name]
+        clamped = max(param.min_bound, min(param.max_bound, value))
+        param.value = clamped
+        import time
+        param.last_update_time = time.time()
+        param.update_count += 1
+        # Reset velocity so momentum does not carry stale direction forward
+        param.velocity = 0.0
+        logger.debug(f"Set {symbol} {param_name} = {clamped:.4f} (direct)")
+        return clamped
 
     def save(self):
         """Save all parameters to disk using atomic persistence with CRC32"""
@@ -681,6 +780,10 @@ class LearnedParametersManager:
 # ============================================================================
 
 if __name__ == "__main__":
+    # Test-script wide constants — change once, consistent everywhere
+    _TEST_SYMBOL = "BTC/USD"
+    _TEST_PARAMS_FILE = Path("data/test_params.json")
+
     print("=" * 80)
     print("LEARNED PARAMETERS SYSTEM - TEST SUITE")
     print("=" * 80)
@@ -705,12 +808,12 @@ if __name__ == "__main__":
     print("\n[Test 2] Instrument Parameters")
     print("-" * 80)
 
-    btc_params = InstrumentParameters("BTC/USD", "M1", "pepperstone")
+    btc_params = InstrumentParameters(_TEST_SYMBOL, "M1", "pepperstone")
     btc_params.add_param("position_size", 0.10, 0.01, 1.0)
     btc_params.add_param("stop_loss_pct", 0.02, 0.005, 0.10)
 
-    print(f"BTC/USD position_size: {btc_params.get('position_size'):.2f}")
-    print(f"BTC/USD stop_loss_pct: {btc_params.get('stop_loss_pct'):.3f}")
+    print(f"{_TEST_SYMBOL} position_size: {btc_params.get('position_size'):.2f}")
+    print(f"{_TEST_SYMBOL} stop_loss_pct: {btc_params.get('stop_loss_pct'):.3f}")
 
     # Update position size
     new_size = btc_params.update("position_size", 0.05)
@@ -726,16 +829,16 @@ if __name__ == "__main__":
     print("\n[Test 3] Learned Parameters Manager")
     print("-" * 80)
 
-    manager = LearnedParametersManager(Path("data/test_params.json"))
+    manager = LearnedParametersManager(_TEST_PARAMS_FILE)
 
     # Get BTC/USD parameters (auto-creates with defaults)
-    btc_inst = manager.get_instrument("BTC/USD", "M1", "pepperstone")
-    print(f"Created BTC/USD with {len(btc_inst.params)} default parameters")
+    btc_inst = manager.get_instrument(_TEST_SYMBOL, "M1", "pepperstone")
+    print(f"Created {_TEST_SYMBOL} with {len(btc_inst.params)} default parameters")
 
     # Get some parameter values
-    print(f"  capture_multiplier: {manager.get('BTC/USD', 'capture_multiplier'):.2f}")
-    print(f"  wtl_penalty_multiplier: {manager.get('BTC/USD', 'wtl_penalty_multiplier'):.2f}")
-    print(f"  base_position_size: {manager.get('BTC/USD', 'base_position_size'):.2f}")
+    print(f"  capture_multiplier: {manager.get(_TEST_SYMBOL, 'capture_multiplier'):.2f}")
+    print(f"  wtl_penalty_multiplier: {manager.get(_TEST_SYMBOL, 'wtl_penalty_multiplier'):.2f}")
+    print(f"  base_position_size: {manager.get(_TEST_SYMBOL, 'base_position_size'):.2f}")
 
     # Add ETH/USD
     eth_inst = manager.get_instrument("ETH/USD", "M15", "pepperstone")
@@ -745,15 +848,15 @@ if __name__ == "__main__":
     print("\n[Test 4] Parameter Updates with Gradients")
     print("-" * 80)
 
-    initial_capture = manager.get("BTC/USD", "capture_multiplier")
+    initial_capture = manager.get(_TEST_SYMBOL, "capture_multiplier")
     print(f"Initial capture_multiplier: {initial_capture:.4f}")
 
     # Simulate positive gradient (increase reward)
     for i in range(5):
-        new_val = manager.update("BTC/USD", "capture_multiplier", 0.1)
+        new_val = manager.update(_TEST_SYMBOL, "capture_multiplier", 0.1)
         print(f"  Update {i+1}: {new_val:.4f}")
 
-    final_capture = manager.get("BTC/USD", "capture_multiplier")
+    final_capture = manager.get(_TEST_SYMBOL, "capture_multiplier")
     print(f"Final capture_multiplier: {final_capture:.4f}")
     print(f"Change: {final_capture - initial_capture:+.4f}")
 
@@ -766,12 +869,12 @@ if __name__ == "__main__":
     print(f"✓ Saved to {manager.persistence_path}")
 
     # Create new manager and load
-    manager2 = LearnedParametersManager(Path("data/test_params.json"))
+    manager2 = LearnedParametersManager(_TEST_PARAMS_FILE)
     loaded = manager2.load()
     print(f"✓ Loaded: {loaded}")
 
     # Verify values match
-    loaded_capture = manager2.get("BTC/USD", "capture_multiplier")
+    loaded_capture = manager2.get(_TEST_SYMBOL, "capture_multiplier")
     print(f"Loaded capture_multiplier: {loaded_capture:.4f}")
     print(f"Matches saved: {abs(loaded_capture - final_capture) < FLOATING_POINT_TOLERANCE}")
 
@@ -823,8 +926,8 @@ if __name__ == "__main__":
     # Cleanup
     import os
 
-    if os.path.exists("data/test_params.json"):
-        os.remove("data/test_params.json")
+    if os.path.exists(_TEST_PARAMS_FILE):
+        os.remove(_TEST_PARAMS_FILE)
         print("\n✓ Cleanup: Removed test file")
 
     print("\n" + "=" * 80)

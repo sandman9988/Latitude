@@ -49,6 +49,7 @@ MIN_ENSEMBLE_MODELS: Final[int] = 2
 STATE_BATCH_DIM: Final[int] = 2
 # Default fallback if action dimension cannot be inferred
 DEFAULT_NUM_ACTIONS: Final[int] = 3
+NUM_ACTIONS: Final[int] = DEFAULT_NUM_ACTIONS  # Alias for test imports
 MAX_ACTION_INDEX: Final[int] = DEFAULT_NUM_ACTIONS - 1
 UNIT_SUM_TOLERANCE: Final[float] = 1e-6
 EXPECTED_PREDICTIONS_SELF_TEST: Final[int] = 101

@@ -49,8 +49,6 @@ class TransactionLogger:
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
 
-        LOG.info("[AUDIT] Transaction logger initialized: %s", self.log_file)
-
         # Log session start
         self.log_event("SESSION_START", {"session_id": self.session_id})
 
@@ -197,8 +195,6 @@ class DecisionLogger:
         self.log_file = self.log_dir / filename
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
-
-        LOG.info("[DECISION] Decision logger initialized: %s", self.log_file)
 
     def log_decision(
         self, agent: str, decision: str, confidence: float, context: dict[str, Any], reasoning: dict[str, Any] = None

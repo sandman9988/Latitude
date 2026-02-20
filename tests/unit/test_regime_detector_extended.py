@@ -12,9 +12,9 @@ from src.features.regime_detector import (
     RUNWAY_MULT_MEAN_REVERTING,
     RUNWAY_MULT_NEUTRAL,
     RUNWAY_MULT_TRENDING,
-    TRIGGER_ADJUST_MEAN_REVERTING,
-    TRIGGER_ADJUST_NEUTRAL,
-    TRIGGER_ADJUST_TRENDING,
+    REGIME_ADJ_MEAN_REVERTING,
+    REGIME_ADJ_NEUTRAL,
+    REGIME_ADJ_TRENDING,
     RegimeDetector,
 )
 
@@ -73,7 +73,7 @@ class TestUpdateRegimeEdges:
 
     def test_negative_price_skipped(self):
         det = RegimeDetector(window_size=10, update_interval=1)
-        regime, zeta = det.add_price(-5.0)
+        regime, _ = det.add_price(-5.0)
         assert regime == "UNKNOWN"
         assert len(det.price_buffer) == 0
 
@@ -126,17 +126,17 @@ class TestGetRegimeMultiplier:
 class TestTriggerAdjustment:
     def test_unknown_is_zero(self):
         det = RegimeDetector()
-        assert det.get_trigger_threshold_adjustment() == TRIGGER_ADJUST_NEUTRAL
+        assert det.get_trigger_threshold_adjustment() == REGIME_ADJ_NEUTRAL
 
     def test_trending(self):
         det = RegimeDetector()
         det.current_regime = "TRENDING"
-        assert det.get_trigger_threshold_adjustment() == TRIGGER_ADJUST_TRENDING
+        assert det.get_trigger_threshold_adjustment() == REGIME_ADJ_TRENDING
 
     def test_mean_reverting(self):
         det = RegimeDetector()
         det.current_regime = "MEAN_REVERTING"
-        assert det.get_trigger_threshold_adjustment() == TRIGGER_ADJUST_MEAN_REVERTING
+        assert det.get_trigger_threshold_adjustment() == REGIME_ADJ_MEAN_REVERTING
 
 
 # ---------------------------------------------------------------------------

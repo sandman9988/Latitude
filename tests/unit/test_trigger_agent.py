@@ -148,6 +148,7 @@ class TestFallbackStrategy:
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
         state[-1, 2] = 0.5  # Strong positive MA diff
+        state[-1, 0] = 0.3  # ret1 confirms momentum (required by multi-factor)
         action = ta._fallback_strategy(state)
         assert action == 1  # LONG
 
@@ -155,6 +156,7 @@ class TestFallbackStrategy:
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
         state[-1, 2] = -0.5  # Strong negative MA diff
+        state[-1, 0] = -0.3  # ret1 confirms downward momentum (required)
         action = ta._fallback_strategy(state)
         assert action == 2  # SHORT
 
@@ -169,14 +171,14 @@ class TestFallbackStrategy:
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
         state[-1, 2] = 0.35  # Medium positive MA diff
+        state[-1, 0] = 0.3   # ret1 confirms momentum
 
-        # Without adjustment — should trigger LONG
+        # Without adjustment — should trigger LONG (live threshold=0.3, 0.35>0.3)
         _action_no_adj = ta._fallback_strategy(state, regime_threshold_adj=0.0)
+        assert _action_no_adj == 1
 
-        # With positive adjustment (mean-reverting → harder threshold)
+        # With positive adjustment (mean-reverting → threshold=0.45, 0.35<0.45 → blocked)
         action_hard = ta._fallback_strategy(state, regime_threshold_adj=0.5)
-
-        # The harder threshold should block — medium signal not enough
         assert action_hard == 0
 
     def test_fallback_with_imbalance_tilt(self):
@@ -187,6 +189,74 @@ class TestFallbackStrategy:
         action = ta._fallback_strategy(state)
         # With tilt, the effective threshold for LONG is lower
         assert action in [0, 1]  # May or may not trigger depending on threshold
+
+    def test_fallback_ma_alone_insufficient(self):
+        """MA-diff alone (no momentum) returns NO_ENTRY under multi-factor rules."""
+        ta = TriggerAgent(window=64, n_features=7)
+        state = np.zeros((64, 7), dtype=np.float32)
+        state[-1, 2] = 0.5  # Strong MA diff — ret1=ret5=0
+        action = ta._fallback_strategy(state)
+        assert action == 0  # No momentum confirmation → NO_ENTRY
+
+    def test_fallback_vpin_veto_blocks_long(self):
+        """Strong opposing VPIN z-score (< −2σ) vetoes a LONG entry."""
+        ta = TriggerAgent(window=64, n_features=7)
+        state = np.zeros((64, 7), dtype=np.float32)
+        state[-1, 2] = 0.5   # MA diff → LONG
+        state[-1, 0] = 0.3   # ret1 confirms
+        state[-1, 5] = -3.0  # Strong sell-side flow: veto
+        action = ta._fallback_strategy(state)
+        assert action == 0  # Vetoed by VPIN
+
+    def test_fallback_vpin_veto_blocks_short(self):
+        """Strong opposing VPIN z-score (> +2σ) vetoes a SHORT entry."""
+        ta = TriggerAgent(window=64, n_features=7)
+        state = np.zeros((64, 7), dtype=np.float32)
+        state[-1, 2] = -0.5   # MA diff → SHORT
+        state[-1, 0] = -0.3   # ret1 confirms
+        state[-1, 5] = 3.0    # Strong buy-side flow: veto SHORT
+        action = ta._fallback_strategy(state)
+        assert action == 0  # Vetoed by VPIN
+
+    def test_fallback_decide_confidence_increases_with_factors(self):
+        """Confidence increases as more momentum and VPIN factors confirm direction."""
+        ta = TriggerAgent(window=64, n_features=7)
+        # ret1 only (1 factor)
+        s1 = np.zeros((64, 7), dtype=np.float32)
+        s1[-1, 2] = 0.5
+        s1[-1, 0] = 0.3
+        # ret1 + ret5 (2 factors)
+        s2 = np.zeros((64, 7), dtype=np.float32)
+        s2[-1, 2] = 0.5
+        s2[-1, 0] = 0.3
+        s2[-1, 1] = 0.2
+        # ret1 + ret5 + vpin agrees (3 factors)
+        s3 = np.zeros((64, 7), dtype=np.float32)
+        s3[-1, 2] = 0.5
+        s3[-1, 0] = 0.3
+        s3[-1, 1] = 0.2
+        s3[-1, 5] = 1.0  # positive VPIN → agrees with LONG
+        _, c1, _ = ta._fallback_decide(s1)
+        _, c2, _ = ta._fallback_decide(s2)
+        _, c3, _ = ta._fallback_decide(s3)
+        assert c1 < c2 < c3
+        assert 0.5 <= c1 <= 0.85
+        assert 0.5 <= c3 <= 0.85
+
+    def test_fallback_decide_runway_scales_with_vol(self):
+        """Predicted runway is larger in high-volatility regimes."""
+        ta = TriggerAgent(window=64, n_features=7)
+
+        def _state(vol_z: float) -> np.ndarray:
+            s = np.zeros((64, 7), dtype=np.float32)
+            s[-1, 2] = 0.5
+            s[-1, 0] = 0.3
+            s[-1, 3] = vol_z  # z-scored rolling volatility
+            return s
+
+        _, _, runway_quiet = ta._fallback_decide(_state(-2.0))
+        _, _, runway_hot   = ta._fallback_decide(_state(2.0))
+        assert runway_hot > runway_quiet
 
 
 # ---------------------------------------------------------------------------

@@ -3,11 +3,11 @@
 
 ## For Future Claude Instances
 
-**Last Updated:** 2026-01-11  
+**Last Updated:** 2026-02-20  
 **Project:** Dual-Agent Deep Q-Network (DDQN) Reinforcement Learning Trading System  
 **Platform:** cTrader via FIX 4.4 Protocol (Dual Sessions: Quote + Trade)  
-**Implementation:** Python 3.12 (25,518 lines production code + 2,690 lines tests)  
-**Status:** ~90% Complete, Production-Ready (pending BrokerExecutionModel)  
+**Implementation:** Python 3.12 (32,517 lines production code + 32,197 lines tests, 128 test files)  
+**Status:** Active paper trading XAUUSD M5 — DDQN agents learning live (ongoing)  
 **User:** Renier - Expert algorithmic trader
 
 ---
@@ -31,11 +31,14 @@ FIX Trade Session ← Orders ← Risk Checks ← Position Sizing ← Signals
 ```
 
 **Key Files:**
-- `ctrader_ddqn_paper.py` - Main bot (3,434 lines)
-- `trigger_agent.py` - Entry specialist (506 lines)
-- `harvester_agent.py` - Exit specialist (468 lines)
-- `ddqn_network.py` - Neural network (476 lines)
-- `trade_manager.py` - FIX order management (887 lines)
+- `src/core/ctrader_ddqn_paper.py` - Main bot (4,500 lines)
+- `src/agents/trigger_agent.py` - Entry specialist (968 lines)
+- `src/agents/harvester_agent.py` - Exit specialist (1,136 lines)
+- `src/core/ddqn_network.py` - Neural network (481 lines)
+- `src/core/trade_manager.py` - FIX order management (1,435 lines)
+- `src/core/reward_shaper.py` - Reward shaping (823 lines)
+- `src/utils/experience_buffer.py` - PER buffer (725 lines)
+- `src/features/regime_detector.py` - DSP regime detection (434 lines)
 
 ---
 
@@ -88,8 +91,8 @@ A **fully adaptive, self-learning trading intelligence using Deep Reinforcement 
 ### 1.4 Production Deployment Status
 
 **Current Implementation:** Python 3.12 + cTrader FIX 4.4  
-**Code Base:** 25,518 lines production + 2,690 lines tests  
-**Test Coverage:** 57+ passing tests (100% of P0 critical safety)  
+**Code Base:** 32,517 lines production + 32,197 lines tests (128 files, 2,331 passing, 4 skipped)  
+**Active Session:** Paper trading XAUUSD M5 at Pepperstone demo — FIX dual sessions live
 
 **Deployment Readiness:**
 - ✅ **FIX Protocol Integration:** Fully operational (Quote + Trade sessions)
@@ -100,17 +103,21 @@ A **fully adaptive, self-learning trading intelligence using Deep Reinforcement 
   - Anti-gaming detection (reward integrity monitoring)
   - Feedback loop breaking
   - Real-time monitoring (HTTP metrics API)
-- ✅ **Neural Networks:** DDQN with PyTorch, PER, target networks
+- ✅ **Neural Networks:** DDQN with PyTorch, PER + IS weights (corrected Feb 2026)
 - ✅ **Risk Management:** VaR, circuit breakers, regime detection
+- ✅ **Reward Shaping:** 5-dimensional (corrected Feb 2026 — dimension/clip bugs fixed)
+- ✅ **Fallback Strategies:** Multi-factor tri-gate with dynamic confidence (Feb 2026)
+- ✅ **Harvester Min-Hold:** 10-tick minimum before DDQN close allowed (Feb 2026)
 - ⚠️ **One Gap:** BrokerExecutionModel (asymmetric slippage) - implement before live money
+- ⚠️ **L2 Feed:** OrderBook connected but no actual L2 data from broker → imbalance always 0
 
 **Deployment Path:**
-1. ✅ Paper trading validation (complete)
-2. ⚠️ Add asymmetric slippage model (2-3 hours)
-3. 🔄 Micro position live testing (current phase)
-4. 📋 Graduated scaling to full position sizes
+1. ✅ Paper trading validation (ongoing — XAUUSD M5 active)
+2. 🔄 DDQN relearning after Feb 2026 reward/IS fixes (~1,300+ steps of corrected experience accumulated)
+3. ⚠️ Add asymmetric slippage model before live (2-3 hours)
+4. 📋 Micro position live testing → graduated scaling
 
-**Target Assets:** Crypto (BTC/USD initially), generalizable to forex, indices, commodities
+**Target Assets:** XAUUSD M5 (active), generalizable to forex, indices, commodities
 ┌─────────────────────────────────────────────────────────────────┐
 │ RISK MANAGEMENT                                                  │
 │   - VaR estimation (multi-factor adjusted)                      │
@@ -163,8 +170,8 @@ A **fully adaptive, self-learning trading intelligence using Deep Reinforcement 
 - **Platform:** cTrader
 - **Language:** Python 3.12
 - **Protocol:** FIX 4.4 Protocol (Dual sessions: Quote + Trade)
-- **Implementation Status:** ~90% complete (25,518 lines production code)
-- **Testing:** Comprehensive (2,690 lines, 57+ passing tests)
+- **Implementation Status:** Active paper trading (32,517 lines production code)
+- **Testing:** Comprehensive (32,197 lines, 2,331 passing / 4 skipped, 128 test files)
 - **Assets:** Crypto-first (Bitcoin/USD), generalizable to all asset classes
 - **Multi-Position Support:** ✅ COMPLETE (hedged accounts, concurrent LONG+SHORT)
 - **Production Safety:** ✅ P0 critical gaps resolved (7/7 complete)
@@ -409,7 +416,7 @@ Regime Classification:
 | `docs/DISASTER_RECOVERY_RUNBOOK.md` | Operations playbook | ✅ DOCUMENTED |
 
 **Summary:** All 7 P0 critical gaps addressed. System ready for graduated production deployment.
-**Test Status:** 46/46 self-tests passing, 11/11 integration tests passing
+**Test Status:** 2,331 passing, 4 skipped (as of 2026-02-20)
 **Risk Reduction:** 70-80% catastrophic failure → 15-20% (80% reduction in risk)
 
 See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md` for complete details.
@@ -418,12 +425,12 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 | File | Purpose | Status (Python) |
 |------|---------|--------|
-| `trigger_agent.py` | Entry specialist (Trigger Agent) | ✅ IMPLEMENTED (506 lines) |
-| `harvester_agent.py` | Exit specialist (Harvester Agent) | ✅ IMPLEMENTED (468 lines) |
-| `ddqn_network.py` | Double DQN with PyTorch | ✅ IMPLEMENTED (476 lines) |
-| `agent_arena.py` | Competitive allocation, consensus | ✅ IMPLEMENTED (314 lines) |
-| `sum_tree.py` | Efficient PER sampling O(log n) | ✅ IMPLEMENTED (390 lines) |
-| `experience_buffer.py` | Prioritized Experience Replay | ✅ IMPLEMENTED (402 lines) |
+| `src/agents/trigger_agent.py` | Entry specialist (Trigger Agent) | ✅ IMPLEMENTED (968 lines) |
+| `src/agents/harvester_agent.py` | Exit specialist (Harvester Agent) | ✅ IMPLEMENTED (1,136 lines) |
+| `src/core/ddqn_network.py` | Double DQN with PyTorch | ✅ IMPLEMENTED (481 lines) |
+| `src/core/agent_arena.py` | Competitive allocation, consensus | ✅ IMPLEMENTED |
+| `src/utils/sum_tree.py` | Efficient PER sampling O(log n) | ✅ IMPLEMENTED |
+| `src/utils/experience_buffer.py` | Prioritized Experience Replay + IS weights | ✅ IMPLEMENTED (725 lines) |
 
 ### 4.5 Multi-Position Support (🆕 PYTHON ENHANCEMENT)
 
@@ -463,8 +470,8 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 | File | Purpose | Status (Python) |
 |------|---------|--------|
-| `reward_shaper.py` | Asymmetric, component-based rewards | ✅ IMPLEMENTED (395 lines) |
-| `activity_monitor.py` | No-trade prevention, exploration | ✅ IMPLEMENTED (160 lines) |
+| `src/core/reward_shaper.py` | Asymmetric, component-based rewards (5 dims) | ✅ IMPLEMENTED (823 lines) |
+| `src/core/activity_monitor.py` | No-trade prevention, exploration | ✅ IMPLEMENTED |
 | Counterfactual analysis | What-if reward adjustment | ✅ IN harvester_agent.py |
 | Integrated reward system | Complete reward pipeline | ✅ IN trigger/harvester agents |
 
@@ -498,7 +505,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 | `var_estimator.py` | Dynamic VaR with multi-factor adjustment | ✅ IMPLEMENTED (412 lines) |
 | `circuit_breakers.py` | Sortino, Kurtosis, VPIN breakers | ✅ IMPLEMENTED (372 lines) |
 | Position sizing | VaR-based sizing | ✅ IN ctrader_ddqn_paper.py |
-| `regime_detector.py` | DSP-based damping ratio (ζ) | ✅ IMPLEMENTED (402 lines) |
+| `src/features/regime_detector.py` | DSP-based damping ratio (ζ) | ✅ IMPLEMENTED (434 lines) |
 
 ### 4.12 Production Safety (🆕 P0 CRITICAL - ALL COMPLETE)
 
@@ -508,7 +515,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 | `journaled_persistence.py` | Write-ahead log for crash recovery | ✅ IMPLEMENTED (416 lines) |
 | `cold_start_manager.py` | Graduated warm-up protocol | ✅ IMPLEMENTED (471 lines) |
 | `learned_parameters.py` | Parameter staleness tracking | ✅ IMPLEMENTED (387 lines) |
-| `regime_detector.py` | Regime change detection | ✅ IMPLEMENTED (402 lines) |
+| `src/features/regime_detector.py` | Regime change detection | ✅ IMPLEMENTED (434 lines) |
 | `reward_integrity_monitor.py` | Detect reward hacking | ✅ IMPLEMENTED (413 lines) |
 | `production_monitor.py` | Real-time metrics + HTTP API | ✅ IMPLEMENTED (318 lines) |
 
@@ -549,10 +556,10 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 ### 5.1 Overall Progress: ~90% COMPLETE
 
-**Production Code:** 25,518 lines across 49 files  
-**Test Code:** 2,690 lines, 57+ passing tests  
-**Documentation:** 15+ comprehensive markdown docs  
-**Status:** Production-ready with one critical gap (BrokerExecutionModel)
+**Production Code:** 32,517 lines  
+**Test Code:** 32,197 lines, 128 test files, **2,331 passing / 4 skipped**  
+**Documentation:** 20+ comprehensive markdown docs  
+**Status:** Active paper trading (XAUUSD M5); DDQN relearning after Feb 2026 reward/IS fixes
 
 ### 5.2 Component Status Matrix
 
@@ -576,12 +583,12 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 **What's Missing:** Asymmetric slippage modeling
 
-**Impact:** 
+**Impact:**
 - Currently using symmetric slippage assumptions
 - Real-world execution shows asymmetric patterns (buys slip more than sells in trending markets)
 - Without this, position sizing may be slightly suboptimal
 
-**Priority:** HIGH - Should implement before live trading with real money
+**Priority:** HIGH - Must implement before live trading with real money
 
 **Estimated Effort:** 150-200 lines, 2-3 hours
 
@@ -589,9 +596,55 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 **Current State:** ~50/200 features implemented (25%)
 **Tournament Framework:** ✅ Complete and functional
-**Impact:** System will work but may not reach full performance potential
+**Impact:** System works but may not reach full performance potential
 
 **Recommendation:** Add features incrementally as needed per instrument, let tournament select winners
+
+---
+
+### 5.5 Critical Bug Fixes (February 2026)
+
+The following bugs were identified during active paper trading and corrected. All affected tests pass (2,331/2,335).
+
+#### A. Reward Shaper — 5-Dimensional Alignment (Fixed)
+
+**Bug:** `reward_shaper.py` was building a 6-element reward vector but `ddqn_network.py` expected 5 dimensions. Similarly, clipping thresholds were misaligned across the pipeline (trigger: 4→5, paper trainer: 4→5, dual_policy: 4→5 in multiple places).
+
+**Impact:** Every training step produced a dimension mismatch error, silently falling back to fallback rewards. The DDQN was never learning from real shaped rewards.
+
+**Fix:** Standardised all layers to exactly 5 reward dimensions: `[capture, wtl, runway, opportunity, time]`. All clip operations updated to match.
+
+#### B. Experience Buffer — IS Weight Correction (Fixed)
+
+**Bug:** In `experience_buffer.py`, Importance Sampling (IS) weights were being computed from normalized-then-raised priorities rather than raw priorities. This made IS corrections invert gradient scaling instead of de-biasing it.
+
+**Impact:** High-priority experiences were getting their gradients *reduced* (opposite of PER intent). Learning was adversely affected from the start.
+
+**Fix:**
+1. IS weights now computed from raw priorities before normalisation.
+2. Priority updates happen after the training loop, not inside it (prevents stale denominator).
+3. Three regression tests added to lock the correct behaviour.
+
+#### C. TriggerAgent Fallback — Multi-Factor Strategy (Improved)
+
+**Old behaviour:** `_fallback_strategy()` used MA-diff crossover only (single factor, threshold=0.15σ paper). Confidence hardcoded to 0.6, runway hardcoded to PREDICTED_RUNWAY_FALLBACK.
+
+**New behaviour (`_fallback_decide()`):**
+- **MA-diff** remains the primary gate
+- **Momentum confirm** — at least one of ret1/ret5 must align ≥ 0.05σ (filters noise spikes)
+- **VPIN veto** — opposing VPIN z-score > ±2σ blocks entry
+- **Dynamic confidence** — 0.55 base + 0.10/momentum factor + 0.05 VPIN bonus → range [0.55, 0.85]
+- **Vol-scaled runway** — PREDICTED_RUNWAY_FALLBACK × vol-regime multiplier [0.70, 1.50]
+
+`_fallback_strategy()` kept as backward-compat shim → delegates to `_fallback_decide()`.
+
+#### D. HarvesterAgent — Minimum Hold Period (Added)
+
+**Problem:** After ~1,341 training steps with pre-fix broken rewards, the DDQN harvester learned Q(CLOSE) > Q(HOLD) regardless of state. Every entry was closed at ticks=1 (~2-4 seconds after paper fill). Trade MFE was always 0.
+
+**Fix:** Added `MIN_HOLD_TICKS_DEFAULT = 10` constant and `self.min_hold_ticks` guard in `decide()`. Only the emergency stop-loss can close a position before the minimum hold period. Configurable via `$MIN_HOLD_TICKS` env-var.
+
+**Effect:** DDQN still issues CLOSE at tick 10 (stale Q-values), but now positions survive long enough to accumulate real MFE/MAE so corrected rewards can propagate through the network.
 
 ## 5. IMPLEMENTATION STATUS (LEGACY MQL DESIGN)
 
@@ -1360,84 +1413,83 @@ Live Trading (Minimum 3 months at minimal size):
 
 ## 13. NEXT STEPS
 
-### 13.1 Immediate Actions
+### 13.1 Immediate Priorities (as of 2026-02-20)
 
-1. **Implement CNeuralNetwork.mqh**
-   - Forward pass
-   - Backpropagation
-   - Weight initialization
-   - Gradient clipping
+1. **Allow DDQN to accumulate corrected experience**
+   - Min-hold guard is live (10 ticks/~25 sec)
+   - Reward shaping now correct (5 dims, IS weights fixed)
+   - Allow ~500–1,000 more harvester training steps before assessing Q-value recovery
+   - Watch for `[HARVESTER] CLOSE ticks=N` where N drifts above 10 → learning is working
 
-2. **Implement CSumTree.mqh**
-   - Efficient priority sampling
-   - Update operations
-   - O(log n) complexity
+2. **Implement BrokerExecutionModel** (BEFORE live money)
+   - Asymmetric slippage: buys slip more in up-trends, sells in down-trends
+   - ~150-200 lines, 2-3 hours
+   - Add to friction_costs.py or standalone src/broker/broker_execution_model.py
 
-3. **Implement DSP Pipeline**
-   - Detrending
-   - Bandpass filter
-   - Hilbert transform
-   - Envelope extraction
-   - Decay fitting
+3. **Investigate L2/Imbalance feed**
+   - OrderBook is connected but `imbalance` is always 0.0
+   - VPIN computation may also be zero/noisy
+   - Check if broker sends L2 data via FIX MarketDataRequest with MDEntryType=0/1
+   - Imbalance = 0 means VPIN veto and tilt features are inactive
 
-4. **Create Main EA Shell**
-   - OnInit with cold start
-   - OnTick with full pipeline
-   - OnDeinit with state save
+4. **Evaluate trigger fallback quality after min-hold fix**
+   - Check if multi-factor fallback (`_fallback_decide`) is generating entries with conf > 0.65
+   - DDQN trigger has ε ≈ 0.52 (still early exploration) — most entries are random EXPLORE
+   - Once ε drops to ~0.2 the fallback filter quality matters more
 
-### 13.2 Validation Roadmap
+### 13.2 Medium-Term Roadmap
 
 ```
-Week 1-2: Unit tests for all designed components
-Week 3-4: Integration testing
-Week 5-8: Paper trading validation
-Week 9-12: Minimal live trading
-Week 13+: Graduated scaling
+Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
++2wk     : Assess harvester Q-value convergence — is ticks held drifting up?
++4wk     : Implement BrokerExecutionModel
++6wk     : Investigate & fix L2 imbalance feed
++2mo     : Graduated scaling to micro real-money positions
++3mo     : Full production deployment
 ```
 
-### 13.3 Questions for Renier
+### 13.3 Known Issues / Tech Debt
 
-When continuing this conversation:
-
-1. Which component should we implement first?
-2. Do you have a preferred neural network architecture?
-3. Any specific broker quirks to model?
-4. What instruments for initial testing?
-5. Paper trading account available?
+| Issue | Severity | Notes |
+|-------|----------|-------|
+| BrokerExecutionModel missing | HIGH | Must fix before live money |
+| L2/imbalance always 0 | MEDIUM | VPIN veto/tilt Features inactive until fixed |
+| Harvester stale Q-values | LOW | Self-healing via min-hold + corrected rewards |
+| Feature library ~25% complete | LOW | System works; add incrementally |
+| Trigger ε=0.52 (early phase) | INFO | Expected — bot is still early in exploration |
 
 ---
 
 ## CONVERSATION CONTINUITY NOTES
 
-### What Was Discussed
+### What Has Been Built (Chronological)
 
-1. **Foundation design** - Defensive programming framework
-2. **Broker abstraction** - SymbolSpec, friction costs
-3. **Normalization** - Log-returns, BPS
-4. **Learned parameters** - Adaptive with soft bounds
-5. **Performance tracking** - Multi-dimensional
-6. **Agent architecture** - DDQN, Arena, allocation
-7. **Overfitting detection** - Multiple signals combined
-8. **Reward shaping** - Asymmetric, self-optimizing
-9. **Feature engineering** - Event-relative time, tournament
-10. **Gap analysis** - Critical issues identified
+1. **Foundation + Architecture** — Defensive programming, broker abstraction, DDQN dual-agent design
+2. **Full Python/cTrader implementation** — 32k+ lines, FIX dual sessions, paper trading live
+3. **P0 safety gaps** — All 7 resolved: WAL, graduated warmup, anti-gaming, feedback loop, HTTP metrics
+4. **Multi-position support** — Hedged accounts, per-position MFE/MAE, FIX Tag 721
+5. **Critical bug fixes (Feb 2026):**
+   - Reward shaper 5-dim alignment across all layers
+   - IS weight computation corrected (raw priorities, post-loop updates)
+   - TriggerAgent fallback upgraded to multi-factor (MA + momentum + VPIN)
+   - HarvesterAgent min-hold guard (10 ticks, emergency-stop exempt)
 
-### Key Files in Transcript
+### Current State (2026-02-20)
 
-The full conversation transcript is at:
-`/mnt/transcripts/2026-01-08-09-13-30-adaptive-trading-system-evolution.txt`
-
-Previous transcript:
-`/mnt/transcripts/2026-01-08-08-54-57-dual-agent-var-trading-system.txt`
+- **Bot:** Running, PID changes on restart, paper_mode=True, XAUUSD M5
+- **Broker:** Pepperstone demo via FIX 4.4
+- **Trigger:** ε ≈ 0.52, buffer ~760 exp, 1329 training steps
+- **Harvester:** buffer ~790 exp, 1341 training steps (contaminated pre-fix; relearning in progress)
+- **Min hold:** 10 ticks enforced; ticks=10 observed in first post-fix trade
+- **Tests:** 2,331 passed, 4 skipped, 6 warnings
 
 ### User Preferences
 
-- Wants complete, production-ready code
-- No simplified prototypes
+- Wants complete, production-ready code — no simplified prototypes
 - Defensive programming throughout
-- Comprehensive error handling
-- Detailed logging for analysis
-- JSON response format requested in preferences
+- Comprehensive error handling and logging
+- Implement changes directly rather than suggesting
+- Keep MASTER_HANDBOOK.md up to date with actual code status
 
 ---
 

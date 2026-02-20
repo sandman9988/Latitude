@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from performance_tracker import PerformanceTracker
 from trade_exporter import TradeExporter
 
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from src.monitoring.performance_tracker import AgentAttribution  # noqa: E402
+
 
 def test_dual_agent_attribution():
     """Test Phase 3.3 dual-agent attribution metrics."""
@@ -44,15 +47,16 @@ def test_dual_agent_attribution():
         mfe=0.0100,  # 100 pips MFE
         mae=0.0015,  # 15 pips MAE
         winner_to_loser=False,
-        # Phase 3.3: Dual-agent attribution
-        predicted_runway=0.0095,  # Predicted 95 pips (actual 100 = 1.05x utilization)
-        runway_utilization=1.053,  # Excellent (within 20%)
-        runway_error_pct=5.3,  # 5.3% error
-        trigger_quality="EXCELLENT",
-        harvester_quality="GOOD",  # 72% capture
-        mfe_bar_offset=8,  # MFE at bar 8
-        mae_bar_offset=3,  # MAE at bar 3
-        bars_from_mfe_to_exit=7,  # Held 7 bars after MFE
+        attribution=AgentAttribution(
+            predicted_runway=0.0095,  # Predicted 95 pips (actual 100 = 1.05x utilization)
+            runway_utilization=1.053,  # Excellent (within 20%)
+            runway_error_pct=5.3,  # 5.3% error
+            trigger_quality="EXCELLENT",
+            harvester_quality="GOOD",  # 72% capture
+            mfe_bar_offset=8,  # MFE at bar 8
+            mae_bar_offset=3,  # MAE at bar 3
+            bars_from_mfe_to_exit=7,  # Held 7 bars after MFE
+        ),
     )
 
     print("✓ Trade 1 recorded")
@@ -77,15 +81,16 @@ def test_dual_agent_attribution():
         mfe=0.0150,  # 150 pips MFE
         mae=0.0050,  # 50 pips MAE
         winner_to_loser=True,  # WTL!
-        # Phase 3.3: Dual-agent attribution
-        predicted_runway=0.0070,  # Predicted 70 pips (actual 150 = 2.14x utilization)
-        runway_utilization=2.143,  # Underpredicted
-        runway_error_pct=114.3,  # 114% error
-        trigger_quality="UNDERPREDICTED",
-        harvester_quality="POOR_WTL",  # Winner-to-loser
-        mfe_bar_offset=22,  # MFE at bar 22
-        mae_bar_offset=5,  # MAE at bar 5
-        bars_from_mfe_to_exit=23,  # Held 23 bars after MFE (too long!)
+        attribution=AgentAttribution(
+            predicted_runway=0.0070,  # Predicted 70 pips (actual 150 = 2.14x utilization)
+            runway_utilization=2.143,  # Underpredicted
+            runway_error_pct=114.3,  # 114% error
+            trigger_quality="UNDERPREDICTED",
+            harvester_quality="POOR_WTL",  # Winner-to-loser
+            mfe_bar_offset=22,  # MFE at bar 22
+            mae_bar_offset=5,  # MAE at bar 5
+            bars_from_mfe_to_exit=23,  # Held 23 bars after MFE (too long!)
+        ),
     )
 
     print("✓ Trade 2 recorded")
@@ -110,15 +115,16 @@ def test_dual_agent_attribution():
         mfe=0.0100,  # 100 pips MFE
         mae=0.0008,  # 8 pips MAE
         winner_to_loser=False,
-        # Phase 3.3: Dual-agent attribution
-        predicted_runway=0.0075,  # Predicted 75 pips (actual 100 = 1.33x utilization)
-        runway_utilization=1.333,  # Good (within 50%)
-        runway_error_pct=33.3,  # 33% error
-        trigger_quality="GOOD",
-        harvester_quality="EXCELLENT",  # 88% capture
-        mfe_bar_offset=6,  # MFE at bar 6
-        mae_bar_offset=2,  # MAE at bar 2
-        bars_from_mfe_to_exit=4,  # Excellent timing (4 bars)
+        attribution=AgentAttribution(
+            predicted_runway=0.0075,  # Predicted 75 pips (actual 100 = 1.33x utilization)
+            runway_utilization=1.333,  # Good (within 50%)
+            runway_error_pct=33.3,  # 33% error
+            trigger_quality="GOOD",
+            harvester_quality="EXCELLENT",  # 88% capture
+            mfe_bar_offset=6,  # MFE at bar 6
+            mae_bar_offset=2,  # MAE at bar 2
+            bars_from_mfe_to_exit=4,  # Excellent timing (4 bars)
+        ),
     )
 
     print("✓ Trade 3 recorded")

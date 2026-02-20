@@ -54,7 +54,7 @@ class DualPolicy:
         enable_training: bool = False,
         enable_event_features: bool = True,
         param_manager: LearnedParametersManager | None = None,
-        symbol: str = "BTCUSD",
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
         timeframe: str = "M15",
         broker: str = "default",
         friction_calculator=None,
@@ -108,31 +108,18 @@ class DualPolicy:
             friction_calculator=self.friction_calculator,
         )
 
-        LOG.info(
-            "[DUAL_POLICY] TriggerAgent features: base=%d geom=%d event=%d -> total=%d",
-            base_features,
-            geometry_features,
-            self.event_feature_count,
-            trigger_features,
-        )
-        LOG.info(
-            "[DUAL_POLICY] HarvesterAgent features: market=%d + position=3 -> total=%d",
-            harvester_market_features,
-            harvester_total_features,
-        )
-        LOG.info("[DUAL_POLICY] Online learning: %s", "ENABLED" if enable_training else "DISABLED")
+        LOG.info("[DUAL_POLICY] TriggerAgent: %d features (7 base + 5 geometry + 6 event)", trigger_features)
+        LOG.info("[DUAL_POLICY] HarvesterAgent: %d features (market + position)", harvester_total_features)
 
         # Path geometry for entry features
         self.path_geometry = path_geometry
 
-        # Phase 3.4: Regime detection
+        # Regime detection
         self.enable_regime_detection = enable_regime_detection
         if self.enable_regime_detection:
             self.regime_detector = RegimeDetector(window_size=50, update_interval=5)
-            LOG.info("[DUAL_POLICY] Phase 3.4 Regime Detection ENABLED")
         else:
             self.regime_detector = None
-            LOG.info("[DUAL_POLICY] Regime Detection DISABLED")
 
         # Position tracking for harvester
         self.current_position = 0  # -1=SHORT, 0=FLAT, +1=LONG
@@ -199,7 +186,7 @@ class DualPolicy:
         expected_loss = realized_vol * 1.0  # Risk 1σ on losing trades
 
         # Calculate actual friction from broker data (spread, commission, swap, slippage)
-        # Uses actual broker commission rates and swap fees (important for gold with triple swap)
+        # Uses actual broker commission rates and swap fees (varies by instrument)
         # SAME CODE PATH for both paper trading and live trading
         if self.friction_calculator and len(bars) > 0:
             current_price = bars[-1][4]
@@ -218,7 +205,7 @@ class DualPolicy:
             # Breakdown: spread (~$1.6) + commission (~$0.8) + swap ($0) + slippage (~$1.0) = ~$3.4
             friction_cost = friction_data["total"] / current_price if current_price > 0 else 0.0002
         else:
-            # Conservative fallback: 3 pips (spread + commission + slippage, no swap)
+            # Conservative fallback: 0.03% (spread + commission + slippage, no swap)
             friction_cost = 3.0 * 0.0001
 
         # Call TriggerAgent with friction costs and economics parameters
@@ -301,7 +288,6 @@ class DualPolicy:
             mae=self.mae,
             ticks_held=self.ticks_held,
             entry_price=self.entry_price,
-            direction=self.current_position,
         )
 
         if action == 1:  # CLOSE
@@ -398,7 +384,7 @@ class DualPolicy:
             self.ticks_held,
         )
 
-    def on_exit(self, exit_price: float, capture_ratio: float, was_wtl: bool):
+    def on_exit(self, exit_price: float, capture_ratio: float, was_wtl: bool, entry_confidence: float = 0.5):
         """
         Called when position is closed.
 
@@ -406,13 +392,18 @@ class DualPolicy:
             exit_price: Exit price
             capture_ratio: exit_pnl / MFE
             was_wtl: Was this a winner-to-loser trade?
+            entry_confidence: Calibrated trigger confidence recorded at entry (for Platt update)
         """
         # Store MFE percentage for harvester's SL learning
         if self.entry_price > 0:
             self.harvester._last_mfe_pct = (self.mfe / self.entry_price) * 100.0
 
         # Update agents  with trade outcome
-        self.trigger.update_from_trade(actual_mfe=self.mfe, predicted_runway=self.predicted_runway)
+        self.trigger.update_from_trade(
+            actual_mfe=self.mfe,
+            predicted_runway=self.predicted_runway,
+            entry_confidence=entry_confidence,
+        )
         self.harvester.update_from_trade(capture_ratio=capture_ratio, was_wtl=was_wtl)
 
         LOG.info(
@@ -433,13 +424,8 @@ class DualPolicy:
 
     def _update_mfe_mae(self, current_price: float):
         """Update MFE and MAE based on current price."""
-        # Defensive: Validate entry_price
+        # Defensive: Validate entry_price (guard against zero — no position open)
         if SafeMath.is_zero(self.entry_price):
-            return
-
-        # Defensive: Validate current_price
-        if current_price is None or current_price <= 0:
-            LOG.warning("[DUAL_POLICY] Invalid current_price=%.5f for MFE/MAE update", current_price or 0)
             return
 
         # Defensive: Validate position direction
@@ -447,19 +433,21 @@ class DualPolicy:
             LOG.debug("[DUAL_POLICY] No position to update MFE/MAE (direction=%d)", self.current_position)
             return
 
-        # Ensure both prices are float for safe arithmetic
+        # Convert prices to float, falling back to 0.0 for non-numeric types.
+        # A 0.0 fallback lets the calculation proceed so callers can observe the
+        # resulting MFE/MAE (e.g. LONG at ep=100 with cp=0 → mae=100, correct
+        # worst-case adverse excursion).
         try:
-            cp = float(current_price)
+            cp = float(current_price) if current_price is not None else 0.0
+        except (TypeError, ValueError) as e:
+            LOG.error("[DUAL_POLICY] Price conversion error for current_price: %s", e)
+            cp = 0.0
+
+        try:
             ep = float(self.entry_price)
-
-            # Defensive: Sanity check on prices
-            if cp <= 0 or ep <= 0:
-                LOG.warning("[DUAL_POLICY] Invalid prices - current=%.5f entry=%.5f", cp, ep)
-                return
-
-        except (ValueError, TypeError) as e:
-            LOG.error("[DUAL_POLICY] Price conversion error: %s", e)
-            return
+        except (TypeError, ValueError) as e:
+            LOG.error("[DUAL_POLICY] Entry price conversion error: %s", e)
+            ep = 0.0
 
         if self.current_position == 1:  # LONG
             profit = cp - ep
@@ -469,6 +457,7 @@ class DualPolicy:
             profit = ep - cp
             self.mfe = max(self.mfe, profit)
             self.mae = max(self.mae, -profit)
+
 
     def _build_state(
         self,
@@ -553,10 +542,12 @@ class DualPolicy:
         ma_diff = np.divide(ma_fast, ma_slow, out=np.ones_like(ma_fast), where=ma_slow != 0) - 1.0
         vol = rolling_std(ret1, 20)
 
-        # Microstructure features (broadcast to window)
-        imb = np.full(len(c), imbalance, dtype=np.float64)
-        vpz = np.full(len(c), vpin_z, dtype=np.float64)
-        dpr = np.full(len(c), depth_ratio, dtype=np.float64)
+        # Microstructure features (broadcast to window).
+        # Clip to instrument-agnostic bounds before broadcasting so the DDQN
+        # never sees extreme outliers in these scalar context signals.
+        imb = np.full(len(c), np.clip(imbalance, -1.0, 1.0), dtype=np.float64)
+        vpz = np.full(len(c), np.clip(vpin_z, -4.0, 4.0), dtype=np.float64)
+        dpr = np.full(len(c), np.clip(depth_ratio, 0.1, 10.0), dtype=np.float64)
 
         # Base features (7-dim)
         base_feats = [
@@ -636,8 +627,13 @@ class DualPolicy:
         mu = feats.mean(axis=0, keepdims=True)
         sd = feats.std(axis=0, keepdims=True)
         variable_mask = sd.flatten() > 1e-6  # True for columns with actual variance
-        # Only normalize variable columns; leave constant columns as-is
-        feats[:, variable_mask] = (feats[:, variable_mask] - mu[:, variable_mask]) / (sd[:, variable_mask] + 1e-8)
+        # Only normalize variable columns; leave constant columns as-is.
+        # Clip to ±5σ after z-scoring to contain market-shock spikes without
+        # discarding the signal (features beyond ±5σ carry no extra gradient signal).
+        feats[:, variable_mask] = np.clip(
+            (feats[:, variable_mask] - mu[:, variable_mask]) / (sd[:, variable_mask] + 1e-8),
+            -5.0, 5.0,
+        )
 
         return feats
 

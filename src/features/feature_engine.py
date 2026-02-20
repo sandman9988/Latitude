@@ -41,7 +41,8 @@ except ImportError:  # Optional dependency
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-SMALL_NUMBER: Final[float] = 1e-10
+from src.utils.safe_math import SafeMath, SAFE_EPSILON as SMALL_NUMBER
+
 MIN_PRICE_POINTS: Final[int] = 2
 OMEGA_MIN_RETURNS: Final[int] = 5
 MIN_LOG_RETURN_SAMPLES: Final[int] = 10
@@ -53,53 +54,6 @@ OMEGA_CLAMP_MAX: Final[float] = 10.0
 SHARPE_WEEKLY_BARS: Final[int] = 7200  # 60 bars/hr * 24 * 5
 BASELINE_VOL: Final[float] = 0.01  # 1% daily baseline for window sizing
 BALANCED_RANGE_POSITION: Final[float] = 0.5
-
-
-class SafeMath:
-    """Defensive mathematical operations (reused from regime_detector)"""
-
-    @staticmethod
-    def is_valid(value: float | np.floating) -> bool:
-        """Check if value is finite (not NaN or Inf)"""
-        return bool(np.isfinite(value))
-
-    @staticmethod
-    def safe_div(numerator: float | np.floating, denominator: float | np.floating, default: float = 0.0) -> float:
-        """Safe division with zero protection"""
-        if not SafeMath.is_valid(numerator) or not SafeMath.is_valid(denominator):
-            return default
-        denom_float = float(denominator)
-        if abs(denom_float) < SMALL_NUMBER:
-            return default
-        num_float = float(numerator)
-        result = num_float / denom_float
-        return result if SafeMath.is_valid(result) else default
-
-    @staticmethod
-    def clamp(value: float | np.floating, min_val: float, max_val: float) -> float:
-        """Clamp value to range [min_val, max_val]"""
-        if not SafeMath.is_valid(value):
-            return (min_val + max_val) / 2.0
-        value_float = float(value)
-        return max(min_val, min(max_val, value_float))
-
-    @staticmethod
-    def safe_log(value: float | np.floating, default: float = 0.0) -> float:
-        """Safe logarithm (handles negatives/zero)"""
-        if not SafeMath.is_valid(value) or value <= 0:
-            return default
-        value_float = float(value)
-        result = float(np.log(value_float))
-        return result if SafeMath.is_valid(result) else default
-
-    @staticmethod
-    def safe_sqrt(value: float | np.floating, default: float = 0.0) -> float:
-        """Safe square root (handles negatives)"""
-        if not SafeMath.is_valid(value) or value < 0:
-            return default
-        value_float = float(value)
-        result = float(np.sqrt(value_float))
-        return result if SafeMath.is_valid(result) else default
 
 
 class LogNormalizer:

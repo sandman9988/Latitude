@@ -16,63 +16,12 @@ All features use DEFENSIVE PROGRAMMING principles from handbook Section 8.
 import datetime as dt
 import math
 
+from src.utils.safe_math import SafeMath
+
 DENOMINATOR_EPS = 1e-10
 MIN_STD_SAMPLE_COUNT = 2
 YEAR_MIN = 2020
 YEAR_MAX = 2030
-
-
-# ----------------------------
-# Defensive Programming Utilities
-# ----------------------------
-class SafeMath:
-    """Safe mathematical operations with NaN/Inf protection and division by zero handling."""
-
-    @staticmethod
-    def is_valid(value: float) -> bool:
-        """Check if value is valid (not NaN or Inf)."""
-        return not (math.isnan(value) or math.isinf(value))
-
-    @staticmethod
-    def safe_div(numerator: float, denominator: float, default: float = 0.0) -> float:
-        """
-        Safe division with zero check.
-
-        Args:
-            numerator: Top of division
-            denominator: Bottom of division
-            default: Value to return if division invalid
-
-        Returns:
-            numerator / denominator if valid, else default
-        """
-        if abs(denominator) < DENOMINATOR_EPS:  # Protect against near-zero
-            return default
-
-        result = numerator / denominator
-
-        if not SafeMath.is_valid(result):
-            return default
-
-        return result
-
-    @staticmethod
-    def clamp(value: float, min_val: float, max_val: float) -> float:
-        """Clamp value to range [min_val, max_val]."""
-        if not SafeMath.is_valid(value):
-            return min_val
-        return max(min_val, min(max_val, value))
-
-    @staticmethod
-    def normalize_angle(degrees: float) -> float:
-        """Normalize angle to [0, 360) range."""
-        if not SafeMath.is_valid(degrees):
-            return 0.0
-        # Use modulo to wrap
-        normalized = degrees % 360.0
-        if normalized < 0:
-            normalized += 360.0
-        return normalized
 
 
 class RingBuffer:
@@ -231,7 +180,7 @@ class TimeFeatures:
 
         try:
             # Find next Friday 22:00 UTC
-            days_until_friday = (4 - current_time.weekday()) % 7  # 4 = Friday
+            days_until_friday = (4 - current_time.weekday()) % 7  # weekday index 4 is Friday
             if days_until_friday == 0 and current_time.hour >= self.FOREX_NY_CLOSE:
                 days_until_friday = 7  # Next Friday
 
@@ -351,7 +300,7 @@ class TimeFeatures:
             return 0.0
 
         try:
-            day = current_time.weekday()  # 0=Monday, 6=Sunday
+            day = current_time.weekday()  # weekday 0=Monday through 6=Sunday
             # Normalize to [0, 1]
             normalized = SafeMath.safe_div(float(day), 6.0, default=0.0)
             return SafeMath.clamp(normalized, 0.0, 1.0)

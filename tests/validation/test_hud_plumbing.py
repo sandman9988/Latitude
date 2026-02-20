@@ -72,7 +72,7 @@ def create_mock_data(data_dir: Path):
             "profit_factor": 1.45,
             "expectancy": 0.0258,
             "avg_win": 45.20,
-            "avg_loss": -31.15,
+            "avg_loser": -31.15,
             "max_consec_wins": 7,
             "max_consec_losses": 4,
         },

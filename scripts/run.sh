@@ -227,7 +227,7 @@ wait_for_bot_process() {
         sleep 1
     done
     log "${RED}✗ Trading bot process not detected after ${retries}s${NC}"
-    log "${YELLOW}  Check bot_console.log for details${NC}"
+    log "${YELLOW}  Check logs/bot_console.log for details${NC}"
     return 1
 }
 

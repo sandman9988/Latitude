@@ -139,11 +139,12 @@ class RiskManager:
         var_estimator: VaREstimator,
         risk_budget_usd: float = 100.0,
         max_position_size: float = 1.0,
-        min_confidence_entry: float = 0.6,
-        min_confidence_exit: float = 0.5,
-        symbol: str = "BTCUSD",
+        min_confidence_entry: float | None = None,
+        min_confidence_exit: float | None = None,
+        symbol: str = "XAUUSD",  # Instrument-agnostic: required in production, default for tests
         timeframe: str = "M15",
         broker: str = "default",
+        param_manager=None,  # LearnedParametersManager instance
     ):
         """
         Initialize RiskManager.
@@ -153,18 +154,41 @@ class RiskManager:
             var_estimator: VaR estimator instance
             risk_budget_usd: Maximum USD risk per position
             max_position_size: Maximum position size (lots)
-            min_confidence_entry: Minimum confidence for entry
-            min_confidence_exit: Minimum confidence for exit
+            min_confidence_entry: Minimum confidence for entry (None = load from param_manager)
+            min_confidence_exit: Minimum confidence for exit (None = load from param_manager)
             symbol: Trading symbol (for multi-asset coordination)
             timeframe: Timeframe (for context)
             broker: Broker name (for context)
+            param_manager: LearnedParametersManager for adaptive thresholds (None = use defaults)
         """
         self.circuit_breakers = circuit_breakers
         self.var_estimator = var_estimator
         self.risk_budget_usd = risk_budget_usd
         self.max_position_size = max_position_size
-        self.min_confidence_entry = min_confidence_entry
-        self.min_confidence_exit = min_confidence_exit
+        self.param_manager = param_manager
+
+        # Load confidence thresholds from param_manager if available, otherwise use provided/default values
+        if param_manager is not None:
+            self.min_confidence_entry = param_manager.get(
+                symbol, "entry_confidence_threshold", timeframe=timeframe, broker=broker, default=0.6
+            )
+            self.min_confidence_exit = param_manager.get(
+                symbol, "exit_confidence_threshold", timeframe=timeframe, broker=broker, default=0.45
+            )
+            LOG.info(
+                "[RISK] Loaded adaptive thresholds: entry=%.3f exit=%.3f (from LearnedParametersManager)",
+                self.min_confidence_entry,
+                self.min_confidence_exit,
+            )
+        else:
+            self.min_confidence_entry = min_confidence_entry if min_confidence_entry is not None else 0.6
+            self.min_confidence_exit = min_confidence_exit if min_confidence_exit is not None else 0.45
+            LOG.info(
+                "[RISK] Using default thresholds: entry=%.3f exit=%.3f (no LearnedParametersManager)",
+                self.min_confidence_entry,
+                self.min_confidence_exit,
+            )
+
         self.symbol = symbol
         self.timeframe = timeframe
         self.broker = broker
@@ -239,9 +263,7 @@ class RiskManager:
         self.flash_crash_threshold: float = 0.85  # avg correlation > 0.85 = warning
 
         LOG.info(
-            "[RISK] Initialized RiskManager"
-            " (Central Risk Coordinator):"
-            " budget=$%.2f max_size=%.4f symbol=%s",
+            "[RISK] Initialized RiskManager" " (Central Risk Coordinator):" " budget=$%.2f max_size=%.4f symbol=%s",
             risk_budget_usd,
             max_position_size,
             symbol,
@@ -807,10 +829,7 @@ class RiskManager:
         if n == 1:
             return 1.0
         total_exposure = sum(abs(p) for p in self.active_positions.values())
-        return sum(
-            (abs(p) / max(total_exposure, 1e-8)) ** 2
-            for p in self.active_positions.values()
-        )
+        return sum((abs(p) / max(total_exposure, 1e-8)) ** 2 for p in self.active_positions.values())
 
     @staticmethod
     def _get_regime_multiplier(regime: RegimeType) -> float:
@@ -1078,36 +1097,20 @@ class RiskManager:
         composite_calib = self.get_probability_calibration("composite")
 
         # Calculate overall accuracy for each agent
-        trigger_total = sum(
-            len(outcomes)
-            for outcomes in self.calibration_buckets_trigger.values()
-        )
+        trigger_total = sum(len(outcomes) for outcomes in self.calibration_buckets_trigger.values())
         trigger_wins = sum(
-            1
-            for outcomes in self.calibration_buckets_trigger.values()
-            for _, outcome in outcomes
-            if outcome
+            1 for outcomes in self.calibration_buckets_trigger.values() for _, outcome in outcomes if outcome
         )
         trigger_accuracy = trigger_wins / max(trigger_total, 1)
 
-        harvester_total = sum(
-            len(outcomes)
-            for outcomes in self.calibration_buckets_harvester.values()
-        )
+        harvester_total = sum(len(outcomes) for outcomes in self.calibration_buckets_harvester.values())
         harvester_wins = sum(
-            1
-            for outcomes in self.calibration_buckets_harvester.values()
-            for _, outcome in outcomes
-            if outcome
+            1 for outcomes in self.calibration_buckets_harvester.values() for _, outcome in outcomes if outcome
         )
         harvester_accuracy = harvester_wins / max(harvester_total, 1)
 
         # Determine best calibrated agent
-        trigger_avg_error = (
-            np.mean([c.calibration_error for c in trigger_calib.values()])
-            if trigger_calib
-            else 1.0
-        )
+        trigger_avg_error = np.mean([c.calibration_error for c in trigger_calib.values()]) if trigger_calib else 1.0
         harvester_avg_error = (
             np.mean(
                 [c.calibration_error for c in harvester_calib.values()],
@@ -1125,15 +1128,11 @@ class RiskManager:
             recommendation = "Both agents well-calibrated - trust both equally"
         elif trigger_avg_error < harvester_avg_error * 0.7:
             recommendation = (
-                f"Trust TriggerAgent more"
-                f" (error: {trigger_avg_error:.1%}"
-                f" vs {harvester_avg_error:.1%})"
+                f"Trust TriggerAgent more" f" (error: {trigger_avg_error:.1%}" f" vs {harvester_avg_error:.1%})"
             )
         elif harvester_avg_error < trigger_avg_error * 0.7:
             recommendation = (
-                f"Trust HarvesterAgent more"
-                f" (error: {harvester_avg_error:.1%}"
-                f" vs {trigger_avg_error:.1%})"
+                f"Trust HarvesterAgent more" f" (error: {harvester_avg_error:.1%}" f" vs {trigger_avg_error:.1%})"
             )
         else:
             recommendation = "Both agents similarly calibrated - weight equally"
@@ -1173,10 +1172,7 @@ class RiskManager:
         Reward: +1 for correct decision, -1 for incorrect
         """
         # Current state
-        drawdown_pct = (
-            (self.peak_equity - (self.peak_equity + self.total_pnl))
-            / self.peak_equity
-        ) * 100
+        drawdown_pct = ((self.peak_equity - (self.peak_equity + self.total_pnl)) / self.peak_equity) * 100
         drawdown_level = int(drawdown_pct / 5)  # 0-5% = 0, 5-10% = 1, etc.
         win_rate = self.winning_trades / max(self.total_trades, 1)
         win_bucket = int(win_rate * 10)  # 0-10% = 0, 10-20% = 1, etc.
@@ -1265,10 +1261,7 @@ class RiskManager:
                 action_scores[action].append(q_val)
 
         # Average Q-value for each action
-        avg_q = {
-            action: np.mean(scores) if scores else 0.0
-            for action, scores in action_scores.items()
-        }
+        avg_q = {action: np.mean(scores) if scores else 0.0 for action, scores in action_scores.items()}
 
         # Best action
         best_action = max(avg_q, key=lambda k: float(avg_q[k]))
@@ -1326,9 +1319,7 @@ class RiskManager:
             return None
 
         symbols_with_data = [
-            sym
-            for sym, returns in self.returns_history.items()
-            if len(returns) >= min(20, self.correlation_window)
+            sym for sym, returns in self.returns_history.items() if len(returns) >= min(20, self.correlation_window)
         ]
 
         if len(symbols_with_data) < 2:
@@ -1347,11 +1338,7 @@ class RiskManager:
 
         # Get off-diagonal correlations (exclude self-correlation)
         n = len(symbols_with_data)
-        off_diag_correlations = [
-            self.correlation_matrix[i, j]
-            for i in range(n)
-            for j in range(i + 1, n)
-        ]
+        off_diag_correlations = [self.correlation_matrix[i, j] for i in range(n) for j in range(i + 1, n)]
 
         avg_correlation = float(np.mean(np.abs(off_diag_correlations)))
         max_correlation = float(np.max(np.abs(off_diag_correlations)))
@@ -1423,10 +1410,7 @@ class RiskManager:
         # Calculate diversification score for each symbol
         # Higher score = better diversification (more negative/low correlations)
         symbols_with_data = [
-            sym
-            for sym in symbols
-            if sym in self.returns_history
-            and len(self.returns_history[sym]) >= 20
+            sym for sym in symbols if sym in self.returns_history and len(self.returns_history[sym]) >= 20
         ]
 
         if len(symbols_with_data) < 2:

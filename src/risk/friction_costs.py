@@ -320,7 +320,7 @@ class FrictionCalculator:
 
     def __init__(
         self,
-        symbol: str = "BTCUSD",
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
         symbol_id: int = 10028,
         timeframe: str = "M15",
         broker: str = "default",

@@ -372,7 +372,7 @@ class CircuitBreakerManager:
         kurtosis_threshold: float | None = None,
         max_drawdown: float | None = None,
         max_consecutive_losses: int | None = None,
-        symbol: str = "BTCUSD",
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
         timeframe: str = "M15",
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,

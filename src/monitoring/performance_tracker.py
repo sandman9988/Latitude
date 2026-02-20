@@ -6,6 +6,49 @@ Tracks Sharpe ratio, win rate, drawdown, and other key statistics.
 
 import datetime as dt
 import math
+from dataclasses import dataclass
+from typing import ClassVar
+
+
+@dataclass
+class AgentAttribution:
+    """Phase 3.3 dual-agent attribution for a completed trade.
+
+    Validation is applied in __post_init__:
+    - Numeric fields clamped to valid ranges
+    - Quality strings fall back to "N/A" if unrecognised
+    - Bar-offset ints clamped to >= -1
+    """
+
+    _VALID_TRIGGER: ClassVar[frozenset] = frozenset(
+        {"EXCELLENT", "GOOD", "OVERPREDICTED", "UNDERPREDICTED", "N/A"}
+    )
+    _VALID_HARVESTER: ClassVar[frozenset] = frozenset(
+        {"EXCELLENT", "GOOD", "FAIR", "POOR", "POOR_WTL", "STOPPED_OUT", "N/A"}
+    )
+
+    predicted_runway: float = 0.0
+    runway_utilization: float = 0.0
+    runway_error_pct: float = 0.0
+    trigger_quality: str = "N/A"
+    harvester_quality: str = "N/A"
+    mfe_bar_offset: int = -1
+    mae_bar_offset: int = -1
+    bars_from_mfe_to_exit: int = -1
+
+    def __post_init__(self) -> None:
+        self.predicted_runway = max(0.0, self.predicted_runway or 0.0)
+        self.runway_utilization = max(0.0, min(10.0, self.runway_utilization or 0.0))
+        self.runway_error_pct = max(0.0, min(1000.0, self.runway_error_pct or 0.0))
+        if self.trigger_quality not in self._VALID_TRIGGER:
+            self.trigger_quality = "N/A"
+        if self.harvester_quality not in self._VALID_HARVESTER:
+            self.harvester_quality = "N/A"
+        self.mfe_bar_offset = max(-1, self.mfe_bar_offset if self.mfe_bar_offset is not None else -1)
+        self.mae_bar_offset = max(-1, self.mae_bar_offset if self.mae_bar_offset is not None else -1)
+        self.bars_from_mfe_to_exit = max(
+            -1, self.bars_from_mfe_to_exit if self.bars_from_mfe_to_exit is not None else -1
+        )
 
 
 class PerformanceTracker:
@@ -50,52 +93,64 @@ class PerformanceTracker:
         mfe: float = 0.0,
         mae: float = 0.0,
         winner_to_loser: bool = False,
-        # Phase 3.3: Dual-agent attribution metrics
-        predicted_runway: float = 0.0,
-        runway_utilization: float = 0.0,
-        runway_error_pct: float = 0.0,
-        trigger_quality: str = "N/A",
-        harvester_quality: str = "N/A",
-        mfe_bar_offset: int = -1,
-        mae_bar_offset: int = -1,
-        bars_from_mfe_to_exit: int = -1,
+        attribution: AgentAttribution | None = None,
     ):
-        """
-        Record a completed trade.
+        """Record a completed trade.
 
-        Phase 3.3: Added dual-agent attribution metrics for TriggerAgent and HarvesterAgent performance.
+        Phase 3.3: Pass an ``AgentAttribution`` instance for dual-agent metrics.
+        All individual Phase 3.3 fields are bundled there to keep the signature
+        within SonarQube's parameter-count limit.
         """
+        pnl, mfe, mae = self._sanitize_trade_inputs(pnl, mfe, mae)
+        attr = attribution or AgentAttribution()
 
-        # Defensive: Validate numeric inputs
+        self.total_trades += 1
+        self.total_pnl += pnl
+        self.current_equity += pnl
+
+        self._update_win_loss_streaks(pnl > 0, pnl)
+        self._update_drawdown()
+
+        # Store trade record (Phase 3.3: Extended with dual-agent metrics)
+        self.trades.append(
+            {
+                "trade_num": self.total_trades,
+                "entry_time": entry_time,
+                "exit_time": exit_time,
+                "direction": direction,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl": pnl,
+                "mfe": mfe,
+                "mae": mae,
+                "winner_to_loser": winner_to_loser,
+                "equity_after": self.current_equity,
+                # Phase 3.3: Dual-agent attribution
+                "predicted_runway": attr.predicted_runway,
+                "runway_utilization": attr.runway_utilization,
+                "runway_error_pct": attr.runway_error_pct,
+                "trigger_quality": attr.trigger_quality,
+                "harvester_quality": attr.harvester_quality,
+                "mfe_bar_offset": attr.mfe_bar_offset,
+                "mae_bar_offset": attr.mae_bar_offset,
+                "bars_from_mfe_to_exit": attr.bars_from_mfe_to_exit,
+            }
+        )
+        self.equity_curve.append((exit_time, self.current_equity))
+
+    @staticmethod
+    def _sanitize_trade_inputs(pnl: object, mfe: object, mae: object) -> tuple[float, float, float]:
+        """Defensive sanitization of core numeric trade inputs."""
         if pnl is None or not isinstance(pnl, (int, float)):
             pnl = 0.0
         if mfe is None or not isinstance(mfe, (int, float)) or mfe < 0:
             mfe = 0.0
         if mae is None or not isinstance(mae, (int, float)) or mae < 0:
             mae = 0.0
+        return float(pnl), float(mfe), float(mae)
 
-        # Defensive: Clamp Phase 3.3 metrics to reasonable ranges
-        predicted_runway = max(0.0, predicted_runway) if predicted_runway else 0.0
-        runway_utilization = max(0.0, min(10.0, runway_utilization)) if runway_utilization else 0.0  # 0-1000%
-        runway_error_pct = max(0.0, min(1000.0, runway_error_pct)) if runway_error_pct else 0.0  # 0-1000%
-
-        # Defensive: Validate quality strings
-        valid_trigger = {"EXCELLENT", "GOOD", "OVERPREDICTED", "UNDERPREDICTED", "N/A"}
-        valid_harvester = {"EXCELLENT", "GOOD", "FAIR", "POOR", "POOR_WTL", "STOPPED_OUT", "N/A"}
-        trigger_quality = trigger_quality if trigger_quality in valid_trigger else "N/A"
-        harvester_quality = harvester_quality if harvester_quality in valid_harvester else "N/A"
-
-        # Defensive: Clamp bar offsets to non-negative
-        mfe_bar_offset = max(-1, mfe_bar_offset) if mfe_bar_offset is not None else -1
-        mae_bar_offset = max(-1, mae_bar_offset) if mae_bar_offset is not None else -1
-        bars_from_mfe_to_exit = max(-1, bars_from_mfe_to_exit) if bars_from_mfe_to_exit is not None else -1
-
-        self.total_trades += 1
-        self.total_pnl += pnl
-        self.current_equity += pnl
-
-        # Track win/loss
-        is_winner = pnl > 0
+    def _update_win_loss_streaks(self, is_winner: bool, pnl: float) -> None:
+        """Update win/loss tallies and consecutive-streak counters."""
         if is_winner:
             self.winning_trades += 1
             self.total_winner_pnl += pnl
@@ -109,44 +164,16 @@ class PerformanceTracker:
             self.consecutive_wins = 0
             self.max_consecutive_losses = max(self.max_consecutive_losses, self.consecutive_losses)
 
-        # Update drawdown
+    def _update_drawdown(self) -> None:
+        """Recompute current_drawdown against peak equity after an equity change."""
         if self.current_equity > self.peak_equity:
             self.peak_equity = self.current_equity
             self.current_drawdown = 0.0
-        # Defensive: protect against zero peak_equity
         elif self.peak_equity > 0:
             self.current_drawdown = (self.peak_equity - self.current_equity) / self.peak_equity
             self.max_drawdown = max(self.max_drawdown, self.current_drawdown)
         else:
             self.current_drawdown = 0.0
-
-        # Store trade record (Phase 3.3: Extended with dual-agent metrics)
-        trade_record = {
-            "trade_num": self.total_trades,
-            "entry_time": entry_time,
-            "exit_time": exit_time,
-            "direction": direction,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "pnl": pnl,
-            "mfe": mfe,
-            "mae": mae,
-            "winner_to_loser": winner_to_loser,
-            "equity_after": self.current_equity,
-            # Phase 3.3: Dual-agent attribution
-            "predicted_runway": predicted_runway,
-            "runway_utilization": runway_utilization,
-            "runway_error_pct": runway_error_pct,
-            "trigger_quality": trigger_quality,
-            "harvester_quality": harvester_quality,
-            "mfe_bar_offset": mfe_bar_offset,
-            "mae_bar_offset": mae_bar_offset,
-            "bars_from_mfe_to_exit": bars_from_mfe_to_exit,
-        }
-        self.trades.append(trade_record)
-
-        # Update equity curve
-        self.equity_curve.append((exit_time, self.current_equity))
 
     def get_metrics(self) -> dict:
         """Calculate and return current performance metrics."""

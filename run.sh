@@ -227,7 +227,7 @@ wait_for_bot_process() {
         sleep 1
     done
     log "${RED}✗ Trading bot process not detected after ${retries}s${NC}"
-    log "${YELLOW}  Check bot_console.log for details${NC}"
+    log "${YELLOW}  Check logs/bot_console.log for details${NC}"
     return 1
 }
 
@@ -376,7 +376,8 @@ PY
 }
 
 start_bot_daemon() {
-    local launcher_log="bot_console.log"
+    mkdir -p logs
+    local launcher_log="logs/bot_console.log"
     # Always use the absolute path to this script for recursion
     local script_path
     script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
@@ -450,9 +451,10 @@ launch_hud_background() {
     log "=========================================="
     log ""
     log "HUD is running in background. Use 'pkill -f hud_tabbed' to stop it."
-    log "Bot console log: bot_console.log"
+    log "Bot console log: logs/bot_console.log"
     log ""
-    nohup python3 src/monitoring/hud_tabbed.py >> hud_console.log 2>&1 &
+    mkdir -p logs
+    nohup python3 src/monitoring/hud_tabbed.py >> logs/hud_console.log 2>&1 &
     HUD_PID=$!
     sleep 2
     if ! kill -0 "$HUD_PID" 2>/dev/null; then

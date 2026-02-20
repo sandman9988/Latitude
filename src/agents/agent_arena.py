@@ -100,6 +100,7 @@ class AgentArena:
         harvester_agents: list,  # List[HarvesterAgent]
         consensus_mode: ConsensusMode = ConsensusMode.WEIGHTED_AVERAGE,
         min_agreement: float = 0.6,
+        param_manager=None,  # LearnedParametersManager instance
     ):
         """
         Initialize agent arena.
@@ -109,11 +110,28 @@ class AgentArena:
             harvester_agents: List of HarvesterAgent instances
             consensus_mode: Method for combining agent outputs
             min_agreement: Minimum agreement threshold (0-1)
+            param_manager: LearnedParametersManager for adaptive thresholds (None = use default)
         """
         self.trigger_agents = trigger_agents
         self.harvester_agents = harvester_agents
         self.consensus_mode = consensus_mode
         self.min_agreement = min_agreement
+
+        # Load confidence threshold from param_manager if available
+        if param_manager is not None and len(trigger_agents) > 0:
+            # Get symbol from first trigger agent (all agents should be for same symbol)
+            agent_symbol = getattr(trigger_agents[0], "symbol", "XAUUSD")
+            agent_timeframe = getattr(trigger_agents[0], "timeframe", "M15")
+            agent_broker = getattr(trigger_agents[0], "broker", "default")
+            self.min_confidence_threshold = param_manager.get(
+                agent_symbol,
+                "entry_confidence_threshold",
+                timeframe=agent_timeframe,
+                broker=agent_broker,
+                default=MIN_CONFIDENCE_THRESHOLD,
+            )
+        else:
+            self.min_confidence_threshold = MIN_CONFIDENCE_THRESHOLD
 
         # Performance tracking
         self.trigger_stats = [AgentStats() for _ in trigger_agents]
@@ -366,9 +384,7 @@ class AgentArena:
 
         return consensus_action, consensus_confidence, agreement
 
-    def _min_risk_consensus(
-        self, actions: list[int], confidences: list[float]
-    ) -> tuple[int, float, float]:
+    def _min_risk_consensus(self, actions: list[int], confidences: list[float]) -> tuple[int, float, float]:
         """
         Conservative consensus: prefer no-action unless strong agreement.
 
@@ -394,7 +410,7 @@ class AgentArena:
             avg_confidence = stats["total_conf"] / stats["count"]
 
             # Require both majority vote AND high confidence
-            if vote_ratio >= self.min_agreement and avg_confidence >= MIN_CONFIDENCE_THRESHOLD:
+            if vote_ratio >= self.min_agreement and avg_confidence >= self.min_confidence_threshold:
                 return action, avg_confidence, vote_ratio
 
         # No strong consensus - return no-action

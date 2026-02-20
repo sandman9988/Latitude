@@ -4,7 +4,7 @@ import datetime as dt
 
 import pytest
 
-from src.monitoring.performance_tracker import PerformanceTracker
+from src.monitoring.performance_tracker import AgentAttribution, PerformanceTracker
 
 
 # ---------------------------------------------------------------------------
@@ -81,9 +81,18 @@ class TestAddTrade:
 
     def test_invalid_quality_string_replaced(self):
         pt = PerformanceTracker()
-        pt.add_trade(pnl=10, entry_time=_T0, exit_time=_T1,
-                     direction="LONG", entry_price=100_000, exit_price=100_010,
-                     trigger_quality="GARBAGE", harvester_quality="INVALID")
+        pt.add_trade(
+            pnl=10,
+            entry_time=_T0,
+            exit_time=_T1,
+            direction="LONG",
+            entry_price=100_000,
+            exit_price=100_010,
+            attribution=AgentAttribution(
+                trigger_quality="GARBAGE",
+                harvester_quality="INVALID",
+            ),
+        )
         assert pt.trades[0]["trigger_quality"] == "N/A"
         assert pt.trades[0]["harvester_quality"] == "N/A"
 

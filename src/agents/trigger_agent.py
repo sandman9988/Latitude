@@ -46,6 +46,8 @@ Q_RUNWAY_MIN = 0.0010
 Q_RUNWAY_MAX = 0.0050
 Q_RUNWAY_MAX_Q = 3.0
 TD_ERROR_CAP = 10.0
+FALLBACK_VOL_SCALE_QUIET: float = 0.70  # Runway scale during below-average volatility
+FALLBACK_VOL_SCALE_HOT: float = 1.50    # Runway scale during above-average volatility
 
 
 class TriggerAgent:
@@ -79,7 +81,7 @@ class TriggerAgent:
         window: int = 64,
         n_features: int = 7,
         enable_training: bool = False,
-        symbol: str = "BTCUSD",
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
         timeframe: str = "M15",
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
@@ -129,7 +131,7 @@ class TriggerAgent:
         self.ddqn = (
             DDQNNetwork(
                 state_dim=window * n_features,  # Flattened state vector
-                n_actions=3,  # NO_ENTRY=0, LONG=1, SHORT=2
+                n_actions=3,  # three actions: NO_ENTRY, LONG, SHORT
                 learning_rate=0.0005,
                 gamma=0.99,
                 tau=0.005,
@@ -139,8 +141,6 @@ class TriggerAgent:
             if enable_training
             else None
         )
-        if enable_training:
-            LOG.info("[TRIGGER] DDQNNetwork initialized: state_dim=%d, actions=3", window * n_features)
 
         # Phase 2: Platt calibration for probability estimates (online learning)
         # Converts raw scores to calibrated probabilities: p = 1/(1 + exp(A*score + B))
@@ -152,44 +152,27 @@ class TriggerAgent:
         # Training mode: NO GATES - pure exploration, learn through rewards
         # Live mode: LEARNED GATES - confidence floor from trained model
         if self.disable_gates or self.paper_mode:
-            self.feasibility_threshold = 0.0  # No feasibility gate in training
-            self.confidence_floor = 0.0  # No confidence floor in training
-            LOG.info("[TRIGGER] TRAINING MODE - All gates DISABLED")
+            self.feasibility_threshold = 0.0
+            self.confidence_floor = 0.0
         else:
             # Live trading: use learned gating
-            self.feasibility_threshold, feas_source = self._resolve_gate_value(
+            self.feasibility_threshold, _ = self._resolve_gate_value(
                 env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5
             )
-            self.confidence_floor, conf_source = self._resolve_gate_value(
+            self.confidence_floor, _ = self._resolve_gate_value(
                 env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55
             )
-            LOG.info(
-                "[TRIGGER] LIVE MODE - Confidence floor: %.2f (%s) | Feasibility: %.2f (%s)",
-                self.confidence_floor,
-                conf_source,
-                self.feasibility_threshold,
-                feas_source,
-            )
 
-        LOG.info(
-            "[TRIGGER] Epsilon: %.2f → %.2f (decay=%.4f)",
-            self.epsilon,
-            self.epsilon_end,
-            self.epsilon_decay,
-        )
+        # Log consolidated initialization
+        mode_str = "TRAINING" if (self.disable_gates or self.paper_mode) else "LIVE"
+        training_str = f"online_learn={enable_training}" if enable_training else "no_training"
+        LOG.info("[TRIGGER] Init: %s ε=%.2f→%.2f decay=%.3f | %s",
+            mode_str, self.epsilon, self.epsilon_end, self.epsilon_decay, training_str)
 
         # Try to load model if path specified
         model_path = os.environ.get("DDQN_TRIGGER_MODEL", "").strip()
         if model_path:
             self._load_model(model_path)
-        else:
-            LOG.info("[TRIGGER] No model specified, using fallback strategy")
-
-        if self.enable_training:
-            LOG.info(
-                "[TRIGGER] Online learning ENABLED (buffer capacity=50k, min=%d)",
-                self.min_experiences,
-            )
 
     def _resolve_gate_value(self, env_key: str, param_name: str, fallback: float) -> tuple[float, str]:
         """Resolve gate thresholds via env override → learned params → fallback."""
@@ -283,7 +266,7 @@ class TriggerAgent:
             (action, confidence, predicted_runway)
             - action: 0=NO_ENTRY, 1=LONG, 2=SHORT
             - confidence: [0, 1] Platt-calibrated probability
-            - predicted_runway: Expected MFE (e.g., 0.002 = 20 pips for BTC)
+            - predicted_runway: Expected MFE as percentage (e.g., 0.002 = 0.2% of entry price)
         """
         # Track bars since last trade for forced exploration
         self.bars_since_trade += 1
@@ -362,10 +345,10 @@ class TriggerAgent:
                     predicted_runway,
                 )
             else:
-                # Fallback: Simple MA crossover with microstructure tilt + regime adjustment
-                action = self._fallback_strategy(state, regime_threshold_adj)
-                confidence = 0.6  # Medium confidence for rule-based
-                predicted_runway = PREDICTED_RUNWAY_FALLBACK  # Conservative estimate: 15 pips
+                # Fallback: multi-factor MA/momentum/VPIN with dynamic confidence + vol-scaled runway
+                action, confidence, predicted_runway = self._fallback_decide(state, regime_threshold_adj)
+                if action == 0:
+                    return 0, 0.0, 0.0
 
             # Store last state for experience creation (always, for both paths)
             self.last_state = state.copy()
@@ -450,44 +433,93 @@ class TriggerAgent:
         """Decay epsilon for exploration schedule."""
         self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
 
-    def _fallback_strategy(self, state: np.ndarray, regime_threshold_adj: float = 0.0) -> int:
-        """
-        Fallback entry strategy when no model loaded.
+    def _fallback_decide(
+        self, state: np.ndarray, regime_threshold_adj: float = 0.0
+    ) -> tuple[int, float, float]:
+        """Multi-factor fallback entry decision with dynamic confidence and vol-scaled runway.
 
-        Uses MA crossover + microstructure tilt + Phase 3.4 regime adjustment.
-        NOTE: Epsilon exploration is handled in decide() method, NOT here.
+        Improvements over the legacy single-factor MA-diff crossover:
+        1. CONFIRM  — at least one of ret1/ret5 must align with direction.
+                      Prevents entries on brief MA-diff spikes with no momentum.
+        2. FILTER   — strong opposing VPIN z-score (> ±2σ) vetoes the entry.
+                      Protects against entering into toxic institutional flow.
+        3. DYN CONF — 0.55 base + 0.10 per momentum factor + 0.05 if VPIN agrees.
+                      Range [0.55, 0.85]; previously a flat 0.6.
+        4. VOL RWWY — PREDICTED_RUNWAY_FALLBACK × vol-regime multiplier.
+                      Quiet markets → tighter runway; volatile → wider.
 
-        Args:
-            state: Normalized state features (can be deque or ndarray)
-            regime_threshold_adj: Adjustment from regime detector
-                - Negative (trending): easier to trigger
-                - Positive (mean-reverting): harder to trigger
+        Returns:
+            (action, confidence, predicted_runway)
         """
-        # Convert deque to ndarray if needed
         if not isinstance(state, np.ndarray):
             state = np.array(state)
 
         if state.shape[0] == 0 or state.shape[1] < MIN_FEATURE_COLS:
-            return 0  # NO_ENTRY
+            return 0, 0.0, 0.0
 
-        # Get latest features (already normalized)
-        ma_diff = float(state[-1, 2])  # MA fast/slow difference
+        # Extract normalised features from the latest bar
+        ma_diff   = float(state[-1, 2])
+        ret1      = float(state[-1, 0])
+        ret5      = float(state[-1, 1])
+        vol_z     = float(state[-1, 3]) if state.shape[1] > 3 else 0.0
         imbalance = float(state[-1, IMBALANCE_INDEX]) if state.shape[1] > IMBALANCE_INDEX else 0.0
+        vpin_z    = float(state[-1, 5]) if state.shape[1] > 5 else 0.0
 
-        # Tilt thresholds by order book imbalance
-        tilt = imbalance * TILT_SCALE
-
-        # Phase 3.4: Apply regime-based threshold adjustment
-        # Paper mode: Lower base threshold for more entries
+        # Regime-adjusted threshold (same adaptive logic as before)
         paper_mode = os.environ.get("PAPER_MODE") == "1"
-        base_threshold = PAPER_BASE_THRESHOLD if paper_mode else LIVE_BASE_THRESHOLD
-        adjusted_threshold = base_threshold + regime_threshold_adj
+        seed_threshold = PAPER_BASE_THRESHOLD if paper_mode else LIVE_BASE_THRESHOLD
+        base_threshold, _ = self._resolve_gate_value(
+            env_key="FALLBACK_THRESHOLD",
+            param_name="fallback_base_threshold",
+            fallback=seed_threshold,
+        )
+        tilt = imbalance * TILT_SCALE
+        adjusted_threshold = max(base_threshold * (1.0 + regime_threshold_adj), 0.0)
 
-        if ma_diff > (adjusted_threshold - tilt):
-            return 1  # LONG
-        if ma_diff < (-adjusted_threshold - tilt):
-            return 2  # SHORT
-        return 0  # NO_ENTRY
+        # Primary: MA-diff crossover
+        ma_long  = ma_diff > (adjusted_threshold - tilt)
+        ma_short = ma_diff < -(adjusted_threshold + tilt)
+
+        if not ma_long and not ma_short:
+            return 0, 0.0, 0.0
+
+        direction = 1 if ma_long else -1
+
+        # Momentum confirmation: at least one of ret1/ret5 must align with direction.
+        # Min deviation 0.05σ filters positions where both returns are near-zero noise.
+        MOMENTUM_MIN = 0.05
+        ret1_ok = (direction == 1 and ret1 > MOMENTUM_MIN) or (direction == -1 and ret1 < -MOMENTUM_MIN)
+        ret5_ok = (direction == 1 and ret5 > MOMENTUM_MIN) or (direction == -1 and ret5 < -MOMENTUM_MIN)
+
+        if not (ret1_ok or ret5_ok):
+            return 0, 0.0, 0.0  # No momentum support: likely noise spike
+
+        # VPIN toxicity veto: strong opposing flow (>±2σ) blocks entry
+        VPIN_VETO = 2.0
+        if (direction == 1 and vpin_z < -VPIN_VETO) or (direction == -1 and vpin_z > VPIN_VETO):
+            return 0, 0.0, 0.0  # Opposing institutional flow: skip
+
+        # Dynamic confidence: base + bonus per confirming factor
+        vpin_agrees = (direction == 1 and vpin_z > 0.0) or (direction == -1 and vpin_z < 0.0)
+        confidence = 0.55 + 0.10 * int(ret1_ok) + 0.10 * int(ret5_ok) + 0.05 * int(vpin_agrees)
+        confidence = min(confidence, 0.85)
+
+        # Vol-scaled runway: linear interpolation QUIET(0.70)→HOT(1.50) over vol_z ∈ [-1,+1]
+        if vol_z < -1.0:
+            vol_scale = FALLBACK_VOL_SCALE_QUIET
+        elif vol_z > 1.0:
+            vol_scale = FALLBACK_VOL_SCALE_HOT
+        else:
+            vol_scale = FALLBACK_VOL_SCALE_QUIET + (FALLBACK_VOL_SCALE_HOT - FALLBACK_VOL_SCALE_QUIET) * (vol_z + 1.0) / 2.0
+        predicted_runway = float(np.clip(PREDICTED_RUNWAY_FALLBACK * vol_scale, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
+
+        action = 1 if direction == 1 else 2
+        return action, confidence, predicted_runway
+
+    def _fallback_strategy(self, state: np.ndarray, regime_threshold_adj: float = 0.0) -> int:
+        """Action-only shim for backward compatibility. Delegates to _fallback_decide()."""
+        action, _, _ = self._fallback_decide(state, regime_threshold_adj)
+        return action
 
     def _softmax(self, x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
         """Softmax with temperature for confidence calculation."""
@@ -559,25 +591,22 @@ class TriggerAgent:
 
         NOTE: This returns GROSS runway. Caller must subtract friction_cost to get NET runway.
 
-        Heuristic mapping:
-        - Q ≤ 0: 0.0010 (10 pips, minimal runway)
-        - Q = 1: 0.0020 (20 pips, moderate runway)
-        - Q = 2: 0.0030 (30 pips, good runway)
-        - Q ≥ 3: 0.0050 (50 pips, excellent runway)
+        Heuristic mapping (as percentage of entry price):
+        - Q ≤ 0: 0.0010 (0.10%, minimal runway)
+        - Q = 1: 0.0020 (0.20%, moderate runway)
+        - Q = 2: 0.0030 (0.30%, good runway)
+        - Q ≥ 3: 0.0050 (0.50%, excellent runway)
 
-        For BTC/USD at ~$100k, 1 pip = $10, so:
-        - 10 pips = 0.0001 = $10
-        - 20 pips = 0.0002 = $20
-        - 50 pips = 0.0005 = $50
+        Example: For entry at $4600, 0.20% runway = $9.20 expected MFE
         """
         if q_value <= 0:
-            return Q_RUNWAY_MIN  # 10 pips minimum
+            return Q_RUNWAY_MIN  # 0.10% minimum
         if q_value >= Q_RUNWAY_MAX_Q:
-            return Q_RUNWAY_MAX  # 50 pips maximum
+            return Q_RUNWAY_MAX  # 0.50% maximum
         # Linear interpolation: Q in [0, 3] → Runway in [0.001, 0.005]
         return Q_RUNWAY_MIN + (q_value / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
 
-    def update_from_trade(self, actual_mfe: float, predicted_runway: float):
+    def update_from_trade(self, actual_mfe: float, predicted_runway: float, entry_confidence: float = 0.5):
         """
         Update trigger agent based on trade outcome.
 
@@ -610,7 +639,7 @@ class TriggerAgent:
             if self.enable_training and hasattr(self, "platt_a"):
                 # Use the last known confidence as predicted probability
                 # (Platt calibration improves over time)
-                predicted_prob = 0.5  # Default if we don't track per-trade confidence
+                predicted_prob = float(entry_confidence)  # Actual calibrated confidence at entry
                 self.update_platt_params(predicted_prob, outcome)
 
             # Update confidence_floor via LearnedParameters
@@ -635,6 +664,33 @@ class TriggerAgent:
                         broker=self.broker,
                     )
                     self.confidence_floor = float(new_floor)
+
+                    # Update fallback_base_threshold in the same direction.
+                    # Bad entry → threshold was too permissive → raise it.
+                    # Great entry → can afford to lower it slightly.
+                    self.param_manager.update(
+                        self.symbol,
+                        "fallback_base_threshold",
+                        gradient * 0.5,  # Half the learning rate of confidence_floor
+                        timeframe=self.timeframe,
+                        broker=self.broker,
+                    )
+
+                    # Update regime_adj_scale: if utilization is very bad or
+                    # very good, it may indicate the current regime scale is
+                    # wrong (too aggressive or too timid). Pull toward a
+                    # neutral signal; leave the absolute magnitude to drift
+                    # based on regime-specific performance over time.
+                    if utilization < 0.2 or utilization > 2.0:
+                        # Outlier trade — soften the regime signal slightly
+                        self.param_manager.update(
+                            self.symbol,
+                            "regime_adj_scale",
+                            -0.001,  # Small nudge toward less aggressive gating
+                            timeframe=self.timeframe,
+                            broker=self.broker,
+                        )
+
                     self.param_manager.save()
                     LOG.debug(
                         "[TRIGGER] Updated confidence_floor: %.3f (gradient=%.3f, utilization=%.2f)",

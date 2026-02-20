@@ -285,7 +285,6 @@ class CounterfactualAnalyzer:
             lookback_bars: How many bars to look back for MFE comparison
         """
         self.lookback_bars = lookback_bars
-        logger.info(f"CounterfactualAnalyzer initialized: lookback={lookback_bars}")
 
     def analyze_exit(
         self, entry_price: float, exit_price: float, mfe: float, mfe_bar_offset: int, direction: int

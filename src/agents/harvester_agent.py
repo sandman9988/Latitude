@@ -22,13 +22,14 @@ Phase 3.5: Online Learning
 """
 
 import logging
+import math
 import os
 
 import numpy as np
 
 from src.core.ddqn_network import DDQNNetwork
-from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 from src.persistence.learned_parameters import LearnedParametersManager
+from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
 
 LOG = logging.getLogger(__name__)
 
@@ -38,18 +39,32 @@ BATCH_SIZE_DEFAULT: int = 64
 CONFIDENCE_FALLBACK: float = 0.7
 PCT_SCALE: float = 100.0
 TICKS_HELD_NORM_DENOM: float = 100.0  # Normalize tick count to [0,1] range
-SOFT_TIME_STOP_BARS: int = 200  # Let trades develop (200 ticks ≈ 10-15 min on M5)
-HARD_TIME_STOP_BARS: int = 400  # Hard cap at 400 ticks
-MIN_SOFT_PROFIT_PCT: float = 0.20  # Need at least 20 pips ($2) to soft-exit
-PROFIT_TARGET_PCT_DEFAULT: float = 0.60  # Target ~60 pips on XAUUSD M5 (realistic for intraday)
-STOP_LOSS_PCT_DEFAULT: float = 0.40  # Allow 40 pips drawdown (tighter, 1.5:1 R:R)
+SOFT_TIME_STOP_BARS: int = 200  # Soft time stop threshold (adaptive via learned parameters)
+HARD_TIME_STOP_BARS: int = 400  # Hard time stop limit (adaptive via learned parameters)
+MIN_SOFT_PROFIT_PCT: float = 0.20  # Minimum unrealized profit percentage required for soft time stop exit
+PROFIT_TARGET_PCT_DEFAULT: float = 0.45  # Target profit as percentage of entry price (instrument-agnostic)
+STOP_LOSS_PCT_DEFAULT: float = 0.40  # Maximum adverse excursion percentage before forced exit
 
-# Trailing stop & profit protection constants
-BREAKEVEN_TRIGGER_PCT: float = 0.20  # Move stop to breakeven after 20 pips profit
-TRAILING_STOP_ACTIVATION_PCT: float = 0.30  # Start trailing after 30 pips
-TRAILING_STOP_DISTANCE_PCT: float = 0.15  # Trail 15 pips behind peak
-CAPTURE_DECAY_THRESHOLD: float = 0.40  # Exit if capture ratio drops below 40% of MFE
-CAPTURE_DECAY_MIN_MFE_PCT: float = 0.10  # Only apply capture decay if MFE > 10 pips
+# Trailing stop & profit protection constants (all as percentages for instrument-agnostic operation)
+BREAKEVEN_TRIGGER_PCT: float = 0.40  # MFE threshold to move stop to breakeven (profit protection)
+TRAILING_STOP_ACTIVATION_PCT: float = 0.35  # MFE percentage to activate trailing stop
+TRAILING_STOP_DISTANCE_PCT: float = 0.15  # Distance to trail behind peak MFE (as percentage)
+MIN_HOLD_TICKS_DEFAULT: int = 10  # Minimum ticks held before DDQN close is allowed (~3-5 sec at typical feed)
+CAPTURE_DECAY_THRESHOLD: float = 0.35  # Exit if current profit / MFE ratio falls below threshold
+CAPTURE_DECAY_MIN_MFE_PCT: float = 0.10  # Only apply capture decay logic above this MFE percentage
+
+# Magic number constants for code quality
+MAX_MAE_PCT: float = 100.0  # Maximum MAE percentage (clip suspicious values)
+SOFT_TIME_CAPTURE_THRESHOLD: float = 0.50  # Soft time stop capture threshold
+HIGH_CAPTURE_RATIO: float = 0.7  # High capture ratio for profit target adjustment
+LOW_CAPTURE_RATIO: float = 0.3  # Low capture ratio for profit target adjustment
+EXCELLENT_CAPTURE_RATIO: float = 0.8  # Excellent capture ratio for trailing stop
+FLOAT_EPSILON: float = 1e-9  # Floating point comparison tolerance
+MFE_TO_SL_RATIO_HIGH: float = 2.0  # High MFE to SL ratio threshold
+MFE_TO_SL_RATIO_LOW: float = 0.5  # Low MFE to SL ratio threshold
+TRAINING_LOG_INTERVAL_EARLY: int = 10  # Log every 10 steps for first 100 steps
+TRAINING_LOG_INTERVAL_LATE: int = 100  # Log every 100 steps after 100 steps
+TRAINING_STEPS_EARLY: int = 100  # Number of steps considered "early training"
 
 
 class HarvesterAgent:
@@ -87,7 +102,7 @@ class HarvesterAgent:
         window: int = 64,
         n_features: int = 10,
         enable_training: bool = False,
-        symbol: str = "BTCUSD",
+        symbol: str = "XAUUSD",  # Instrument-agnostic: required param, default only for tests
         timeframe: str = "M15",
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
@@ -124,8 +139,8 @@ class HarvesterAgent:
         # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
         self.ddqn = (
             DDQNNetwork(
-                state_dim=window * n_features,  # Flattened state vector
-                n_actions=2,  # HOLD=0, CLOSE=1
+                state_dim=window * n_features,
+                n_actions=2,
                 learning_rate=0.0005,
                 gamma=0.99,
                 tau=0.005,
@@ -135,34 +150,32 @@ class HarvesterAgent:
             if enable_training
             else None
         )
-        if enable_training:
-            LOG.info("[HARVESTER] DDQNNetwork initialized: state_dim=%d, actions=2", window * n_features)
 
         # Try to load model if path specified
         model_path = os.environ.get("DDQN_HARVESTER_MODEL", "").strip()
         if model_path:
             self._load_model(model_path)
-        else:
-            LOG.info("[HARVESTER] No model specified, using fallback strategy")
 
-        if self.enable_training:
-            LOG.info(
-                "[HARVESTER] Online learning ENABLED (buffer capacity=50k, min=%d)",
-                self.min_experiences,
-            )
+        LOG.info("[HARVESTER] Init: training=%s | buffer=%dk min=%d",
+            enable_training, BUFFER_CAPACITY // 1000, self.min_experiences)
 
         self._init_exit_thresholds()
+
+        # Minimum hold period: prevents DDQN (which may have stale learned Q-values)
+        # from issuing a CLOSE on the very first tick after entry before any MFE develops.
+        # Only the emergency stop loss is exempt from this guard.
+        self.min_hold_ticks = int(os.environ.get("MIN_HOLD_TICKS", str(MIN_HOLD_TICKS_DEFAULT)))
 
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for harvester agent."""
         try:
             import torch
-            from torch import nn
+            from torch import nn  # noqa: PLC0415 - conditional import for optional torch dependency
 
             class HarvesterQNet(nn.Module):
                 """Q-Network for harvester agent (exit specialist)."""
 
-                def __init__(self, window: int, n_features: int, n_actions: int = 2):
+                def __init__(self, n_features: int, n_actions: int = 2):
                     super().__init__()
                     self.net = nn.Sequential(
                         nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
@@ -181,97 +194,84 @@ class HarvesterAgent:
                     return self.net(x.transpose(1, 2))
 
             self.torch = torch
-            self.model = HarvesterQNet(window=self.window, n_features=self.n_features, n_actions=2)
+            self.model = HarvesterQNet(n_features=self.n_features, n_actions=2)
             self.model.load_state_dict(torch.load(model_path, map_location="cpu"))
             self.model.eval()
             self.use_torch = True
             LOG.info("[HARVESTER] Loaded DDQN model: %s", model_path)
-        except Exception as e:
+        except (OSError, ImportError, RuntimeError) as e:
             LOG.warning("[HARVESTER] Failed to load model: %s. Using fallback.", e)
             self.use_torch = False
 
-    def decide(
-        self,
-        market_state: np.ndarray,
-        mfe: float,
-        mae: float,
-        ticks_held: int,
-        entry_price: float,
-        direction: int,
-    ) -> tuple[int, float]:
+    def _check_emergency_stop_loss(self, mae: float, entry_price: float) -> tuple[bool, tuple[int, float] | None]:
+        """Check if emergency stop loss is triggered.
+
+        Returns:
+            (should_exit, exit_decision) where exit_decision is (action, confidence) if should exit
         """
-        Decide exit action based on market + position state.
+        if entry_price is None or entry_price <= 0:
+            return False, None
+
+        try:
+            mae_pct = (mae / entry_price) * PCT_SCALE
+
+            # Defensive: Validate calculated percentage is reasonable
+            if mae_pct < 0 or mae_pct > MAX_MAE_PCT:
+                LOG.warning("[HARVESTER_EMERGENCY_SL] Suspicious MAE percentage %.2f%% - recalculating", mae_pct)
+                mae_pct = min(max(mae_pct, 0), MAX_MAE_PCT)  # Clamp to [0, 100]
+
+            if mae_pct >= self.stop_loss_pct:
+                LOG.warning(
+                    "[HARVESTER_EMERGENCY_SL] Stop loss TRIGGERED: MAE=%.2f%% >= SL=%.2f%% - CLOSING!",
+                    mae_pct,
+                    self.stop_loss_pct,
+                )
+                return True, (1, 1.0)  # CLOSE with full confidence
+        except (ValueError, TypeError, ZeroDivisionError) as e:
+            LOG.error("[HARVESTER_EMERGENCY_SL] Error calculating MAE percentage: %s", e)
+
+        return False, None
+
+    def _decide_with_ddqn(self, full_state: np.ndarray) -> tuple[int, float]:
+        """Make decision using DDQN network.
 
         Args:
-            market_state: Normalized market features (window, 7)
-            mfe: Maximum favorable excursion (absolute price)
-            mae: Maximum adverse excursion (absolute price)
-            ticks_held: Number of market data ticks position has been open (~2-3/sec)
-            entry_price: Entry price for normalization
-            direction: +1 for LONG, -1 for SHORT
+            full_state: Full state array (window, n_features)
 
         Returns:
             (action, confidence)
-            - action: 0=HOLD, 1=CLOSE
-            - confidence: [0, 1] probability from model
         """
-        LOG.info(
-            "[HARVESTER_DECIDE] use_torch=%s ddqn=%s enable_training=%s training_steps=%d",
-            self.use_torch,
-            self.ddqn is not None,
-            self.enable_training,
-            self.training_steps,
+        flat_state = full_state.reshape(1, -1).astype(np.float64)
+        q_values = self.ddqn.predict(flat_state).flatten()  # flatten (1,N) → (N,)
+        action = int(np.argmax(q_values))
+
+        probs = self._softmax(q_values)
+        confidence = float(probs[action])
+
+        LOG.debug(
+            "[HARVESTER] DDQN decision: Q=%s, action=%d (%s), conf=%.3f",
+            q_values,
+            action,
+            "CLOSE" if action == 1 else "HOLD",
+            confidence,
         )
+        return action, confidence
 
-        # === CRITICAL: Emergency Stop Loss Check (always executed regardless of model) ===
-        # Defensive: Validate inputs before division
-        if entry_price is not None and entry_price > 0:
-            try:
-                mae_pct = (float(mae) / float(entry_price)) * PCT_SCALE
+    def _decide_with_torch(
+        self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float
+    ) -> tuple[int, float]:
+        """Make decision using PyTorch model.
 
-                # Defensive: Validate calculated percentage is reasonable
-                if mae_pct < 0 or mae_pct > 100:
-                    LOG.warning("[HARVESTER_EMERGENCY_SL] Suspicious MAE percentage %.2f%% - recalculating", mae_pct)
-                    mae_pct = min(max(mae_pct, 0), 100)  # Clamp to [0, 100]
+        Args:
+            market_state: Normalized market features (window, 7)
+            mfe: Maximum favorable excursion
+            mae: Maximum adverse excursion
+            ticks_held: Ticks held in position
+            entry_price: Position entry price
 
-                if mae_pct >= self.stop_loss_pct:
-                    LOG.warning(
-                        "[HARVESTER_EMERGENCY_SL] Stop loss TRIGGERED: MAE=%.2f%% >= SL=%.2f%% - CLOSING!",
-                        mae_pct,
-                        self.stop_loss_pct,
-                    )
-                    return 1, 1.0  # CLOSE with full confidence
-            except (ValueError, TypeError, ZeroDivisionError) as e:
-                LOG.error("[HARVESTER_EMERGENCY_SL] Error calculating MAE percentage: %s", e)
-
-        if not self.use_torch:
-            # Build full state for DDQN (market + position features)
-            full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
-            self.last_state = full_state.copy()  # Track for experience creation
-
-            # Use DDQN network if available and trained, else fallback
-            if self.ddqn is not None and self.enable_training and self.training_steps > 0:
-                flat_state = full_state.reshape(1, -1).astype(np.float64)
-                q_values = self.ddqn.predict(flat_state).flatten()  # flatten (1,N) → (N,)
-                action = int(np.argmax(q_values))
-
-                probs = self._softmax(q_values)
-                confidence = float(probs[action])
-
-                LOG.debug(
-                    "[HARVESTER] DDQN decision: Q=%s, action=%d (%s), conf=%.3f",
-                    q_values,
-                    action,
-                    "CLOSE" if action == 1 else "HOLD",
-                    confidence,
-                )
-                return action, confidence
-            else:
-                # Fallback: Simple profit target + stop loss
-                action = self._fallback_strategy(mfe, mae, ticks_held, entry_price)
-                confidence = CONFIDENCE_FALLBACK
-                return action, confidence
-
+        Returns:
+            (action, confidence)
+        """
         # Augment state with position information
         # Normalize MFE/MAE/ticks_held to [0, 1] range
         mfe_norm = (mfe / entry_price) * PCT_SCALE  # Convert to percentage
@@ -297,7 +297,7 @@ class HarvesterAgent:
             confidence = float(probs[action])
 
             LOG.debug(
-                "[HARVESTER] Q-values: %s, Action: %d (%s), Conf: %.3f, " "MFE: %.4f, MAE: %.4f, Bars: %d",
+                "[HARVESTER] Q-values: %s, Action: %d (%s), Conf: %.3f, MFE: %.4f, MAE: %.4f, Bars: %d",
                 q_values,
                 action,
                 "CLOSE" if action == 1 else "HOLD",
@@ -308,6 +308,69 @@ class HarvesterAgent:
             )
 
             return action, confidence
+
+    def decide(
+        self,
+        market_state: np.ndarray,
+        mfe: float,
+        mae: float,
+        ticks_held: int,
+        entry_price: float,
+        direction: int = 0,  # noqa: ARG002  # NOSONAR
+    ) -> tuple[int, float]:
+        """Decide exit action based on market + position state.
+
+        Args:
+            market_state: Normalized market features (window, 7)
+            mfe: Maximum favorable excursion (absolute price)
+            mae: Maximum adverse excursion (absolute price)
+            ticks_held: Number of market data ticks position has been open (~2-3/sec)
+            entry_price: Entry price for normalization
+
+        Returns:
+            (action, confidence)
+            - action: 0=HOLD, 1=CLOSE
+            - confidence: [0, 1] probability from model
+        """
+        LOG.info(
+            "[HARVESTER_DECIDE] use_torch=%s ddqn=%s enable_training=%s training_steps=%d",
+            self.use_torch,
+            self.ddqn is not None,
+            self.enable_training,
+            self.training_steps,
+        )
+
+        # Emergency stop loss check (always executed, not subject to min-hold)
+        should_exit, exit_decision = self._check_emergency_stop_loss(mae, entry_price)
+        if should_exit:
+            return exit_decision
+
+        # Minimum hold period: only emergency stop may close before this threshold.
+        # This prevents DDQN Q-values (potentially stale from prior training) from
+        # issuing an immediate CLOSE before any price movement can develop.
+        if ticks_held < self.min_hold_ticks:
+            LOG.debug(
+                "[HARVESTER] Min-hold: ticks=%d < min=%d → HOLD",
+                ticks_held,
+                self.min_hold_ticks,
+            )
+            return 0, 0.0  # HOLD
+
+        if not self.use_torch:
+            # Build full state for DDQN (market + position features)
+            full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
+            self.last_state = full_state.copy()  # Track for experience creation
+
+            # Use DDQN network if available and trained, else fallback
+            if self.ddqn is not None and self.enable_training and self.training_steps > 0:
+                return self._decide_with_ddqn(full_state)
+
+            # Fallback: Simple profit target + stop loss
+            action = self._fallback_strategy(mfe, mae, ticks_held, entry_price)
+            return action, CONFIDENCE_FALLBACK
+
+        # Use PyTorch model
+        return self._decide_with_torch(market_state, mfe, mae, ticks_held, entry_price)
 
     def _build_full_state(
         self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float
@@ -332,56 +395,15 @@ class HarvesterAgent:
         position_features = np.full((market_state.shape[0], 3), [mfe_norm, mae_norm, ticks_held_norm], dtype=np.float32)
         return np.hstack([market_state, position_features])
 
-    def _fallback_strategy(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> int:
-        """
-        Fallback exit strategy when no model loaded.
-
-        Rules (designed for profit protection on M5):
-        1. Stop loss at MAE threshold
-        2. Profit target hit → CLOSE
-        3. Trailing stop: once MFE exceeds activation, trail behind peak
-        4. Breakeven stop: once MFE exceeds breakeven trigger, don't let winner become loser
-        5. Capture decay: if current P&L drops below 40% of MFE, exit to protect profits
-        6. Soft time stop: exit if holding too long with diminished profits
-        7. Hard time stop: exit regardless
-        """
-        # Guard against division by zero (entry_price not set yet)
-        if entry_price <= 0:
-            LOG.warning("[HARVESTER] entry_price=0, cannot evaluate exit - holding")
-            return 0  # HOLD
-
-        # Calculate friction cost percentage
-        friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE  # Convert to same scale as mfe_pct
-
-        mfe_pct = (mfe / entry_price) * PCT_SCALE
-        mae_pct = (mae / entry_price) * PCT_SCALE
-
-        # DEBUG: Log SL check values every time
-        LOG.info(
-            "[HARVESTER_FALLBACK] SL Check: mae=%.4f entry=%.2f mae_pct=%.4f stop_loss_pct=%.4f check=%s",
-            mae,
-            entry_price,
-            mae_pct,
-            self.stop_loss_pct,
-            mae_pct >= self.stop_loss_pct,
-        )
-
-        # Current P&L estimate: MFE - MAE gives a rough signed P&L proxy
-        # More precisely: current_pnl_pct ≈ mfe_pct - mae_pct (unsigned excursions)
-        # But we need actual current P&L which is mfe_pct - current_giveback
-        # Since mae tracks the worst, and mfe the best, current profit is between them.
-        # We approximate: current_capture = max(0, mfe_pct - mae_pct)
-        current_profit_pct = max(0.0, mfe_pct - mae_pct)
-
-        # Net profit after friction costs
-        net_profit_pct = mfe_pct - friction_pct
-
-        # === 1. STOP LOSS (highest priority) ===
+    def _check_stop_loss(self, mae_pct: float) -> bool:
+        """Check if stop loss is triggered."""
         if mae_pct >= self.stop_loss_pct:
             LOG.info("[HARVESTER] Stop loss TRIGGERED: MAE=%.2f%% >= SL=%.2f%%", mae_pct, self.stop_loss_pct)
-            return 1  # CLOSE
+            return True
+        return False
 
-        # === 2. PROFIT TARGET ===
+    def _check_profit_target(self, net_profit_pct: float, mfe_pct: float, friction_pct: float) -> bool:
+        """Check if profit target is hit."""
         if net_profit_pct >= self.profit_target_pct:
             LOG.debug(
                 "[HARVESTER] Profit target hit: MFE=%.2f%%, Friction=%.2f%%, Net=%.2f%% (target=%.2f%%)",
@@ -390,13 +412,14 @@ class HarvesterAgent:
                 net_profit_pct,
                 self.profit_target_pct,
             )
-            return 1  # CLOSE
+            return True
+        return False
 
-        # === 3. TRAILING STOP (once profit exceeds activation threshold) ===
+    def _check_trailing_stop(self, mfe_pct: float, current_profit_pct: float) -> bool:
+        """Check if trailing stop is triggered."""
         trailing_activation = getattr(self, "trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT)
         trailing_distance = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
         if mfe_pct >= trailing_activation:
-            # Trail behind peak: if price has retraced more than trailing distance from MFE, exit
             giveback_pct = mfe_pct - current_profit_pct
             if giveback_pct >= trailing_distance:
                 LOG.info(
@@ -405,22 +428,24 @@ class HarvesterAgent:
                     giveback_pct,
                     trailing_distance,
                 )
-                return 1  # CLOSE
+                return True
+        return False
 
-        # === 4. BREAKEVEN STOP (protect once meaningful profit achieved) ===
+    def _check_breakeven_stop(self, mfe_pct: float, current_profit_pct: float, friction_pct: float) -> bool:
+        """Check if breakeven stop is triggered."""
         breakeven_trigger = getattr(self, "breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT)
-        if mfe_pct >= breakeven_trigger:
-            # Don't let a winner become a loser - exit if we'd lose money after friction
-            if current_profit_pct <= friction_pct:
-                LOG.info(
-                    "[HARVESTER] Breakeven stop: MFE=%.2f%% but current_profit=%.2f%% <= friction=%.2f%%",
-                    mfe_pct,
-                    current_profit_pct,
-                    friction_pct,
-                )
-                return 1  # CLOSE
+        if mfe_pct >= breakeven_trigger and current_profit_pct <= friction_pct:
+            LOG.info(
+                "[HARVESTER] Breakeven stop: MFE=%.2f%% but current_profit=%.2f%% <= friction=%.2f%%",
+                mfe_pct,
+                current_profit_pct,
+                friction_pct,
+            )
+            return True
+        return False
 
-        # === 5. CAPTURE DECAY (exit if giving back too much of peak profit) ===
+    def _check_capture_decay(self, mfe_pct: float, current_profit_pct: float) -> bool:
+        """Check if capture decay exit is triggered."""
         capture_decay_min = getattr(self, "capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT)
         capture_decay_thresh = getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)
         if mfe_pct >= capture_decay_min:
@@ -432,15 +457,17 @@ class HarvesterAgent:
                     capture_decay_thresh * 100,
                     mfe_pct,
                 )
-                return 1  # CLOSE
+                return True
+        return False
 
-        # === 6. SOFT TIME STOP (exit if holding too long with declining capture) ===
+    def _check_soft_time_stop(
+        self, ticks_held: int, mfe_pct: float, current_profit_pct: float, net_profit_pct: float
+    ) -> bool:
+        """Check if soft time stop is triggered."""
         if ticks_held > self.soft_time_stop_bars:
-            # Instead of just "any net profit", check capture quality
             if mfe_pct > 0:
                 soft_capture = current_profit_pct / mfe_pct
-                # Exit if capture has deteriorated below 50% of peak OR any net profit
-                if soft_capture < 0.50 or net_profit_pct > 0:
+                if soft_capture < SOFT_TIME_CAPTURE_THRESHOLD or net_profit_pct > 0:
                     LOG.debug(
                         "[HARVESTER] Soft time stop: %d ticks, MFE=%.2f%%, capture=%.1f%%, Net=%.2f%%",
                         ticks_held,
@@ -448,14 +475,67 @@ class HarvesterAgent:
                         soft_capture * 100,
                         net_profit_pct,
                     )
-                    return 1  # CLOSE
+                    return True
             elif net_profit_pct > 0:
-                return 1  # CLOSE
+                return True
+        return False
 
-        # === 7. HARD TIME STOP (exit regardless to free capital) ===
+    def _check_hard_time_stop(self, ticks_held: int) -> bool:
+        """Check if hard time stop is triggered."""
         if ticks_held > self.hard_time_stop_bars:
             LOG.debug("[HARVESTER] Hard time stop: %d ticks", ticks_held)
-            return 1  # CLOSE
+            return True
+        return False
+
+    def _fallback_strategy(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> int:
+        """Fallback exit strategy when no model loaded.
+
+        Rules (designed for profit protection on M5):
+        1. Stop loss at MAE threshold
+        2. Profit target hit → CLOSE
+        3. Trailing stop: once MFE exceeds activation, trail behind peak
+        4. Breakeven stop: once MFE exceeds breakeven trigger, don't let winner become loser
+        5. Capture decay: if current P&L drops below 40% of MFE, exit to protect profits
+        6. Soft time stop: exit if holding too long with diminished profits
+        7. Hard time stop: exit regardless
+        """
+        # Guard against division by zero
+        if entry_price <= 0:
+            LOG.warning("[HARVESTER] entry_price=0, cannot evaluate exit - holding")
+            return 0  # HOLD
+
+        # Calculate metrics
+        friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE
+        mfe_pct = (mfe / entry_price) * PCT_SCALE
+        mae_pct = (mae / entry_price) * PCT_SCALE
+
+        LOG.info(
+            "[HARVESTER_FALLBACK] SL Check: mae=%.4f entry=%.2f mae_pct=%.4f stop_loss_pct=%.4f check=%s",
+            mae,
+            entry_price,
+            mae_pct,
+            self.stop_loss_pct,
+            mae_pct >= self.stop_loss_pct,
+        )
+
+        current_profit_pct = max(0.0, mfe_pct - mae_pct)
+        net_profit_pct = mfe_pct - friction_pct
+
+        # Check exit conditions in priority order
+        if self._check_stop_loss(mae_pct):
+            return 1
+        if self._check_profit_target(net_profit_pct, mfe_pct, friction_pct):
+            return 1
+        if self._check_trailing_stop(mfe_pct, current_profit_pct):
+            return 1
+        if self._check_breakeven_stop(mfe_pct, current_profit_pct, friction_pct):
+            return 1
+        if self._check_capture_decay(mfe_pct, current_profit_pct):
+            return 1
+        if self._check_soft_time_stop(ticks_held, mfe_pct, current_profit_pct, net_profit_pct):
+            return 1
+        if self._check_hard_time_stop(ticks_held):
+            return 1
 
         return 0  # HOLD
 
@@ -523,15 +603,14 @@ class HarvesterAgent:
 
         # Breakeven stop check
         breakeven_trigger = getattr(self, "breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT)
-        if mfe_pct >= breakeven_trigger:
-            if current_pnl_pct <= friction_pct:
-                LOG.info(
-                    "[TICK_HARVESTER] Breakeven stop: MFE=%.2f%%, current_pnl=%.2f%% <= friction=%.2f%%",
-                    mfe_pct,
-                    current_pnl_pct,
-                    friction_pct,
-                )
-                return True
+        if mfe_pct >= breakeven_trigger and current_pnl_pct <= friction_pct:
+            LOG.info(
+                "[TICK_HARVESTER] Breakeven stop: MFE=%.2f%%, current_pnl=%.2f%% <= friction=%.2f%%",
+                mfe_pct,
+                current_pnl_pct,
+                friction_pct,
+            )
+            return True
 
         # Capture decay check
         capture_decay_min = getattr(self, "capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT)
@@ -574,13 +653,17 @@ class HarvesterAgent:
         self.min_soft_profit_pct = self._get_param(
             "harvester_min_soft_profit_pct", MIN_SOFT_PROFIT_PCT * timeframe_scale
         )
+        self.trailing_stop_distance_pct = self._get_param(
+            "harvester_trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT
+        )
         LOG.info(
-            "[HARVESTER] Exit plan: TP=%.2f%% SL=%.2f%% soft=%d bars hard=%d bars min_profit=%.2f%% (timeframe=%s scale=%.2f)",
+            "[HARVESTER] Exit plan: TP=%.2f%% SL=%.2f%% soft=%d bars hard=%d bars min_profit=%.2f%% trail=%.2f%% (timeframe=%s scale=%.2f)",
             self.profit_target_pct,
             self.stop_loss_pct,
             self.soft_time_stop_bars,
             self.hard_time_stop_bars,
             self.min_soft_profit_pct,
+            self.trailing_stop_distance_pct,
             self.timeframe,
             self._get_timeframe_scale(),
         )
@@ -602,12 +685,12 @@ class HarvesterAgent:
             side: "BUY" or "SELL"
 
         Returns:
-            Friction cost as percentage (e.g., 0.05 = 5 pips for 0.05% of price)
+            Friction cost as percentage (e.g., 0.0005 = 0.05% of entry price)
         """
         if not self.friction_calculator or entry_price <= 0:
             # Conservative estimate: spread ~0.10% + commission ~0.02% + slippage ~0.03% = 0.15%
-            # For XAUUSD @ $4600: 0.15% = 6.9 pips ($6.90)
-            return 0.0015  # Default 0.15% = 15 pips per 1% move
+            # Example: 0.15% friction on $4600 entry = $6.90 cost
+            return 0.0015  # Default 0.15% friction estimate (instrument-agnostic)
 
         try:
             # Calculate total friction in USD
@@ -623,22 +706,21 @@ class HarvesterAgent:
             )
 
             # Convert USD friction to percentage of entry price
-            # For XAUUSD @ $4600: friction ~$3.4 (spread+comm+slip, NO swap) → 0.074% = 7.4 pips
-            contract_size = getattr(self.friction_calculator.costs, "contract_size", 100000)
+            # Example: $3.4 friction on $4600 entry (spread+comm+slip, NO swap) = 0.074%
+            contract_size = getattr(self.friction_calculator.costs, "contract_size", 100.0)
             position_value = quantity * entry_price * contract_size
             if position_value > 0:
                 friction_pct = friction["total"] / position_value
                 LOG.debug(
-                    "[HARVESTER-FRICTION] Entry=%.2f, Quantity=%.2f, Friction=$%.2f (%.3f%% = %.2f pips) [swap=$%.2f intraday=0]",
+                    "[HARVESTER-FRICTION] Entry=%.2f, Quantity=%.2f, Friction=$%.2f (%.3f%%) [swap=$%.2f intraday=0]",
                     entry_price,
                     quantity,
                     friction["total"],
                     friction_pct * 100,
-                    friction.get("total_pips", 0),
                     friction.get("swap", 0),
                 )
                 return friction_pct
-        except Exception as exc:
+        except (AttributeError, TypeError, ZeroDivisionError) as exc:
             LOG.warning("[HARVESTER] Friction calculation failed: %s", exc)
 
         return 0.0015  # Fallback to conservative 0.15%
@@ -654,7 +736,7 @@ class HarvesterAgent:
             manager = self._ensure_param_manager()
             value = manager.get(self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default)
             return float(value)
-        except Exception as exc:
+        except (AttributeError, ValueError, TypeError) as exc:
             LOG.debug("[HARVESTER] Falling back to default %.3f for %s (%s)", default, name, exc)
             return float(default)
 
@@ -685,11 +767,11 @@ class HarvesterAgent:
                 # WTL: Should have exited earlier → reduce profit target
                 profit_gradient = -0.15  # Reduce by 15% (3x faster)
                 LOG.info("[HARVESTER] WTL trade - reducing profit target")
-            elif capture_ratio > 0.7:
+            elif capture_ratio > HIGH_CAPTURE_RATIO:
                 # Great capture → can tighten profit target slightly
                 profit_gradient = -0.06  # 3x faster
                 LOG.debug("[HARVESTER] High capture %.2f%% - tightening target", capture_ratio * 100)
-            elif capture_ratio < 0.3:
+            elif capture_ratio < LOW_CAPTURE_RATIO:
                 # Poor capture → widen profit target to let winners run
                 profit_gradient = 0.10  # Less aggressive widening to prevent oscillation
                 LOG.info("[HARVESTER] Low capture %.2f%% - widening profit target", capture_ratio * 100)
@@ -714,13 +796,13 @@ class HarvesterAgent:
             if was_wtl:
                 # WTL: trailing stop was too loose → tighten it
                 trail_gradient = -0.10
-            elif capture_ratio > 0.8:
+            elif capture_ratio > EXCELLENT_CAPTURE_RATIO:
                 # Excellent capture → trail might be too tight, loosen slightly
                 trail_gradient = 0.03
             else:
                 trail_gradient = 0.0  # No change
 
-            if trail_gradient != 0.0:
+            if abs(trail_gradient) > FLOAT_EPSILON:
                 # Update trailing distance (not a learned param yet, adjust locally)
                 current_trail = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
                 new_trail = max(0.05, min(0.40, current_trail + trail_gradient * current_trail))
@@ -734,15 +816,15 @@ class HarvesterAgent:
             if was_wtl:
                 # Winner-to-loser: check if SL was too wide
                 # If trade had significant MFE before becoming loser, SL should be tighter
-                mfe_to_sl_ratio = getattr(self, "_last_mfe_pct", 0.0) / (self.stop_loss_pct + 1e-9)
-                if mfe_to_sl_ratio > 2.0:
+                mfe_to_sl_ratio = getattr(self, "_last_mfe_pct", 0.0) / (self.stop_loss_pct + FLOAT_EPSILON)
+                if mfe_to_sl_ratio > MFE_TO_SL_RATIO_HIGH:
                     # Had MFE > 2x stop loss before going negative → SL too wide
                     sl_gradient = -0.08  # Tighten by ~8%
                     LOG.info(
                         "[HARVESTER] WTL with large MFE (%.2fx SL) → tightening stop loss",
                         mfe_to_sl_ratio,
                     )
-                elif mfe_to_sl_ratio < 0.5:
+                elif mfe_to_sl_ratio < MFE_TO_SL_RATIO_LOW:
                     # Had minimal MFE before hitting SL → SL was appropriate, entry was poor
                     sl_gradient = 0.0
                     LOG.debug(
@@ -751,7 +833,7 @@ class HarvesterAgent:
                     )
 
             # Apply SL gradient if non-zero
-            if sl_gradient != 0.0:
+            if abs(sl_gradient) > FLOAT_EPSILON:
                 new_sl = self.param_manager.update(
                     self.symbol,
                     "harvester_stop_loss_pct",
@@ -776,7 +858,7 @@ class HarvesterAgent:
                 profit_gradient,
             )
 
-        except Exception as exc:
+        except (AttributeError, ValueError, TypeError, OSError) as exc:
             LOG.warning("[HARVESTER] Failed to update parameters: %s", exc)
 
     def add_experience(
@@ -842,8 +924,6 @@ class HarvesterAgent:
         indices = batch["indices"]  # (batch_size,)
 
         # Defensive: Validate batch
-        import math
-
         if not all(math.isfinite(r) for r in rewards):
             LOG.warning("[HARVESTER] Non-finite rewards in batch, skipping training")
             return None
@@ -884,7 +964,7 @@ class HarvesterAgent:
                     "grad_norm": train_result["grad_norm"],
                     "mean_reward": float(np.mean(rewards)),
                 }
-            except Exception as e:
+            except (ValueError, TypeError, AttributeError) as e:
                 LOG.error("[HARVESTER] DDQN train_batch failed: %s", e, exc_info=True)
                 td_errors = np.clip(np.abs(rewards), 0, TD_ERROR_CAP)
                 self.buffer.update_priorities(indices, td_errors)
@@ -914,7 +994,9 @@ class HarvesterAgent:
         self.training_steps += 1
 
         # Log every 10 steps (more frequent during early training)
-        log_interval = 10 if self.training_steps < 100 else 100
+        log_interval = (
+            TRAINING_LOG_INTERVAL_EARLY if self.training_steps < TRAINING_STEPS_EARLY else TRAINING_LOG_INTERVAL_LATE
+        )
         if self.training_steps % log_interval == 0:
             LOG.info(
                 "[HARVESTER] Training step %d: loss=%.4f, mean_q=%.3f, mean_reward=%.4f, mean_td=%.4f, buffer=%d",
@@ -1019,7 +1101,7 @@ if __name__ == "__main__":
     mae = entry_price * 0.001  # 0.1% MAE
     bars_held = 10
 
-    action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
+    action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price)
     assert action == 1  # Should CLOSE (profit target)
     assert 0 <= conf <= 1
     print(f"✓ Action: {action} (CLOSE), Confidence: {conf:.3f}")
@@ -1029,7 +1111,7 @@ if __name__ == "__main__":
     mfe = entry_price * 0.001  # 0.1% MFE
     mae = entry_price * 0.003  # 0.3% MAE (above 0.2% stop)
 
-    action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
+    action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price)
     assert action == 1  # Should CLOSE (stop loss)
     print(f"✓ Action: {action} (CLOSE), Confidence: {conf:.3f}")
 
@@ -1039,7 +1121,7 @@ if __name__ == "__main__":
     mae = entry_price * 0.0015  # 0.15% MAE (below stop)
     bars_held = 5
 
-    action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
+    action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price)
     assert action == 0  # Should HOLD
     print(f"✓ Action: {action} (HOLD), Confidence: {conf:.3f}")
 

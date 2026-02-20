@@ -16,9 +16,9 @@ from src.features.regime_detector import (
     RUNWAY_MULT_TRENDING,
     RUNWAY_MULT_MEAN_REVERTING,
     RUNWAY_MULT_NEUTRAL,
-    TRIGGER_ADJUST_TRENDING,
-    TRIGGER_ADJUST_MEAN_REVERTING,
-    TRIGGER_ADJUST_NEUTRAL,
+    REGIME_ADJ_TRENDING,
+    REGIME_ADJ_MEAN_REVERTING,
+    REGIME_ADJ_NEUTRAL,
 )
 
 
@@ -95,17 +95,17 @@ class TestTriggerThresholdAdjustment:
     def test_trending_adjustment(self):
         det = RegimeDetector()
         det.current_regime = "TRENDING"
-        assert det.get_trigger_threshold_adjustment() == TRIGGER_ADJUST_TRENDING
+        assert det.get_trigger_threshold_adjustment() == REGIME_ADJ_TRENDING
 
     def test_mean_reverting_adjustment(self):
         det = RegimeDetector()
         det.current_regime = "MEAN_REVERTING"
-        assert det.get_trigger_threshold_adjustment() == TRIGGER_ADJUST_MEAN_REVERTING
+        assert det.get_trigger_threshold_adjustment() == REGIME_ADJ_MEAN_REVERTING
 
     def test_transitional_adjustment(self):
         det = RegimeDetector()
         det.current_regime = "TRANSITIONAL"
-        assert det.get_trigger_threshold_adjustment() == TRIGGER_ADJUST_NEUTRAL
+        assert det.get_trigger_threshold_adjustment() == REGIME_ADJ_NEUTRAL
 
 
 # ---------------------------------------------------------------------------
@@ -142,18 +142,18 @@ class TestRegimeInfo:
 class TestAddPriceEdgeCases:
     def test_none_price_skipped(self):
         det = RegimeDetector()
-        regime, zeta = det.add_price(None)
+        regime, _ = det.add_price(None)
         assert regime == "UNKNOWN"
         assert len(det.price_buffer) == 0
 
     def test_zero_price_skipped(self):
         det = RegimeDetector()
-        regime, zeta = det.add_price(0.0)
+        regime, _ = det.add_price(0.0)
         assert regime == "UNKNOWN"
 
     def test_negative_price_skipped(self):
         det = RegimeDetector()
-        regime, zeta = det.add_price(-100.0)
+        regime, _ = det.add_price(-100.0)
         assert regime == "UNKNOWN"
 
     def test_buffer_rolls_at_window_size(self):

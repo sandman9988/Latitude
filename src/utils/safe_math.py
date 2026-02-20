@@ -165,6 +165,16 @@ class SafeMath:
         return max(min_val, x)
 
     @staticmethod
+    def normalize_angle(degrees: float) -> float:
+        """Normalize angle to [0, 360) range."""
+        if not SafeMath.is_valid(degrees):
+            return 0.0
+        normalized = degrees % 360.0
+        if normalized < 0:
+            normalized += 360.0
+        return normalized
+
+    @staticmethod
     def is_equal(a: float, b: float, eps: float = SAFE_EPSILON) -> bool:
         """Tolerance-based equality"""
         return abs(a - b) < eps
@@ -351,5 +361,5 @@ def safe_array_operation(arr: np.ndarray, operation: str, default: float = 0.0) 
     try:
         result = operations[operation](arr)
         return result if SafeMath.is_valid(result) else default
-    except:
+    except Exception:
         return default

@@ -166,12 +166,12 @@ class TestRegimeHelpers:
     def test_get_trigger_threshold_trending(self):
         d = RegimeDetector()
         d.current_regime = "TRENDING"
-        assert d.get_trigger_threshold_adjustment() == pytest.approx(-0.0002)
+        assert d.get_trigger_threshold_adjustment() == pytest.approx(-0.15)
 
     def test_get_trigger_threshold_mean_reverting(self):
         d = RegimeDetector()
         d.current_regime = "MEAN_REVERTING"
-        assert d.get_trigger_threshold_adjustment() == pytest.approx(0.0003)
+        assert d.get_trigger_threshold_adjustment() == pytest.approx(0.15)
 
     def test_get_regime_info_keys(self):
         d = RegimeDetector()

@@ -83,14 +83,6 @@ Point-in-time status reports and completion summaries.
 | [INTEGRATION_STATUS.md](reports/INTEGRATION_STATUS.md) | Jan 2026 | Component integration |
 | [PRE_LAUNCH_CHECKLIST.md](reports/PRE_LAUNCH_CHECKLIST.md) | Jan 2026 | Production readiness |
 
-### `/docs/archive` (Historical/Deprecated)
-Old documentation kept for reference.
-
-- Phase update summaries (UPDATE_*.md)
-- Deprecated contributing guides
-- Historical project summaries
-- Pause notifications
-
 ---
 
 ## 🎯 Documentation by Use Case
@@ -160,12 +152,8 @@ All docs should include:
 - **30-90 days:** Aging, verify accuracy
 - **> 90 days:** Consider archiving if superseded
 
-### Archive Criteria
-Move to `/docs/archive` if:
-- Superseded by newer documentation
-- Refers to deprecated features
-- Historical value only (no operational use)
-- Part of completed phase (not reference material)
+### Archive Policy
+Obsolete documentation has been removed. Historical backups saved as compressed archives.
 
 ---
 
@@ -196,8 +184,8 @@ Multiple gap analysis docs exist - consolidate into:
 # Search all docs
 grep -r "stop loss" docs/
 
-# Search active docs only (exclude archive)
-grep -r "epsilon" docs/ --exclude-dir=archive
+# Case-insensitive search
+grep -ri "epsilon" docs/
 
 # Find by topic
 grep -r "friction" docs/ -l  # List files only
