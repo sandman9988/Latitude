@@ -926,8 +926,19 @@ class TabbedHUD:
 
             print(f"  Trigger Conf Avg:  {trig_col}{trig_conf:.3f}\033[0m")
             print(f"  Harvester Conf Avg:{harv_col}{harv_conf:.3f}\033[0m")
-            print(f"  Avg Trade Duration:{avg_dur:>8.1f} min")
-            print(f"  Last Trade:        {last_trade:>8.1f} min ago")
+
+            def _fmt_dur(mins: float) -> str:
+                """Format minutes as 'Xm', 'X.Xh', or 'X.Xd' for readability."""
+                if mins <= 0:
+                    return "—"
+                if mins < 90:
+                    return f"{mins:.0f}m"
+                if mins < 1440:
+                    return f"{mins / 60:.1f}h"
+                return f"{mins / 1440:.1f}d"
+
+            print(f"  Avg Trade Duration:{_fmt_dur(avg_dur):>8} ")
+            print(f"  Last Trade:        {_fmt_dur(last_trade):>8} ago")
 
     def _render_decision_log(self):
         """Render the Decision Log tab (Tab 6)"""

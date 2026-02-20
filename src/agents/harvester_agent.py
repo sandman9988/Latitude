@@ -107,6 +107,7 @@ class HarvesterAgent:
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
         friction_calculator=None,
+        timeframe_minutes: int = 5,
     ):
         """
         Initialize Harvester Agent.
@@ -125,6 +126,7 @@ class HarvesterAgent:
         self.symbol = symbol
         self.friction_calculator = friction_calculator
         self.timeframe = timeframe
+        self.timeframe_minutes = timeframe_minutes
         self.broker = broker
         self.param_manager = param_manager
 
@@ -164,7 +166,11 @@ class HarvesterAgent:
         # Minimum hold period: prevents DDQN (which may have stale learned Q-values)
         # from issuing a CLOSE on the very first tick after entry before any MFE develops.
         # Only the emergency stop loss is exempt from this guard.
-        self.min_hold_ticks = int(os.environ.get("MIN_HOLD_TICKS", str(MIN_HOLD_TICKS_DEFAULT)))
+        # Scale default to ~1 bar (timeframe ≤ 60 min) or 1 bar minimum for anything
+        # longer, so at H4 we don't enforce a 40-hour minimum hold.
+        # Default: ~1 hour expressed in bars (min 1).
+        _default_hold = max(1, int(60 / max(1, timeframe_minutes)))
+        self.min_hold_ticks = int(os.environ.get("MIN_HOLD_TICKS", str(_default_hold)))
 
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for harvester agent."""

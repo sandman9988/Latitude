@@ -742,6 +742,15 @@ class CTraderFixApp(fix.Application):
         self.timeframe_label = f"M{timeframe_minutes}"
         self.broker = "default"
 
+        # Timeframe-aware scaling constants.
+        # All "bar count" thresholds are derived from wall-clock durations so
+        # H4/D1 bots behave correctly without manual env-var tuning.
+        self._bars_per_day = max(1, int(24 * 60 / timeframe_minutes))
+        # Minimum bars before state vector is meaningful (fast MA=10, slow MA=30).
+        # Keep 70 for M5 (6h warmup); scale down for higher timeframes so the
+        # agent isn't blind for 11+ days at H4.
+        self._min_bars_for_features = max(35, min(70, self._bars_per_day * 2))
+
         # Risk scaffolding defaults + env overrides
         self.starting_equity = float(os.environ.get("CTRADER_STARTING_EQUITY", "10000"))
         self.max_leverage = float(os.environ.get("CTRADER_MAX_LEVERAGE", "10"))
@@ -794,6 +803,8 @@ class CTraderFixApp(fix.Application):
                 timeframe=self.timeframe_label,
                 broker="default",
                 friction_calculator=self.friction_calculator,
+                timeframe_minutes=timeframe_minutes,
+                min_bars_for_features=self._min_bars_for_features,
             )
             LOG.info("[POLICY] DualPolicy: TriggerAgent + HarvesterAgent | training=%s", enable_online_learning)
 
@@ -937,6 +948,11 @@ class CTraderFixApp(fix.Application):
         self._last_harvester_conf = 0.5
         self.entry_vpin_z = 0.0       # VPIN z-score at entry time (for regime-conditioned reward)
 
+        # Trade timing — persistent across sessions via trade_log.jsonl
+        # Seeded from trade_log at startup (see _seed_trade_timing_from_log).
+        self._last_trade_close_ts: float | None = None  # epoch seconds of last trade close
+        self._avg_trade_duration_mins: float = 0.0      # EMA of trade durations (α=0.1)
+
         # Harvester experience tracking (dense feedback every bar)
         self.prev_harvester_state = None
         self.prev_exit_action = None
@@ -1059,7 +1075,12 @@ class CTraderFixApp(fix.Application):
                 win_rate=m.get("win_rate", 0.0),
                 avg_profit=m.get("avg_winner", 0.0),
                 avg_loss=abs(m.get("avg_loser", 0.0)),
-                avg_trade_duration_mins=0.0,
+                avg_trade_duration_mins=self._avg_trade_duration_mins,
+                last_trade_mins_ago=(
+                    (time.time() - self._last_trade_close_ts) / 60.0
+                    if self._last_trade_close_ts is not None
+                    else 0.0
+                ),
                 trigger_confidence_avg=getattr(self, "_last_trigger_conf", 0.0),
                 harvester_confidence_avg=getattr(self, "_last_harvester_conf", 0.0),
                 circuit_breakers_tripped=len(tripped_names),
@@ -1369,6 +1390,83 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[LOGON] Error during session setup for %s: %s", qual, e, exc_info=True)
 
+    def _seed_trade_timing_from_log(self) -> None:
+        """Seed _last_trade_close_ts and _avg_trade_duration_mins from trade_log.jsonl.
+
+        Called once at startup so HUD stats survive a bot restart.
+        Reads the last 50 entries (most recent trades) and computes:
+        - _last_trade_close_ts: unix timestamp of the most recent exit
+        - _avg_trade_duration_mins: EMA (α=0.1) over trade durations
+        """
+        try:
+            import pathlib
+            trade_log_path = pathlib.Path(self.hud_data_dir) / "trade_log.jsonl"
+            if not trade_log_path.exists():
+                return
+
+            # Efficiently read last 50 lines without loading the whole file
+            lines: list[str] = []
+            with open(trade_log_path, "rb") as fh:
+                # Seek backward to collect up to 50 newline-terminated records
+                fh.seek(0, 2)
+                file_size = fh.tell()
+                if file_size == 0:
+                    return
+                buf_size = min(file_size, 64 * 1024)
+                fh.seek(-buf_size, 2)
+                raw = fh.read(buf_size).decode("utf-8", errors="replace")
+                lines = [l for l in raw.splitlines() if l.strip()][-50:]
+
+            trades: list[dict] = []
+            for line in lines:
+                try:
+                    rec = json.loads(line)
+                    if rec.get("exit_time") and rec.get("entry_time"):
+                        trades.append(rec)
+                except json.JSONDecodeError:
+                    continue
+
+            if not trades:
+                return
+
+            # Sort by exit_time ascending
+            import datetime as dt_mod
+            def _parse_ts(s: str) -> float:
+                try:
+                    return dt_mod.datetime.fromisoformat(s).timestamp()
+                except Exception:
+                    return 0.0
+
+            trades.sort(key=lambda t: _parse_ts(t["exit_time"]))
+
+            # Seed last_trade_close_ts from most recent exit
+            most_recent_exit = _parse_ts(trades[-1]["exit_time"])
+            if most_recent_exit > 0:
+                self._last_trade_close_ts = most_recent_exit
+
+            # Build duration EMA over all retrieved trades
+            avg = 0.0
+            for t in trades:
+                entry_ts = _parse_ts(t["entry_time"])
+                exit_ts = _parse_ts(t["exit_time"])
+                if entry_ts > 0 and exit_ts > entry_ts:
+                    dur = (exit_ts - entry_ts) / 60.0
+                    avg = 0.9 * avg + 0.1 * dur
+            if avg > 0:
+                self._avg_trade_duration_mins = avg
+
+            LOG.info(
+                "[STARTUP] Seeded trade timing from %d log entries: "
+                "last_trade=%.1f min ago, avg_dur=%.1f min",
+                len(trades),
+                (time.time() - self._last_trade_close_ts) / 60.0
+                if self._last_trade_close_ts
+                else 0.0,
+                self._avg_trade_duration_mins,
+            )
+        except Exception as e:
+            LOG.warning("[STARTUP] Could not seed trade timing from log: %s", e)
+
     def _complete_trade_session_startup(self):
         """Complete TRADE session startup after symbol ID is resolved.
 
@@ -1377,6 +1475,7 @@ class CTraderFixApp(fix.Application):
         2. From on_security_list after symbol_id lookup succeeds
         """
         LOG.info("[TRADE] Completing trade session startup for symbol_id=%d", self.symbol_id)
+        self._seed_trade_timing_from_log()  # Restore last_trade / avg duration from log
 
         # If we deferred quote subscription, do it now that symbol ID is resolved
         if self.quote_subscription_deferred and self.quote_sid:
@@ -2506,6 +2605,22 @@ class CTraderFixApp(fix.Application):
                 LOG.warning("[TRADE_COMPLETION] Skipped: entry_price=%.5f", entry_price)
                 return
 
+            # ── Trade timing tracking (single source of truth for HUD) ──────
+            # Update duration EMA and record close timestamp so the HUD can
+            # show "avg_trade_duration" and "last_trade_mins_ago" accurately.
+            if self.trade_entry_time:
+                _dur_mins = (exit_time - self.trade_entry_time).total_seconds() / 60.0
+                self._avg_trade_duration_mins = (
+                    0.9 * self._avg_trade_duration_mins + 0.1 * _dur_mins
+                )
+                LOG.debug(
+                    "[TRADE_TIMING] dur=%.1f min → avg=%.1f min",
+                    _dur_mins,
+                    self._avg_trade_duration_mins,
+                )
+            self._last_trade_close_ts = time.time()
+            # ─────────────────────────────────────────────────────────────────
+
             # Calculate P&L using dedicated method (single source of truth)
             pnl = self._calculate_position_pnl(entry_price, exit_price, direction)
 
@@ -2891,8 +3006,11 @@ class CTraderFixApp(fix.Application):
         mae_penalty = -np.clip(norm_mae_delta * 0.4, 0.0, 0.4)
 
         # Component 4: Time decay [-0.2, 0]
-        # Small penalty for holding too long (encourages taking profits)
-        time_decay = -0.02 * min(bars_held / 10, 10)  # Max -0.2 after 100 bars
+        # Small penalty for holding too long (encourages taking profits).
+        # Scaled to the timeframe so max decay triggers after ~1 trading day
+        # regardless of bar size: M5→288 bars, H1→24, H4→6, D1→1.
+        _target_hold_bars = max(10, self._bars_per_day)
+        time_decay = -0.02 * min(bars_held / max(1, _target_hold_bars / 10), 10)
 
         # Component 5: Opportunity cost penalty [-0.3, 0]
         # Penalty for holding past MFE peak (missed the best exit).

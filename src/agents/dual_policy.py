@@ -57,6 +57,8 @@ class DualPolicy:
         symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
         timeframe: str = "M15",
         broker: str = "default",
+        timeframe_minutes: int = 5,
+        min_bars_for_features: int = 70,
         friction_calculator=None,
     ):
         """
@@ -76,8 +78,12 @@ class DualPolicy:
         self.param_manager = param_manager
         self.symbol = symbol
         self.timeframe = timeframe
+        self.timeframe_minutes = timeframe_minutes
         self.broker = broker
         self.friction_calculator = friction_calculator
+        # Scale minimum-bars threshold to wall-clock time so higher timeframes
+        # don't produce zero-state for absurd durations (H4 would need 11 days!).
+        self.min_bars_for_features = min_bars_for_features
 
         # Calculate feature dimensions (base=7, geometry=5, event=6)
         base_features = 7
@@ -106,6 +112,7 @@ class DualPolicy:
             broker=self.broker,
             param_manager=self.param_manager,
             friction_calculator=self.friction_calculator,
+            timeframe_minutes=timeframe_minutes,
         )
 
         LOG.info("[DUAL_POLICY] TriggerAgent: %d features (7 base + 5 geometry + 6 event)", trigger_features)
@@ -117,7 +124,11 @@ class DualPolicy:
         # Regime detection
         self.enable_regime_detection = enable_regime_detection
         if self.enable_regime_detection:
-            self.regime_detector = RegimeDetector(window_size=50, update_interval=5)
+            # Scale update_interval inversely with timeframe so regime reacts
+            # at roughly the same wall-clock frequency regardless of bar size.
+            # M5 → every 5 bars; H1 → every 1 bar; H4+ → every 1 bar
+            update_interval = max(1, min(5, int(5 * 5 / max(1, timeframe_minutes))))
+            self.regime_detector = RegimeDetector(window_size=50, update_interval=update_interval)
         else:
             self.regime_detector = None
 
@@ -506,7 +517,7 @@ class DualPolicy:
         if self.enable_event_features:
             n_features += self.event_feature_count  # Event time (always counted when enabled)
 
-        if len(bars) < MIN_BARS_FOR_FEATURES:
+        if len(bars) < self.min_bars_for_features:
             return np.zeros((self.window, n_features), dtype=np.float32)
 
         closes = [b[4] for b in bars]

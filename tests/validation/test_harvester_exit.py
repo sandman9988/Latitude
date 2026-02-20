@@ -30,10 +30,11 @@ def test_profit_target():
 
     # Simulate MFE building up to 30%
     exit_triggered = False
+    # bars_held=15 — past the 12-bar min-hold at M5 (= 1 h) so threshold exits can fire
     for pct in [5, 10, 15, 20, 25, 28, 30, 31]:
         mfe = entry_price * (pct / 100.0)
         mae = 0.0  # No adverse movement
-        bars_held = 10
+        bars_held = 15
 
         action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
 
@@ -60,10 +61,11 @@ def test_stop_loss():
 
     # Simulate MAE building up to 20%
     exit_triggered = False
+    # bars_held=15 — past the 12-bar min-hold at M5 so stop-loss exits can fire
     for pct in [5, 10, 15, 18, 20, 22]:
         mae = entry_price * (pct / 100.0)
         mfe = entry_price * 0.05  # Small profit before reversal
-        bars_held = 10
+        bars_held = 15
 
         action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
 
