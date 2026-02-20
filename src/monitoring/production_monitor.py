@@ -57,13 +57,6 @@ class TradingMetrics:
     harvester_confidence_avg: float
     last_trade_mins_ago: float
 
-    # Prediction convergence (EMA-10 trades)
-    runway_delta_ema: float = 0.0
-    runway_accuracy_ema: float = 0.5
-    conf_calib_err_ema: float = 0.5
-    platt_a: float = 1.0
-    platt_b: float = 0.0
-
     # Circuit breakers
     circuit_breakers_tripped: int
     circuit_breaker_names: list[str]
@@ -76,6 +69,13 @@ class TradingMetrics:
 
     # Timestamp
     timestamp: float
+
+    # Prediction convergence (EMA-10 trades, defaults until first trade closes)
+    runway_delta_ema: float = 0.0
+    runway_accuracy_ema: float = 0.5
+    conf_calib_err_ema: float = 0.5
+    platt_a: float = 1.0
+    platt_b: float = 0.0
 
 
 @dataclass
