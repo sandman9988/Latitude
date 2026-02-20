@@ -3,11 +3,11 @@
 
 ## For Future Claude Instances
 
-**Last Updated:** 2026-02-20  
+**Last Updated:** 2026-02-20 (commit 295f0fc)  
 **Project:** Dual-Agent Deep Q-Network (DDQN) Reinforcement Learning Trading System  
 **Platform:** cTrader via FIX 4.4 Protocol (Dual Sessions: Quote + Trade)  
-**Implementation:** Python 3.12 (32,517 lines production code + 32,197 lines tests, 128 test files)  
-**Status:** Active paper trading XAUUSD M5 — DDQN agents learning live (ongoing)  
+**Implementation:** Python 3.12 (32,517 lines production code + 32,197 lines tests, 128 test files, 2,331 passing)  
+**Status:** Active paper trading XAUUSD M5 — DDQN agents learning live; stats now fully wired into decisions  
 **User:** Renier - Expert algorithmic trader
 
 ---
@@ -521,7 +521,26 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 **All 7 P0 gaps addressed.** See `docs/P0_IMPLEMENTATION_SUMMARY.md` for details.
 
-### 4.13 Platform Integration (cTrader/FIX Protocol)
+**All 7 P0 gaps addressed.** See `docs/P0_IMPLEMENTATION_SUMMARY.md` for details.
+
+### 4.13 Monitoring & HUD
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `src/monitoring/hud_tabbed.py` | Terminal HUD — 5 tabs, curses UI | ✅ IMPLEMENTED |
+| `src/monitoring/startup_selftest.py` | 17-check self-test at startup | ✅ IMPLEMENTED |
+
+**HUD tabs:**
+- **System Health (Overview)** — startup self-test results (17 checks, JSON export), live quote, VaR, risk budget, regime ζ, circuit-breaker status, P&L summary
+- **Training** — per-agent training progress with trend arrows (↑/↓/→), sparklines, velocity, confidence indicators, correct buffer caps (trigger 2k, harvester 10k), loss/reward EMA
+- **Performance** — payoff ratio (avg_win/avg_loss), Sortino, max drawdown, win rate, VaR%, signal synthesis quality, regime distribution tips
+- **Risk/Market** — VPIN-z, kurtosis, depth ratio, imbalance, regime ζ, live VaR, circuit-breaker state with contextual warnings
+- **Decision Log** — rolling decisions with action, confidence, entry reason, decision distribution histogram
+
+**Startup Self-Test (17 checks):**
+Runs at boot; exports pass/fail JSON to `data/startup_selftest.json`. Checks cover: FIX sessions, position reconciliation, VaR estimator, circuit breakers, reward shaper dims, IS weight correctness, min-hold guard, disk persistence, network weight load, feature pipeline, regime detector, order book, trade log, and more.
+
+### 4.14 Platform Integration (cTrader/FIX Protocol)
 
 | File | Purpose | Status (Python) |
 |------|---------|--------|
@@ -578,6 +597,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 | **cTrader/FIX Integration** | 5 | 5 | 100% | ✅ |
 | **Overfitting Detection** | 4 | 4 | 100% | ✅ |
 | **Path Analysis & Geometry** | 3 | 3 | 100% | ✅ |
+| **Monitoring / HUD** | 2 | 2 | 100% | ✅ |
 
 ### 5.3 Critical Gap: BrokerExecutionModel
 
@@ -645,6 +665,87 @@ The following bugs were identified during active paper trading and corrected. Al
 **Fix:** Added `MIN_HOLD_TICKS_DEFAULT = 10` constant and `self.min_hold_ticks` guard in `decide()`. Only the emergency stop-loss can close a position before the minimum hold period. Configurable via `$MIN_HOLD_TICKS` env-var.
 
 **Effect:** DDQN still issues CLOSE at tick 10 (stale Q-values), but now positions survive long enough to accumulate real MFE/MAE so corrected rewards can propagate through the network.
+
+### 5.6 HUD & Monitoring Enhancements (February 2026)
+
+All four items implemented and committed on branch `update-1.1-mfe-mae-tracking-v2`.
+
+#### E. Startup Self-Test — 17 Checks (commit ab6e8b7)
+
+`src/monitoring/startup_selftest.py` added. Runs at bot startup, performs 17 checks across all subsystems, exports PASS/FAIL results to `data/startup_selftest.json`. Results displayed on the HUD Overview tab immediately on launch — no more guessing if a subsystem silently failed to initialise.
+
+#### F. Training Tab — Trend Arrows, Sparklines, Velocity (commit f31865e)
+
+HUD training tab rewritten:
+- **Trend arrows** (↑/↓/→) on all key metrics based on 5-sample rolling window
+- **Sparklines** (unicode block characters) for loss and reward history per agent
+- **Velocity** (rate of improvement) shown alongside absolute values
+- **Confidence indicators** for learning stability
+- Buffer caps corrected: trigger buffer cap 2,000 / harvester 10,000 (were swapped)
+- Removed vanity counters (total ticks, uptime raw)
+
+#### G. Tab Audit — Meaningful Stats Only (commit d2a485e)
+
+Full pass over all 5 HUD tabs to ensure every displayed figure is actionable:
+- **Performance tab:** Added payoff ratio (avg_win / |avg_loss|), signal synthesis quality score, decision distribution histogram; removed raw counts
+- **Risk/Market tab:** Added VaR%, regime confidence ζ with contextual tips ("TRANSITIONAL — wait for trend confirmation"), VPIN-z trend, kurtosis alert thresholds
+- **Decision Log tab:** Added action-reason column, colour-coded confidence
+
+#### H. `bars_held` Always 0 — PathRecorder.path Fix
+
+**Bug:** Both `_export_order_book` (live path) and `_export_hud_data` (bar-close path) called `len(position_path_recorder.bars)`. `PathRecorder` stores data in `.path`, not `.bars` — the attribute guard silently returned 0 every tick.
+
+**Fix (`ctrader_ddqn_paper.py`):**
+- `_export_order_book` live path: look up `path_recorders` dict directly and read `.path` length (same logic as `_export_hud_data`)
+- `_export_hud_data` bar-close path: `.bars` → `.path`
+
+**Note:** After a restart where position is recovered from persistence, `path_recorders` is empty until next bar closes → `bars_held = 0` briefly. Cold-start limitation, not a bug.
+
+### 5.7 Decision-Wiring Fixes (February 2026, commit 295f0fc)
+
+Audit confirmed that several stats displayed on the HUD were **not** fed back into decisions. Three genuine gaps were closed.
+
+#### I. Payoff Ratio → Risk Budget Adaptation (`risk_manager.py`)
+
+**Gap:** `_consider_risk_adaptation` only used `win_rate` + `equity_change`. A 55% win rate with losses twice the size of wins (payoff 0.5×) has negative EV — but budget was being *increased*.
+
+**Fix:**
+- Track `total_wins_pnl` / `total_losses_pnl` in `on_trade_complete`
+- Compute `payoff_ratio = avg_win / avg_loss` every 10 trades; pass to `_consider_risk_adaptation`
+- **Increase** budget only if payoff ≥ 1.0 AND win_rate > 0.55 AND equity growing
+- **Reduce** budget whenever payoff < 0.8 (losses larger than wins per trade), regardless of win rate
+
+#### J. Regime ζ → Feasibility Gate (`dual_policy.py`)
+
+**Gap:** `self.current_zeta` was computed correctly from `regime_detector` but never used. The trigger's feasibility hard-gate treated TRANSITIONAL and TRENDING regimes identically.
+
+**Fix:** In `decide_entry`, scale effective feasibility score by `(0.5 + 0.5 × ζ)` before passing to `trigger.decide()`:
+- ζ = 1.0 (confident regime): no change
+- ζ = 0.5 (transitional): feasibility × 0.75 → stricter entry required
+- ζ = 0.0 (fully uncertain): feasibility × 0.50 → only the highest-quality setups pass
+
+#### K. VPIN-z → Trigger Reward (`ctrader_ddqn_paper.py`)
+
+**Gap:** VPIN-z was penalising the *harvester* close reward via `regime_adj` (correct — exit at high toxicity is bad). But the *trigger* was never penalised for *entering* at high VPIN-z, so it could not learn to avoid toxic-flow entries.
+
+**Fix:** Added `toxic_penalty` component to `_calculate_trigger_reward`:
+```
+if entry_vpin_z > vpin_z_threshold × 0.75:
+    excess = (entry_vpin_z - threshold×0.75) / threshold
+    toxic_penalty = -0.15 × min(excess, 2.0)   # max −0.30
+```
+Trigger now learns that entering into informed order flow is a bad decision, not just arriving at a bad exit.
+
+**Already-correct wiring confirmed (no changes needed):**
+| Stat | Mechanism | Location |
+|------|-----------|----------|
+| Kurtosis → VaR | `kurtosis_mult = 1 + max(0,(k-1)/3)` | `var_estimator.py` |
+| VPIN-z → VaR inflation | `vpin_mult = 1 + max(0, vpin_z/2)` | `var_estimator.py` |
+| Feasibility → entry hard gate | threshold check blocks entry | `trigger_agent.py:314` |
+| Regime → runway multiplier | `get_regime_multiplier()` | `dual_policy.py` |
+| Efficiency/gamma/jerk → features | `_build_state` | `dual_policy.py` |
+| Imbalance/depth_ratio → features | `_build_state` | `dual_policy.py` |
+| VaR → position sizing | `position_size_from_var(...)` | `risk_manager.py` |
 
 ## 5. IMPLEMENTATION STATUS (LEGACY MQL DESIGN)
 
@@ -1417,9 +1518,12 @@ Live Trading (Minimum 3 months at minimal size):
 
 1. **Allow DDQN to accumulate corrected experience**
    - Min-hold guard is live (10 ticks/~25 sec)
-   - Reward shaping now correct (5 dims, IS weights fixed)
+   - Reward shaping correct (5 dims, IS weights fixed)
+   - Payoff ratio, ζ gate, and VPIN-z trigger penalty all now active
    - Allow ~500–1,000 more harvester training steps before assessing Q-value recovery
    - Watch for `[HARVESTER] CLOSE ticks=N` where N drifts above 10 → learning is working
+   - Watch for `[DUAL_POLICY] ζ=` log lines — confirms feasibility scaling is firing
+   - Watch for `[TRIGGER_REWARD] Toxic:` log lines — confirms VPIN penalty propagating
 
 2. **Implement BrokerExecutionModel** (BEFORE live money)
    - Asymmetric slippage: buys slip more in up-trends, sells in down-trends
@@ -1436,11 +1540,14 @@ Live Trading (Minimum 3 months at minimal size):
    - Check if multi-factor fallback (`_fallback_decide`) is generating entries with conf > 0.65
    - DDQN trigger has ε ≈ 0.52 (still early exploration) — most entries are random EXPLORE
    - Once ε drops to ~0.2 the fallback filter quality matters more
+   - ζ-scaling now also narrows entry in uncertain regimes; check rejection rate in HUD decision log
 
 ### 13.2 Medium-Term Roadmap
 
 ```
 Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
+           • payoff ratio, ζ gate, VPIN-z trigger penalty all live
+           • HUD self-test, 5-tab display, all stats wired
 +2wk     : Assess harvester Q-value convergence — is ticks held drifting up?
 +4wk     : Implement BrokerExecutionModel
 +6wk     : Investigate & fix L2 imbalance feed
@@ -1453,10 +1560,10 @@ Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
 | Issue | Severity | Notes |
 |-------|----------|-------|
 | BrokerExecutionModel missing | HIGH | Must fix before live money |
-| L2/imbalance always 0 | MEDIUM | VPIN veto/tilt Features inactive until fixed |
+| L2/imbalance always 0 | MEDIUM | VPIN veto/tilt features inactive until fixed |
 | Harvester stale Q-values | LOW | Self-healing via min-hold + corrected rewards |
 | Feature library ~25% complete | LOW | System works; add incrementally |
-| Trigger ε=0.52 (early phase) | INFO | Expected — bot is still early in exploration |
+| Trigger ε=0.52 (early phase) | INFO | Expected — bot is in early exploration phase |
 
 ---
 
@@ -1473,6 +1580,15 @@ Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
    - IS weight computation corrected (raw priorities, post-loop updates)
    - TriggerAgent fallback upgraded to multi-factor (MA + momentum + VPIN)
    - HarvesterAgent min-hold guard (10 ticks, emergency-stop exempt)
+6. **HUD & monitoring (Feb 2026):**
+   - Startup self-test: 17 checks, JSON export, Overview tab display (`ab6e8b7`)
+   - Training tab: trend arrows, sparklines, velocity, correct buffer caps 2k/10k (`f31865e`)
+   - Tab audit: payoff ratio, signal synthesis, VaR%, regime tips, decision distribution (`d2a485e`)
+   - `bars_held` fix: PathRecorder `.bars → .path` in both write paths
+7. **Decision-wiring audit & fixes (Feb 2026, `295f0fc`):**
+   - Payoff ratio (avg_win/avg_loss) now feeds risk budget adaptation
+   - Regime ζ now scales the feasibility gate in `decide_entry`
+   - VPIN-z now penalises trigger reward (in addition to existing harvester penalty)
 
 ### Current State (2026-02-20)
 
@@ -1482,6 +1598,8 @@ Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
 - **Harvester:** buffer ~790 exp, 1341 training steps (contaminated pre-fix; relearning in progress)
 - **Min hold:** 10 ticks enforced; ticks=10 observed in first post-fix trade
 - **Tests:** 2,331 passed, 4 skipped, 6 warnings
+- **HUD:** 5-tab curses UI live; startup self-test runs at boot; all displayed stats wired into decisions
+- **Decision wiring:** payoff ratio → risk budget; ζ → feasibility gate; VPIN-z → trigger reward (all confirmed wired as of `295f0fc`)
 
 ### User Preferences
 
