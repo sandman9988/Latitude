@@ -2284,6 +2284,58 @@ class CTraderFixApp(fix.Application):
             }
             with open(self.hud_data_dir / "order_book.json", "w", encoding="utf-8") as fh:
                 json.dump(ob, fh)
+
+            # Also write a fresh current_position.json so the HUD overview always
+            # shows the correct current_price, unrealized PnL, MFE and MAE
+            # without waiting for the next bar close (which can be hours on H4).
+            if self.cur_pos != 0 and self.best_bid and self.best_ask:
+                live_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
+                with self._tracker_lock:
+                    live_tracker = (
+                        next(reversed(self.mfe_mae_trackers.values()), None)
+                        if self.mfe_mae_trackers
+                        else self.mfe_mae_tracker
+                    )
+                if live_tracker and live_tracker.entry_price:
+                    ep = float(live_tracker.entry_price)
+                    live_qty = self.qty
+                    try:
+                        if self.trade_integration and self.trade_integration.trade_manager:
+                            _lp = self.trade_integration.trade_manager.get_position()
+                            if _lp and abs(_lp.net_qty) > 0:
+                                live_qty = float(abs(_lp.net_qty))
+                    except Exception:
+                        pass
+                    live_pnl = (
+                        (live_price - ep) * live_qty if self.cur_pos > 0
+                        else (ep - live_price) * live_qty
+                    )
+                    pos_data = {
+                        "direction": "LONG" if self.cur_pos > 0 else "SHORT",
+                        "entry_price": ep,
+                        "current_price": live_price,
+                        "mfe": float(live_tracker.mfe),
+                        "mae": float(live_tracker.mae),
+                        "unrealized_pnl": live_pnl,
+                        "bars_held": len(getattr(live_tracker, "bars", [])),
+                    }
+                    with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as fh:
+                        json.dump(pos_data, fh)
+            elif self.cur_pos == 0:
+                # No open position — write a FLAT snapshot so the HUD clears
+                # immediately after a close without waiting for bar-close flush.
+                flat_data = {
+                    "direction": "FLAT",
+                    "entry_price": 0.0,
+                    "current_price": 0.0,
+                    "mfe": 0.0,
+                    "mae": 0.0,
+                    "unrealized_pnl": 0.0,
+                    "bars_held": 0,
+                }
+                with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as fh:
+                    json.dump(flat_data, fh)
+
             self._last_ob_export_time = now
         except Exception as e:
             LOG.debug("[OB] order_book.json export failed: %s", e)
@@ -4188,7 +4240,9 @@ class CTraderFixApp(fix.Application):
 
             # 2. Current Position
             current_price = (
-                (float(self.best_bid) + float(self.best_ask)) / 2.0 if self.best_bid and self.best_ask else 0.0
+                (float(self.best_bid) + float(self.best_ask)) / 2.0
+                if self.best_bid and self.best_ask
+                else (float(self.bars[-1][4]) if self.bars else 0.0)
             )
             if self.cur_pos > 0:
                 direction = "LONG"
