@@ -207,6 +207,8 @@ class RiskManager:
         self.total_trades = 0
         self.winning_trades = 0
         self.total_pnl = 0.0
+        self.total_wins_pnl = 0.0   # cumulative P&L on winning trades
+        self.total_losses_pnl = 0.0  # cumulative |P&L| on losing trades
         self.peak_equity = 10000.0  # Will be updated
         self.initial_risk_budget = risk_budget_usd
 
@@ -666,6 +668,9 @@ class RiskManager:
             is_win = pnl > 0
         if is_win:
             self.winning_trades += 1
+            self.total_wins_pnl += pnl
+        else:
+            self.total_losses_pnl += abs(pnl)
 
         # Update peak equity
         self.peak_equity = max(self.peak_equity, equity)
@@ -696,16 +701,23 @@ class RiskManager:
 
         # Check if adaptive adjustment needed (every 10 trades)
         if self.total_trades % 10 == 0:
-            self._consider_risk_adaptation(equity, win_rate)
+            losses_count  = self.total_trades - self.winning_trades
+            avg_win  = self.total_wins_pnl  / max(self.winning_trades, 1)
+            avg_loss = self.total_losses_pnl / max(losses_count, 1)  # already absolute
+            payoff_ratio = avg_win / max(avg_loss, 1e-9)
+            self._consider_risk_adaptation(equity, win_rate, payoff_ratio)
 
-    def _consider_risk_adaptation(self, equity: float, win_rate: float):
+    def _consider_risk_adaptation(self, equity: float, win_rate: float, payoff_ratio: float = 1.0):
         """
         Consider adaptive risk budget adjustment based on performance.
 
         Logic:
-        - Good performance (win rate > 55%, equity growing) → Increase budget
-        - Poor performance (win rate < 45%, equity declining) → Decrease budget
+        - Good performance (win rate > 55%, equity growing, payoff ≥ 1.2) → Increase budget
+        - Poor performance (win rate < 45%, equity declining, OR payoff < 0.8) → Decrease budget
         - Circuit breakers tripped → Reduce budget immediately
+
+        payoff_ratio = avg_win / avg_loss  (the key EV sanity check:
+          >1.0 wins larger than losses; <1.0 = losses larger even if win_rate OK)
         """
         if self.circuit_breakers.is_any_tripped():
             # Emergency: reduce risk budget
@@ -722,22 +734,26 @@ class RiskManager:
         equity_change = (equity - self.peak_equity) / max(self.peak_equity, 1.0)
 
         # Good performance: increase budget (max 1.5x initial)
-        if win_rate > 0.55 and equity_change > 0.05:
+        # Require payoff >= 1.0 (avg win ≥ avg loss) as an EV sanity check.
+        if win_rate > 0.55 and equity_change > 0.05 and payoff_ratio >= 1.0:
             new_budget = min(self.risk_budget_usd * 1.1, self.initial_risk_budget * 1.5)
             if new_budget > self.risk_budget_usd:
                 LOG.info(
-                    "[RISK] Strong performance → INCREASING risk budget: $%.2f → $%.2f",
+                    "[RISK] Strong performance (wr=%.0f%% payoff=%.2fx) → INCREASING risk budget: $%.2f → $%.2f",
+                    win_rate * 100, payoff_ratio,
                     self.risk_budget_usd,
                     new_budget,
                 )
                 self.update_risk_budget(new_budget)
 
         # Poor performance: decrease budget (min 0.5x initial)
-        elif win_rate < 0.45 or equity_change < -0.10:
+        # Trigger on: low win_rate OR bad equity OR payoff < 0.8 (losses > wins)
+        elif win_rate < 0.45 or equity_change < -0.10 or payoff_ratio < 0.8:
             new_budget = max(self.risk_budget_usd * 0.9, self.initial_risk_budget * 0.5)
             if new_budget < self.risk_budget_usd:
                 LOG.warning(
-                    "[RISK] Weak performance → REDUCING risk budget: $%.2f → $%.2f",
+                    "[RISK] Weak performance (wr=%.0f%% payoff=%.2fx eq_chg=%.1f%%) → REDUCING risk budget: $%.2f → $%.2f",
+                    win_rate * 100, payoff_ratio, equity_change * 100,
                     self.risk_budget_usd,
                     new_budget,
                 )

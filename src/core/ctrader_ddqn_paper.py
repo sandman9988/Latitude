@@ -3375,17 +3375,29 @@ class CTraderFixApp(fix.Application):
             loss_severity = min(abs(pnl_pts) / vol_pts / 3.0, 1.0)
             false_positive_penalty = -0.2 - 0.5 * loss_severity  # -0.2 to -0.7
 
+        # Component 4: Toxic flow entry penalty
+        # Entering when VPIN z-score is elevated means trading against informed
+        # order flow.  Penalise the trigger so it learns to wait for cleaner
+        # conditions.  Linear from 0.75× threshold up to -0.30 at 2× threshold.
+        entry_vpin_z = abs(getattr(self, "entry_vpin_z", 0.0))
+        _vpin_thresh = float(getattr(self, "vpin_z_threshold", 2.5))
+        toxic_penalty = 0.0
+        if entry_vpin_z > _vpin_thresh * 0.75:
+            _excess = (entry_vpin_z - _vpin_thresh * 0.75) / max(_vpin_thresh, 1.0)
+            toxic_penalty = -0.15 * min(_excess, 2.0)  # max -0.30
+
         # Combine components
-        total_reward = accuracy_reward + magnitude_bonus + false_positive_penalty
+        total_reward = accuracy_reward + magnitude_bonus + false_positive_penalty + toxic_penalty
 
         # Clip to reasonable range
         total_reward = np.clip(total_reward, -1.5, 1.5)
 
         LOG.debug(
-            "[TRIGGER_REWARD] Accuracy: %.3f | Magnitude: %.3f | FP Penalty: %.3f | Total: %.3f",
+            "[TRIGGER_REWARD] Accuracy: %.3f | Magnitude: %.3f | FP Penalty: %.3f | Toxic: %.3f | Total: %.3f",
             accuracy_reward,
             magnitude_bonus,
             false_positive_penalty,
+            toxic_penalty,
             total_reward,
         )
 

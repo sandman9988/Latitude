@@ -191,6 +191,19 @@ class DualPolicy:
         if self.path_geometry:
             feasibility = self.path_geometry.last.get("feasibility", 1.0)
 
+        # Regime-confidence gate: low ζ → scale down effective feasibility so
+        # the trigger's hard gate demands a cleaner setup in uncertain regimes.
+        # ζ=1.0: no change.  ζ=0.5: feasibility × 0.75.  ζ=0: feasibility × 0.5.
+        _zeta = max(0.0, min(1.0, self.current_zeta))
+        if _zeta < 1.0:
+            _zeta_scale = 0.5 + 0.5 * _zeta   # maps [0,1] → [0.5, 1.0]
+            _raw_feas = feasibility
+            feasibility = feasibility * _zeta_scale
+            LOG.debug(
+                "[DUAL_POLICY] ζ=%.2f → feasibility %.3f → %.3f (regime uncertainty gate)",
+                _zeta, _raw_feas, feasibility,
+            )
+
         # Phase 2: Calculate economics parameters
         # Expected gain/loss based on realized volatility and typical move sizes
         expected_gain = realized_vol * 2.0  # Expect 2σ move on winning trades
