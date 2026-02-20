@@ -1512,6 +1512,9 @@ class CTraderFixApp(fix.Application):
         if self.trade_integration.trade_manager:
             self.trade_integration.trade_manager.on_logon()
 
+        # Restore bar history so realized_vol / path geometry work immediately.
+        self._load_bars_cache()
+
         # Write initial training stats immediately at startup so HUD shows
         # correct buffer sizes before the first bar closes.
         try:
@@ -2244,8 +2247,91 @@ class CTraderFixApp(fix.Application):
             self.close_stats.update(closed[4])
             self.bars.append(closed)
             LOG.info(f"[BAR] Appended to self.bars (len now {len(self.bars)})")
+            self._save_bars_cache()
             self.on_bar_close(closed)
             self._mark_non_repaint_opened()
+
+    # ── Bar cache persistence ──────────────────────────────────────────────
+
+    def _save_bars_cache(self, max_bars: int = 500) -> None:
+        """Persist the last *max_bars* closed bars to data/bars_cache.json.
+
+        Bars are stored as [iso_timestamp, o, h, l, c] rows so they can be
+        reloaded after a restart without waiting for real bars to accumulate.
+        """
+        try:
+            cache_path = self.hud_data_dir / "bars_cache.json"
+            rows = [
+                [b[0].isoformat(), b[1], b[2], b[3], b[4]]
+                for b in list(self.bars)[-max_bars:]
+            ]
+            with open(cache_path, "w", encoding="utf-8") as fh:
+                json.dump({"timeframe_minutes": self.timeframe_minutes, "bars": rows}, fh)
+        except Exception as e:
+            LOG.warning("[BARS] Could not save bars cache: %s", e)
+
+    def _load_bars_cache(self) -> None:
+        """Re-seed self.bars from data/bars_cache.json on startup.
+
+        Also replays bar returns into var_estimator, close_stats, and
+        path_geometry so all derived signals are live from the first tick.
+        """
+        cache_path = self.hud_data_dir / "bars_cache.json"
+        if not cache_path.exists():
+            LOG.info("[BARS] No bars cache found — waiting for live bars")
+            return
+        try:
+            with open(cache_path, encoding="utf-8") as fh:
+                payload = json.load(fh)
+
+            # Reject cache if it was written for a different timeframe
+            cached_tf = payload.get("timeframe_minutes")
+            if cached_tf is not None and int(cached_tf) != self.timeframe_minutes:
+                LOG.warning(
+                    "[BARS] Cache timeframe %sm ≠ current %sm — ignoring",
+                    cached_tf, self.timeframe_minutes,
+                )
+                return
+
+            rows = payload.get("bars", [])
+            if not rows:
+                return
+
+            loaded = 0
+            for row in rows:
+                try:
+                    ts = dt.datetime.fromisoformat(row[0])
+                    bar = (ts, float(row[1]), float(row[2]), float(row[3]), float(row[4]))
+                except (ValueError, IndexError, TypeError):
+                    continue
+                self.bars.append(bar)
+                self.close_stats.update(bar[4])
+                loaded += 1
+
+            # Replay returns into VaR estimator
+            bar_list = list(self.bars)
+            for i in range(1, len(bar_list)):
+                prev_c = bar_list[i - 1][4]
+                curr_c = bar_list[i][4]
+                if prev_c > 0:
+                    self.var_estimator.update_return(SafeMath.safe_div(curr_c - prev_c, prev_c, 0.0))
+
+            # Seed regime detector and path geometry
+            if hasattr(self.policy, "seed_regime_from_bars") and len(self.bars) >= 10:
+                self.policy.seed_regime_from_bars(self.bars)
+
+            realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
+            if len(self.bars) >= 3 and realized_vol > 0:
+                self.path_geometry.update(self.bars, realized_vol)
+
+            LOG.info(
+                "[BARS] ✓ Seeded %d bars from cache (tf=%sm, vol=%.6f)",
+                loaded, self.timeframe_minutes, realized_vol,
+            )
+        except Exception as e:
+            LOG.warning("[BARS] Failed to load bars cache: %s", e)
+
+    # ── Harvester tick evaluation ─────────────────────────────────────────
 
     def _evaluate_harvester_on_tick(self):
         """
