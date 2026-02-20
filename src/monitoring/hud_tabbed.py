@@ -226,6 +226,22 @@ class TabbedHUD:
                     self._set_notification(f"⚠️  Error loading risk metrics: {e}", ttl=10)
                     self._risk_error_shown = True
 
+        # order_book.json is written every ~1s directly from the FIX handler
+        # (much fresher than risk_metrics.json which only updates on bar close).
+        # Overwrite book-specific fields in market_stats when available.
+        ob_file = self.data_dir / "order_book.json"
+        if ob_file.exists():
+            try:
+                with open(ob_file) as f:
+                    ob = json.load(f)
+                self.market_stats["spread"] = ob.get("spread", self.market_stats.get("spread", 0.0))
+                self.market_stats["depth_bid"] = ob.get("depth_bid", self.market_stats.get("depth_bid", 0.0))
+                self.market_stats["depth_ask"] = ob.get("depth_ask", self.market_stats.get("depth_ask", 0.0))
+                self.market_stats["order_book_bids"] = ob.get("order_book_bids", self.market_stats.get("order_book_bids", []))
+                self.market_stats["order_book_asks"] = ob.get("order_book_asks", self.market_stats.get("order_book_asks", []))
+            except Exception:
+                pass
+
     def _load_profile_options(self):
         """Load preset symbol/timeframe profiles for selection UI"""
         presets_path = Path("config/profile_presets.json")

@@ -918,6 +918,7 @@ class CTraderFixApp(fix.Application):
         self.order_book = OrderBook(depth=order_book_depth)
         # Maps MDEntryID (tag 278) → (side, price) so delete-by-ID can resolve price.
         self._md_entry_id_map: dict[str, tuple[str, float]] = {}
+        self._last_ob_export_time: float = 0.0  # Rate-limit for order_book.json writes
         self.vpin_calculator = VPINCalculator(bucket_volume=max(self.vpin_bucket_volume, 1e-6), window=50)
         self.last_vpin_stats = {"vpin": 0.0, "mean": 0.0, "std": 0.0, "zscore": 0.0}
         self.last_vpin_mid: float | None = None
@@ -2056,6 +2057,7 @@ class CTraderFixApp(fix.Application):
         # Evaluate Harvester on tick for faster exit execution
         self._evaluate_harvester_on_tick()
 
+        self._export_order_book()
         self.try_bar_update()
 
     def on_md_incremental(self, msg: fix.Message):
@@ -2160,6 +2162,7 @@ class CTraderFixApp(fix.Application):
             self.best_bid, self.best_ask = float(best_bid), float(best_ask)
             self.friction_calculator.update_spread(self.best_bid, self.best_ask)
 
+        self._export_order_book()
         self.try_bar_update()
 
     def _update_non_repaint_series(self, bar, tick_count: int):
@@ -2250,6 +2253,37 @@ class CTraderFixApp(fix.Application):
             self._save_bars_cache()
             self.on_bar_close(closed)
             self._mark_non_repaint_opened()
+
+    # ── Order book live export ─────────────────────────────────────────────
+
+    def _export_order_book(self, min_interval: float = 1.0) -> None:
+        """Write data/order_book.json at most once per *min_interval* seconds.
+
+        The HUD market tab reads this file so it always has the live L2 ladder
+        without waiting for a bar close (which could be hours on H4).
+        """
+        now = time.time()
+        if now - self._last_ob_export_time < min_interval:
+            return
+        try:
+            spread = (
+                float(self.best_ask) - float(self.best_bid)
+                if self.best_bid and self.best_ask
+                else 0.0
+            )
+            ob = {
+                "symbol": self.symbol,
+                "spread": spread,
+                "order_book_bids": [[p, s] for p, s in list(self.order_book.bids.items())[:5]],
+                "order_book_asks": [[p, s] for p, s in list(self.order_book.asks.items())[:5]],
+                "depth_bid": sum(s for _, s in self.order_book.bids.items()),
+                "depth_ask": sum(s for _, s in self.order_book.asks.items()),
+            }
+            with open(self.hud_data_dir / "order_book.json", "w", encoding="utf-8") as fh:
+                json.dump(ob, fh)
+            self._last_ob_export_time = now
+        except Exception as e:
+            LOG.debug("[OB] order_book.json export failed: %s", e)
 
     # ── Bar cache persistence ──────────────────────────────────────────────
 
