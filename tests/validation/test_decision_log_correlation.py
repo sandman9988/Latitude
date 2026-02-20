@@ -322,6 +322,72 @@ class TestSequenceInvariants:
         ]
         assert check_invariants(entries) == []
 
+    def test_long_hold_hold_hold_close_sequence(self):
+        """LONG → HOLD × 3 → CLOSE must pass with no violations."""
+        entries = [
+            self._entry("LONG",  tid="t1", ts="T1"),
+            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T2"),
+            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T3"),
+            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T4"),
+            self._entry("CLOSE", tid="t1", agent="HarvesterAgent", ts="T5"),
+        ]
+        assert check_invariants(entries) == []
+
+    def test_no_entry_spam_then_short_hold_hold_close(self):
+        """NO_ENTRY × 3 (no trade_id) → SHORT → HOLD × 2 → CLOSE — no violations."""
+        entries = [
+            self._entry("NO_ENTRY", ts="T1"),   # no tid
+            self._entry("NO_ENTRY", ts="T2"),
+            self._entry("NO_ENTRY", ts="T3"),
+            self._entry("SHORT",  tid="t2", ts="T4"),
+            self._entry("HOLD",   tid="t2", agent="HarvesterAgent", ts="T5"),
+            self._entry("HOLD",   tid="t2", agent="HarvesterAgent", ts="T6"),
+            self._entry("CLOSE",  tid="t2", agent="HarvesterAgent", ts="T7"),
+        ]
+        assert check_invariants(entries) == []
+
+    def test_two_full_trades_in_sequence(self):
+        """LONG→HOLD×3→CLOSE then NO_ENTRY×3 then SHORT→HOLD×2→CLOSE, different IDs."""
+        entries = [
+            # Trade 1
+            self._entry("LONG",     tid="t1", ts="T01"),
+            self._entry("HOLD",     tid="t1", agent="HarvesterAgent", ts="T02"),
+            self._entry("HOLD",     tid="t1", agent="HarvesterAgent", ts="T03"),
+            self._entry("HOLD",     tid="t1", agent="HarvesterAgent", ts="T04"),
+            self._entry("CLOSE",    tid="t1", agent="HarvesterAgent", ts="T05"),
+            # Flat period
+            self._entry("NO_ENTRY", ts="T06"),
+            self._entry("NO_ENTRY", ts="T07"),
+            self._entry("NO_ENTRY", ts="T08"),
+            # Trade 2
+            self._entry("SHORT",    tid="t2", ts="T09"),
+            self._entry("HOLD",     tid="t2", agent="HarvesterAgent", ts="T10"),
+            self._entry("HOLD",     tid="t2", agent="HarvesterAgent", ts="T11"),
+            self._entry("CLOSE",    tid="t2", agent="HarvesterAgent", ts="T12"),
+        ]
+        assert check_invariants(entries) == []
+
+    def test_no_entry_with_trade_id_between_trades_is_violation(self):
+        """A NO_ENTRY that accidentally carries a trade_id must be flagged."""
+        entries = [
+            self._entry("LONG",     tid="t1", ts="T1"),
+            self._entry("CLOSE",    tid="t1", agent="HarvesterAgent", ts="T2"),
+            self._entry("NO_ENTRY", tid="t2", ts="T3"),  # trade_id on NO_ENTRY — bug
+        ]
+        v = check_invariants(entries)
+        assert any("NO_ENTRY" in x for x in v), f"Expected NO_ENTRY violation, got: {v}"
+
+    def test_hold_after_close_without_new_entry_is_violation(self):
+        """HOLD after CLOSE but before a new LONG/SHORT must be flagged as orphan."""
+        entries = [
+            self._entry("LONG",  tid="t1", ts="T1"),
+            self._entry("CLOSE", tid="t1", agent="HarvesterAgent", ts="T2"),
+            # Next bar: HarvesterAgent fires HOLD with the now-cleared trade_id
+            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T3"),  # ghost!
+        ]
+        v = check_invariants(entries)
+        assert any("t1" in x for x in v), f"Expected ghost HOLD violation, got: {v}"
+
 
 # ---------------------------------------------------------------------------
 # Live log test
