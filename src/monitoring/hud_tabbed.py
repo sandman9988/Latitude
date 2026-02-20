@@ -261,6 +261,7 @@ class TabbedHUD:
         trade_file = Path("data/trade_log.jsonl")
         if not trade_file.exists():
             return
+        starting_equity = float(self.bot_config.get("starting_equity", 10_000.0))
         try:
             trades = []
             with open(trade_file, "r", encoding="utf-8") as f:
@@ -273,7 +274,7 @@ class TabbedHUD:
         if not trades:
             return
 
-        def _period_metrics(pts: list) -> dict:
+        def _period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
             if not pts:
                 return {}
             pnls = [t.get("pnl", 0.0) for t in pts]
@@ -292,17 +293,23 @@ class TabbedHUD:
             sharpe = mean_p / std_p if std_p > 0 else 0.0
             down_var = sum(p ** 2 for p in pnls if p < 0) / n
             sortino = mean_p / math.sqrt(down_var) if down_var > 0 else 0.0
-            # Max drawdown from cumulative PnL series (ratio vs peak equity)
-            cum = peak_eq = max_dd = 0.0
+            # Max drawdown as % of peak equity.
+            # peak_equity starts at starting_equity (the account baseline) so a
+            # run of losses from the very first trade still gives a sensible %.
+            # e.g. $1 000 drop on a $100 000 BTC account = 1.0%; same drop on a
+            # $10 000 forex account = 10.0%.
+            cum = 0.0
+            peak_equity = starting_equity
+            max_dd_pct = 0.0
             for p in pnls:
                 cum += p
-                if cum > peak_eq:
-                    peak_eq = cum
-                if peak_eq > 0:
-                    dd = (peak_eq - cum) / peak_eq
-                    if dd > max_dd:
-                        max_dd = dd
-            max_dd = min(max_dd, 1.0)  # cap at 100%
+                equity = starting_equity + cum
+                if equity > peak_equity:
+                    peak_equity = equity
+                if peak_equity > 0:
+                    dd_pct = (peak_equity - equity) / peak_equity * 100.0
+                    if dd_pct > max_dd_pct:
+                        max_dd_pct = dd_pct
             # Consecutive streaks
             max_cw = max_cl = cw = cl = 0
             for p in pnls:
@@ -319,7 +326,7 @@ class TabbedHUD:
                 "sharpe_ratio": sharpe,
                 "sortino_ratio": sortino,
                 "omega_ratio": min(profit_factor, 99.0),
-                "max_drawdown": max_dd,
+                "max_drawdown": max_dd_pct,
                 "best_trade": max(pnls),
                 "worst_trade": min(pnls),
                 "avg_trade": mean_p,
@@ -355,10 +362,32 @@ class TabbedHUD:
             if d >= month_start:
                 monthly.append(t)
 
-        self.daily_metrics = _period_metrics(daily)
-        self.weekly_metrics = _period_metrics(weekly)
-        self.monthly_metrics = _period_metrics(monthly)
-        self.lifetime_metrics = _period_metrics(trades)
+        self.daily_metrics = _period_metrics(daily, starting_equity)
+        self.weekly_metrics = _period_metrics(weekly, starting_equity)
+        self.monthly_metrics = _period_metrics(monthly, starting_equity)
+        self.lifetime_metrics = _period_metrics(trades, starting_equity)
+
+    def _price_decimals(self, ref_price: float = 0.0) -> int:
+        """Return the correct number of decimal places for the active symbol.
+
+        Reads ``digits`` from config/symbol_specs.json for the symbol stored in
+        bot_config.  Falls back to a heuristic based on price magnitude so the
+        HUD works even without a specs file.
+        """
+        symbol = self.bot_config.get("symbol", "")
+        try:
+            specs_path = Path("config") / "symbol_specs.json"
+            specs = json.loads(specs_path.read_text(encoding="utf-8"))
+            if symbol in specs:
+                return int(specs[symbol].get("digits", 5))
+        except Exception:
+            pass
+        # Heuristic fallback: gold/BTC ≥1000 → 2dp; majors → 5dp
+        if ref_price >= 1000:
+            return 2
+        if ref_price >= 10:
+            return 3
+        return 5
 
     def _load_json(self, filename: str, attr: str):
         """Load JSON file into attribute"""
@@ -873,9 +902,9 @@ class TabbedHUD:
 
         # Column headers
         print(
-            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL':>11} {'Sharpe':>7} {'Omega':>7} {'MaxDD':>8}"
+            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL':>11} {'Sharpe':>7} {'Omega':>7} {'MaxDD%':>8}"
         )
-        print("  " + "─" * 60)
+        print("  " + "─" * 61)
 
         for label, metrics in [
             ("Daily", self.daily_metrics),
@@ -888,13 +917,14 @@ class TabbedHUD:
             pnl = metrics.get("total_pnl", 0)
             sharpe = metrics.get("sharpe_ratio", 0)
             omega = metrics.get("omega_ratio", 0)
-            maxdd = metrics.get("max_drawdown", 0) * 100
+            maxdd = metrics.get("max_drawdown", 0.0)  # already a % of peak equity
 
             pnl_color = self._pnl_color(pnl)
+            dd_color = "\033[91m" if maxdd > 5 else ("\033[93m" if maxdd > 2 else "\033[92m")
 
             print(
                 f"  {label:<9} {trades:>7} {wr:>6.1f}% {pnl_color}{pnl:>+10.2f}\033[0m "
-                f"{sharpe:>7.2f} {omega:>7.2f} {maxdd:>7.2f}%"
+                f"{sharpe:>7.2f} {omega:>7.2f} {dd_color}{maxdd:>7.2f}%\033[0m"
             )
 
         # Additional stats if available
@@ -993,9 +1023,10 @@ class TabbedHUD:
                     color = "\033[0m"
 
                 vpin_flag = "\033[91m⚠\033[0m" if abs(vpin_z) > 2.0 else " "
+                dec = self._price_decimals(price)
                 print(
                     f"  {ts_str:<8} {agent:<10} {color}{decision:<10}\033[0m "
-                    f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} {price:>10.4f}"
+                    f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} {price:>10.{dec}f}"
                 )
             print("  " + "─" * 60)
             print(f"\n  Source: {jsonl_file}  |  Total lines visible: {len(entries_jsonl)}")

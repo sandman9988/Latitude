@@ -4010,6 +4010,7 @@ class CTraderFixApp(fix.Application):
                 "uptime_seconds": uptime_seconds,
                 "bar_count": self.bar_count,
                 "training_enabled": os.environ.get("DDQN_ONLINE_LEARNING", "1") == "1",
+                "starting_equity": self.starting_equity,
             }
             with open(self.hud_data_dir / "bot_config.json", "w", encoding="utf-8") as f:
                 json.dump(bot_config, f, indent=2)
