@@ -37,7 +37,7 @@ import numpy as np
 
 LOG = logging.getLogger(__name__)
 
-Bar = tuple[datetime, float, float, float, float]   # t, o, h, l, c
+Bar = tuple[datetime, float, float, float, float, float]   # t, o, h, l, c, spread_pts
 
 # ── Recognised column-name patterns ─────────────────────────────────────────
 
@@ -47,6 +47,7 @@ _OPEN_COLS   = re.compile(r"^open$", re.IGNORECASE)
 _HIGH_COLS   = re.compile(r"^high$", re.IGNORECASE)
 _LOW_COLS    = re.compile(r"^low$", re.IGNORECASE)
 _CLOSE_COLS  = re.compile(r"^close$|^last$", re.IGNORECASE)
+_SPREAD_COLS = re.compile(r"^spread$", re.IGNORECASE)
 
 # Datetime format strings to try, most specific first
 _DT_FORMATS = [
@@ -241,6 +242,11 @@ def _detect_columns(headers: list[str]) -> dict[str, str] | None:
     if not all(k in result for k in ("o", "h", "l", "c")):
         return None
 
+    # Spread column is optional — present in cTrader / MT4 exports (broker points)
+    sp_match = _find(_SPREAD_COLS)
+    if sp_match:
+        result["sp"] = sp_match
+
     return result
 
 
@@ -265,7 +271,8 @@ def _parse_csv_row(row: dict[str, str], col_map: dict[str, str]) -> Bar | None:
         if h < l or h < o or h < c or l > o or l > c:
             return None  # Malformed OHLC
 
-        return (ts, o, h, l, c)
+        sp = float(row[col_map["sp"]]) if "sp" in col_map else 0.0
+        return (ts, o, h, l, c, sp)
     except (KeyError, ValueError, TypeError):
         return None
 
@@ -305,7 +312,7 @@ def _parse_jsonl_bar(row: list) -> Bar | None:
         ts = _parse_datetime(str(ts_str))
         if ts is None:
             return None
-        return (ts, float(o), float(h), float(l), float(c))
+        return (ts, float(o), float(h), float(l), float(c), 0.0)
     except (IndexError, ValueError, TypeError):
         return None
 

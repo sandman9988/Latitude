@@ -177,10 +177,11 @@ class TestLoadCSV:
 
         bars = load_csv(str(f))
         assert len(bars) == 30
-        # Each bar is (datetime, o, h, l, c)
-        t, o, h, l, c = bars[0]
+        # Each bar is (datetime, o, h, l, c, spread_pts)
+        t, o, h, l, c, sp = bars[0]
         assert isinstance(t, datetime)
         assert h >= l
+        assert sp == 0.0  # no spread column in this fixture
 
     def test_max_bars_truncation(self, tmp_path):
         rows = _bar_rows(50)

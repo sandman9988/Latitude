@@ -136,10 +136,11 @@ class _Simulator:
     Does NOT call train_step — the caller decides when to update.
     """
 
-    def __init__(self, policy, update_policy: bool = True) -> None:
+    def __init__(self, policy, update_policy: bool = True, symbol_digits: int = 2) -> None:
         self.policy = policy
         self.update_policy = update_policy  # False during validation pass
         self.bars: deque = deque(maxlen=DEQUE_MAXLEN)
+        self._pt: float = 10 ** (-symbol_digits)  # broker points → price-unit multiplier
 
         # Position state
         self.cur_pos: int = 0           # 0=flat, 1=long, -1=short
@@ -149,6 +150,8 @@ class _Simulator:
         self.mfe: float = 0.0
         self.mae: float = 0.0
         self.ticks_held: int = 0
+        self.entry_spread_pts: float = 0.0  # spread at entry bar (broker points)
+        self._cur_spread_pts: float = 0.0   # spread at current bar (broker points)
 
         # State snapshots for experience labelling
         self.entry_state: np.ndarray | None = None
@@ -159,6 +162,7 @@ class _Simulator:
     def step(self, bar: tuple, bar_idx: int) -> None:
         """Process one bar."""
         self.bars.append(bar)
+        self._cur_spread_pts = float(bar[5]) if len(bar) > 5 else 0.0
 
         if len(self.bars) < MIN_BARS_FOR_ENTRY:
             return
@@ -186,6 +190,7 @@ class _Simulator:
         direction = 1 if action == 1 else -1
         self.cur_pos = direction
         self.entry_price = current_price
+        self.entry_spread_pts = self._cur_spread_pts
         self.entry_bar_idx = bar_idx
         self.entry_action = action
         self.mfe = 0.0
@@ -244,7 +249,9 @@ class _Simulator:
             self.mae = max(self.mae, -excursion)
 
     def _close_position(self, bar_idx: int, exit_price: float, forced: bool = False) -> None:
-        pnl_pts = (exit_price - self.entry_price) * self.cur_pos
+        # Deduct round-trip spread cost (entry half-spread + exit half-spread = 1 full spread)
+        spread_cost = (self.entry_spread_pts + self._cur_spread_pts) * self._pt
+        pnl_pts = (exit_price - self.entry_price) * self.cur_pos - spread_cost
         capture = self.mfe > 0 and pnl_pts > 0
         capture_ratio = (pnl_pts / self.mfe) if self.mfe > 1e-8 else 0.0
 
@@ -373,6 +380,7 @@ class OfflineTrainer:
         warm_start: bool = False,
         epsilon_start: float = 0.4,
         epsilon_end: float = 0.05,
+        symbol_digits: int = 2,
     ) -> None:
         self.symbol = symbol
         self.timeframe_minutes = timeframe_minutes
@@ -385,6 +393,7 @@ class OfflineTrainer:
         self.warm_start = warm_start
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
+        self.symbol_digits = symbol_digits
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -508,7 +517,7 @@ class OfflineTrainer:
             # trigger.decide_entry would block every bar with 'current_position != 0'.
             policy.current_position = 0
 
-            sim = _Simulator(policy, update_policy=True)
+            sim = _Simulator(policy, update_policy=True, symbol_digits=self.symbol_digits)
             epoch_bar_offset = epoch * len(train_bars)
 
             for i, bar in enumerate(train_bars):
@@ -569,7 +578,7 @@ class OfflineTrainer:
         if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
             policy.harvester.epsilon = self.epsilon_end
 
-        val_sim = _Simulator(policy, update_policy=False)
+        val_sim = _Simulator(policy, update_policy=False, symbol_digits=self.symbol_digits)
         for i, bar in enumerate(val_bars):
             val_sim.step(bar, i)
 

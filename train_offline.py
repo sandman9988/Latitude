@@ -149,6 +149,26 @@ def _register_universe(
 _TF_PATTERN = re.compile(r"[_\-](M15|M30|M5|M1|H1|H4|H12|D1|W1)(?!\d)", re.IGNORECASE)
 _SYM_PATTERN = re.compile(r"^([A-Z]{3,8}(?:[A-Z]{3})?)", re.IGNORECASE)
 
+
+def _load_symbol_digits(symbol: str) -> int:
+    """Return the decimal-digit count for *symbol* from symbol_specs.json (default 2).
+
+    Strips ECN/variant suffixes (+, .crp, etc.) to find the base symbol spec.
+    """
+    try:
+        _specs_path = Path("config/symbol_specs.json")
+        if _specs_path.exists():
+            import json as _j
+            specs = _j.loads(_specs_path.read_text())
+            base = re.sub(r"[+.].*$", "", symbol)  # XAUUSD+→XAUUSD, XAUUSD.CRP→XAUUSD
+            entry = specs.get(symbol) or specs.get(base)
+            if entry and "digits" in entry:
+                return int(entry["digits"])
+    except Exception:
+        pass
+    return 2
+
+
 # ── Job descriptor ─────────────────────────────────────────────────────────────
 
 @dataclass
@@ -174,6 +194,7 @@ def _run_job(
     warm_start: bool = False,
     epsilon_start: float = 0.4,
     epsilon_end: float = 0.05,
+    symbol_digits: int = 2,
 ) -> dict[str, Any]:
     """
     Child-process entry point.  Returns a dict (not a TrainResult) so it
@@ -215,6 +236,7 @@ def _run_job(
         warm_start=warm_start,
         epsilon_start=epsilon_start,
         epsilon_end=epsilon_end,
+        symbol_digits=symbol_digits,
     )
     result = trainer.run()
     return {
@@ -487,6 +509,7 @@ def _execute_pool(
                 warm_start,
                 args.epsilon_start,
                 args.epsilon_end,
+                _load_symbol_digits(j.symbol),
             ): j
             for j in jobs
         }
