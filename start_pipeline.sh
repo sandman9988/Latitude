@@ -25,7 +25,7 @@ cd "$SCRIPT_DIR" || exit 1
 # ── Configurable defaults ──────────────────────────────────────────────────────
 SYMBOLS="${SYMBOLS:-XAUUSD BTCUSD}"
 TIMEFRAMES="${TIMEFRAMES:-M15 M30 H1 H4}"
-WORKERS="${WORKERS:-2}"
+WORKERS="${WORKERS:-$(nproc)}"  # default: all logical CPU cores
 THRESHOLD="${THRESHOLD:-1.0}"
 HISTORY_DIR="${HISTORY_DIR:-/home/renierdejager/Kinetra/data/master_standardized}"
 WATCH=1
