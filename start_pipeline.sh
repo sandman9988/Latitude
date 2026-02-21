@@ -27,6 +27,7 @@ SYMBOLS="${SYMBOLS:-XAUUSD BTCUSD}"
 TIMEFRAMES="${TIMEFRAMES:-M15 M30 H1 H4}"
 WORKERS="${WORKERS:-$(nproc)}"  # default: all logical CPU cores
 THRESHOLD="${THRESHOLD:-1.0}"
+RETRAIN_ROUNDS="${RETRAIN_ROUNDS:-3}"    # warm-start re-runs for jobs below threshold
 HISTORY_DIR="${HISTORY_DIR:-/home/renierdejager/Kinetra/data/master_standardized}"
 WATCH=1
 
@@ -48,6 +49,7 @@ echo "  Symbols    : $SYMBOLS"
 echo "  Timeframes : $TIMEFRAMES"
 echo "  Workers    : $WORKERS"
 echo "  Z-Ω gate   : $THRESHOLD"
+echo "  Retrain    : $RETRAIN_ROUNDS rounds"
 echo "  History    : $HISTORY_DIR"
 echo "  Auto-watch : $([ "$WATCH" -eq 1 ] && echo yes || echo no)"
 echo "============================================================"
@@ -79,7 +81,8 @@ python3 train_offline.py "$HISTORY_DIR" \
     "${TF_ARGS[@]}" \
     --workers "$WORKERS" \
     --auto-promote \
-    --paper-threshold "$THRESHOLD"
+    --paper-threshold "$THRESHOLD" \
+    --retrain-rounds  "$RETRAIN_ROUNDS"
 
 echo ""
 echo "[1/2] Offline training complete."

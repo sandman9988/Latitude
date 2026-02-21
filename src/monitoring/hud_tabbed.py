@@ -818,7 +818,7 @@ class TabbedHUD:
                     vtrades = r.get("val_trades", 0)
                     steps   = r.get("total_train_steps", 0)
                     if zo is not None and jstatus == "done":
-                        zo_col = _G if zo > 0.5 else (_Y if zo > 0 else _R)
+                        zo_col = _G if zo >= 1.0 else (_Y if zo >= 0.8 else _R)
                         zo_str = f"{zo_col}{zo:8.4f}\033[0m"
                     else:
                         zo_str = f"{_DIM}{'—':>8}\033[0m"

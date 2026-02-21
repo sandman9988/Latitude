@@ -424,9 +424,99 @@ def _build_parser() -> argparse.ArgumentParser:
         "--paper-threshold", type=float, default=1.0, metavar="ZO",
         help="Minimum ZOmega score required for --auto-promote (default: 1.0)",
     )
+    p.add_argument(
+        "--retrain-rounds", type=int, default=1, metavar="N",
+        help=(
+            "Number of warm-start retrain cycles for jobs below --paper-threshold. "
+            "After the first round, any job whose ZOmega < paper-threshold is re-run "
+            "with warm_start=True until it meets the threshold or N rounds are exhausted "
+            "(default: 1 = no auto-retrain)."
+        ),
+    )
     p.add_argument("-v", "--verbose", action="store_true",
                    help="Enable DEBUG logging")
     return p
+
+
+def _execute_pool(
+    jobs: list,
+    n_workers: int,
+    args,
+    warm_start: bool,
+    ot_status: dict,
+    t_start: float,
+) -> list[dict]:
+    """
+    Run a pool of training jobs and return the list of result dicts.
+    Updates ot_status in place so the HUD reflects live progress.
+    """
+    round_results: list[dict] = []
+    ctx = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+        futures = {
+            pool.submit(
+                _run_job,
+                j.symbol,
+                j.timeframe_minutes,
+                str(j.bars_file),
+                j.file_format,
+                args.checkpoint_dir,
+                args.train_split,
+                args.train_every,
+                args.max_bars,
+                args.n_epochs,
+                warm_start,
+                args.epsilon_start,
+                args.epsilon_end,
+            ): j
+            for j in jobs
+        }
+
+        # Mark submitted jobs as running
+        submitted_keys = {(j.symbol, j.timeframe_minutes) for j in jobs}
+        for entry in ot_status["results"]:
+            if (entry["symbol"], entry["timeframe_minutes"]) in submitted_keys:
+                entry["status"] = "running"
+        _write_status(ot_status)
+
+        for fut in as_completed(futures):
+            job = futures[fut]
+            label = f"{job.symbol}_M{job.timeframe_minutes}"
+            try:
+                res = fut.result()
+                round_results.append(res)
+                if res.get("error"):
+                    LOG.error("[MAIN] %s failed: %s", label, res["error"])
+                else:
+                    LOG.info(
+                        "[MAIN] %s done — ZOmega=%.4f  trades=%d",
+                        label, res["z_omega"], res["val_trades"],
+                    )
+            except Exception as exc:
+                LOG.error("[MAIN] %s raised: %s", label, exc, exc_info=True)
+                res = {
+                    "symbol": job.symbol, "timeframe_minutes": job.timeframe_minutes,
+                    "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
+                    "total_train_steps": 0, "elapsed_s": 0.0,
+                    "weights_path": "", "error": str(exc),
+                }
+                round_results.append(res)
+
+            ot_status["elapsed_s"] = time.perf_counter() - t_start
+            for entry in ot_status["results"]:
+                if (entry["symbol"] == res["symbol"]
+                        and entry["timeframe_minutes"] == res["timeframe_minutes"]):
+                    entry["status"] = "error" if res.get("error") else "done"
+                    entry["z_omega"] = res.get("z_omega", 0.0)
+                    entry["train_trades"] = res.get("train_trades", 0)
+                    entry["val_trades"] = res.get("val_trades", 0)
+                    entry["total_train_steps"] = res.get("total_train_steps", 0)
+                    entry["elapsed_s"] = res.get("elapsed_s", 0.0)
+                    entry["error"] = res.get("error")
+                    break
+            _write_status(ot_status)
+
+    return round_results
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -484,69 +574,54 @@ def main(argv: list[str] | None = None) -> int:
     }
     _write_status(_ot_status)
 
-    # Use spawn context to avoid CUDA/fork issues
-    ctx = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
-        futures = {
-            pool.submit(
-                _run_job,
-                j.symbol,
-                j.timeframe_minutes,
-                str(j.bars_file),
-                j.file_format,
-                args.checkpoint_dir,
-                args.train_split,
-                args.train_every,
-                args.max_bars,
-                args.n_epochs,
-                args.warm_start,
-                args.epsilon_start,
-                args.epsilon_end,
-            ): j
-            for j in jobs
-        }
+    # ── Round 0: initial training run ─────────────────────────────────────────
+    results = _execute_pool(jobs, n_workers, args, args.warm_start, _ot_status, t_start)
 
-        # Mark all submitted jobs as running (they're queued in the pool)
+    # ── Auto-retrain rounds: warm-start re-run for below-threshold jobs ───────
+    # Keep best result per (symbol, timeframe) across all rounds.
+    best_per_job: dict[tuple, dict] = {}
+    for r in results:
+        key = (r["symbol"], r["timeframe_minutes"])
+        if not r.get("error") and r.get("z_omega", 0.0) > best_per_job.get(key, {}).get("z_omega", -1.0):
+            best_per_job[key] = r
+
+    for retrain_round in range(1, args.retrain_rounds):
+        # Jobs that still haven't met the threshold and had no error
+        retry_jobs = [
+            j for j in jobs
+            if (
+                best_per_job.get((j.symbol, j.timeframe_minutes), {}).get("z_omega", 0.0)
+                < args.paper_threshold
+                and not best_per_job.get((j.symbol, j.timeframe_minutes), {}).get("error")
+            )
+        ]
+        if not retry_jobs:
+            LOG.info("[RETRAIN] All jobs met threshold after round %d — stopping early.", retrain_round)
+            break
+        LOG.info(
+            "[RETRAIN] Round %d/%d: %d job(s) below ZΩ=%.2f — re-training with warm_start=True",
+            retrain_round + 1, args.retrain_rounds, len(retry_jobs), args.paper_threshold,
+        )
+        # Reset HUD entries for jobs being retrained so they show "running" again
+        retry_keys = {(j.symbol, j.timeframe_minutes) for j in retry_jobs}
         for entry in _ot_status["results"]:
-            entry["status"] = "running"
+            if (entry["symbol"], entry["timeframe_minutes"]) in retry_keys:
+                entry["status"] = "queued"
+                entry.pop("z_omega", None)
+        _ot_status["status"] = "running"
         _write_status(_ot_status)
 
-        for fut in as_completed(futures):
-            job = futures[fut]
-            label = f"{job.symbol}_M{job.timeframe_minutes}"
-            try:
-                res = fut.result()
-                results.append(res)
-                if res.get("error"):
-                    LOG.error("[MAIN] %s failed: %s", label, res["error"])
-                else:
-                    LOG.info(
-                        "[MAIN] %s done — ZOmega=%.4f  trades=%d",
-                        label, res["z_omega"], res["val_trades"],
-                    )
-            except Exception as exc:
-                LOG.error("[MAIN] %s raised: %s", label, exc, exc_info=True)
-                res = {
-                    "symbol": job.symbol, "timeframe_minutes": job.timeframe_minutes,
-                    "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
-                    "total_train_steps": 0, "elapsed_s": 0.0,
-                    "weights_path": "", "error": str(exc),
-                }
-                results.append(res)
+        round_results = _execute_pool(
+            retry_jobs, min(n_workers, len(retry_jobs)), args,
+            warm_start=True,   # always warm-start on retrain rounds
+            ot_status=_ot_status, t_start=t_start,
+        )
+        results.extend(round_results)
 
-            # ── Update HUD status after each job completes ────────────────────
-            _ot_status["elapsed_s"] = time.perf_counter() - t_start
-            for entry in _ot_status["results"]:
-                if entry["symbol"] == res["symbol"] and entry["timeframe_minutes"] == res["timeframe_minutes"]:
-                    entry["status"] = "error" if res.get("error") else "done"
-                    entry["z_omega"] = res.get("z_omega", 0.0)
-                    entry["train_trades"] = res.get("train_trades", 0)
-                    entry["val_trades"] = res.get("val_trades", 0)
-                    entry["total_train_steps"] = res.get("total_train_steps", 0)
-                    entry["elapsed_s"] = res.get("elapsed_s", 0.0)
-                    entry["error"] = res.get("error")
-                    break
-            _write_status(_ot_status)
+        for r in round_results:
+            key = (r["symbol"], r["timeframe_minutes"])
+            if not r.get("error") and r.get("z_omega", 0.0) > best_per_job.get(key, {}).get("z_omega", -1.0):
+                best_per_job[key] = r
 
     total_s = time.perf_counter() - t_start
 
@@ -556,12 +631,16 @@ def main(argv: list[str] | None = None) -> int:
     _ot_status["elapsed_s"] = total_s
     _write_status(_ot_status)
 
-    # Print summary table
-    print_summary(results)
+    # Print summary table — deduplicate to show best result per (symbol, TF)
+    deduped = list(best_per_job.values()) if best_per_job else results
+    # Include any errored jobs not in best_per_job
+    errored = [r for r in results if r.get("error")
+               and (r["symbol"], r["timeframe_minutes"]) not in best_per_job]
+    print_summary(deduped + errored)
     LOG.info("All jobs completed in %.1f s", total_s)
 
     # Copy best-by-ZOmega weights per symbol
-    best = select_best(results)
+    best = select_best(deduped + errored)
     if best:
         best_dir = Path(args.checkpoint_dir) / "best"
         copy_best_weights(best, best_dir)
@@ -591,8 +670,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             print("  Launch paper bots with:  python3 run_universe.py --watch")
 
-    n_ok  = sum(1 for r in results if not r.get("error"))
-    n_err = len(results) - n_ok
+    n_ok  = sum(1 for r in deduped + errored if not r.get("error"))
+    n_err = len(deduped + errored) - n_ok
     if n_err:
         LOG.warning("%d job(s) failed.", n_err)
         return 1
