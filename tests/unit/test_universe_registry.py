@@ -29,8 +29,13 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
-import train_offline as to   # noqa: E402
+import train_offline as to   # noqa: E402  # isort: skip
 
+# ---------------------------------------------------------------------------
+# Named constants (avoid magic literals in assertions)
+# ---------------------------------------------------------------------------
+_TF_H1_MINUTES = 60     # minutes per H1 bar
+_TF_H4_MINUTES = 240    # minutes per H4 bar
 
 # ---------------------------------------------------------------------------
 # Synthetic bar generator
@@ -78,12 +83,12 @@ class TestRegisterUniverse:
         uni = tmp_path / "universe.json"
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
 
-        to._register_universe("EURUSD", 60, z_omega=2.5, weights_path="data/checkpoints/best/EURUSD_trigger.npz")
+        to._register_universe("EURUSD", _TF_H1_MINUTES, z_omega=2.5, weights_path="data/checkpoints/best/EURUSD_trigger.npz")
 
         assert uni.exists()
         inst = _read_universe(uni)["instruments"]["EURUSD"]
         assert inst["stage"] == "PAPER"
-        assert inst["timeframe_minutes"] == 60
+        assert inst["timeframe_minutes"] == _TF_H1_MINUTES
         assert inst["z_omega"] == pytest.approx(2.5)
         assert inst["paper_pid"] is None
 
