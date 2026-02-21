@@ -79,6 +79,7 @@ class TabbedHUD:
         self.production_metrics = {}
         self.offline_stats: dict = {}       # offline_training_status.json
         self.offline_job_progress: dict = {}  # keyed by (symbol, tf_minutes)
+        self.universe_stats: dict = {}        # universe.json + PID liveness
         self.self_test_results: list = []
         self._metrics_from_trade_log = False
         # Loss history for trend / sparkline (non-zero samples only)
@@ -226,6 +227,28 @@ class TabbedHUD:
 
         # Offline training status (written by train_offline.py, optional)
         self._load_json("offline_training_status.json", "offline_stats")
+
+        # Universe / paper trading state (written by train_offline.py --auto-promote)
+        _uni_path = self.data_dir / "universe.json"
+        if _uni_path.exists():
+            try:
+                import os as _os
+                _uni_raw: dict = json.loads(_uni_path.read_text())
+                for _sym, _entry in _uni_raw.items():
+                    _pid = _entry.get("paper_pid")
+                    _alive = False
+                    if _pid:
+                        try:
+                            _os.kill(int(_pid), 0)
+                            _alive = True
+                        except (OSError, ProcessLookupError):
+                            pass
+                    _entry["_pid_alive"] = _alive
+                self.universe_stats = _uni_raw
+            except Exception:
+                pass
+        else:
+            self.universe_stats = {}
 
         # Per-job live progress files (written by OfflineTrainer worker processes)
         _prog: dict = {}
@@ -822,7 +845,54 @@ class TabbedHUD:
                     print(row)
             print()
 
-        print("\033[1m🧠 AGENT TRAINING STATUS\033[0m\n")
+        # ── Paper Trading Pipeline ────────────────────────────────────────────
+        if self.universe_stats:
+            uni = self.universe_stats
+            _STAGE_COL = {
+                "PAPER":     _Y,
+                "LIVE":      _G,
+                "UNTRAINED": _DIM,
+                "DEMOTED":   _R,
+            }
+            running_count = sum(1 for e in uni.values() if e.get("_pid_alive"))
+            total_count   = len(uni)
+            hdr_badge = (
+                f"{_G}{running_count}/{total_count} running{_RST}"
+                if running_count else
+                f"{_DIM}0/{total_count} running{_RST}"
+            )
+            print(f"  \033[1m📈 PAPER TRADING PIPELINE\033[0m  {hdr_badge}")
+            print()
+            print(f"    {'Symbol':<8}  {'TF':>5}  {'Stage':<10}  {'ZΩ':>8}  {'Bot':>6}  Started")
+            print(f"    {'─'*8}  {'─'*5}  {'─'*10}  {'─'*8}  {'─'*6}  {'─'*19}")
+            for sym, entry in sorted(uni.items()):
+                stage   = entry.get("stage", "?")[:10]
+                tf_min  = entry.get("timeframe_minutes", 0)
+                tf_lbl  = f"M{tf_min}" if tf_min else "?"
+                zo      = entry.get("z_omega")
+                zo_str  = f"{zo:8.4f}" if zo is not None else f"{'—':>8}"
+                if zo is not None:
+                    zo_col = _G if zo > 0.5 else (_Y if zo > 0 else _R)
+                    zo_str = f"{zo_col}{zo_str}{_RST}"
+                pid_alive = entry.get("_pid_alive", False)
+                pid       = entry.get("paper_pid")
+                if pid_alive:
+                    bot_str = f"{_G}  ▶ {pid}{_RST}"
+                elif pid:
+                    bot_str = f"{_R}dead {_DIM}({pid}){_RST}"
+                else:
+                    bot_str = f"{_DIM}  —{_RST}"
+                started = entry.get("paper_started_at", "")[:19].replace("T", " ") if entry.get("paper_started_at") else "—"
+                stage_col = _STAGE_COL.get(stage, _DIM)
+                print(f"    {sym:<8}  {tf_lbl:>5}  {stage_col}{stage:<10}{_RST}  {zo_str}  {bot_str}  {started}")
+            print()
+
+        # ── Live Bot Training ─────────────────────────────────────────────────
+        _ts_nonempty = any(v for v in self.training_stats.values() if v)
+        if not _ts_nonempty:
+            print(f"\033[1m🤖 LIVE BOT TRAINING\033[0m  {_DIM}(no live bot running){_RST}\n")
+            return   # offline + paper already printed above; nothing more to show
+        print("\033[1m🤖 LIVE BOT TRAINING\033[0m\n")
 
         def _pct_bar(val: int, cap: int) -> str:
             pct = min(val / cap, 1.0) if cap > 0 else 0.0
@@ -948,6 +1018,7 @@ class TabbedHUD:
         print("  \033[1m📊 LEARNING HEALTH\033[0m")
         print(f"    Training: {train_str}   Last event: {last_train}")
         print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
+        print()
 
     def _render_header(self):
         """Render header"""
