@@ -113,6 +113,7 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 from src.agents.dual_policy import DualPolicy
+from src.training.bar_experience_cache import BarExperienceCache
 from src.core.adaptive_regularization import AdaptiveRegularization
 from src.core.broker_execution_model import BrokerExecutionModel, OrderSide
 from src.core.order_book import OrderBook, VPINCalculator
@@ -818,6 +819,14 @@ class CTraderFixApp(fix.Application):
                 self.policy.load_checkpoint()
         else:
             self.policy = Policy()  # type: ignore[assignment]
+
+        # Bar experience cache — writes raw-bar trade records for offline training
+        _cache_enabled = enable_online_learning and os.environ.get("DDQN_BAR_CACHE", "1") == "1"
+        self._bar_cache = BarExperienceCache(
+            symbol=symbol,
+            timeframe_minutes=timeframe_minutes,
+            enabled=_cache_enabled,
+        )
 
         self.bars: deque = deque(maxlen=2000)
         self.builder = BarBuilder(timeframe_minutes)
@@ -3062,6 +3071,23 @@ class CTraderFixApp(fix.Application):
                 self.prev_exit_action = None
                 self.prev_mfe = 0.0
                 self.prev_mae = 0.0
+                # Persist raw-bar trade record for offline training replay
+                self._bar_cache.record_trade(
+                    bars=self.bars,
+                    trigger_action=self.entry_action or 0,
+                    trigger_reward=float(locals().get("trigger_reward", 0.0)),
+                    capture_reward=float(locals().get("capture_reward", 0.0)),
+                    entry_price=float(entry_price),
+                    exit_price=float(exit_price),
+                    pnl_pts=float(pnl_pts),
+                    mfe=float(summary.get("mfe", 0.0)),
+                    mae=float(summary.get("mae", 0.0)),
+                    regime=str(getattr(self.policy, "current_regime", "UNKNOWN")),
+                    was_explore=getattr(self, "was_exploration_entry", False),
+                    imbalance=0.0,
+                    vpin_z=float(self.entry_vpin_z),
+                    depth_ratio=1.0,
+                )
 
             # Update circuit breakers
             current_equity = self.performance.total_pnl + 10000.0
@@ -3809,6 +3835,8 @@ class CTraderFixApp(fix.Application):
                         and self.policy.trigger.epsilon > EPSILON_HIGH_THRESHOLD
                         and runway <= RUNWAY_FALLBACK_THRESHOLD
                     )
+                    # Snapshot bars at entry for offline training cache
+                    self._bar_cache.snapshot_entry(self.bars)
 
                 # FIX 5: Add NO_ENTRY experiences so trigger learns when NOT to trade
                 # This provides negative/neutral examples critical for balanced learning
