@@ -521,41 +521,64 @@ def _execute_pool(
                 entry["status"] = "running"
         _write_status(ot_status)
 
-        for fut in as_completed(futures):
-            job = futures[fut]
-            label = f"{job.symbol}_M{job.timeframe_minutes}"
-            try:
-                res = fut.result()
-                round_results.append(res)
-                if res.get("error"):
-                    LOG.error("[MAIN] %s failed: %s", label, res["error"])
-                else:
-                    LOG.info(
-                        "[MAIN] %s done — ZOmega=%.4f  trades=%d",
-                        label, res["z_omega"], res["val_trades"],
-                    )
-            except Exception as exc:
-                LOG.error("[MAIN] %s raised: %s", label, exc, exc_info=True)
-                res = {
-                    "symbol": job.symbol, "timeframe_minutes": job.timeframe_minutes,
-                    "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
-                    "total_train_steps": 0, "elapsed_s": 0.0,
-                    "weights_path": "", "error": str(exc),
-                }
-                round_results.append(res)
+        try:
+            for fut in as_completed(futures):
+                job = futures[fut]
+                label = f"{job.symbol}_M{job.timeframe_minutes}"
+                try:
+                    res = fut.result()
+                    round_results.append(res)
+                    if res.get("error"):
+                        LOG.error("[MAIN] %s failed: %s", label, res["error"])
+                    else:
+                        LOG.info(
+                            "[MAIN] %s done — ZOmega=%.4f  trades=%d",
+                            label, res["z_omega"], res["val_trades"],
+                        )
+                except Exception as exc:
+                    LOG.error("[MAIN] %s raised: %s", label, exc, exc_info=True)
+                    res = {
+                        "symbol": job.symbol, "timeframe_minutes": job.timeframe_minutes,
+                        "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
+                        "total_train_steps": 0, "elapsed_s": 0.0,
+                        "weights_path": "", "error": str(exc),
+                    }
+                    round_results.append(res)
 
+                ot_status["elapsed_s"] = time.perf_counter() - t_start
+                for entry in ot_status["results"]:
+                    if (entry["symbol"] == res["symbol"]
+                            and entry["timeframe_minutes"] == res["timeframe_minutes"]):
+                        entry["status"] = "error" if res.get("error") else "done"
+                        entry["z_omega"] = res.get("z_omega", 0.0)
+                        entry["train_trades"] = res.get("train_trades", 0)
+                        entry["val_trades"] = res.get("val_trades", 0)
+                        entry["total_train_steps"] = res.get("total_train_steps", 0)
+                        entry["elapsed_s"] = res.get("elapsed_s", 0.0)
+                        entry["error"] = res.get("error")
+                        break
+                _write_status(ot_status)
+
+        except Exception as pool_exc:
+            # BrokenProcessPool or other pool-level failure — mark remaining jobs as failed
+            LOG.error("[MAIN] Process pool crashed: %s", pool_exc, exc_info=True)
+            completed_syms = {(r["symbol"], r["timeframe_minutes"]) for r in round_results}
+            for j in jobs:
+                if (j.symbol, j.timeframe_minutes) not in completed_syms:
+                    err_res = {
+                        "symbol": j.symbol, "timeframe_minutes": j.timeframe_minutes,
+                        "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
+                        "total_train_steps": 0, "elapsed_s": 0.0,
+                        "weights_path": "", "error": f"Pool crash: {pool_exc}",
+                    }
+                    round_results.append(err_res)
+                    for entry in ot_status["results"]:
+                        if (entry["symbol"] == j.symbol
+                                and entry["timeframe_minutes"] == j.timeframe_minutes):
+                            entry["status"] = "error"
+                            entry["error"] = err_res["error"]
+                            break
             ot_status["elapsed_s"] = time.perf_counter() - t_start
-            for entry in ot_status["results"]:
-                if (entry["symbol"] == res["symbol"]
-                        and entry["timeframe_minutes"] == res["timeframe_minutes"]):
-                    entry["status"] = "error" if res.get("error") else "done"
-                    entry["z_omega"] = res.get("z_omega", 0.0)
-                    entry["train_trades"] = res.get("train_trades", 0)
-                    entry["val_trades"] = res.get("val_trades", 0)
-                    entry["total_train_steps"] = res.get("total_train_steps", 0)
-                    entry["elapsed_s"] = res.get("elapsed_s", 0.0)
-                    entry["error"] = res.get("error")
-                    break
             _write_status(ot_status)
 
     return round_results
