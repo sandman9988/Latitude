@@ -503,6 +503,11 @@ class OfflineTrainer:
                 label, epoch + 1, self.n_epochs, epoch_eps_start,
             )
 
+            # Reset any stale position state from the previous epoch.
+            # If the prior epoch ended mid-trade (on_exit never called),
+            # trigger.decide_entry would block every bar with 'current_position != 0'.
+            policy.current_position = 0
+
             sim = _Simulator(policy, update_policy=True)
             epoch_bar_offset = epoch * len(train_bars)
 
@@ -556,6 +561,10 @@ class OfflineTrainer:
 
         # ── Validation pass ───────────────────────────────────────────────────
         # ── Validation pass (greedy: epsilon = epsilon_end so results are stable) ─
+        # CRITICAL: reset stale position state from training. If the last epoch
+        # ended with an open trade, policy.current_position stays non-zero,
+        # causing trigger.decide_entry to return 0 for every val bar → val=0.
+        policy.current_position = 0
         policy.trigger.epsilon = self.epsilon_end
         if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
             policy.harvester.epsilon = self.epsilon_end
