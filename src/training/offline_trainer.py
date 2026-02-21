@@ -403,6 +403,15 @@ class OfflineTrainer:
             label, len(train_bars), len(val_bars),
         )
 
+        # Scale PER buffer to training set size: up to half the training bars,
+        # capped at 20k to avoid unbounded memory. Explicit policy_kwargs override wins.
+        offline_buffer_capacity = min(max(len(train_bars) // 2, 2_000), 20_000)
+        policy_kwargs = {
+            "trigger_buffer_capacity": offline_buffer_capacity,
+            "harvester_buffer_capacity": offline_buffer_capacity,
+            **self.policy_kwargs,
+        }
+
         # Build policy — training enabled, no checkpoint loading (start fresh)
         policy = DualPolicy(
             symbol=self.symbol,
@@ -411,7 +420,7 @@ class OfflineTrainer:
             enable_training=True,
             enable_event_features=False,   # event features require live-time context
             timeframe_minutes=self.timeframe_minutes,
-            **self.policy_kwargs,
+            **policy_kwargs,
         )
 
         # ── Training pass ─────────────────────────────────────────────────────

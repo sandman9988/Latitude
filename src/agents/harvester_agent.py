@@ -111,6 +111,7 @@ class HarvesterAgent:
         param_manager: LearnedParametersManager | None = None,
         friction_calculator=None,
         timeframe_minutes: int = 5,
+        buffer_capacity: int = BUFFER_CAPACITY,
     ):
         """
         Initialize Harvester Agent.
@@ -135,7 +136,7 @@ class HarvesterAgent:
 
         # Phase 3.5: Experience replay buffer
         self.enable_training = enable_training
-        self.buffer = ExperienceBuffer(capacity=BUFFER_CAPACITY, timeframe_minutes=self.timeframe_minutes) if enable_training else None
+        self.buffer = ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes) if enable_training else None
         self.min_experiences = MIN_EXPERIENCES_DEFAULT  # Minimum before training starts
         self.batch_size = BATCH_SIZE_DEFAULT
         self.training_steps = 0
@@ -162,7 +163,7 @@ class HarvesterAgent:
             self._load_model(model_path)
 
         LOG.info("[HARVESTER] Init: training=%s | buffer=%dk min=%d",
-            enable_training, BUFFER_CAPACITY // 1000, self.min_experiences)
+            enable_training, buffer_capacity // 1000, self.min_experiences)
 
         self._init_exit_thresholds()
 

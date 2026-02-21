@@ -60,6 +60,8 @@ class DualPolicy:
         timeframe_minutes: int = 5,
         min_bars_for_features: int = 70,
         friction_calculator=None,
+        trigger_buffer_capacity: int = 2_000,
+        harvester_buffer_capacity: int = 10_000,
     ):
         """
         Initialize DualPolicy with trigger and harvester agents.
@@ -103,6 +105,7 @@ class DualPolicy:
             broker=self.broker,
             param_manager=self.param_manager,
             timeframe_minutes=timeframe_minutes,
+            buffer_capacity=trigger_buffer_capacity,
         )
         self.harvester = HarvesterAgent(
             window=window,
@@ -114,6 +117,7 @@ class DualPolicy:
             param_manager=self.param_manager,
             friction_calculator=self.friction_calculator,
             timeframe_minutes=timeframe_minutes,
+            buffer_capacity=harvester_buffer_capacity,
         )
 
         LOG.info("[DUAL_POLICY] TriggerAgent: %d features (7 base + 5 geometry + 6 event)", trigger_features)

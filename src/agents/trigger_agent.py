@@ -86,6 +86,7 @@ class TriggerAgent:
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
         timeframe_minutes: int = 5,
+        buffer_capacity: int = 2_000,
     ):
         """
         Initialize Trigger Agent.
@@ -123,7 +124,7 @@ class TriggerAgent:
         # Capacity sized to ~20 days at ~100 trades/day (staleness halflife = 1 day,
         # so >2,000 entries are already near-zero weight and waste memory/diversity).
         self.enable_training = enable_training
-        self.buffer = ExperienceBuffer(capacity=2_000, timeframe_minutes=self.timeframe_minutes) if enable_training else None
+        self.buffer = ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes) if enable_training else None
         self.min_experiences = 32  # 1 batch – start training as soon as we have enough
         self.batch_size = 64
         self.training_steps = 0
