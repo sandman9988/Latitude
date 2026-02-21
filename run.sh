@@ -388,7 +388,9 @@ start_bot_daemon() {
     local script_path
     script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
     log "${BLUE}Launching trading bot (daemon mode)...${NC}"
-    ("$script_path" --bot-daemon "${FORWARDED_ARGS[@]}") >> "$launcher_log" 2>&1 &
+    # setsid gives the bot its own session so HUD terminal signals (SIGINT/SIGHUP
+    # from Ctrl+C, terminal close, tab cycling, etc.) never reach the bot process.
+    setsid "$script_path" --bot-daemon "${FORWARDED_ARGS[@]}" >> "$launcher_log" 2>&1 &
     BOT_LAUNCHER_PID=$!
     sleep 2
     if ! kill -0 "$BOT_LAUNCHER_PID" 2>/dev/null; then
@@ -428,6 +430,7 @@ launch_hud_foreground() {
     log "=========================================="
     log ""
     log "Press Ctrl+C to close the HUD. Trading bot continues running."
+    log "Re-attach HUD at any time:  ./run.sh --hud-only"
     HUD_INTERRUPTED=0
     trap handle_hud_sigint INT
     local hud_status=0
@@ -504,7 +507,7 @@ orchestrate_with_hud() {
     start_bot_daemon
     wait_for_bot_telemetry || true
     seed_hud_state
-    launch_hud_background
+    launch_hud_foreground
 }
 
 # Main startup sequence
