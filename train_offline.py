@@ -163,6 +163,10 @@ def _run_job(
     train_split: float,
     train_every: int,
     max_bars: int | None,
+    n_epochs: int = 1,
+    warm_start: bool = False,
+    epsilon_start: float = 0.4,
+    epsilon_end: float = 0.05,
 ) -> dict[str, Any]:
     """
     Child-process entry point.  Returns a dict (not a TrainResult) so it
@@ -200,6 +204,10 @@ def _run_job(
         checkpoint_dir=checkpoint_dir,
         train_split=train_split,
         train_every=train_every,
+        n_epochs=n_epochs,
+        warm_start=warm_start,
+        epsilon_start=epsilon_start,
+        epsilon_end=epsilon_end,
     )
     result = trainer.run()
     return {
@@ -386,6 +394,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--train-split",   type=float, default=0.80, metavar="0.8")
     p.add_argument("--train-every",   type=int, default=4, metavar="N")
     p.add_argument("--max-bars",      type=int, default=None, metavar="N")
+    p.add_argument("--n-epochs",      type=int, default=1, metavar="N",
+                   help="Number of training passes over the data per job (default: 1)")
+    p.add_argument("--warm-start",    action="store_true", default=False,
+                   help="Load existing checkpoint weights before training (continue from prior run)")
+    p.add_argument("--epsilon-start", type=float, default=0.4, metavar="E",
+                   help="Epsilon at the start of each training epoch (default: 0.4)")
+    p.add_argument("--epsilon-end",   type=float, default=0.05, metavar="E",
+                   help="Epsilon floor / val epsilon (default: 0.05)")
     p.add_argument("--dry-run",       action="store_true",
                    help="Discover jobs and print plan without training")
     # Universe / paper-trading promotion
@@ -475,6 +491,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.train_split,
                 args.train_every,
                 args.max_bars,
+                args.n_epochs,
+                args.warm_start,
+                args.epsilon_start,
+                args.epsilon_end,
             ): j
             for j in jobs
         }

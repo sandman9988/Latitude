@@ -348,6 +348,16 @@ class OfflineTrainer:
         train_split:        Fraction of bars used for training (default 0.80).
         train_every:        Number of bar-close steps between train_step() calls.
         policy_kwargs:      Extra kwargs forwarded to DualPolicy constructor.
+        n_epochs:           Number of full passes over the training set (default 1).
+                            Each epoch resets epsilon so the policy re-explores
+                            with increasingly warm weights.
+        warm_start:         If True, load existing per-label checkpoint weights
+                            (``<checkpoint_dir>/<label>_trigger_offline.npz``) before
+                            the first epoch so training continues from a prior run.
+        epsilon_start:      Epsilon at the beginning of each training epoch
+                            (overrides EPSILON_START env var, default 0.4).
+        epsilon_end:        Epsilon floor across all epochs
+                            (overrides EPSILON_END env var, default 0.05).
     """
 
     def __init__(
@@ -359,6 +369,10 @@ class OfflineTrainer:
         train_split: float = TRAIN_SPLIT,
         train_every: int = TRAIN_EVERY,
         policy_kwargs: dict | None = None,
+        n_epochs: int = 1,
+        warm_start: bool = False,
+        epsilon_start: float = 0.4,
+        epsilon_end: float = 0.05,
     ) -> None:
         self.symbol = symbol
         self.timeframe_minutes = timeframe_minutes
@@ -367,6 +381,10 @@ class OfflineTrainer:
         self.train_split = train_split
         self.train_every = train_every
         self.policy_kwargs = policy_kwargs or {}
+        self.n_epochs = max(1, int(n_epochs))
+        self.warm_start = warm_start
+        self.epsilon_start = epsilon_start
+        self.epsilon_end = epsilon_end
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -392,6 +410,7 @@ class OfflineTrainer:
 
     def _run_inner(self, label: str, t0: float) -> TrainResult:
         # Lazy import to avoid circular imports and allow multiprocessing fork
+        import os
         from src.agents.dual_policy import DualPolicy
 
         n_total = len(self.bars)
@@ -400,8 +419,8 @@ class OfflineTrainer:
         val_bars   = self.bars[n_train:]
 
         LOG.info(
-            "[OFFLINE] %s: %d train bars / %d val bars",
-            label, len(train_bars), len(val_bars),
+            "[OFFLINE] %s: %d train bars / %d val bars  (epochs=%d, warm_start=%s)",
+            label, len(train_bars), len(val_bars), self.n_epochs, self.warm_start,
         )
 
         # Scale PER buffer to training set size: up to half the training bars,
@@ -413,7 +432,17 @@ class OfflineTrainer:
             **self.policy_kwargs,
         }
 
-        # Build policy — training enabled, no checkpoint loading (start fresh)
+        # Override epsilon schedule for offline training.  The live defaults
+        # (epsilon_start=0.05, epsilon_end=0.01) are too conservative; the
+        # policy would barely explore causing near-zero val trades.
+        # Restore originals after policy construction so child processes don't
+        # bleed into each other (each is a spawned process, so this is safe).
+        _orig_eps_start = os.environ.get("EPSILON_START")
+        _orig_eps_end   = os.environ.get("EPSILON_END")
+        os.environ["EPSILON_START"] = str(self.epsilon_start)
+        os.environ["EPSILON_END"]   = str(self.epsilon_end)
+
+        # Build policy — training enabled
         policy = DualPolicy(
             symbol=self.symbol,
             timeframe=f"M{self.timeframe_minutes}",
@@ -424,53 +453,107 @@ class OfflineTrainer:
             **policy_kwargs,
         )
 
-        # ── Training pass ─────────────────────────────────────────────────────
+        # Restore env vars immediately after construction
+        if _orig_eps_start is None:
+            os.environ.pop("EPSILON_START", None)
+        else:
+            os.environ["EPSILON_START"] = _orig_eps_start
+        if _orig_eps_end is None:
+            os.environ.pop("EPSILON_END", None)
+        else:
+            os.environ["EPSILON_END"] = _orig_eps_end
+
+        # ── Warm start: load existing checkpoint weights ───────────────────────
+        if self.warm_start:
+            for agent_name, agent in [("trigger", policy.trigger), ("harvester", policy.harvester)]:
+                ckpt = self.checkpoint_dir / f"{label}_{agent_name}_offline.npz"
+                if ckpt.exists() and agent.ddqn is not None:
+                    try:
+                        agent.ddqn.load_weights(str(ckpt))
+                        LOG.info("[OFFLINE] %s warm-started from %s", label, ckpt.name)
+                    except Exception as exc:
+                        LOG.warning("[OFFLINE] %s could not load %s: %s", label, ckpt.name, exc)
+
+        # ── Multi-epoch training pass ──────────────────────────────────────────
         _progress_path = Path(f"data/offline_progress_{self.symbol}_M{self.timeframe_minutes}.json")
         _progress_path.parent.mkdir(parents=True, exist_ok=True)
-        _progress_every = max(50, len(train_bars) // 100)   # ~100 updates across the run
+        _total_bars_all_epochs = len(train_bars) * self.n_epochs
+        _progress_every = max(50, len(train_bars) // 100)   # ~100 HUD updates per epoch
 
-        sim = _Simulator(policy, update_policy=True)
         total_train_steps = 0
-        for i, bar in enumerate(train_bars):
-            sim.step(bar, i)
-            if i % self.train_every == 0 and i > 0:
-                try:
-                    policy.train_step()
-                    total_train_steps += 1
-                except Exception as exc:
-                    LOG.debug("[OFFLINE] train_step failed at bar %d: %s", i, exc)
+        total_train_trades = 0
 
-            # Emit live progress for HUD every _progress_every bars
-            if i % _progress_every == 0:
-                _trig = policy.trigger
-                _harv = policy.harvester
-                try:
-                    _tmp = _progress_path.with_suffix(".tmp")
-                    _tmp.write_text(json.dumps({
-                        "symbol":            self.symbol,
-                        "timeframe_minutes": self.timeframe_minutes,
-                        "bar":               i,
-                        "total_bars":        len(train_bars),
-                        "pct":               round(i / len(train_bars) * 100, 1),
-                        "train_steps":       total_train_steps,
-                        "trades":            len(sim.trades),
-                        "epsilon":           round(float(_trig.epsilon), 4),
-                        "beta":              round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
-                        "trigger_buf":       int(_trig.buffer.size) if _trig.buffer else 0,
-                        "harvester_buf":     int(_harv.buffer.size) if _harv.buffer else 0,
-                    }))
-                    _tmp.replace(_progress_path)
-                except Exception:
-                    pass
+        for epoch in range(self.n_epochs):
+            # Reset epsilon at the start of each epoch so the policy re-explores.
+            # Warm weights mean less randomness is needed; reduce ε slightly each epoch.
+            epoch_eps_start = self.epsilon_start * (0.7 ** epoch)
+            epoch_eps_start = max(epoch_eps_start, self.epsilon_end * 2)  # keep some exploration
+            policy.trigger.epsilon = epoch_eps_start
+            if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
+                policy.harvester.epsilon = epoch_eps_start
+
+            LOG.info(
+                "[OFFLINE] %s epoch %d/%d  ε_start=%.3f",
+                label, epoch + 1, self.n_epochs, epoch_eps_start,
+            )
+
+            sim = _Simulator(policy, update_policy=True)
+            epoch_bar_offset = epoch * len(train_bars)
+
+            for i, bar in enumerate(train_bars):
+                sim.step(bar, i)
+                if i % self.train_every == 0 and i > 0:
+                    try:
+                        policy.train_step()
+                        total_train_steps += 1
+                    except Exception as exc:
+                        LOG.debug("[OFFLINE] train_step failed at bar %d: %s", i, exc)
+
+                # Emit live progress for HUD every _progress_every bars
+                if i % _progress_every == 0:
+                    _trig = policy.trigger
+                    _harv = policy.harvester
+                    _global_bar = epoch_bar_offset + i
+                    try:
+                        _tmp = _progress_path.with_suffix(".tmp")
+                        _tmp.write_text(json.dumps({
+                            "symbol":            self.symbol,
+                            "timeframe_minutes": self.timeframe_minutes,
+                            "bar":               _global_bar,
+                            "total_bars":        _total_bars_all_epochs,
+                            "pct":               round(_global_bar / _total_bars_all_epochs * 100, 1),
+                            "epoch":             epoch + 1,
+                            "n_epochs":          self.n_epochs,
+                            "train_steps":       total_train_steps,
+                            "trades":            total_train_trades + len(sim.trades),
+                            "epsilon":           round(float(_trig.epsilon), 4),
+                            "beta":              round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
+                            "trigger_buf":       int(_trig.buffer.size) if _trig.buffer else 0,
+                            "harvester_buf":     int(_harv.buffer.size) if _harv.buffer else 0,
+                        }))
+                        _tmp.replace(_progress_path)
+                    except Exception:
+                        pass
+
+            total_train_trades += len(sim.trades)
+            LOG.info(
+                "[OFFLINE] %s epoch %d/%d done: %d trades, %d gradient steps",
+                label, epoch + 1, self.n_epochs, len(sim.trades), total_train_steps,
+            )
 
         _progress_path.unlink(missing_ok=True)   # clean up when done
 
         LOG.info(
-            "[OFFLINE] %s train done: %d trades, %d gradient steps",
-            label, len(sim.trades), total_train_steps,
+            "[OFFLINE] %s all epochs done: %d total trades, %d gradient steps",
+            label, total_train_trades, total_train_steps,
         )
 
         # ── Validation pass ───────────────────────────────────────────────────
+        # ── Validation pass (greedy: epsilon = epsilon_end so results are stable) ─
+        policy.trigger.epsilon = self.epsilon_end
+        if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
+            policy.harvester.epsilon = self.epsilon_end
+
         val_sim = _Simulator(policy, update_policy=False)
         for i, bar in enumerate(val_bars):
             val_sim.step(bar, i)
@@ -493,7 +576,7 @@ class OfflineTrainer:
             symbol=self.symbol,
             timeframe_minutes=self.timeframe_minutes,
             z_omega=score,
-            train_trades=len(sim.trades),
+            train_trades=total_train_trades,
             val_trades=len(val_sim.trades),
             total_train_steps=total_train_steps,
             elapsed_s=elapsed,
