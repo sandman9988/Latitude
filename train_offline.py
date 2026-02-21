@@ -244,9 +244,28 @@ def _detect_tf_minutes(filename: str) -> int | None:
 
 
 def _detect_symbol(filename: str) -> str | None:
-    stem = Path(filename).stem.upper()
-    m = _SYM_PATTERN.match(stem)
-    return m.group(1) if m else None
+    """Extract broker symbol from filename, preserving ECN/variant suffixes.
+
+    Uses the timeframe marker as a right-boundary delimiter so that symbols
+    like XAUUSD+, XAUUSD.crp and BTCUSD are returned in full rather than
+    being truncated to their bare alphabetic prefix.
+
+    Examples
+    --------
+    XAUUSD_H1.csv               → XAUUSD
+    XAUUSD+_H1_20240101.csv     → XAUUSD+
+    XAUUSD.crp_H4_20240101.csv  → XAUUSD.CRP
+    BTCUSD_M15.csv              → BTCUSD
+    """
+    stem = Path(filename).stem          # drop extension
+    m = _TF_PATTERN.search(stem)
+    if m:
+        sym = stem[:m.start()]          # everything before _M15 / _H1 / etc.
+        if sym:
+            return sym.upper()
+    # Fallback for filenames without a recognised TF marker
+    m2 = _SYM_PATTERN.match(stem.upper())
+    return m2.group(1) if m2 else None
 
 
 def discover_jobs(
@@ -305,16 +324,16 @@ def discover_jobs(
 
             found.append(Job(sym.upper(), tf, f, fmt))
 
-    # Deduplicate
-    seen = set()
-    unique = []
+    # Deduplicate: one job per (symbol, timeframe_minutes).
+    # When multiple files resolve to the same pair, prefer the shortest filename
+    # (e.g. XAUUSD_H1.csv over XAUUSD.crp_H1_20240222...csv or XAUUSD+_H1_...csv).
+    best: dict[tuple, Job] = {}
     for j in found:
-        key = (j.symbol, j.timeframe_minutes, str(j.bars_file))
-        if key not in seen:
-            seen.add(key)
-            unique.append(j)
+        key = (j.symbol, j.timeframe_minutes)
+        if key not in best or len(j.bars_file.name) < len(best[key].bars_file.name):
+            best[key] = j
 
-    return unique
+    return list(best.values())
 
 
 # ── Best-model selection ───────────────────────────────────────────────────────
