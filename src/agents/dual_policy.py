@@ -102,6 +102,7 @@ class DualPolicy:
             timeframe=self.timeframe,
             broker=self.broker,
             param_manager=self.param_manager,
+            timeframe_minutes=timeframe_minutes,
         )
         self.harvester = HarvesterAgent(
             window=window,

@@ -6,9 +6,12 @@ import numpy as np
 import pytest
 
 from src.utils.experience_buffer import (
+    HALFLIFE_SESSIONS,
+    TRADING_SESSION_MINUTES,
     Experience,
     ExperienceBuffer,
     RegimeSampling,
+    staleness_halflife_for_timeframe,
 )
 
 
@@ -306,3 +309,57 @@ class TestISWeightCorrectness:
         assert batch2 is not None
         assert np.all(np.isfinite(batch2["weights"]))
         _ = total_before  # referenced to avoid lint warning
+
+
+# ---------------------------------------------------------------------------
+# Staleness halflife utility
+# ---------------------------------------------------------------------------
+
+class TestStalenessHalflife:
+
+    def test_timeframe_agnostic(self):
+        """M1, M5, and H1 all produce the same wall-clock halflife."""
+        h_m1 = staleness_halflife_for_timeframe(1)
+        h_m5 = staleness_halflife_for_timeframe(5)
+        h_h1 = staleness_halflife_for_timeframe(60)
+        assert h_m1 == pytest.approx(h_m5)
+        assert h_m5 == pytest.approx(h_h1)
+
+    def test_default_value(self):
+        """Default 1.5 sessions × 480 min × 60 s = 43200 s (12 h)."""
+        h = staleness_halflife_for_timeframe(5)
+        assert h == pytest.approx(HALFLIFE_SESSIONS * TRADING_SESSION_MINUTES * 60.0)
+        assert h == pytest.approx(43_200.0)
+
+    def test_custom_n_sessions(self):
+        """3 sessions × 480 min × 60 s = 86400 s (24 h)."""
+        h = staleness_halflife_for_timeframe(5, n_sessions=3.0)
+        assert h == pytest.approx(86_400.0)
+
+    def test_custom_session_minutes(self):
+        """1 session × 360 min × 60 s = 21600 s (6 h)."""
+        h = staleness_halflife_for_timeframe(5, n_sessions=1.0, session_minutes=360.0)
+        assert h == pytest.approx(21_600.0)
+
+    def test_d1_same_wall_clock(self):
+        """D1 (1440 min timeframe) gives same halflife as M5 — instrument agnostic."""
+        assert staleness_halflife_for_timeframe(1440) == pytest.approx(
+            staleness_halflife_for_timeframe(5)
+        )
+
+    def test_buffer_auto_computes_halflife(self):
+        """ExperienceBuffer with no explicit halflife auto-derives from timeframe."""
+        buf_m5 = ExperienceBuffer(capacity=100, timeframe_minutes=5)
+        buf_h1 = ExperienceBuffer(capacity=100, timeframe_minutes=60)
+        # Both should get the same default wall-clock halflife
+        assert buf_m5.staleness_halflife == pytest.approx(buf_h1.staleness_halflife)
+        assert buf_m5.staleness_halflife == pytest.approx(43_200.0)
+
+    def test_explicit_halflife_override(self):
+        """Passing staleness_halflife= explicitly bypasses auto-compute."""
+        buf = ExperienceBuffer(capacity=100, staleness_halflife=86_400.0, timeframe_minutes=5)
+        assert buf.staleness_halflife == pytest.approx(86_400.0)
+
+    def test_constants_exported(self):
+        assert TRADING_SESSION_MINUTES == pytest.approx(480.0)
+        assert HALFLIFE_SESSIONS == pytest.approx(1.5)

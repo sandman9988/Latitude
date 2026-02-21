@@ -57,6 +57,54 @@ from src.utils.sum_tree import SumTree
 LOG = logging.getLogger(__name__)
 RNG: Generator = default_rng(42)
 
+# ---------------------------------------------------------------------------
+# Session-based staleness halflife
+# ---------------------------------------------------------------------------
+# Express staleness in trading-session units rather than raw seconds so the
+# decay is instrument- and timeframe-agnostic.
+#
+# halflife_secs = n_sessions × session_bars × timeframe_minutes × 60
+#              = n_sessions × (session_minutes / tf_min) × tf_min × 60
+#              = n_sessions × session_minutes × 60
+#
+# timeframe_minutes cancels → the result is a pure wall-clock value that
+# correctly represents "N trading sessions" regardless of bar size.
+#
+# Example (all yield 43 200 s = 12 h):
+#   M1  → 1.5 × 480 bars × 1 min × 60  = 43 200 s
+#   M5  → 1.5 × 96 bars  × 5 min × 60  = 43 200 s
+#   H1  → 1.5 × 8 bars   × 60 min × 60 = 43 200 s
+#   D1  → 1.5 × 1 bar    × 1440 min × 60 = 129 600 s (≈ 1.5 days, appropriate)
+TRADING_SESSION_MINUTES: float = 480.0   # one FX intraday session (8 h)
+HALFLIFE_SESSIONS: float = 1.5           # 50% decay after 1.5 sessions
+
+
+def staleness_halflife_for_timeframe(
+    timeframe_minutes: int,
+    n_sessions: float = HALFLIFE_SESSIONS,
+    session_minutes: float = TRADING_SESSION_MINUTES,
+) -> float:
+    """Return staleness halflife in seconds scaled to the trading timeframe.
+
+    Args:
+        timeframe_minutes: Bar duration in minutes (e.g. 5 for M5, 60 for H1).
+        n_sessions: Number of trading sessions that span the halflife window.
+            Default 1.5 → an experience from 1.5 sessions ago counts 50%.
+        session_minutes: Duration of one trading session in minutes.
+            Default 480 (8 h) covers standard FX and most equity sessions.
+
+    Returns:
+        Halflife in seconds.  The formula is:
+            session_bars  = session_minutes / timeframe_minutes
+            halflife_secs = n_sessions × session_bars × timeframe_minutes × 60
+                          = n_sessions × session_minutes × 60
+        timeframe_minutes cancels, making the result timeframe-agnostic in
+        wall-clock units while remaining conceptually grounded in session units.
+    """
+    session_bars = session_minutes / max(1, timeframe_minutes)
+    return n_sessions * session_bars * timeframe_minutes * 60.0
+
+
 
 class RegimeSampling(IntEnum):
     """Regime types for prioritization weighting."""
@@ -98,10 +146,11 @@ class ExperienceBuffer:
         alpha: float = 0.6,
         beta: float = 0.4,
         beta_increment: float = 0.001,
-        staleness_halflife: float = 86400.0,  # 1 day in seconds
+        staleness_halflife: float | None = None,
         regime_boost: float = 1.5,
         epsilon: float = 0.01,
         seed: int | None = None,
+        timeframe_minutes: int = 5,
     ):
         """Initialize experience buffer.
 
@@ -110,18 +159,29 @@ class ExperienceBuffer:
             alpha: Priority exponent (0=uniform, 1=full prioritization)
             beta: Importance sampling exponent (0=no correction, 1=full correction)
             beta_increment: Beta increase per sample (annealing)
-            staleness_halflife: Time for priority to decay by 50% (seconds)
+            staleness_halflife: Override halflife in seconds.  ``None`` (default)
+                auto-computes from *timeframe_minutes* via
+                :func:`staleness_halflife_for_timeframe`, producing a value
+                grounded in trading-session units (instrument- and
+                timeframe-agnostic).
             regime_boost: Priority multiplier for experiences from current regime
             epsilon: Small constant to ensure non-zero priorities
             seed: Random seed for reproducibility (default: None for non-deterministic)
+            timeframe_minutes: Bar duration in minutes.  Used to auto-compute
+                *staleness_halflife* when that argument is ``None``.
         """
         self.capacity = capacity
         self.alpha = alpha
         self.beta = beta
         self.beta_increment = beta_increment
-        self.staleness_halflife = staleness_halflife
+        self.staleness_halflife = (
+            staleness_halflife
+            if staleness_halflife is not None
+            else staleness_halflife_for_timeframe(timeframe_minutes)
+        )
         self.regime_boost = regime_boost
         self.epsilon = epsilon
+        self.timeframe_minutes = timeframe_minutes
 
         # SumTree for efficient sampling (stores priorities only)
         self.tree = SumTree(capacity, seed=seed)
@@ -139,11 +199,13 @@ class ExperienceBuffer:
 
         LOG.info(
             "ExperienceBuffer initialized: capacity=%d, alpha=%.2f, beta=%.2f, "
-            "staleness_halflife=%.0fs, regime_boost=%.2f",
+            "staleness_halflife=%.0fs (tf=%dmin, %.1f sessions), regime_boost=%.2f",
             capacity,
             alpha,
             beta,
-            staleness_halflife,
+            self.staleness_halflife,
+            timeframe_minutes,
+            self.staleness_halflife / max(1.0, TRADING_SESSION_MINUTES * 60),
             regime_boost,
         )
 

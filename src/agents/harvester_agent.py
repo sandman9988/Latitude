@@ -135,7 +135,7 @@ class HarvesterAgent:
 
         # Phase 3.5: Experience replay buffer
         self.enable_training = enable_training
-        self.buffer = ExperienceBuffer(capacity=BUFFER_CAPACITY) if enable_training else None
+        self.buffer = ExperienceBuffer(capacity=BUFFER_CAPACITY, timeframe_minutes=self.timeframe_minutes) if enable_training else None
         self.min_experiences = MIN_EXPERIENCES_DEFAULT  # Minimum before training starts
         self.batch_size = BATCH_SIZE_DEFAULT
         self.training_steps = 0
