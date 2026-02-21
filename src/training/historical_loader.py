@@ -220,6 +220,9 @@ def _detect_columns(headers: list[str]) -> dict[str, str] | None:
         if date_h and time_h:
             result["date"] = date_h
             result["time"] = time_h
+        elif date_h:
+            # Single "date" column containing a full datetime string (e.g. yfinance export)
+            result["dt"] = date_h
 
     if "dt" not in result and "date" not in result:
         return None
