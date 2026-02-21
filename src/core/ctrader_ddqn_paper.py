@@ -1038,6 +1038,12 @@ class CTraderFixApp(fix.Application):
         self._health_thread = threading.Thread(target=self._monitor_connection_health, daemon=True)
         self._health_thread.start()
 
+        # Kill switch monitor — polls data/kill_switch.json every 5 s, independent of bar frequency.
+        # Allows the HUD (Alt+K) to trigger emergency close on H12/D1 without waiting for bar close.
+        self._kill_switch_path = Path("data/kill_switch.json")
+        self._kill_switch_thread = threading.Thread(target=self._monitor_kill_switch, daemon=True)
+        self._kill_switch_thread.start()
+
         # TradeManager integration - centralized order & position management
         self.trade_integration = TradeManagerIntegration(self)
 
@@ -1291,6 +1297,52 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[RECONNECT] Error forcing %s restart: %s", qual, e, exc_info=True)
         return False
+
+    def _monitor_kill_switch(self):
+        """
+        Background thread that polls data/kill_switch.json every 5 seconds.
+
+        This is intentionally independent of bar close so that emergency kills
+        work immediately on any timeframe (M15, H4, H12, D1, etc.).
+
+        When a kill is detected:
+          1. The file is consumed (deleted) to prevent re-triggering on restart.
+          2. ALL circuit breakers are tripped.
+          3. Emergency close is called on the broker.
+          4. Circuit breaker state is persisted to disk.
+        """
+        LOG.info("[KILL-SWITCH] Monitor started (polling every 5 s)")
+        while not self._shutdown_requested:
+            try:
+                if self._kill_switch_path.exists():
+                    with open(self._kill_switch_path) as _ksf:
+                        _ks = json.load(_ksf)
+                    if _ks.get("active"):
+                        _reason = _ks.get("reason", "MANUAL_KILL_SWITCH")
+                        LOG.critical("[KILL-SWITCH] 🚨 Activated: %s", _reason)
+                        # Consume immediately so we never double-trip on restart
+                        self._kill_switch_path.unlink(missing_ok=True)
+                        # Trip each breaker state directly so is_any_tripped() returns True
+                        for _b in self.circuit_breakers.breakers:
+                            if not _b.state.is_tripped:
+                                _b.state.trip(reason=_reason, value=999.0, threshold=0.0)
+                        LOG.critical("[KILL-SWITCH] Circuit breakers tripped — no new entries allowed")
+                        # Emergency close via the same closer the circuit breaker uses
+                        _closer = self.circuit_breakers.emergency_closer
+                        if _closer is not None:
+                            _ok = _closer.close_all_positions(reason=_reason)
+                            if _ok:
+                                LOG.critical("[KILL-SWITCH] ✓ All positions closed")
+                            else:
+                                LOG.critical("[KILL-SWITCH] ✗ Emergency close FAILED — manual intervention required!")
+                        else:
+                            LOG.critical("[KILL-SWITCH] ✗ No emergency_closer configured — cannot auto-close!")
+                        # Persist tripped state so breakers survive a bot restart
+                        self.circuit_breakers.save_state()
+            except Exception as _e:
+                LOG.error("[KILL-SWITCH] Poll error: %s", _e)
+            time.sleep(5)
+        LOG.info("[KILL-SWITCH] Monitor stopped")
 
     def stop_health_monitor(self):
         """Gracefully stop the health monitor thread."""

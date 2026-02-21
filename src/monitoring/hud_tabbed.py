@@ -136,13 +136,17 @@ class TabbedHUD:
                 elif key == "\t":  # Tab key to cycle forward
                     idx = self.TAB_ORDER.index(self.current_tab)
                     self.current_tab = self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)]
-                elif key == "\x1b":  # Escape sequence (for Shift+Tab)
-                    # Read the rest of the escape sequence
-                    if select.select([sys.stdin], [], [], 0.01)[0]:
-                        seq = sys.stdin.read(2)
-                        if seq == "[Z":  # Shift+Tab
-                            idx = self.TAB_ORDER.index(self.current_tab)
-                            self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
+                elif key == "\x1b":  # Escape sequence: Shift+Tab or Alt+<key>
+                    if select.select([sys.stdin], [], [], 0.05)[0]:
+                        seq1 = sys.stdin.read(1)
+                        if seq1 == "[":  # CSI sequence (e.g. Shift+Tab = \x1b[Z)
+                            if select.select([sys.stdin], [], [], 0.01)[0]:
+                                seq2 = sys.stdin.read(1)
+                                if seq2 == "Z":  # Shift+Tab
+                                    idx = self.TAB_ORDER.index(self.current_tab)
+                                    self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
+                        elif seq1 == "k":  # Alt+K — emergency kill switch
+                            self._handle_kill_switch()
                 elif key.lower() == "q" or key == "\x18":
                     self.running = False
                 elif key.lower() == "s":
@@ -491,6 +495,7 @@ class TabbedHUD:
             print("  [s]           - Select symbol/timeframe preset")
             print("  [h]           - Show this help screen")
             print("  [q] / Ctrl+X  - Quit HUD")
+            print("  [Alt+K]       - Emergency kill switch (close all positions + halt trading)")
 
             print("\n\033[1m📊 TAB DESCRIPTIONS\033[0m\n")
             print("  Overview      - Quick snapshot of position, daily stats, risk, and health")
@@ -532,6 +537,47 @@ class TabbedHUD:
         except Exception as e:
             print(f"Error displaying help: {e}")
             input("Press Enter to continue...")
+        finally:
+            self._enable_raw_mode()
+
+    def _handle_kill_switch(self):
+        """Alt+K: confirm and write kill_switch.json — bot background thread acts within 5 seconds."""
+        self._disable_raw_mode()
+        try:
+            os.system("clear" if os.name != "nt" else "cls")
+            RED = "\033[91m"
+            YLW = "\033[93m"
+            RST = "\033[0m"
+            print(RED + "╔" + "═" * 60 + "╗")
+            print("║" + " " * 16 + "⚠️  EMERGENCY KILL SWITCH" + " " * 17 + "║")
+            print("╚" + "═" * 60 + "╝" + RST + "\n")
+            print("This will (within ~5 seconds, regardless of bar interval):")
+            print("  1. Trip ALL circuit breakers immediately")
+            print("  2. Close ALL open positions via emergency close")
+            print("  3. Halt all new entries until circuit breakers are manually reset\n")
+            print(YLW + "Type KILL and press Enter to confirm, or press Enter to abort:" + RST)
+            confirm = input("> ").strip()
+            if confirm == "KILL":
+                ks_path = self.data_dir / "kill_switch.json"
+                with open(ks_path, "w") as f:
+                    json.dump(
+                        {
+                            "active": True,
+                            "reason": "MANUAL_HUD_KILL",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        },
+                        f,
+                    )
+                print("\n" + RED + "✓ KILL SWITCH ACTIVATED — bot will close all positions within 5 seconds" + RST)
+                self._set_notification("🚨 KILL SWITCH ACTIVATED — closing all positions", ttl=120)
+                input("\nPress Enter to return to HUD...")
+            else:
+                print("\n" + YLW + "Aborted — no action taken." + RST)
+                time.sleep(1)
+        except Exception as e:
+            print(f"Error: {e}")
+            with contextlib.suppress(Exception):
+                input("Press Enter to continue...")
         finally:
             self._enable_raw_mode()
 
