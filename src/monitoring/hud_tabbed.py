@@ -261,11 +261,13 @@ class TabbedHUD:
                 self.market_stats["order_book_asks"] = ob.get("order_book_asks", self.market_stats.get("order_book_asks", []))
                 self.market_stats["vpin"] = ob.get("vpin", self.market_stats.get("vpin", 0.0))
                 self.market_stats["vpin_z"] = ob.get("vpin_zscore", self.market_stats.get("vpin_z", 0.0))
-                # Recompute imbalance live so the overview tab shows a fresh value
-                _db = self.market_stats.get("depth_bid", 0.0)
-                _da = self.market_stats.get("depth_ask", 0.0)
-                _tot = _db + _da
-                self.market_stats["imbalance"] = (_db - _da) / _tot if _tot > 0 else 0.0
+                # Read QFI-based imbalance directly — do NOT recompute from depth_bid/ask
+                # (those use uniform size=1.0 fallback when broker omits MDEntrySize)
+                _ob_imb = ob.get("imbalance")
+                if _ob_imb is not None:
+                    self.market_stats["imbalance"] = float(_ob_imb)
+                self.market_stats["has_real_sizes"] = ob.get("has_real_sizes", False)
+                self.market_stats["qfi_update_count"] = ob.get("qfi_update_count", 0)
             except Exception:
                 pass
 
@@ -967,8 +969,9 @@ class TabbedHUD:
         imb = self.market_stats.get("imbalance", 0)
 
         vpin_status = "\033[91m⚠️ HIGH\033[0m" if abs(vpin_z) > 2.0 else "\033[92m✓\033[0m"
-
-        print(f"  Spread: {spread:.5f}  |  VPIN: {vpin:.3f} {vpin_status}  |  Imbalance: {imb:+.3f}")
+        _has_real = self.market_stats.get("has_real_sizes", False)
+        _imb_label = "Imb" if _has_real else "QFI"
+        print(f"  Spread: {spread:.5f}  |  VPIN: {vpin:.3f} {vpin_status}  |  {_imb_label}: {imb:+.3f}")
 
         # ── System health (expanded) ──────────────────────────────────────────
         _G = "\033[92m"; _Y = "\033[93m"; _R = "\033[91m"; _B = "\033[94m"; _DIM = "\033[90m"; _RST = "\033[0m"
@@ -1501,10 +1504,12 @@ class TabbedHUD:
 
         print()
 
-        # Order imbalance — compute live from fresh depth values
-        print("  \033[1m⚖️  ORDER IMBALANCE\033[0m")
-        total_depth = depth_bid + depth_ask
-        imbalance = (depth_bid - depth_ask) / total_depth if total_depth > 0 else ms.get("imbalance", 0)
+        # Order imbalance — read QFI-based value from market_stats (set by bot)
+        print("  \033[1m⚖️  ORDER IMBALANCE (QFI)\033[0m")
+        has_real_sizes = ms.get("has_real_sizes", False)
+        qfi_updates = int(ms.get("qfi_update_count", 0))
+        imbalance = ms.get("imbalance", 0.0)
+        signal_source = "size-weighted" if has_real_sizes else "quote-flow (QFI)"
 
         if imbalance > IMBALANCE_BUY_THRESHOLD:
             imb_status = "\033[92m🔺 BUY PRESSURE\033[0m"
@@ -1514,6 +1519,7 @@ class TabbedHUD:
             imb_status = "\033[93m⚖️  BALANCED\033[0m"
 
         print(f"    Imbalance:         {imbalance:>+12.4f}")
+        print(f"    Signal source:     {signal_source}  (updates: {qfi_updates})") 
         print(f"    Status:            {imb_status}")
 
         # Imbalance visualization

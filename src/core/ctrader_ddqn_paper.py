@@ -2349,6 +2349,10 @@ class CTraderFixApp(fix.Application):
                 "depth_ask": sum(s for _, s in self.order_book.asks.items()),
                 "vpin": vpin_s.get("vpin", 0.0),
                 "vpin_zscore": vpin_s.get("zscore", 0.0),
+                # QFI imbalance: last bar value (updated each bar close)
+                "imbalance": getattr(self, "_last_bar_qfi", 0.0),
+                "qfi_update_count": getattr(self, "_last_bar_qfi_count", 0),
+                "has_real_sizes": self._has_real_sizes,
             }
             with open(self.hud_data_dir / "order_book.json", "w", encoding="utf-8") as fh:
                 json.dump(ob, fh)
@@ -3651,6 +3655,9 @@ class CTraderFixApp(fix.Application):
         # Reset per-bar quote refresh counters
         self._bid_refresh_count = 0
         self._ask_refresh_count = 0
+        # Persist so _export_order_book() (tick-level) can read the latest value
+        self._last_bar_qfi: float = imbalance
+        self._last_bar_qfi_count: int = _qfi_total
 
         self.last_depth_metrics = {
             "bid": depth_bid,
