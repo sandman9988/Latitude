@@ -77,7 +77,8 @@ class TabbedHUD:
         self.market_stats = {}
         self.bot_config = {}
         self.production_metrics = {}
-        self.offline_stats: dict = {}   # offline_training_status.json
+        self.offline_stats: dict = {}       # offline_training_status.json
+        self.offline_job_progress: dict = {}  # keyed by (symbol, tf_minutes)
         self.self_test_results: list = []
         self._metrics_from_trade_log = False
         # Loss history for trend / sparkline (non-zero samples only)
@@ -225,6 +226,16 @@ class TabbedHUD:
 
         # Offline training status (written by train_offline.py, optional)
         self._load_json("offline_training_status.json", "offline_stats")
+
+        # Per-job live progress files (written by OfflineTrainer worker processes)
+        _prog: dict = {}
+        for _pf in self.data_dir.glob("offline_progress_*.json"):
+            try:
+                _d = json.loads(_pf.read_text())
+                _prog[(_d["symbol"], _d["timeframe_minutes"])] = _d
+            except Exception:
+                pass
+        self.offline_job_progress = _prog
 
         # Always compute from trade_log.jsonl (complete persistent history).
         # performance_snapshot resets on each bot restart so it only reflects
@@ -919,6 +930,21 @@ class TabbedHUD:
                         zo_str = f"{_DIM}{'—':>8}\033[0m"
                     if jstatus in ("done", "error"):
                         row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {ttrades:>7,}  {vtrades:>5,}  {steps:>7,}  {zo_str}"
+                    elif jstatus == "running":
+                        prog = self.offline_job_progress.get(
+                            (r.get("symbol"), r.get("timeframe_minutes")), {}
+                        )
+                        if prog:
+                            pb = prog.get("pct", 0.0)
+                            pb_fill = int(10 * pb / 100)
+                            pb_bar = f"{_Y}[{'█'*pb_fill}{'░'*(10-pb_fill)}] {pb:4.1f}%{_RST}"
+                            eps_str = f"ε={prog.get('epsilon',0):.3f}"
+                            beta_str = f"β={prog.get('beta',0.4):.3f}"
+                            tr_str = f"tr={prog.get('trades',0):,}"
+                            row = (f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  "
+                                   f"{pb_bar}  {eps_str}  {beta_str}  {tr_str}")
+                        else:
+                            row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':>7}  {'—':>5}  {'—':>7}  {zo_str}"
                     else:
                         row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':>7}  {'—':>5}  {'—':>7}  {zo_str}"
                     # Annotate error inline

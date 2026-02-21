@@ -34,6 +34,7 @@ Caller: train_offline.py spawns one OfflineTrainer.run() per job in a
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections import deque
@@ -424,6 +425,10 @@ class OfflineTrainer:
         )
 
         # ── Training pass ─────────────────────────────────────────────────────
+        _progress_path = Path(f"data/offline_progress_{self.symbol}_M{self.timeframe_minutes}.json")
+        _progress_path.parent.mkdir(parents=True, exist_ok=True)
+        _progress_every = max(50, len(train_bars) // 100)   # ~100 updates across the run
+
         sim = _Simulator(policy, update_policy=True)
         total_train_steps = 0
         for i, bar in enumerate(train_bars):
@@ -434,6 +439,31 @@ class OfflineTrainer:
                     total_train_steps += 1
                 except Exception as exc:
                     LOG.debug("[OFFLINE] train_step failed at bar %d: %s", i, exc)
+
+            # Emit live progress for HUD every _progress_every bars
+            if i % _progress_every == 0:
+                _trig = policy.trigger
+                _harv = policy.harvester
+                try:
+                    _tmp = _progress_path.with_suffix(".tmp")
+                    _tmp.write_text(json.dumps({
+                        "symbol":            self.symbol,
+                        "timeframe_minutes": self.timeframe_minutes,
+                        "bar":               i,
+                        "total_bars":        len(train_bars),
+                        "pct":               round(i / len(train_bars) * 100, 1),
+                        "train_steps":       total_train_steps,
+                        "trades":            len(sim.trades),
+                        "epsilon":           round(float(_trig.epsilon), 4),
+                        "beta":              round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
+                        "trigger_buf":       int(_trig.buffer.size) if _trig.buffer else 0,
+                        "harvester_buf":     int(_harv.buffer.size) if _harv.buffer else 0,
+                    }))
+                    _tmp.replace(_progress_path)
+                except Exception:
+                    pass
+
+        _progress_path.unlink(missing_ok=True)   # clean up when done
 
         LOG.info(
             "[OFFLINE] %s train done: %d trades, %d gradient steps",
