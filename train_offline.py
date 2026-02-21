@@ -368,6 +368,84 @@ def discover_jobs(
     return list(best.values())
 
 
+# ── Pre-flight data integrity check ───────────────────────────────────────────
+
+def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], list[str]]:
+    """
+    Validate each job's data file before spawning any workers.
+
+    Checks performed:
+      1. Symlink resolves to a real file (catches broken symlinks immediately)
+      2. File can be opened and read
+      3. Header row is present (CSV) or first line parses as JSON (JSONL)
+      4. File contains at least ``min_rows`` data rows
+
+    Returns:
+      (good_jobs, error_messages)
+    """
+    good: list[Job] = []
+    errors: list[str] = []
+
+    for j in jobs:
+        path = j.bars_file
+        label = f"{j.symbol} {_tf_label(j.timeframe_minutes)}"
+
+        # 1. Resolve symlink — Path.exists() follows symlinks
+        if not path.exists():
+            # Distinguish broken symlink from missing file
+            if path.is_symlink():
+                target = path.resolve()
+                errors.append(
+                    f"[PREFLIGHT] {label}: broken symlink "
+                    f"{path} → {target} (target does not exist)"
+                )
+            else:
+                errors.append(f"[PREFLIGHT] {label}: file not found: {path}")
+            continue
+
+        # 2 + 3 + 4. Open, read header, count rows
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                first = fh.readline()
+                if not first.strip():
+                    errors.append(f"[PREFLIGHT] {label}: file is empty: {path}")
+                    continue
+
+                if j.file_format == "jsonl":
+                    import json as _json
+                    try:
+                        _json.loads(first)
+                    except Exception as exc:
+                        errors.append(
+                            f"[PREFLIGHT] {label}: first line is not valid JSON "
+                            f"({exc}): {path}"
+                        )
+                        continue
+                # CSV: first line is header — just presence is enough
+
+                # Count data rows (up to min_rows + 1 to avoid reading huge files)
+                row_count = 0
+                for _ in fh:
+                    row_count += 1
+                    if row_count >= min_rows:
+                        break
+
+                if row_count < min_rows:
+                    errors.append(
+                        f"[PREFLIGHT] {label}: only {row_count} data rows "
+                        f"(need ≥ {min_rows}): {path}"
+                    )
+                    continue
+
+        except OSError as exc:
+            errors.append(f"[PREFLIGHT] {label}: cannot read file: {exc}")
+            continue
+
+        good.append(j)
+
+    return good, errors
+
+
 # ── Best-model selection ───────────────────────────────────────────────────────
 
 def select_best(results: list[dict]) -> dict[str, dict]:
@@ -652,6 +730,19 @@ def main(argv: list[str] | None = None) -> int:
     LOG.info("Discovered %d job(s):", len(jobs))
     for j in jobs:
         LOG.info("  %s M%d  ← %s", j.symbol, j.timeframe_minutes, j.bars_file.name)
+
+    # ── Pre-flight data integrity check ──────────────────────────────────────
+    jobs, pf_errors = preflight_check(jobs)
+    if pf_errors:
+        for msg in pf_errors:
+            LOG.error(msg)
+        if not jobs:
+            LOG.error("All jobs failed pre-flight — nothing to train.")
+            return 1
+        LOG.warning(
+            "%d job(s) dropped due to data errors; continuing with %d valid job(s).",
+            len(pf_errors), len(jobs),
+        )
 
     if args.dry_run:
         print("\n[DRY RUN] — no training executed.")
