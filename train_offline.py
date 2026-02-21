@@ -65,6 +65,12 @@ LOG = logging.getLogger("train_offline")
 # monitored live in the Training tab without parsing the log file.
 _STATUS_PATH = Path("data/offline_training_status.json")
 
+# Universe registry — shared with run_universe.py; records trained instruments
+# and their current pipeline stage (UNTRAINED → OFFLINE_TRAINING → PAPER → …)
+_UNIVERSE_PATH = Path("data/universe.json")
+
+_STAGE_ORDER = ["UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"]
+
 
 def _write_status(data: dict) -> None:
     """Atomically write offline training status for HUD consumption."""
@@ -73,6 +79,63 @@ def _write_status(data: dict) -> None:
     with open(tmp, "w") as _f:
         json.dump(data, _f, indent=2)
     tmp.replace(_STATUS_PATH)
+
+
+def _register_universe(
+    symbol: str,
+    timeframe_minutes: int,
+    z_omega: float,
+    weights_path: str,
+) -> None:
+    """
+    Promote a successfully trained instrument to PAPER stage in
+    data/universe.json.
+
+    Safe to call concurrently — uses atomic tmp-file rename.
+    Never downgrades an instrument already at PAPER or above.
+    """
+    _UNIVERSE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    registry: dict = {"version": 1, "instruments": {}}
+    if _UNIVERSE_PATH.exists():
+        try:
+            with open(_UNIVERSE_PATH) as _f:
+                registry = json.load(_f)
+        except Exception:
+            pass
+
+    instruments = registry.setdefault("instruments", {})
+    existing = instruments.get(symbol, {})
+    current_stage = existing.get("stage", "UNTRAINED")
+    current_idx = (
+        _STAGE_ORDER.index(current_stage)
+        if current_stage in _STAGE_ORDER
+        else 0
+    )
+
+    if current_idx <= _STAGE_ORDER.index("OFFLINE_TRAINING"):
+        instruments[symbol] = {
+            **existing,
+            "stage":             "PAPER",
+            "timeframe_minutes": timeframe_minutes,
+            "z_omega":           z_omega,
+            "weights_path":      weights_path,
+            "promoted_at":       datetime.now(timezone.utc).isoformat(),
+            "paper_pid":         None,
+            "paper_started_at":  None,
+        }
+        tmp = _UNIVERSE_PATH.with_suffix(".tmp")
+        with open(tmp, "w") as _f:
+            json.dump(registry, _f, indent=2)
+        tmp.replace(_UNIVERSE_PATH)
+        LOG.info(
+            "[UNIVERSE] %s M%d → PAPER  (ZOmega=%.4f)  Run: python3 run_universe.py",
+            symbol, timeframe_minutes, z_omega,
+        )
+    else:
+        LOG.info(
+            "[UNIVERSE] %s already at stage %s — not demoting",
+            symbol, current_stage,
+        )
 
 # ── Import training modules ────────────────────────────────────────────────────
 # Deferred to avoid importing torch/numpy before fork on some platforms
@@ -325,6 +388,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-bars",      type=int, default=None, metavar="N")
     p.add_argument("--dry-run",       action="store_true",
                    help="Discover jobs and print plan without training")
+    # Universe / paper-trading promotion
+    p.add_argument(
+        "--auto-promote", action="store_true", default=False,
+        help=(
+            "After training, promote any symbol whose best ZOmega meets "
+            "--paper-threshold to PAPER stage in data/universe.json. "
+            "Run `python3 run_universe.py` to launch the paper bots."
+        ),
+    )
+    p.add_argument(
+        "--paper-threshold", type=float, default=1.0, metavar="ZO",
+        help="Minimum ZOmega score required for --auto-promote (default: 1.0)",
+    )
     p.add_argument("-v", "--verbose", action="store_true",
                    help="Enable DEBUG logging")
     return p
@@ -464,11 +540,29 @@ def main(argv: list[str] | None = None) -> int:
         copy_best_weights(best, best_dir)
         LOG.info("Best weights written to %s/", best_dir)
         print(f"\nBest weights by ZOmega:")
+        promoted: list[str] = []
         for sym, r in sorted(best.items()):
             zo = r.get("z_omega", 0.0)
             zo_str = f"{zo:.4f}" if zo != float("inf") else "+inf"
             label = f"M{r['timeframe_minutes']}"
             print(f"  {sym:<12} {label:>5}  ZOmega={zo_str}")
+
+            # Promote to PAPER stage if enabled and threshold met
+            if args.auto_promote and zo >= args.paper_threshold:
+                _register_universe(
+                    symbol=sym,
+                    timeframe_minutes=r["timeframe_minutes"],
+                    z_omega=zo,
+                    weights_path=r.get("weights_path", ""),
+                )
+                promoted.append(sym)
+
+        if promoted:
+            print(
+                f"\n[UNIVERSE] {len(promoted)} instrument(s) promoted to PAPER stage: "
+                + ", ".join(promoted)
+            )
+            print("  Launch paper bots with:  python3 run_universe.py --watch")
 
     n_ok  = sum(1 for r in results if not r.get("error"))
     n_err = len(results) - n_ok
