@@ -328,6 +328,22 @@ def _sort_and_dedupe(bars: list[Bar]) -> list[Bar]:
 
 
 def _filter_to_timeframe(bars: list[Bar], timeframe_minutes: int) -> list[Bar]:
-    """Drop bars whose timestamp doesn't align to *timeframe_minutes* boundaries."""
-    delta = timeframe_minutes * 60
-    return [b for b in bars if int(b[0].timestamp()) % delta == 0]
+    """Drop bars whose spacing doesn't match *timeframe_minutes*.
+
+    Rather than testing epoch-alignment (which breaks for broker sessions that
+    open at an offset, e.g. cTrader gold H4 starting at 02:00/06:00/...), we
+    infer the actual bar-interval from the first pair of bars and only drop bars
+    whose gap to the previous bar differs significantly from the expected step.
+    """
+    if len(bars) < 2:
+        return bars
+
+    expected_secs = timeframe_minutes * 60
+    # Detect actual session step from the first gap
+    first_gap = (bars[1][0] - bars[0][0]).total_seconds()
+    if abs(first_gap - expected_secs) > expected_secs * 0.1:
+        # Actual interval doesn't match requested TF — conservative epoch-align fallback
+        return [b for b in bars if int(b[0].timestamp()) % expected_secs == 0]
+
+    # Interval matches: all bars belong to this TF, no filtering needed
+    return bars
