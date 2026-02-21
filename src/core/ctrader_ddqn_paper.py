@@ -939,6 +939,13 @@ class CTraderFixApp(fix.Application):
         self.last_depth_metrics = {"bid": 0.0, "ask": 0.0, "ratio": 1.0, "levels": order_book_depth}
         self.last_depth_gate = False
         self.last_depth_floor = self.friction_calculator.depth_buffer
+        # Quote-refresh counters — reset each bar, incremented on every BID/ASK update.
+        # Used for Quote-Flow Imbalance (QFI) when broker omits real MDEntrySize.
+        self._bid_refresh_count: int = 0
+        self._ask_refresh_count: int = 0
+        self._has_real_sizes: bool = False  # Set True if broker ever sends size > 0
+        self._ob_diag_logged: bool = False  # One-time diagnostic on first snapshot
+        self.entry_imbalance: float = 0.0  # Snapshot of imbalance at trade entry
 
         self.best_bid: float | None = None
         self.best_ask: float | None = None
@@ -2063,8 +2070,10 @@ class CTraderFixApp(fix.Application):
                 if g.isSetField(qty):
                     g.getField(qty)
                     size = float(qty.getValue())
-                if size <= 0:
-                    size = 1.0  # cTrader omits size at top-of-book
+                if size > 0:
+                    self._has_real_sizes = True
+                else:
+                    size = 1.0  # cTrader omits size at top-of-book — uniform fallback
 
             except (ValueError, TypeError) as e:
                 LOG.warning("[QUOTE] Invalid entry %d: %s", i, e)
@@ -2079,6 +2088,10 @@ class CTraderFixApp(fix.Application):
             elif entry_type == "1":
                 self.order_book.update_level("ASK", price_f, size)
 
+        # Refresh counters: count levels received (snapshot = full reset)
+        self._bid_refresh_count += len(self.order_book.bids)
+        self._ask_refresh_count += len(self.order_book.asks)
+
         best_bid, best_ask = self.order_book.best_bid_ask()
         if best_bid is not None:
             self.best_bid = float(best_bid)
@@ -2087,6 +2100,20 @@ class CTraderFixApp(fix.Application):
 
         if best_bid is not None and best_ask is not None:
             self.friction_calculator.update_spread(self.best_bid, self.best_ask)
+
+        # One-time diagnostic: log raw sizes to confirm what broker sends
+        if not self._ob_diag_logged and (self.order_book.bids or self.order_book.asks):
+            bid_sizes = list(self.order_book.bids.values())[:5]
+            ask_sizes = list(self.order_book.asks.values())[:5]
+            LOG.info(
+                "[OB_DIAG] First L2 snapshot: %d bids, %d asks. "
+                "Bid sizes=%s  Ask sizes=%s  real_sizes=%s",
+                len(self.order_book.bids), len(self.order_book.asks),
+                [round(s, 4) for s in bid_sizes],
+                [round(s, 4) for s in ask_sizes],
+                self._has_real_sizes,
+            )
+            self._ob_diag_logged = True
 
         # Evaluate Harvester on tick for faster exit execution
         self._evaluate_harvester_on_tick()
@@ -2156,7 +2183,9 @@ class CTraderFixApp(fix.Application):
                     if g.isSetField(qty):
                         g.getField(qty)
                         size = float(qty.getValue())
-                    if size <= 0:
+                    if size > 0:
+                        self._has_real_sizes = True
+                    else:
                         size = 1.0
                 except (ValueError, TypeError):
                     continue
@@ -2172,6 +2201,11 @@ class CTraderFixApp(fix.Application):
                 self.order_book.update_level(side, price_f, size)
                 if md_id is not None:
                     self._md_entry_id_map[md_id] = (side, price_f)
+                # Increment per-bar quote refresh counter
+                if side == "BID":
+                    self._bid_refresh_count += 1
+                else:
+                    self._ask_refresh_count += 1
             elif action == "2":  # delete with MDEntryType — price-keyed delete
                 if not g.isSetField(px):
                     # No price either — try ID map as fallback.
@@ -3084,7 +3118,7 @@ class CTraderFixApp(fix.Application):
                     mae=float(summary.get("mae", 0.0)),
                     regime=str(getattr(self.policy, "current_regime", "UNKNOWN")),
                     was_explore=getattr(self, "was_exploration_entry", False),
-                    imbalance=0.0,
+                    imbalance=float(getattr(self, "entry_imbalance", 0.0)),
                     vpin_z=float(self.entry_vpin_z),
                     depth_ratio=1.0,
                 )
@@ -3593,6 +3627,31 @@ class CTraderFixApp(fix.Application):
             if mid > 0:
                 imbalance = (self.best_bid - mid) / (spread + 1e-10)
                 imbalance = max(-1.0, min(1.0, imbalance))
+
+        # Quote-Flow Imbalance (QFI): bid vs ask quoting activity this bar.
+        # This is the live signal when Pepperstone omits MDEntrySize (uniform 1.0 fallback).
+        _qfi_total = self._bid_refresh_count + self._ask_refresh_count
+        _qfi = (
+            (self._bid_refresh_count - self._ask_refresh_count) / _qfi_total
+            if _qfi_total > 0 else 0.0
+        )
+        if self._has_real_sizes and abs(imbalance) > 1e-6:
+            # Broker sends real notional sizes: blend size signal + quote flow equally
+            imbalance = 0.5 * imbalance + 0.5 * _qfi
+        else:
+            # Uniform/absent sizes: QFI is the sole live signal
+            imbalance = _qfi
+        LOG.debug(
+            "[IMBALANCE] bid_refreshes=%d ask_refreshes=%d qfi=%.3f "
+            "depth_imb=%.3f final=%.3f real_sizes=%s",
+            self._bid_refresh_count, self._ask_refresh_count, _qfi,
+            SafeMath.safe_div(depth_bid - depth_ask, depth_total + 1e-9, 0.0),
+            imbalance, self._has_real_sizes,
+        )
+        # Reset per-bar quote refresh counters
+        self._bid_refresh_count = 0
+        self._ask_refresh_count = 0
+
         self.last_depth_metrics = {
             "bid": depth_bid,
             "ask": depth_ask,
@@ -3827,6 +3886,7 @@ class CTraderFixApp(fix.Application):
                     self.predicted_runway = runway  # FIX 1: Store predicted MFE for trigger reward
                     # Store market-condition snapshot at entry for regime-conditioned reward shaping
                     self.entry_vpin_z = vpin_zscore
+                    self.entry_imbalance = imbalance  # for offline cache record
                     # entry_var is set in the execution block where current_var is computed
                     # FIX 7: Track if entry was exploration (random) so we can use
                     # a neutral reward instead of prediction-accuracy reward
