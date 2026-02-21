@@ -119,29 +119,39 @@ def _register_universe(
         else 0
     )
 
-    if current_idx <= _STAGE_ORDER.index("OFFLINE_TRAINING"):
+    already_paper = current_idx > _STAGE_ORDER.index("OFFLINE_TRAINING")
+    better_score = z_omega > existing.get("z_omega", 0.0)
+
+    if not already_paper or better_score:
         instruments[symbol] = {
             **existing,
             "stage":             "PAPER",
             "timeframe_minutes": timeframe_minutes,
             "z_omega":           z_omega,
             "weights_path":      weights_path,
-            "promoted_at":       datetime.now(timezone.utc).isoformat(),
-            "paper_pid":         None,
-            "paper_started_at":  None,
+            "promoted_at":       existing.get("promoted_at") or datetime.now(timezone.utc).isoformat(),
+            "updated_at":        datetime.now(timezone.utc).isoformat(),
+            "paper_pid":         existing.get("paper_pid"),
+            "paper_started_at":  existing.get("paper_started_at"),
         }
         tmp = _UNIVERSE_PATH.with_suffix(".tmp")
         with open(tmp, "w") as _f:
             json.dump(registry, _f, indent=2)
         tmp.replace(_UNIVERSE_PATH)
-        LOG.info(
-            "[UNIVERSE] %s M%d → PAPER  (ZOmega=%.4f)  Run: python3 run_universe.py",
-            symbol, timeframe_minutes, z_omega,
-        )
+        if already_paper:
+            LOG.info(
+                "[UNIVERSE] %s M%d → PAPER updated  (ZOmega %.4f → %.4f)",
+                symbol, timeframe_minutes, existing.get("z_omega", 0.0), z_omega,
+            )
+        else:
+            LOG.info(
+                "[UNIVERSE] %s M%d → PAPER  (ZOmega=%.4f)  Run: python3 run_universe.py",
+                symbol, timeframe_minutes, z_omega,
+            )
     else:
         LOG.info(
-            "[UNIVERSE] %s already at stage %s — not demoting",
-            symbol, current_stage,
+            "[UNIVERSE] %s already PAPER ZΩ=%.4f, new ZΩ=%.4f — keeping best",
+            symbol, existing.get("z_omega", 0.0), z_omega,
         )
 
 # ── Import training modules ────────────────────────────────────────────────────
@@ -486,10 +496,13 @@ def _execute_pool(
     warm_start: bool,
     ot_status: dict,
     t_start: float,
+    best_per_job: dict | None = None,
 ) -> list[dict]:
     """
     Run a pool of training jobs and return the list of result dicts.
     Updates ot_status in place so the HUD reflects live progress.
+    If best_per_job is supplied and args.auto_promote is set, promotes
+    winners to universe.json immediately as each job finishes.
     """
     round_results: list[dict] = []
     ctx = multiprocessing.get_context("spawn")
@@ -558,6 +571,36 @@ def _execute_pool(
                         entry["error"] = res.get("error")
                         break
                 _write_status(ot_status)
+
+                # ── Immediate promotion: don't wait for all jobs to finish ──
+                if best_per_job is not None and not res.get("error"):
+                    key = (res["symbol"], res["timeframe_minutes"])
+                    zo = res.get("z_omega", 0.0)
+                    prev_best = best_per_job.get(key, {}).get("z_omega", -1.0)
+                    if zo > prev_best:
+                        best_per_job[key] = res
+                    # Promote if this result is now the best for its symbol
+                    # and beats the threshold (only promote if it improved)
+                    if (args.auto_promote and zo >= args.paper_threshold
+                            and zo > prev_best):
+                        # Check if any other TF for this symbol already has better ZΩ
+                        sym = res["symbol"]
+                        sym_best = max(
+                            (v.get("z_omega", 0.0) for k, v in best_per_job.items()
+                             if k[0] == sym),
+                            default=0.0,
+                        )
+                        if zo >= sym_best:
+                            _register_universe(
+                                symbol=sym,
+                                timeframe_minutes=res["timeframe_minutes"],
+                                z_omega=zo,
+                                weights_path=res.get("weights_path", ""),
+                            )
+                            LOG.info(
+                                "[PROMOTE] %s %s ZΩ=%.4f → promoted to PAPER immediately",
+                                sym, _tf_label(res["timeframe_minutes"]), zo,
+                            )
 
         except Exception as pool_exc:
             # BrokenProcessPool or other pool-level failure — mark remaining jobs as failed
@@ -640,11 +683,11 @@ def main(argv: list[str] | None = None) -> int:
     _write_status(_ot_status)
 
     # ── Round 0: initial training run ─────────────────────────────────────────
-    results = _execute_pool(jobs, n_workers, args, args.warm_start, _ot_status, t_start)
+    best_per_job: dict[tuple, dict] = {}
+    results = _execute_pool(jobs, n_workers, args, args.warm_start, _ot_status, t_start, best_per_job)
 
     # ── Auto-retrain rounds: warm-start re-run for below-threshold jobs ───────
     # Keep best result per (symbol, timeframe) across all rounds.
-    best_per_job: dict[tuple, dict] = {}
     for r in results:
         key = (r["symbol"], r["timeframe_minutes"])
         if not r.get("error") and r.get("z_omega", 0.0) > best_per_job.get(key, {}).get("z_omega", -1.0):
@@ -680,6 +723,7 @@ def main(argv: list[str] | None = None) -> int:
             retry_jobs, min(n_workers, len(retry_jobs)), args,
             warm_start=True,   # always warm-start on retrain rounds
             ot_status=_ot_status, t_start=t_start,
+            best_per_job=best_per_job,
         )
         results.extend(round_results)
 
