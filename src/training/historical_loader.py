@@ -54,7 +54,8 @@ _DT_FORMATS = [
     "%d.%m.%Y %H:%M:%S",      # Dukascopy
     "%Y.%m.%d %H:%M",         # MT4
     "%Y.%m.%d %H:%M:%S",      # MT4 with seconds
-    "%Y-%m-%d %H:%M:%S",      # ISO-like
+    "%Y-%m-%d %H:%M:%S",      # ISO-like (no tz)
+    "%Y-%m-%d %H:%M:%S%z",    # ISO-like with tz offset (e.g. cTrader: +00:00)
     "%Y-%m-%dT%H:%M:%S",      # ISO 8601
     "%Y-%m-%dT%H:%M:%SZ",
     "%Y-%m-%dT%H:%M:%S%z",
@@ -223,6 +224,9 @@ def _detect_columns(headers: list[str]) -> dict[str, str] | None:
         elif date_h:
             # Single "date" column containing a full datetime string (e.g. yfinance export)
             result["dt"] = date_h
+        elif time_h:
+            # Single "time" column containing a full datetime string (e.g. cTrader CSV export)
+            result["dt"] = time_h
 
     if "dt" not in result and "date" not in result:
         return None
@@ -268,7 +272,16 @@ def _parse_csv_row(row: dict[str, str], col_map: dict[str, str]) -> Bar | None:
 
 def _parse_datetime(s: str) -> datetime | None:
     s = s.strip()
-    # Fast path: already has timezone suffix
+    # Fast path: try fromisoformat first (handles +00:00 / Z suffixes natively on Py3.11+)
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        else:
+            dt = dt.astimezone(UTC)
+        return dt
+    except ValueError:
+        pass
     for fmt in _DT_FORMATS:
         try:
             dt = datetime.strptime(s, fmt)
