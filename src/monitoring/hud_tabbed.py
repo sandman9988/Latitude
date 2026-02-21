@@ -798,9 +798,10 @@ class TabbedHUD:
 
             _results = ofs.get("results", [])
             if _results:
+                sym_w = max(6, max(len(r.get("symbol", "")) for r in _results))
                 print()
-                print(f"    {'Symbol':<6}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  ZOmega")
-                print(f"    {'─'*6}  {'─'*5}  {'─'*9}  {'─'*38}  {'─'*8}")
+                print(f"    {'Symbol':<{sym_w}}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  ZOmega")
+                print(f"    {'─'*sym_w}  {'─'*5}  {'─'*9}  {'─'*38}  {'─'*8}")
                 for r in _results:
                     sym      = r.get("symbol", "")
                     tf_label = r.get("label", f"M{r.get('timeframe_minutes', '?')}")
@@ -825,7 +826,7 @@ class TabbedHUD:
 
                     if jstatus in ("done", "error"):
                         detail = f"tr={ttrades:,}  val={vtrades:,}  steps={steps:,}"
-                        row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail:<38}  {zo_str}"
+                        row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail:<38}  {zo_str}"
                     elif jstatus == "running":
                         prog = self.offline_job_progress.get(
                             (r.get("symbol"), r.get("timeframe_minutes")), {}
@@ -835,11 +836,11 @@ class TabbedHUD:
                             pb_fill = int(14 * pb / 100)
                             pb_bar = f"[{'█'*pb_fill}{'░'*(14-pb_fill)}] {pb:4.1f}%"
                             detail = f"{_Y}{pb_bar}{_RST}  ε={prog.get('epsilon',0):.3f}  β={prog.get('beta',0.4):.3f}"
-                            row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail}  {zo_str}"
+                            row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail}  {zo_str}"
                         else:
-                            row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
+                            row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
                     else:
-                        row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
+                        row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
                     if jstatus == "error" and r.get("error"):
                         row += f"  {_R}{r['error'][:30]}\033[0m"
                     print(row)
@@ -863,8 +864,9 @@ class TabbedHUD:
             )
             print(f"  \033[1m📈 PAPER TRADING PIPELINE\033[0m  {hdr_badge}")
             print()
-            print(f"    {'Symbol':<8}  {'TF':>5}  {'Stage':<10}  {'ZΩ':>8}  {'Bot':>6}  Started")
-            print(f"    {'─'*8}  {'─'*5}  {'─'*10}  {'─'*8}  {'─'*6}  {'─'*19}")
+            uni_sym_w = max(8, max((len(s) for s in uni), default=0))
+            print(f"    {'Symbol':<{uni_sym_w}}  {'TF':>5}  {'Stage':<10}  {'ZΩ':>8}  {'Bot':>6}  Started")
+            print(f"    {'─'*uni_sym_w}  {'─'*5}  {'─'*10}  {'─'*8}  {'─'*6}  {'─'*19}")
             for sym, entry in sorted(uni.items()):
                 stage   = entry.get("stage", "?")[:10]
                 tf_min  = entry.get("timeframe_minutes", 0)
@@ -884,7 +886,7 @@ class TabbedHUD:
                     bot_str = f"{_DIM}  —{_RST}"
                 started = entry.get("paper_started_at", "")[:19].replace("T", " ") if entry.get("paper_started_at") else "—"
                 stage_col = _STAGE_COL.get(stage, _DIM)
-                print(f"    {sym:<8}  {tf_lbl:>5}  {stage_col}{stage:<10}{_RST}  {zo_str}  {bot_str}  {started}")
+                print(f"    {sym:<{uni_sym_w}}  {tf_lbl:>5}  {stage_col}{stage:<10}{_RST}  {zo_str}  {bot_str}  {started}")
             print()
 
         # ── Live Bot Training ─────────────────────────────────────────────────
