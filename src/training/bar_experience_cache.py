@@ -65,8 +65,22 @@ LOG = logging.getLogger(__name__)
 
 SCHEMA_VERSION: int = 1
 DEFAULT_BARS_TO_STORE: int = 120   # Enough for all rolling stats (30-bar MA + headroom)
-DEFAULT_CACHE_FILE: str = "data/training_cache.jsonl"
 MAX_CACHE_SIZE_MB: float = 500.0   # Soft cap — log warning when exceeded
+
+
+def _default_cache_path(symbol: str, timeframe_minutes: int) -> str:
+    """
+    Build a per-instrument cache path.
+
+    Examples
+    --------
+    >>> _default_cache_path("XAUUSD", 15)
+    'data/training_cache_XAUUSD_M15.jsonl'
+    >>> _default_cache_path("BTCUSD", 240)
+    'data/training_cache_BTCUSD_M240.jsonl'
+    """
+    safe = symbol.replace("/", "-").replace("\\", "-")
+    return f"data/training_cache_{safe}_M{timeframe_minutes}.jsonl"
 
 
 class BarExperienceCache:
@@ -75,19 +89,26 @@ class BarExperienceCache:
 
     Writes one line per completed trade. Errors are always swallowed so the
     live bot is never disrupted by cache I/O failures.
+
+    Cache file defaults to ``data/training_cache_{SYMBOL}_M{TF}.jsonl`` so
+    that each instrument/timeframe pair accumulates its own experience file
+    and multiple bot processes never interleave each other's data.
+    Pass an explicit ``cache_file`` path to override.
     """
 
     def __init__(
         self,
         symbol: str = "UNKNOWN",
         timeframe_minutes: int = 5,
-        cache_file: str = DEFAULT_CACHE_FILE,
+        cache_file: str | None = None,
         bars_to_store: int = DEFAULT_BARS_TO_STORE,
         enabled: bool = True,
     ) -> None:
         self.symbol = symbol
         self.timeframe_minutes = timeframe_minutes
-        self.cache_file = Path(cache_file)
+        # Derive per-instrument path when caller does not supply an explicit one
+        _resolved = cache_file if cache_file is not None else _default_cache_path(symbol, timeframe_minutes)
+        self.cache_file = Path(_resolved)
         self.bars_to_store = bars_to_store
         self.enabled = enabled
 
