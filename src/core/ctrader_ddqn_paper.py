@@ -2878,6 +2878,8 @@ class CTraderFixApp(fix.Application):
             self.prev_exit_action = None
             self.prev_mfe = 0.0
             self.prev_mae = 0.0
+            # Clear correlation ID — next trigger will allocate a fresh one
+            self.current_trade_id = None
             LOG.debug("[CLEANUP] All position state reset after close")
 
     def _calculate_position_pnl(
@@ -3611,6 +3613,9 @@ class CTraderFixApp(fix.Application):
         depth_bid = None
         depth_ask = None
         depth_ratio = None
+        # trade_id captured before any branch may clear it (used by inline HUD log)
+        _bar_trade_id: str | None = None
+        _close_pending: bool = False
 
         # Increment bar counter for HUD
         self.bar_count += 1
@@ -3920,6 +3925,8 @@ class CTraderFixApp(fix.Application):
                 if action != 0:  # LONG or SHORT
                     import uuid
                     self.current_trade_id = str(uuid.uuid4())[:8]
+                # NO_ENTRY has no open trade — don't stamp a (possibly stale) trade_id
+                _bar_trade_id = self.current_trade_id if action != 0 else None
                 self.decision_log.log_trigger_decision(
                     decision=decision_str,
                     confidence=confidence,
@@ -3931,7 +3938,7 @@ class CTraderFixApp(fix.Application):
                     predicted_runway=runway,
                     feasibility=geom_temp.get("feasibility", 1.0),
                     circuit_breakers_ok=not self.circuit_breakers.is_any_tripped(),
-                    trade_id=self.current_trade_id,
+                    trade_id=_bar_trade_id,
                 )
 
                 # Store state for online learning (if entry is taken)
@@ -4045,8 +4052,18 @@ class CTraderFixApp(fix.Application):
                 unrealized_pnl = (c - entry_price) * self.cur_pos if entry_price > 0 else 0.0
                 capture_ratio = (unrealized_pnl / mfe) if mfe > 0 else 0.0
 
+                # Snapshot trade_id before CLOSE clears it — inline HUD log reads _bar_trade_id
+                _bar_trade_id = self.current_trade_id
+                _close_pending = _already_closing
+                # Label: tick harvester already issued a close — logging HOLD would be a lie
+                if _already_closing:
+                    _harvester_decision_str = "CLOSE_PENDING"
+                elif exit_action == 1:
+                    _harvester_decision_str = "CLOSE"
+                else:
+                    _harvester_decision_str = "HOLD"
                 self.decision_log.log_harvester_decision(
-                    decision="CLOSE" if exit_action == 1 else "HOLD",
+                    decision=_harvester_decision_str,
                     confidence=exit_conf,
                     price=c,
                     entry_price=entry_price,
@@ -4055,7 +4072,7 @@ class CTraderFixApp(fix.Application):
                     ticks_held=ticks_held,
                     unrealized_pnl=unrealized_pnl,
                     capture_ratio=capture_ratio,
-                    trade_id=self.current_trade_id,
+                    trade_id=_bar_trade_id,
                     in_position=(self.cur_pos != 0),
                 )
                 if exit_action == 1:
@@ -4181,6 +4198,8 @@ class CTraderFixApp(fix.Application):
             log_entry = {
                 "timestamp": t.isoformat() if hasattr(t, "isoformat") else str(t),
                 "event": "bar_close",
+                "trade_id": _bar_trade_id,
+                "close_pending": _close_pending,
                 "details": {
                     "open": o,
                     "high": h,
