@@ -28,6 +28,7 @@ TIMEFRAMES="${TIMEFRAMES:-M15 M30 H1 H4}"
 WORKERS="${WORKERS:-$(nproc)}"  # default: all logical CPU cores
 THRESHOLD="${THRESHOLD:-1.0}"
 RETRAIN_ROUNDS="${RETRAIN_ROUNDS:-3}"    # warm-start re-runs for jobs below threshold
+EPOCHS="${EPOCHS:-3}"                    # training passes per dataset per job
 HISTORY_DIR="${HISTORY_DIR:-/home/renierdejager/Kinetra/data/master_standardized}"
 WATCH=1
 
@@ -49,6 +50,7 @@ echo "  Symbols    : $SYMBOLS"
 echo "  Timeframes : $TIMEFRAMES"
 echo "  Workers    : $WORKERS"
 echo "  Z-Ω gate   : $THRESHOLD"
+echo "  Epochs     : $EPOCHS per job"
 echo "  Retrain    : $RETRAIN_ROUNDS rounds"
 echo "  History    : $HISTORY_DIR"
 echo "  Auto-watch : $([ "$WATCH" -eq 1 ] && echo yes || echo no)"
@@ -65,21 +67,18 @@ fi
 echo "[1/2] Starting offline training..."
 echo ""
 
-# Build --symbols flag (space-separated list → multiple args)
-SYM_ARGS=""
-for s in $SYMBOLS; do SYM_ARGS="$SYM_ARGS --symbols $s"; done
-# shellcheck disable=SC2206
-SYM_ARGS=($SYM_ARGS)
-
-TF_ARGS=""
-for t in $TIMEFRAMES; do TF_ARGS="$TF_ARGS --timeframes $t"; done
-# shellcheck disable=SC2206
-TF_ARGS=($TF_ARGS)
+# Build --symbols / --timeframes flags: all values after a SINGLE flag so
+# argparse nargs="+" collects them correctly (repeated flags overwrite each other).
+# shellcheck disable=SC2206  (intentional word-split of space-separated lists)
+SYM_ARGS=(--symbols $SYMBOLS)
+TF_ARGS=(--timeframes $TIMEFRAMES)
 
 python3 train_offline.py "$HISTORY_DIR" \
     "${SYM_ARGS[@]}" \
     "${TF_ARGS[@]}" \
     --workers "$WORKERS" \
+    --n-epochs "$EPOCHS" \
+    --warm-start \
     --auto-promote \
     --paper-threshold "$THRESHOLD" \
     --retrain-rounds  "$RETRAIN_ROUNDS"
