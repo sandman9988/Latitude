@@ -45,6 +45,7 @@ Examples
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import multiprocessing
 import os
@@ -54,10 +55,24 @@ import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger("train_offline")
+
+# HUD-visible status file — written throughout the run so progress can be
+# monitored live in the Training tab without parsing the log file.
+_STATUS_PATH = Path("data/offline_training_status.json")
+
+
+def _write_status(data: dict) -> None:
+    """Atomically write offline training status for HUD consumption."""
+    _STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _STATUS_PATH.with_suffix(".tmp")
+    with open(tmp, "w") as _f:
+        json.dump(data, _f, indent=2)
+    tmp.replace(_STATUS_PATH)
 
 # ── Import training modules ────────────────────────────────────────────────────
 # Deferred to avoid importing torch/numpy before fork on some platforms
@@ -351,6 +366,25 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict] = []
     t_start = time.perf_counter()
 
+    # ── Write initial status for HUD ─────────────────────────────────────────
+    _ot_status: dict = {
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+        "total_jobs": len(jobs),
+        "elapsed_s": 0.0,
+        "results": [
+            {
+                "symbol": j.symbol,
+                "timeframe_minutes": j.timeframe_minutes,
+                "label": f"M{j.timeframe_minutes}",
+                "status": "queued",
+            }
+            for j in jobs
+        ],
+    }
+    _write_status(_ot_status)
+
     # Use spawn context to avoid CUDA/fork issues
     ctx = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
@@ -369,6 +403,11 @@ def main(argv: list[str] | None = None) -> int:
             for j in jobs
         }
 
+        # Mark all submitted jobs as running (they're queued in the pool)
+        for entry in _ot_status["results"]:
+            entry["status"] = "running"
+        _write_status(_ot_status)
+
         for fut in as_completed(futures):
             job = futures[fut]
             label = f"{job.symbol}_M{job.timeframe_minutes}"
@@ -384,14 +423,35 @@ def main(argv: list[str] | None = None) -> int:
                     )
             except Exception as exc:
                 LOG.error("[MAIN] %s raised: %s", label, exc, exc_info=True)
-                results.append({
+                res = {
                     "symbol": job.symbol, "timeframe_minutes": job.timeframe_minutes,
                     "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
                     "total_train_steps": 0, "elapsed_s": 0.0,
                     "weights_path": "", "error": str(exc),
-                })
+                }
+                results.append(res)
+
+            # ── Update HUD status after each job completes ────────────────────
+            _ot_status["elapsed_s"] = time.perf_counter() - t_start
+            for entry in _ot_status["results"]:
+                if entry["symbol"] == res["symbol"] and entry["timeframe_minutes"] == res["timeframe_minutes"]:
+                    entry["status"] = "error" if res.get("error") else "done"
+                    entry["z_omega"] = res.get("z_omega", 0.0)
+                    entry["train_trades"] = res.get("train_trades", 0)
+                    entry["val_trades"] = res.get("val_trades", 0)
+                    entry["total_train_steps"] = res.get("total_train_steps", 0)
+                    entry["elapsed_s"] = res.get("elapsed_s", 0.0)
+                    entry["error"] = res.get("error")
+                    break
+            _write_status(_ot_status)
 
     total_s = time.perf_counter() - t_start
+
+    # ── Write final status ────────────────────────────────────────────────────
+    _ot_status["status"] = "complete"
+    _ot_status["completed_at"] = datetime.now(timezone.utc).isoformat()
+    _ot_status["elapsed_s"] = total_s
+    _write_status(_ot_status)
 
     # Print summary table
     print_summary(results)

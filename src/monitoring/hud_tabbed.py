@@ -77,6 +77,7 @@ class TabbedHUD:
         self.market_stats = {}
         self.bot_config = {}
         self.production_metrics = {}
+        self.offline_stats: dict = {}   # offline_training_status.json
         self.self_test_results: list = []
         self._metrics_from_trade_log = False
         # Loss history for trend / sparkline (non-zero samples only)
@@ -221,6 +222,9 @@ class TabbedHUD:
 
         # Production metrics
         self._load_json("production_metrics.json", "production_metrics")
+
+        # Offline training status (written by train_offline.py, optional)
+        self._load_json("offline_training_status.json", "offline_stats")
 
         # Always compute from trade_log.jsonl (complete persistent history).
         # performance_snapshot resets on each bot restart so it only reflects
@@ -858,6 +862,69 @@ class TabbedHUD:
         print("  \033[1m📊 LEARNING HEALTH\033[0m")
         print(f"    Training: {train_str}   Last event: {last_train}")
         print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
+
+        # ── Offline Training ──────────────────────────────────────────────────
+        ofs = self.offline_stats
+        if ofs:
+            ofs_status = ofs.get("status", "idle")
+            ofs_total  = ofs.get("total_jobs", 0)
+            ofs_done   = sum(1 for r in ofs.get("results", []) if r.get("status") in ("done", "error"))
+            ofs_elapsed = ofs.get("elapsed_s", 0.0)
+            ofs_start  = ofs.get("started_at", "")[:19].replace("T", " ") if ofs.get("started_at") else "—"
+            ofs_end    = ofs.get("completed_at", "")[:19].replace("T", " ") if ofs.get("completed_at") else None
+
+            if ofs_status == "running":
+                status_badge = f"\033[93m⚙  RUNNING ({ofs_done}/{ofs_total} done)\033[0m"
+            elif ofs_status == "complete":
+                status_badge = f"{_G}✓ COMPLETE  ({ofs_done}/{ofs_total} jobs)\033[0m"
+            else:
+                status_badge = f"{_DIM}{ofs_status}\033[0m"
+
+            # Progress bar
+            pct = ofs_done / ofs_total if ofs_total else 0.0
+            filled = int(BAR_LEN * pct)
+            prog_col = _G if pct >= 1.0 else (_Y if pct > 0 else _DIM)
+            prog_bar = f"{prog_col}[{'█' * filled}{'░' * (BAR_LEN - filled)}]\033[0m {pct*100:.0f}%"
+
+            print()
+            print(f"  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
+            print(f"    Progress:  {prog_bar}   Elapsed: {ofs_elapsed:.0f}s")
+            print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
+
+            # Per-job results table
+            _results = ofs.get("results", [])
+            if _results:
+                print()
+                print(f"    {'TF':>5}  {'Status':<9}  {'TrainTr':>7}  {'ValTr':>5}  {'Steps':>7}  ZOmega")
+                print(f"    {'─'*5}  {'─'*9}  {'─'*7}  {'─'*5}  {'─'*7}  {'─'*8}")
+                for r in _results:
+                    tf_label = r.get("label", f"M{r.get('timeframe_minutes', '?')}")
+                    jstatus  = r.get("status", "queued")
+                    if jstatus == "done":
+                        jcol, jbadge = _G, "done     "
+                    elif jstatus == "error":
+                        jcol, jbadge = _R, "ERROR    "
+                    elif jstatus == "running":
+                        jcol, jbadge = _Y, "running  "
+                    else:
+                        jcol, jbadge = _DIM, "queued   "
+                    zo   = r.get("z_omega")
+                    ttrades = r.get("train_trades", 0)
+                    vtrades = r.get("val_trades", 0)
+                    steps   = r.get("total_train_steps", 0)
+                    if zo is not None and jstatus == "done":
+                        zo_col = _G if zo > 0.5 else (_Y if zo > 0 else _R)
+                        zo_str = f"{zo_col}{zo:8.4f}\033[0m"
+                    else:
+                        zo_str = f"{_DIM}{'—':>8}\033[0m"
+                    if jstatus in ("done", "error"):
+                        row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {ttrades:>7,}  {vtrades:>5,}  {steps:>7,}  {zo_str}"
+                    else:
+                        row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':>7}  {'—':>5}  {'—':>7}  {zo_str}"
+                    # Annotate error inline
+                    if jstatus == "error" and r.get("error"):
+                        row += f"  {_R}{r['error'][:30]}\033[0m"
+                    print(row)
 
     def _render_header(self):
         """Render header"""
