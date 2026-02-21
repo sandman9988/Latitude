@@ -250,7 +250,7 @@ def discover_jobs(
     for raw in paths:
         p = Path(raw)
         if p.is_dir():
-            files = sorted(p.glob("*.csv")) + sorted(p.glob("*.jsonl"))
+            files = sorted(p.rglob("*.csv")) + sorted(p.rglob("*.jsonl"))
         elif p.exists():
             files = [p]
         else:

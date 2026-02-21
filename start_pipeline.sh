@@ -27,7 +27,7 @@ SYMBOLS="${SYMBOLS:-XAUUSD BTCUSD}"
 TIMEFRAMES="${TIMEFRAMES:-M15 M30 H1 H4}"
 WORKERS="${WORKERS:-2}"
 THRESHOLD="${THRESHOLD:-1.0}"
-HISTORY_DIR="${HISTORY_DIR:-data/history}"
+HISTORY_DIR="${HISTORY_DIR:-/home/renierdejager/Kinetra/data/master_standardized}"
 WATCH=1
 
 # Parse flags
