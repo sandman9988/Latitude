@@ -72,6 +72,13 @@ _UNIVERSE_PATH = Path("data/universe.json")
 _STAGE_ORDER = ["UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"]
 
 
+def _tf_label(minutes: int) -> str:
+    """Human-readable timeframe label: 60→H1, 240→H4, 1440→D1, else M{n}."""
+    _MAP = {15: "M15", 30: "M30", 60: "H1", 120: "H2", 240: "H4",
+            480: "H8", 720: "H12", 1440: "D1", 10080: "W1"}
+    return _MAP.get(int(minutes), f"M{minutes}")
+
+
 def _write_status(data: dict) -> None:
     """Atomically write offline training status for HUD consumption."""
     _STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -362,7 +369,7 @@ def print_summary(results: list[dict]) -> None:
     print(header)
     print(sep)
     for r in sorted(results, key=lambda x: (x["symbol"], x["timeframe_minutes"])):
-        label = f"M{r['timeframe_minutes']}"
+        label = _tf_label(r['timeframe_minutes'])
         status = f"ERROR: {r['error'][:40]}" if r.get("error") else "OK"
         zo = r.get("z_omega", 0.0)
         zo_str = f"{zo:.4f}" if zo != float("inf") else "  +inf"
@@ -469,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "symbol": j.symbol,
                 "timeframe_minutes": j.timeframe_minutes,
-                "label": f"M{j.timeframe_minutes}",
+                "label": _tf_label(j.timeframe_minutes),
                 "status": "queued",
             }
             for j in jobs
@@ -564,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
         for sym, r in sorted(best.items()):
             zo = r.get("z_omega", 0.0)
             zo_str = f"{zo:.4f}" if zo != float("inf") else "+inf"
-            label = f"M{r['timeframe_minutes']}"
+            label = _tf_label(r['timeframe_minutes'])
             print(f"  {sym:<12} {label:>5}  ZOmega={zo_str}")
 
             # Promote to PAPER stage if enabled and threshold met

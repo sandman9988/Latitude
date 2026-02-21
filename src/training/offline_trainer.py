@@ -432,15 +432,17 @@ class OfflineTrainer:
             **self.policy_kwargs,
         }
 
-        # Override epsilon schedule for offline training.  The live defaults
-        # (epsilon_start=0.05, epsilon_end=0.01) are too conservative; the
-        # policy would barely explore causing near-zero val trades.
+        # Override epsilon schedule AND disable live gating for offline training.
+        # Without DISABLE_GATES=1 the live confidence/feasibility gates block
+        # every entry the untrained network attempts → 0 val trades → ZΩ=0.
         # Restore originals after policy construction so child processes don't
         # bleed into each other (each is a spawned process, so this is safe).
-        _orig_eps_start = os.environ.get("EPSILON_START")
-        _orig_eps_end   = os.environ.get("EPSILON_END")
-        os.environ["EPSILON_START"] = str(self.epsilon_start)
-        os.environ["EPSILON_END"]   = str(self.epsilon_end)
+        _orig_eps_start    = os.environ.get("EPSILON_START")
+        _orig_eps_end      = os.environ.get("EPSILON_END")
+        _orig_disable_gates = os.environ.get("DISABLE_GATES")
+        os.environ["EPSILON_START"]  = str(self.epsilon_start)
+        os.environ["EPSILON_END"]    = str(self.epsilon_end)
+        os.environ["DISABLE_GATES"]  = "1"   # bypass feasibility/conf gates
 
         # Build policy — training enabled
         policy = DualPolicy(
@@ -462,6 +464,10 @@ class OfflineTrainer:
             os.environ.pop("EPSILON_END", None)
         else:
             os.environ["EPSILON_END"] = _orig_eps_end
+        if _orig_disable_gates is None:
+            os.environ.pop("DISABLE_GATES", None)
+        else:
+            os.environ["DISABLE_GATES"] = _orig_disable_gates
 
         # ── Warm start: load existing checkpoint weights ───────────────────────
         if self.warm_start:
