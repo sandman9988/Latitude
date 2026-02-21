@@ -738,8 +738,6 @@ class TabbedHUD:
 
     def _render_training(self):
         """Render agent training status"""
-        print("\n\033[1m🧠 AGENT TRAINING STATUS\033[0m\n")
-
         ts = self.training_stats
         pm = self.production_metrics.get("metrics", {})
         TRIG_CAP = 2_000
@@ -748,6 +746,83 @@ class TabbedHUD:
 
         _G = "\033[92m"; _Y = "\033[93m"; _R = "\033[91m"
         _B = "\033[94m"; _DIM = "\033[90m"; _RST = "\033[0m"
+
+        # ── Offline Training (rendered FIRST so it's always visible) ──────────
+        ofs = self.offline_stats
+        if ofs:
+            ofs_status = ofs.get("status", "idle")
+            ofs_total  = ofs.get("total_jobs", 0)
+            ofs_done   = sum(1 for r in ofs.get("results", []) if r.get("status") in ("done", "error"))
+            ofs_elapsed = ofs.get("elapsed_s", 0.0)
+            ofs_start  = ofs.get("started_at", "")[:19].replace("T", " ") if ofs.get("started_at") else "—"
+            ofs_end    = ofs.get("completed_at", "")[:19].replace("T", " ") if ofs.get("completed_at") else None
+
+            if ofs_status == "running":
+                status_badge = f"\033[93m⚙  RUNNING ({ofs_done}/{ofs_total} done)\033[0m"
+            elif ofs_status == "complete":
+                status_badge = f"{_G}✓ COMPLETE  ({ofs_done}/{ofs_total} jobs)\033[0m"
+            else:
+                status_badge = f"{_DIM}{ofs_status}\033[0m"
+
+            pct = ofs_done / ofs_total if ofs_total else 0.0
+            filled = int(BAR_LEN * pct)
+            prog_col = _G if pct >= 1.0 else (_Y if pct > 0 else _DIM)
+            prog_bar = f"{prog_col}[{'█' * filled}{'░' * (BAR_LEN - filled)}]\033[0m {pct*100:.0f}%"
+
+            print(f"\n  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
+            print(f"    Progress:  {prog_bar}   Elapsed: {ofs_elapsed:.0f}s")
+            print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
+
+            _results = ofs.get("results", [])
+            if _results:
+                print()
+                print(f"    {'Symbol':<6}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  ZOmega")
+                print(f"    {'─'*6}  {'─'*5}  {'─'*9}  {'─'*38}  {'─'*8}")
+                for r in _results:
+                    sym      = r.get("symbol", "")
+                    tf_label = r.get("label", f"M{r.get('timeframe_minutes', '?')}")
+                    jstatus  = r.get("status", "queued")
+                    if jstatus == "done":
+                        jcol, jbadge = _G, "done     "
+                    elif jstatus == "error":
+                        jcol, jbadge = _R, "ERROR    "
+                    elif jstatus == "running":
+                        jcol, jbadge = _Y, "running  "
+                    else:
+                        jcol, jbadge = _DIM, "queued   "
+                    zo      = r.get("z_omega")
+                    ttrades = r.get("train_trades", 0)
+                    vtrades = r.get("val_trades", 0)
+                    steps   = r.get("total_train_steps", 0)
+                    if zo is not None and jstatus == "done":
+                        zo_col = _G if zo > 0.5 else (_Y if zo > 0 else _R)
+                        zo_str = f"{zo_col}{zo:8.4f}\033[0m"
+                    else:
+                        zo_str = f"{_DIM}{'—':>8}\033[0m"
+
+                    if jstatus in ("done", "error"):
+                        detail = f"tr={ttrades:,}  val={vtrades:,}  steps={steps:,}"
+                        row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail:<38}  {zo_str}"
+                    elif jstatus == "running":
+                        prog = self.offline_job_progress.get(
+                            (r.get("symbol"), r.get("timeframe_minutes")), {}
+                        )
+                        if prog:
+                            pb = prog.get("pct", 0.0)
+                            pb_fill = int(14 * pb / 100)
+                            pb_bar = f"[{'█'*pb_fill}{'░'*(14-pb_fill)}] {pb:4.1f}%"
+                            detail = f"{_Y}{pb_bar}{_RST}  ε={prog.get('epsilon',0):.3f}  β={prog.get('beta',0.4):.3f}"
+                            row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail}  {zo_str}"
+                        else:
+                            row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
+                    else:
+                        row = f"    {sym:<6}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
+                    if jstatus == "error" and r.get("error"):
+                        row += f"  {_R}{r['error'][:30]}\033[0m"
+                    print(row)
+            print()
+
+        print("\033[1m🧠 AGENT TRAINING STATUS\033[0m\n")
 
         def _pct_bar(val: int, cap: int) -> str:
             pct = min(val / cap, 1.0) if cap > 0 else 0.0
@@ -873,84 +948,6 @@ class TabbedHUD:
         print("  \033[1m📊 LEARNING HEALTH\033[0m")
         print(f"    Training: {train_str}   Last event: {last_train}")
         print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
-
-        # ── Offline Training ──────────────────────────────────────────────────
-        ofs = self.offline_stats
-        if ofs:
-            ofs_status = ofs.get("status", "idle")
-            ofs_total  = ofs.get("total_jobs", 0)
-            ofs_done   = sum(1 for r in ofs.get("results", []) if r.get("status") in ("done", "error"))
-            ofs_elapsed = ofs.get("elapsed_s", 0.0)
-            ofs_start  = ofs.get("started_at", "")[:19].replace("T", " ") if ofs.get("started_at") else "—"
-            ofs_end    = ofs.get("completed_at", "")[:19].replace("T", " ") if ofs.get("completed_at") else None
-
-            if ofs_status == "running":
-                status_badge = f"\033[93m⚙  RUNNING ({ofs_done}/{ofs_total} done)\033[0m"
-            elif ofs_status == "complete":
-                status_badge = f"{_G}✓ COMPLETE  ({ofs_done}/{ofs_total} jobs)\033[0m"
-            else:
-                status_badge = f"{_DIM}{ofs_status}\033[0m"
-
-            # Progress bar
-            pct = ofs_done / ofs_total if ofs_total else 0.0
-            filled = int(BAR_LEN * pct)
-            prog_col = _G if pct >= 1.0 else (_Y if pct > 0 else _DIM)
-            prog_bar = f"{prog_col}[{'█' * filled}{'░' * (BAR_LEN - filled)}]\033[0m {pct*100:.0f}%"
-
-            print()
-            print(f"  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
-            print(f"    Progress:  {prog_bar}   Elapsed: {ofs_elapsed:.0f}s")
-            print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
-
-            # Per-job results table
-            _results = ofs.get("results", [])
-            if _results:
-                print()
-                print(f"    {'TF':>5}  {'Status':<9}  {'TrainTr':>7}  {'ValTr':>5}  {'Steps':>7}  ZOmega")
-                print(f"    {'─'*5}  {'─'*9}  {'─'*7}  {'─'*5}  {'─'*7}  {'─'*8}")
-                for r in _results:
-                    tf_label = r.get("label", f"M{r.get('timeframe_minutes', '?')}")
-                    jstatus  = r.get("status", "queued")
-                    if jstatus == "done":
-                        jcol, jbadge = _G, "done     "
-                    elif jstatus == "error":
-                        jcol, jbadge = _R, "ERROR    "
-                    elif jstatus == "running":
-                        jcol, jbadge = _Y, "running  "
-                    else:
-                        jcol, jbadge = _DIM, "queued   "
-                    zo   = r.get("z_omega")
-                    ttrades = r.get("train_trades", 0)
-                    vtrades = r.get("val_trades", 0)
-                    steps   = r.get("total_train_steps", 0)
-                    if zo is not None and jstatus == "done":
-                        zo_col = _G if zo > 0.5 else (_Y if zo > 0 else _R)
-                        zo_str = f"{zo_col}{zo:8.4f}\033[0m"
-                    else:
-                        zo_str = f"{_DIM}{'—':>8}\033[0m"
-                    if jstatus in ("done", "error"):
-                        row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {ttrades:>7,}  {vtrades:>5,}  {steps:>7,}  {zo_str}"
-                    elif jstatus == "running":
-                        prog = self.offline_job_progress.get(
-                            (r.get("symbol"), r.get("timeframe_minutes")), {}
-                        )
-                        if prog:
-                            pb = prog.get("pct", 0.0)
-                            pb_fill = int(10 * pb / 100)
-                            pb_bar = f"{_Y}[{'█'*pb_fill}{'░'*(10-pb_fill)}] {pb:4.1f}%{_RST}"
-                            eps_str = f"ε={prog.get('epsilon',0):.3f}"
-                            beta_str = f"β={prog.get('beta',0.4):.3f}"
-                            tr_str = f"tr={prog.get('trades',0):,}"
-                            row = (f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  "
-                                   f"{pb_bar}  {eps_str}  {beta_str}  {tr_str}")
-                        else:
-                            row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':>7}  {'—':>5}  {'—':>7}  {zo_str}"
-                    else:
-                        row = f"    {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':>7}  {'—':>5}  {'—':>7}  {zo_str}"
-                    # Annotate error inline
-                    if jstatus == "error" and r.get("error"):
-                        row += f"  {_R}{r['error'][:30]}\033[0m"
-                    print(row)
 
     def _render_header(self):
         """Render header"""
