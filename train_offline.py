@@ -61,7 +61,7 @@ LOG = logging.getLogger("train_offline")
 
 # ── Import training modules ────────────────────────────────────────────────────
 # Deferred to avoid importing torch/numpy before fork on some platforms
-_TF_PATTERN = re.compile(r"[_\-](M1|M5|M15|M30|H1|H4|D1|W1)", re.IGNORECASE)
+_TF_PATTERN = re.compile(r"[_\-](M15|M30|M5|M1|H1|H4|H12|D1|W1)(?!\d)", re.IGNORECASE)
 _SYM_PATTERN = re.compile(r"^([A-Z]{3,8}(?:[A-Z]{3})?)", re.IGNORECASE)
 
 # ── Job descriptor ─────────────────────────────────────────────────────────────
@@ -140,7 +140,7 @@ def _run_job(
 # ── Job discovery ──────────────────────────────────────────────────────────────
 
 _TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30,
-               "H1": 60, "H4": 240, "D1": 1440, "W1": 10080}
+               "H1": 60, "H4": 240, "H12": 720, "D1": 1440, "W1": 10080}
 
 
 def _detect_tf_minutes(filename: str) -> int | None:

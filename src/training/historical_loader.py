@@ -200,15 +200,23 @@ def _detect_columns(headers: list[str]) -> dict[str, str] | None:
     """Map logical field names to actual CSV column headers."""
     result: dict[str, str] = {}
 
+    # Normalise MT4/MT5 angle-bracket headers: <DATE> → DATE, <OPEN> → OPEN …
+    # We map normalised_name → original_name so lookups still use the real key.
+    norm: dict[str, str] = {h.strip("<> \t"): h for h in headers}
+
+    def _find(pattern: re.Pattern) -> str | None:
+        """Return the original header for the first normalised key that matches."""
+        return next((norm[k] for k in norm if pattern.match(k)), None)
+
     # Datetime: Dukascopy  uses "Gmt time"; cTrader "Date & Time"; MT4 "DATE"
     for h in headers:
-        if re.search(r"(date.*time|gmt.*time|timestamp)", h, re.IGNORECASE):
+        if re.search(r"(date.*time|gmt.*time|timestamp)", h.strip("<> \t"), re.IGNORECASE):
             result["dt"] = h
             break
     if "dt" not in result:
-        # Try separate date + time columns (MT4 style)
-        date_h = next((h for h in headers if re.match(r"^date$", h, re.IGNORECASE)), None)
-        time_h = next((h for h in headers if re.match(r"^time$", h, re.IGNORECASE)), None)
+        # Try separate date + time columns (MT4/MT5 style, with or without brackets)
+        date_h = next((norm[k] for k in norm if re.match(r"^date$", k, re.IGNORECASE)), None)
+        time_h = next((norm[k] for k in norm if re.match(r"^time$", k, re.IGNORECASE)), None)
         if date_h and time_h:
             result["date"] = date_h
             result["time"] = time_h
@@ -216,10 +224,10 @@ def _detect_columns(headers: list[str]) -> dict[str, str] | None:
     if "dt" not in result and "date" not in result:
         return None
 
-    # OHLC columns
+    # OHLC columns (also strip brackets from normalised keys)
     for name, pattern in [("o", _OPEN_COLS), ("h", _HIGH_COLS),
                            ("l", _LOW_COLS),  ("c", _CLOSE_COLS)]:
-        match = next((h for h in headers if pattern.match(h)), None)
+        match = _find(pattern)
         if match:
             result[name] = match
 
