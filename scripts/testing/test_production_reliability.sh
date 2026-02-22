@@ -120,9 +120,9 @@ fi
 # 8. Systemd service file
 echo ""
 echo "[TEST] Checking systemd service file..."
-if [[ -f ctrader-bot@.service ]]; then
+if [[ -f ../ctrader-bot@.service ]]; then
     echo "✓ Systemd service file exists"
-    if grep -q "Restart=always" ctrader-bot@.service; then
+    if grep -q "Restart=always" ../ctrader-bot@.service; then
         echo "✓ Auto-restart enabled"
     else
         echo "⚠ Auto-restart not configured"

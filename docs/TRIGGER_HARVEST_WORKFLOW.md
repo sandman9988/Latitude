@@ -115,12 +115,12 @@ def has_any_open_positions(self) -> bool:
    - Trailing stop state
    - ✅ **Float precision now normalized to 8 decimals**
 
-2. **`log/trade_audit.jsonl`** - Trade execution audit trail
+2. **`logs/audit/trade_audit.jsonl`** - Trade execution audit trail
    - Every order submission
    - Every execution report
    - Position updates
 
-3. **`log/decisions.jsonl`** - DDQN decision log
+3. **`logs/audit/decisions.jsonl`** - DDQN decision log
    - Trigger decisions (entry)
    - Harvester decisions (exit)
    - State vectors, Q-values, epsilon
@@ -291,19 +291,19 @@ def close_position(self, broker_ticket: str):
 
 ```bash
 # Check if bot is trading
-tail -f ctrader_py_logs/ctrader_*.log | grep -E "TRIGGER|HARVEST|EXPLORE|EXPLOIT"
+tail -f logs/ctrader/ctrader_*.log | grep -E "TRIGGER|HARVEST|EXPLORE|EXPLOIT"
 
 # Check position state
 cat data/state/trade_integration_BTCUSD.json | jq '.data | {net_qty: .position.net_qty, trackers: .active_trackers, tickets: .position_tickets}'
 
 # Check decision distribution
-tail -100 log/decisions.jsonl | jq -r '.action' | sort | uniq -c
+tail -100 logs/audit/decisions.jsonl | jq -r '.action' | sort | uniq -c
 
 # Check epsilon value
-tail -200 ctrader_py_logs/ctrader_*.log | grep -i epsilon | tail -5
+tail -200 logs/ctrader/ctrader_*.log | grep -i epsilon | tail -5
 
 # Monitor order flow
-tail -f log/trade_audit.jsonl | jq -r '[.timestamp, .event_type, .side, .quantity] | @tsv'
+tail -f logs/audit/trade_audit.jsonl | jq -r '[.timestamp, .event_type, .side, .quantity] | @tsv'
 ```
 
 ---

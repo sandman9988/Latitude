@@ -538,7 +538,7 @@ class AgentArena:
         Args:
             directory: Directory to save weights
         """
-        from pathlib import Path
+        from pathlib import Path  # noqa: PLC0415
 
         path = Path(directory)
         path.mkdir(parents=True, exist_ok=True)
@@ -560,7 +560,7 @@ class AgentArena:
         Args:
             directory: Directory containing saved weights
         """
-        from pathlib import Path
+        from pathlib import Path  # noqa: PLC0415
 
         path = Path(directory)
 

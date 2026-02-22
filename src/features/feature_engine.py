@@ -37,12 +37,12 @@ except ImportError:  # Optional dependency
     scipy_kurtosis = None
     skew = None
 
+from src.utils.safe_math import SAFE_EPSILON as SMALL_NUMBER
+from src.utils.safe_math import SafeMath
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-from src.utils.safe_math import SAFE_EPSILON as SMALL_NUMBER
-from src.utils.safe_math import SafeMath
 
 MIN_PRICE_POINTS: Final[int] = 2
 OMEGA_MIN_RETURNS: Final[int] = 5

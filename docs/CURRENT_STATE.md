@@ -1,17 +1,17 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** February 20, 2026 (code-review session)  
+**Last Updated:** February 22, 2026 (housekeeping audit)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
-**Status:** ✅ Operational — production readiness gaps addressed  
+**Status:** ✅ Operational — all tests green  
 **Audience:** All
 
 ---
 
 ## 🎯 Executive Summary
 
-XAUUSD M1 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Full production-readiness audit performed this session — all high/medium severity gaps closed.
+XAUUSD M1 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Full housekeeping audit performed this session — 2 bugs fixed, test suite fully green.
 
-**Test Suite:** 2 331 passing, 4 skipped, 0 failures (124 test files, 46.76 s)
+**Test Suite:** 2 506 passing, 3 skipped, 0 failures (124 test files, ~50 s)
 
 **Trading Status:**
 - **Symbol:** XAUUSD (Gold Spot)
@@ -19,6 +19,21 @@ XAUUSD M1 trading bot using dual-agent DDQN reinforcement learning. Currently in
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
 - **Session:** QUOTE + TRADE dual FIX sessions
+
+---
+
+## 🔧 Housekeeping Fixes (Feb 22, 2026 session)
+
+### FIX-1 — QuickFIX namespace-package type-annotation crash (MEDIUM)
+`src/core/trade_manager_integration.py` imported `quickfix` successfully (installed as an empty namespace package) but `quickfix.Message` didn't exist, so the type annotations `msg: fix.Message` raised `AttributeError` at class-body evaluation time.  
+**Fix:** Added `from __future__ import annotations` to defer annotation evaluation, making the annotations strings-only at import time.  
+**Impact:** Was causing 9 test failures across `tests/integration/test_pnl_calculation.py` (7 tests) and `tests/test_depth_gate.py` (collection error). All now pass.
+
+### FIX-2 — Universe registry stage-demotion bug (MEDIUM)
+`_register_universe()` in `train_offline.py` would demote a `LIVE` (or `MICRO`) instrument back to `PAPER` whenever a new training run produced a higher `z_omega` score.  
+**Root Cause:** The condition `if not already_paper or better_score` branched into the update block and hard-coded `"stage": "PAPER"` even when `current_stage` was `LIVE`.  
+**Fix:** Preserve the existing stage when the instrument is already at `PAPER` or above; only set `"PAPER"` when promoting from below.  
+**Impact:** `tests/unit/test_universe_registry.py::test_does_not_demote_from_live` now passes.
 
 ---
 
@@ -235,7 +250,7 @@ Uptime: 8.6+ hours
 
 ### Logs
 ```bash
-$ ls -lh ctrader_py_logs/ | tail -3
+$ ls -lh logs/ctrader/ | tail -3
 -rw-r--r-- 1 user user 1.2M Feb 14 18:45 ctrader_20260213_175906.log
 ```
 
@@ -297,7 +312,7 @@ ps aux | grep ctrader_ddqn_paper
 
 ### View Latest Logs
 ```bash
-tail -f ctrader_py_logs/ctrader_$(ls -t ctrader_py_logs | head -1)
+tail -f logs/ctrader/ctrader_$(ls -t logs/ctrader | head -1)
 ```
 
 ### Check Parameters
@@ -435,21 +450,23 @@ bash run.sh
 
 | File | Change | Purpose |
 |------|--------|---------|
-| `data/learned_parameters.json` | M1 SL: 0.4→0.12 | Fix scaling bug |
-| `src/agents/harvester_agent.py` | Lines 730-763 | SL learning |
-| `src/agents/dual_policy.py` | Lines 409-411 | MFE% tracking |
-| `src/core/ctrader_ddqn_paper.py` | 7 locations | Defensive validation |
-| `src/core/trade_manager_integration.py` | Lines 965-1007 | Tracker recovery validation |
-| `src/persistence/atomic_persistence.py` | Lines 126-167 | JSON corruption detection |
+| `src/core/trade_manager_integration.py` | Added `from __future__ import annotations` | Fix QuickFIX namespace-package type-annotation crash |
+| `train_offline.py` | `_register_universe()` preserves stage when already PAPER+ | Fix LIVE/MICRO → PAPER demotion bug |
+| `data/learned_parameters.json` | M1 SL: 0.4→0.12 | Fix scaling bug (Feb 14) |
+| `src/agents/harvester_agent.py` | Lines 730-763 | SL learning (Feb 14) |
+| `src/agents/dual_policy.py` | Lines 409-411 | MFE% tracking (Feb 14) |
+| `src/core/ctrader_ddqn_paper.py` | 7 locations | Defensive validation (Feb 14) |
+| `src/core/trade_manager_integration.py` | Lines 965-1007 | Tracker recovery validation (Feb 14) |
+| `src/persistence/atomic_persistence.py` | Lines 126-167 | JSON corruption detection (Feb 14) |
 
 **Backups Created:**
 - `data/learned_parameters.json.backup_20260214_*`
 
 ---
 
-**Last Review:** February 14, 2026 18:50 UTC  
-**Next Review:** After bot restart (when markets open)  
-**Review Frequency:** Daily during training, weekly in production
+**Last Review:** February 22, 2026 (housekeeping audit)  
+**Next Review:** After next bot session or code change  
+**Review Frequency:** After each code change; weekly in production
 
 ---
 

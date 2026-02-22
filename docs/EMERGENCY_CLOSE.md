@@ -136,15 +136,15 @@ manager.check_all()  # Should trigger emergency close
 ## Monitoring
 
 Circuit breaker events logged to:
-- **Python logs**: `ctrader_py_logs/ctrader_*.log`
-- **Audit log**: `log/trade_audit.jsonl`
-- **Transaction log**: `log/transactions.jsonl`
+- **Python logs**: `logs/ctrader/ctrader_*.log`
+- **Audit log**: `logs/audit/trade_audit.jsonl`
+- **Transaction log**: `logs/audit/transactions.jsonl`
 
 Search for:
 ```bash
-grep "CIRCUIT.*TRIPPED" ctrader_py_logs/*.log
-grep "EMERGENCY CLOSE" ctrader_py_logs/*.log
-grep "CIRCUIT_BREAKER" log/trade_audit.jsonl
+grep "CIRCUIT.*TRIPPED" logs/ctrader/*.log
+grep "EMERGENCY CLOSE" logs/ctrader/*.log
+grep "CIRCUIT_BREAKER" logs/audit/trade_audit.jsonl
 ```
 
 ## Recovery
@@ -196,7 +196,7 @@ Cooldown periods:
 cat data/state/trade_integration_BTCUSD.json | jq '.data.position_tickets'
 
 # Check audit log
-tail -20 log/trade_audit.jsonl | jq 'select(.event_type=="POSITION_CLOSE")'
+tail -20 logs/audit/trade_audit.jsonl | jq 'select(.event_type=="POSITION_CLOSE")'
 
 # Verify with broker
 python3 scripts/emergency_close_positions.py --method fix
@@ -220,7 +220,7 @@ python3 scripts/emergency_close_positions.py --method fix
 3. **Monitor circuit breaker status**:
    ```bash
    # In bot logs
-   grep "Circuit Breaker" ctrader_py_logs/*.log | tail -20
+   grep "Circuit Breaker" logs/ctrader/*.log | tail -20
    ```
 
 4. **Test emergency close** before going live:

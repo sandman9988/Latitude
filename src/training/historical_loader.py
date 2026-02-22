@@ -29,9 +29,9 @@ import json
 import logging
 import re
 from collections import deque
-from datetime import UTC, datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Iterator
 
 import numpy as np
 
@@ -123,8 +123,8 @@ def load_jsonl_cache(
 
     seen: dict[datetime, Bar] = {}
     with open(path, encoding="utf-8") as fh:
-        for lineno, line in enumerate(fh, 1):
-            line = line.strip()
+        for lineno, raw_line in enumerate(fh, 1):
+            line = raw_line.strip()
             if not line:
                 continue
             try:
@@ -263,16 +263,16 @@ def _parse_csv_row(row: dict[str, str], col_map: dict[str, str]) -> Bar | None:
 
         o = float(row[col_map["o"]])
         h = float(row[col_map["h"]])
-        l = float(row[col_map["l"]])
+        lo = float(row[col_map["l"]])
         c = float(row[col_map["c"]])
 
-        if not all(np.isfinite(v) for v in (o, h, l, c)):
+        if not all(np.isfinite(v) for v in (o, h, lo, c)):
             return None
-        if h < l or h < o or h < c or l > o or l > c:
+        if h < lo or h < o or h < c or lo > o or lo > c:
             return None  # Malformed OHLC
 
         sp = float(row[col_map["sp"]]) if "sp" in col_map else 0.0
-        return (ts, o, h, l, c, sp)
+        return (ts, o, h, lo, c, sp)
     except (KeyError, ValueError, TypeError):
         return None
 
@@ -282,20 +282,14 @@ def _parse_datetime(s: str) -> datetime | None:
     # Fast path: try fromisoformat first (handles +00:00 / Z suffixes natively on Py3.11+)
     try:
         dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
-        else:
-            dt = dt.astimezone(UTC)
+        dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
         return dt
     except ValueError:
         pass
     for fmt in _DT_FORMATS:
         try:
             dt = datetime.strptime(s, fmt)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            else:
-                dt = dt.astimezone(UTC)
+            dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
             return dt
         except ValueError:
             continue
@@ -308,11 +302,11 @@ def _parse_datetime(s: str) -> datetime | None:
 def _parse_jsonl_bar(row: list) -> Bar | None:
     """Parse a bar from the BarExperienceCache format: [iso_str, o, h, l, c]."""
     try:
-        ts_str, o, h, l, c = row[0], row[1], row[2], row[3], row[4]
+        ts_str, o, h, lo, c = row[0], row[1], row[2], row[3], row[4]
         ts = _parse_datetime(str(ts_str))
         if ts is None:
             return None
-        return (ts, float(o), float(h), float(l), float(c), 0.0)
+        return (ts, float(o), float(h), float(lo), float(c), 0.0)
     except (IndexError, ValueError, TypeError):
         return None
 
@@ -335,7 +329,7 @@ def _filter_to_timeframe(bars: list[Bar], timeframe_minutes: int) -> list[Bar]:
     infer the actual bar-interval from the first pair of bars and only drop bars
     whose gap to the previous bar differs significantly from the expected step.
     """
-    if len(bars) < 2:
+    if len(bars) < 2:  # noqa: PLR2004 — need at least a pair to infer step
         return bars
 
     expected_secs = timeframe_minutes * 60

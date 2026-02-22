@@ -13,7 +13,7 @@ if [[ -f .env ]]; then
 fi
 
 # Configuration
-LOG_DIR="${PY_LOGDIR:-ctrader_py_logs}"
+LOG_DIR="${PY_LOGDIR:-logs/ctrader}"
 MAX_LOG_AGE=300  # 5 minutes
 MAX_DATA_STALE=120  # 2 minutes without market data = problem
 PYTHON_PID_FILE="${SCRIPT_DIR}/.bot.pid"

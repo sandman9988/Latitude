@@ -58,7 +58,7 @@ class TradeAuditLogger:
         audit.log_position_open("10028_ticket_186675801", "LONG", 0.1, 91851.0, ticket="186675801")
     """
 
-    def __init__(self, log_dir: str = "log", filename: str = "trade_audit.jsonl"):
+    def __init__(self, log_dir: str = "logs/audit", filename: str = "trade_audit.jsonl"):
         """
         Initialize trade audit logger.
 
@@ -115,7 +115,7 @@ class TradeAuditLogger:
     # ORDER LIFECYCLE
     # ==========================================================================
 
-    def log_order_submit(
+    def log_order_submit(  # noqa: PLR0913
         self,
         order_id: str,
         side: str,
@@ -173,7 +173,7 @@ class TradeAuditLogger:
             severity="WARNING",
         )
 
-    def log_order_fill(
+    def log_order_fill(  # noqa: PLR0913
         self,
         order_id: str,
         fill_price: float,
@@ -220,7 +220,7 @@ class TradeAuditLogger:
     # POSITION LIFECYCLE
     # ==========================================================================
 
-    def log_position_open(
+    def log_position_open(  # noqa: PLR0913
         self,
         position_id: str,
         direction: str,
@@ -267,7 +267,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_position_close(
+    def log_position_close(  # noqa: PLR0913
         self,
         position_id: str,
         exit_price: float,
@@ -457,7 +457,7 @@ def get_trade_audit_logger() -> TradeAuditLogger:
     Returns:
         TradeAuditLogger: Global audit logger instance
     """
-    global _audit_logger_instance
+    global _audit_logger_instance  # noqa: PLW0603 — singleton pattern
 
     if _audit_logger_instance is None:
         with _audit_lock:

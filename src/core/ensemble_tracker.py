@@ -95,7 +95,7 @@ class EnsembleTracker:
     3. Different hyperparameters (optional)
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         n_models: int = 3,
         disagreement_threshold: float = 0.5,

@@ -325,7 +325,7 @@ class EventTimeFeatureEngine:
 # ==============================================================================
 
 
-def main() -> None:
+def main() -> None:  # noqa: PLR0915
     """Run event time features test suite."""
     print("=" * 80)
     print("EVENT-RELATIVE TIME FEATURES - TEST SUITE")

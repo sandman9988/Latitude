@@ -1,5 +1,11 @@
 # Disaster Recovery Runbook
 
+> ⚠️ **LEGACY VERSION** — The canonical, more comprehensive runbook is at  
+> **[operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md)**  
+> This file is kept for backward compatibility only.
+
+---
+
 **CRITICAL**: This document contains step-by-step procedures for recovering from catastrophic failures during production trading. Keep printed copy accessible.
 
 **Emergency Contact**: [YOUR_CONTACT_INFO]  

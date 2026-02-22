@@ -9,8 +9,8 @@
 - `data/current_position.json` - Position data
 - `data/decision_log.json` - DDQN decisions
 - `data/training_stats.json` - Learning metrics
-- `log/decisions.jsonl` - JSONL audit log
-- `log/trade_audit.jsonl` - Trade audit trail
+- `logs/audit/decisions.jsonl` - JSONL audit log
+- `logs/audit/trade_audit.jsonl` - Trade audit trail
 
 **Strengths**:
 - ✅ Simple, human-readable

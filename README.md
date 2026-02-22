@@ -4,27 +4,31 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 
 ## 🚀 Quick Start
 
-**New to deployment?** See [DEPLOYMENT_QUICKSTART.md](DEPLOYMENT_QUICKSTART.md) for the living ecosystem strategy.
+**New to deployment?** See [docs/guides/DEPLOYMENT_QUICKSTART.md](docs/guides/DEPLOYMENT_QUICKSTART.md) for the production deployment guide.
 
 **TL;DR:**
-1. Run `./phase0_validate_system.sh` (2-4 hour paper validation)
-2. Run `./launch_micro_learning.sh` (live micro-position learning, QTY=0.001)
-3. Monitor with `./monitor_phase1.sh`
+
+1. Run `scripts/testing/phase0_validate_system.sh` (2-4 hour paper validation)
+2. Launch bot with `./run.sh` (set `QTY=0.001` for micro-position learning)
+3. Monitor with `scripts/monitoring/monitor.sh`
 4. Graduate to Phase 2 after 500+ profitable trades
 
-**Why this approach?** Avoids RL complacency from paper training. Agents learn real friction costs (spread, slippage, requotes) from day one with tiny positions (~$2-3 max loss). See [PAPER_VS_LIVE_CONFIG.md](PAPER_VS_LIVE_CONFIG.md) for full rationale.
+**Why this approach?** Avoids RL complacency from paper training. Agents learn real friction costs (spread, slippage, requotes) from day one with tiny positions (~$2-3 max loss). See [docs/guides/PAPER_VS_LIVE_CONFIG.md](docs/guides/PAPER_VS_LIVE_CONFIG.md) for full rationale.
 
 ---
 
 ## 📚 Documentation
 
 **System Status & Recent Changes:**
-- 📄 [**CURRENT_STATE.md**](docs/CURRENT_STATE.md) - Latest fixes, parameters, and system health (updated Feb 14, 2026)
-- 📁 [**INDEX.md**](docs/INDEX.md) - Complete navigation index for all 75+ documentation files
+
+- 📄 [**CURRENT_STATE.md**](docs/CURRENT_STATE.md) - Latest fixes, parameters, and system health (updated Feb 22, 2026)
+- 📁 [**INDEX.md**](docs/INDEX.md) - Complete navigation index for all documentation files
 
 **Core Documentation:**
-- 📖 [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Authoritative system design and architecture
+
+- 📖 [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Authoritative system design and architecture (1108 lines)
 - 🚀 [docs/00_START_HERE.md](docs/00_START_HERE.md) - Documentation entry point with organized guides
+- 🏗 [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM_ARCHITECTURE.md) - Technical architecture
 
 ---
 
@@ -39,13 +43,16 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 - **Friction Modeling**: SymbolInfo-based spread/commission/slippage costs
 
 ### Phase 1: Defensive Programming (✅ Complete)
+
 - **SafeMath/SafeArray**: Guards against NaN/Inf/bounds errors
 - **Atomic Persistence**: CRC32-validated file writes with automatic backups
 - **VaR Estimation**: Dynamic Value-at-Risk with regime/VPIN/kurtosis adjustments
 - **Circuit Breakers**: Kurtosis-based automatic order cancellation
 - **Adaptive Parameters**: Self-optimizing learned parameters with soft bounds
+- **Self-Test**: Startup health checks (QuickFIX importable, model weights loadable, CB schema)
 
-### Phase 2: Advanced RL Features (✅ 95% Complete)
+### Phase 2: Advanced RL Features (✅ Complete)
+
 - **Activity Monitoring**: Prevents learned helplessness via trade frequency tracking
 - **Counterfactual Analysis**: Compares actual exits vs optimal (MFE-based)
 - **Non-Repaint Guards**: Enforces strict bar[0] discipline (prevents look-ahead bias)
@@ -55,7 +62,8 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 - **Enhanced Reward Shaping**: 6 components (capture, WTL, opportunity, activity, counterfactual, ensemble)
 - **Safe Bar Access**: Helper methods with non-repaint discipline documentation
 
-### Phase 3: Dual-Agent Architecture (✅ Phase 3.1 Complete - 60% Handbook Alignment)
+### Phase 3: Dual-Agent Architecture (✅ Complete)
+
 - **TriggerAgent**: Entry specialist with runway prediction (10-50 pip MFE forecasts)
 - **HarvesterAgent**: Exit specialist with capture optimization (MFE-aware exits)
 - **DualPolicy**: Orchestrates trigger + harvester agents with position lifecycle tracking
@@ -63,66 +71,69 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 - **Backward Compatible**: Single-agent mode when `DDQN_DUAL_AGENT=0` (default)
 - **Fallback Strategies**: Rule-based logic for model-free operation
   - Trigger: MA crossover + microstructure tilt (0.3 thresholds)
-  - Harvester: 0.3% profit target, 0.2% stop loss, 50-bar time stop
+  - Harvester: 0.3% profit target, 0.12% stop loss, 50-bar time stop
 
 ## Project Structure
 
 ```
 ctrader_trading_bot/
-├── ctrader_ddqn_paper.py         # Main trading bot application
-├── safe_utils.py                  # Defensive programming utilities (Phase 1)
-├── atomic_persistence.py          # CRC32-validated file operations (Phase 1)
-├── var_estimator.py               # VaR with kurtosis monitoring (Phase 1)
-├── activity_monitor.py            # Activity tracking + counterfactual (Phase 2)
-├── non_repaint_guards.py          # Bar[0] discipline enforcement (Phase 2)
-├── ring_buffer.py                 # O(1) rolling statistics (Phase 2)
-├── ensemble_tracker.py            # Ensemble disagreement tracking (Phase 2)
-├── trigger_agent.py               # Entry specialist (Phase 3)
-├── harvester_agent.py             # Exit specialist (Phase 3)
-├── dual_policy.py                 # Dual-agent orchestrator (Phase 3)
-├── learned_parameters.py          # Adaptive parameter system
-├── friction_costs.py              # Spread/commission/slippage modeling
-├── order_book.py                  # L2 order book + VPIN calculator
-├── reward_shaper.py               # RL reward engineering (6 components)
-├── performance_tracker.py         # Trade metrics and analytics
-├── trade_exporter.py              # JSON trade export
-├── tests/                         # Test suite
-│   ├── test_phase1_fixes.py      # Phase 1 defensive tests
-│   ├── test_phase2_integration.py # Phase 2 integration tests
-│   └── test_phase3_dual_agent.py # Phase 3 dual-agent tests
+├── src/                           # Source code
+│   ├── agents/                   # Agent implementations
+│   │   ├── dual_policy.py        # Dual-agent orchestrator (Phase 3)
+│   │   ├── trigger_agent.py      # Entry specialist (Phase 3)
+│   │   └── harvester_agent.py    # Exit specialist (Phase 3)
+│   ├── core/                     # Core trading system
+│   │   ├── ctrader_ddqn_paper.py # ⭐ Main trading bot application
+│   │   ├── trade_manager.py      # FIX order lifecycle management
+│   │   ├── reward_shaper.py      # RL reward engineering (6 components)
+│   │   ├── order_book.py         # L2 order book + VPIN calculator
+│   │   └── self_test.py          # Startup health checks
+│   ├── features/                 # Feature engineering
+│   │   ├── feature_engine.py     # Feature computation pipeline
+│   │   ├── regime_detector.py    # Market regime classification
+│   │   └── event_time_features.py # Activity-time bar features
+│   ├── monitoring/               # HUD and monitoring
+│   │   ├── hud_tabbed.py         # Tabbed terminal dashboard
+│   │   ├── performance_tracker.py # Trade metrics and analytics
+│   │   └── trade_exporter.py     # JSON trade export
+│   ├── persistence/              # State management
+│   │   ├── atomic_persistence.py # CRC32-validated file operations (Phase 1)
+│   │   └── learned_parameters.py # Adaptive parameter system
+│   ├── risk/                     # Risk management
+│   │   ├── risk_manager.py       # Position sizing & risk limits
+│   │   ├── var_estimator.py      # VaR with kurtosis monitoring (Phase 1)
+│   │   ├── circuit_breakers.py   # Kurtosis-based order cancellation
+│   │   └── friction_costs.py     # Spread/commission/slippage modeling
+│   └── utils/                    # Utilities
+│       ├── safe_utils.py         # Defensive programming utilities (Phase 1)
+│       ├── ring_buffer.py        # O(1) rolling statistics (Phase 2)
+│       └── non_repaint_guards.py # Bar[0] discipline enforcement (Phase 2)
+├── tests/                         # Test suite (124 files, 2506 passing)
+│   ├── unit/                     # Unit tests
+│   ├── integration/              # Integration tests
+│   └── validation/               # Validation tests
 ├── config/                        # Configuration files
 │   ├── ctrader_quote.cfg         # QUOTE session FIX config
 │   ├── ctrader_trade.cfg         # TRADE session FIX config
-│   └── cTraderAppTokens          # OAuth credentials (if needed)
+│   └── cTraderAppTokens          # OAuth credentials
 ├── scripts/                       # Utility scripts
-│   └── ctrader_oauth_bootstrap.py # OAuth authentication helper
-├── logs/                          # All log files
-│   ├── python/                   # Python application logs
-│   ├── fix_sessions/             # Combined FIX session logs
-│   ├── fix_quote/                # QUOTE session FIX logs
-│   └── fix_trade/                # TRADE session FIX logs
+│   ├── testing/                  # Test & validation scripts
+│   │   └── phase0_validate_system.sh # 2-4 hour validation run
+│   └── monitoring/               # Live monitoring dashboards
 ├── data/                          # Runtime data
 │   ├── learned_parameters.json   # Atomic-persisted params (with backups)
 │   └── sessions/                 # FIX session state
-│       ├── store/                # Combined session store
-│       ├── store_quote/          # QUOTE session store
-│       └── store_trade/          # TRADE session store
 ├── docs/                          # Documentation
-│   ├── MASTER_HANDBOOK.md        # Original design reference
-│   ├── GAP_ANALYSIS.md           # Handbook alignment analysis
-│   ├── PHASE1_SUMMARY.md         # Phase 1 implementation details
-│   ├── PHASE2_SUMMARY.md         # Phase 2 implementation details
-│   ├── PHASE2_QUICK_REFERENCE.md # Phase 2 usage guide
-│   ├── PHASE3_SUMMARY.md         # Phase 3 dual-agent architecture
-│   └── archive/                  # Historical documentation
-├── archive/                       # Archived/unused modules
-│   └── unused_modules/
-│       ├── feature_engine.py
-│       ├── time_features.py
-│       └── regime_detector.py
+│   ├── CURRENT_STATE.md          # Latest status (read this first)
+│   ├── INDEX.md                  # Documentation navigation
+│   ├── architecture/             # System design documents
+│   ├── guides/                   # User & operator guides
+│   └── operations/               # Runbooks
+├── MASTER_HANDBOOK.md            # Authoritative system design (root)
 ├── run.sh                         # Convenience launcher script
+├── train_offline.py               # Offline training pipeline
+├── run_universe.py                # Universe management
 ├── requirements.txt               # Python dependencies
-├── .gitignore                     # Git ignore patterns
 └── README.md                      # This file
 ```
 
@@ -155,11 +166,13 @@ pip install -e .
 ### Environment Variables
 
 Required:
+
 - `CTRADER_USERNAME` - Your cTrader account username (e.g., "5179095")
 - `CTRADER_PASSWORD_QUOTE` - Password for QUOTE session
 - `CTRADER_PASSWORD_TRADE` - Password for TRADE session
 
 Optional:
+
 - `CTRADER_CFG_QUOTE` - Path to QUOTE config (default: "config/ctrader_quote.cfg")
 - `CTRADER_CFG_TRADE` - Path to TRADE config (default: "config/ctrader_trade.cfg")
 - `CTRADER_BTC_SYMBOL_ID` - Symbol ID for BTC/USD (default: "10028")
@@ -215,7 +228,7 @@ export CTRADER_CFG_QUOTE="config/ctrader_quote.cfg"
 export CTRADER_CFG_TRADE="config/ctrader_trade.cfg"
 
 # Run
-python3 ctrader_ddqn_paper.py
+python3 -m src.core.ctrader_ddqn_paper
 ```
 
 ### With DDQN Model
@@ -230,6 +243,7 @@ export DDQN_MODEL_PATH="path/to/your/model.pth"
 ### Without Model (Fallback)
 
 Uses a simple moving average crossover strategy:
+
 - **MA Fast**: 10-period moving average
 - **MA Slow**: 30-period moving average
 - **Long**: When MA diff > 0.2
@@ -239,12 +253,14 @@ Uses a simple moving average crossover strategy:
 ### With DDQN Model
 
 If a PyTorch model is provided via `DDQN_MODEL_PATH`, the bot uses:
+
 - 64-bar lookback window
 - 7 features: 1-bar return, 5-bar return, MA difference, volatility, imbalance, VPIN, depth_ratio
 - 3 actions: SHORT (0), FLAT (1), LONG (2)
 - Convolutional neural network architecture
 
 #### Single-Agent Mode (Default - Phase 1/2)
+
 ```bash
 export DDQN_MODEL_PATH="path/to/model.pth"
 ./run.sh
@@ -252,6 +268,7 @@ export DDQN_MODEL_PATH="path/to/model.pth"
 Uses `Policy.decide()` for all entry/exit decisions.
 
 #### Dual-Agent Mode (Phase 3)
+
 ```bash
 export DDQN_DUAL_AGENT=1
 export DDQN_TRIGGER_MODEL="path/to/trigger_model.pth"  # optional
@@ -264,6 +281,7 @@ export DDQN_HARVESTER_MODEL="path/to/harvester_model.pth"  # optional
 - Backward compatible: Set `DDQN_DUAL_AGENT=0` to use single-agent mode
 
 #### Ensemble Mode (Multi-Model - Phase 2)
+
 ```bash
 # Provide comma-separated model paths
 export DDQN_MODEL_PATH="model1.pth,model2.pth,model3.pth"
@@ -272,6 +290,7 @@ export DDQN_MODEL_ENSEMBLE=1
 ```
 
 **Ensemble Benefits:**
+
 - Quantifies epistemic uncertainty via disagreement
 - Exploration bonus when models disagree (high uncertainty)
 - Performance-weighted voting for robust decisions
@@ -298,6 +317,7 @@ export DDQN_MODEL_ENSEMBLE=1
 ### Connection Issues
 
 If you see `TargetSubID is assigned with the unexpected value` errors:
+
 - ✅ Already fixed: Both config files now include `TargetSubID` field
 
 ### Module Not Found: quickfix
@@ -325,6 +345,7 @@ pip install -e .
 ## Safety Notes
 
 ⚠️ **This is a demo trading bot**:
+
 - Uses demo account credentials
 - Default quantity is 0.10 BTC/USD
 - Monitor positions manually
@@ -342,6 +363,7 @@ The bot monitors excess kurtosis (fat tail risk) and automatically cancels all p
 ### VaR Estimation
 
 Dynamic VaR calculation with multi-factor adjustments:
+
 - **Base VaR**: Historical 95th percentile of returns
 - **Regime multiplier**: 1.0 (ranging) to 2.0 (trending)
 - **VPIN adjustment**: Scales with toxic flow (VPIN z-score)
@@ -351,6 +373,7 @@ Dynamic VaR calculation with multi-factor adjustments:
 ### Atomic Persistence
 
 All learned parameters are saved with:
+
 - CRC32 checksums for corruption detection
 - Automatic backup (keeps last 3 versions)
 - Crash-safe write (temp file → atomic rename)
@@ -359,6 +382,7 @@ All learned parameters are saved with:
 ### Defensive Programming
 
 SafeMath utilities prevent runtime errors:
+
 - Division by zero → returns default value
 - NaN/Inf propagation → sanitized to valid numbers
 - Array bounds checking → safe access with default values
@@ -375,6 +399,7 @@ SafeMath utilities prevent runtime errors:
 ### Training DDQN Models
 
 The bot supports loading pre-trained PyTorch models. Model architecture:
+
 - Input: (batch, 64, 4) - 64 bars, 4 features
 - Output: (batch, 3) - Q-values for SHORT/FLAT/LONG
 
@@ -385,13 +410,14 @@ This is a research/demo project. Use at your own risk.
 ## Support
 
 For issues related to:
+
 - **cTrader FIX API**: Check Pepperstone/cTrader documentation
 - **QuickFIX**: See https://www.quickfixengine.org/
 - **Trading logic**: Review Python application logs
 
 ---
 
-**Version**: 2.0  
-**Last Updated**: January 9, 2026  
-**Status**: Production-ready for paper trading (Phase 1 critical fixes complete)  
-**Handbook Alignment**: ~60% (see [GAP_ANALYSIS.md](GAP_ANALYSIS.md) for details)
+**Version**: 3.1  
+**Last Updated**: February 22, 2026  
+**Status**: Production-ready for paper trading — test suite green (2506 passed, 0 failed)  
+**Handbook Alignment**: See [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md) for latest status

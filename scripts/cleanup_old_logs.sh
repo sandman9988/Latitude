@@ -116,8 +116,8 @@ cleanup_timestamped_logs() {
 }
 
 # Clean up various log directories
-cleanup_timestamped_logs "ctrader_py_logs" "ctrader_*.log" "Python application logs"
-cleanup_timestamped_logs "ctrader_py_logs" "bot_*.log" "Bot logs"
+cleanup_timestamped_logs "logs/ctrader" "ctrader_*.log" "Python application logs"
+cleanup_timestamped_logs "logs/ctrader" "bot_*.log" "Bot logs"
 cleanup_timestamped_logs "logs" "run_*.log" "Run logs"
 cleanup_timestamped_logs "logs" "training_*.log" "Training logs"
 cleanup_timestamped_logs "logs/python" "*.log" "Python logs"
@@ -154,4 +154,4 @@ fi
 # Show disk usage
 echo ""
 echo -e "${BLUE}Current disk usage:${NC}"
-du -sh ctrader_py_logs/ log/ logs/ 2>/dev/null | sort -h || true
+du -sh logs/ 2>/dev/null || true

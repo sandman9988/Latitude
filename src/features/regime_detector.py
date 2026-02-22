@@ -331,7 +331,7 @@ class RegimeDetector:
         each trade outcome. The RegimeDetector reads it on the next call to
         get_trigger_threshold_adjustment().
         """
-        global REGIME_ADJ_TRENDING, REGIME_ADJ_MEAN_REVERTING
+        global REGIME_ADJ_TRENDING, REGIME_ADJ_MEAN_REVERTING  # noqa: PLW0603
         scale = max(0.0, min(0.50, abs(scale)))
         REGIME_ADJ_TRENDING = -scale
         REGIME_ADJ_MEAN_REVERTING = scale
@@ -352,7 +352,7 @@ class RegimeDetector:
 # ----------------------------
 # Self-test
 # ----------------------------
-def _test_regime_detector():
+def _test_regime_detector():  # noqa: PLR0915
     """Test regime detector with synthetic data."""
     print("\n╔═══════════════════════════════════════════════════════════╗")
     print("║     Phase 3.4: Regime Detector Self-Test                 ║")

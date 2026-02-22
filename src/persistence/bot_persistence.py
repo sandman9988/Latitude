@@ -59,7 +59,7 @@ class BotPersistenceManager:
 
     # ========== MODEL PERSISTENCE ==========
 
-    def save_agent_model(
+    def save_agent_model(  # noqa: PLR0913
         self,
         agent_type: str,  # 'trigger' or 'harvester'
         agent_idx: int,

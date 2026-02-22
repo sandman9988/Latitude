@@ -13,6 +13,9 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger(__name__)
 
+# Minimum position quantity - below this a position is considered closed
+MIN_OPEN_POSITION_QTY: float = 0.0001
+
 
 class EmergencyPositionCloser:
     """
@@ -88,7 +91,7 @@ class EmergencyPositionCloser:
         LOG.info("[EMERGENCY] Closing %d positions by tracker", len(self.app.mfe_mae_trackers))
         success = True
         closed = 0
-        for position_id in self.app.mfe_mae_trackers.keys():
+        for position_id in self.app.mfe_mae_trackers:
             if self._close_by_position_id(position_id, reason):
                 closed += 1
             else:
@@ -103,7 +106,7 @@ class EmergencyPositionCloser:
             return False, 0
         position = self.trade_integration.trade_manager.get_position()
         net_qty = abs(position.net_qty)
-        if net_qty <= 0.0001:
+        if net_qty <= MIN_OPEN_POSITION_QTY:
             return True, 0
         LOG.info("[EMERGENCY] Closing net position: qty=%.6f", net_qty)
         if self._close_net_position(net_qty, reason):
@@ -165,7 +168,7 @@ class EmergencyPositionCloser:
         # Check TradeManager
         if self.trade_integration.trade_manager:
             position = self.trade_integration.trade_manager.get_position()
-            if abs(position.net_qty) > 0.0001 or abs(position.long_qty) > 0.0001 or abs(position.short_qty) > 0.0001:
+            if abs(position.net_qty) > MIN_OPEN_POSITION_QTY or abs(position.long_qty) > MIN_OPEN_POSITION_QTY or abs(position.short_qty) > MIN_OPEN_POSITION_QTY:
                 LOG.warning(
                     "[EMERGENCY] TradeManager still shows positions: long=%.6f short=%.6f net=%.6f",
                     position.long_qty,

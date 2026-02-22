@@ -9,6 +9,8 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 
+from src.utils.safe_utils import SafeMath
+
 PAPER_MAX_BARS_INACTIVE: int = 30
 LIVE_MAX_BARS_INACTIVE: int = 100
 PAPER_MIN_TRADES_PER_DAY: float = 10.0
@@ -30,8 +32,6 @@ EFFICIENCY_CLAMP_MAX: float = 1.0
 TIMING_BONUS_BARS: int = 2
 TIMING_BONUS_VALUE: float = 0.1
 MISS_RATIO_PENALTY_COEFF: float = -0.2
-
-from src.utils.safe_utils import SafeMath
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ class ActivityMonitor:
             exploration_boost: Reward bonus for taking action when stagnant
             activity_decay: Exponential decay for activity score
         """
-        import os
+        import os  # noqa: PLC0415
 
         paper_mode = os.environ.get("PAPER_MODE") == "1"
 
@@ -324,11 +324,7 @@ class CounterfactualAnalyzer:
             early_exit_penalty = 0.0
 
         # Bonus for exiting near MFE
-        if mfe_bar_offset <= TIMING_BONUS_BARS:
-            # Exited very close to MFE timing
-            timing_bonus = TIMING_BONUS_VALUE
-        else:
-            timing_bonus = 0.0
+        timing_bonus = TIMING_BONUS_VALUE if mfe_bar_offset <= TIMING_BONUS_BARS else 0.0
 
         # Combined counterfactual reward
         counterfactual_reward = early_exit_penalty + timing_bonus

@@ -29,6 +29,20 @@ LOG = logging.getLogger(__name__)
 MAX_SPREAD_PIPS: Final[float] = 1000.0
 MIN_SPREAD_SAMPLES: Final[int] = 100
 
+# ── Digits inference price magnitude buckets ──────────────────────────────────
+_DIGITS_PRICE_HIGH: float = 10_000.0   # BTC, NAS100 and similar large-value instruments
+_DIGITS_PRICE_MEDIUM: float = 1_000.0  # Gold, large JPY-cross moves
+_DIGITS_PRICE_LOW: float = 100.0       # Standard JPY pairs, some indices
+_DIGITS_PRICE_FLOOR: float = 10.0      # Very low priced pairs
+_DIGITS_HIGH_MAX: int = 2              # Max digits for high-price instruments
+_DIGITS_LOW_MAX: int = 3               # Max digits for medium/low-price instruments
+_DIGITS_FOREX_MAX: int = 5             # Max digits for standard forex pairs
+DEFAULT_DIGITS: int = 2               # Default digits (used as sentinel for "not yet inferred")
+DEFAULT_TRIPLE_SWAP_DAY: int = 2       # Wednesday (0=Mon…6=Sun)
+MIN_WEEKDAY: int = 0
+MAX_WEEKDAY: int = 6
+TRIPLE_SWAP_EXTRA_DAYS: int = 2        # Additional swap days for weekend rollover
+
 
 @dataclass
 class SymbolCosts:
@@ -94,7 +108,7 @@ class SpreadTracker:
 
     def update(self, bid: float, ask: float, pip_size: float = 1.0):
         """Record a new bid/ask spread with defensive validation."""
-        import math
+        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not all(isinstance(x, (int, float)) for x in (bid, ask, pip_size)):
@@ -145,7 +159,7 @@ class SpreadTracker:
         try:
             avg = statistics.mean(self.spreads)
             # Defensive: Validate result
-            import math
+            import math  # noqa: PLC0415
 
             if not math.isfinite(avg) or avg < 0:
                 return 0.0
@@ -202,7 +216,7 @@ class SpreadTracker:
         Returns:
             Maximum acceptable spread in pips based on learned behavior
         """
-        import math
+        import math  # noqa: PLC0415
 
         min_spread = self.get_min_spread()
 
@@ -270,7 +284,7 @@ class SlippageModel:
         Returns:
             Expected slippage in pips
         """
-        import math
+        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not isinstance(quantity, (int, float)):
@@ -369,8 +383,8 @@ class FrictionCalculator:
         SecurityDefinition from broker takes precedence when received.
         This provides reasonable defaults for trading before SecurityDef arrives.
         """
-        import json
-        from pathlib import Path
+        import json  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
 
         config_path = Path(__file__).parent.parent.parent / "config" / "symbol_specs.json"
         if not config_path.exists():
@@ -465,7 +479,7 @@ class FrictionCalculator:
         Returns:
             Normalized quantity conforming to min/max/step constraints
         """
-        import math
+        import math  # noqa: PLC0415
 
         # Defensive: Handle invalid input
         if not math.isfinite(quantity) or quantity <= 0:
@@ -501,7 +515,7 @@ class FrictionCalculator:
         Returns:
             Price rounded to instrument's tick_size/digits precision
         """
-        import math
+        import math  # noqa: PLC0415
 
         # Defensive: Handle invalid input
         if not math.isfinite(price) or price <= 0:
@@ -616,7 +630,7 @@ class FrictionCalculator:
         Returns:
             Inferred number of decimal places
         """
-        import math
+        import math  # noqa: PLC0415
 
         if not math.isfinite(price) or price <= 0:
             return 2  # Default
@@ -630,14 +644,14 @@ class FrictionCalculator:
             observed_digits = 0
 
         # Symbol-agnostic heuristics based on price magnitude
-        if price > 10000:  # BTC, indices like NAS100
-            return min(2, observed_digits)
-        elif price > 100:  # Gold, JPY crosses, indices
-            return min(2, observed_digits) if price > 1000 else min(3, observed_digits)
-        elif price > 10:  # JPY pairs
-            return min(3, observed_digits)
+        if price > _DIGITS_PRICE_HIGH:  # BTC, indices like NAS100
+            return min(_DIGITS_HIGH_MAX, observed_digits)
+        elif price > _DIGITS_PRICE_LOW:  # Gold, JPY crosses, indices
+            return min(_DIGITS_HIGH_MAX, observed_digits) if price > _DIGITS_PRICE_MEDIUM else min(_DIGITS_LOW_MAX, observed_digits)
+        elif price > _DIGITS_PRICE_FLOOR:  # JPY pairs
+            return min(_DIGITS_LOW_MAX, observed_digits)
         else:  # Standard forex pairs (EURUSD, GBPUSD)
-            return min(5, observed_digits)
+            return min(_DIGITS_FOREX_MAX, observed_digits)
 
     def update_digits_from_price(self, price: float) -> None:
         """
@@ -645,7 +659,7 @@ class FrictionCalculator:
 
         Only updates if current digits seems to be default/unset.
         """
-        if self.costs.digits == 2 and self.costs.last_updated is None:
+        if self.costs.digits == DEFAULT_DIGITS and self.costs.last_updated is None:
             inferred = self.infer_digits_from_price(price)
             if inferred != self.costs.digits:
                 LOG.info(
@@ -676,7 +690,7 @@ class FrictionCalculator:
         Returns:
             Spread cost in USD
         """
-        import math
+        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not isinstance(quantity, (int, float)):
@@ -722,7 +736,7 @@ class FrictionCalculator:
         Returns:
             Commission in USD
         """
-        import math
+        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not all(isinstance(x, (int, float)) for x in (quantity, price)):
@@ -772,7 +786,7 @@ class FrictionCalculator:
         # Cap at reasonable limit
         return min(commission, 100_000.0)
 
-    def calculate_swap(
+    def calculate_swap(  # noqa: PLR0912
         self, quantity: float, side: str, holding_days: float = 1.0, crosses_rollover: bool = False, price: float = 0.0
     ) -> float:
         """
@@ -792,7 +806,7 @@ class FrictionCalculator:
             Swap cost in USD (negative = you pay, positive = you earn)
             Returns 0 for intraday trades that don't cross rollover
         """
-        from datetime import UTC, datetime
+        from datetime import UTC, datetime  # noqa: PLC0415
 
         # INTRADAY TRADES: No swap if not crossing rollover
         # Most M5 trades (~2.4hrs) close before rollover → swap = 0
@@ -808,9 +822,9 @@ class FrictionCalculator:
             try:
                 tsd = int(self.costs.triple_swap_day)
             except (TypeError, ValueError):
-                tsd = 2
-            if tsd < 0 or tsd > 6:
-                tsd = 2  # Default to Wednesday
+                tsd = DEFAULT_TRIPLE_SWAP_DAY
+            if tsd < MIN_WEEKDAY or tsd > MAX_WEEKDAY:
+                tsd = DEFAULT_TRIPLE_SWAP_DAY  # Default to Wednesday
             is_triple_swap_day = now.weekday() == tsd
 
             # Calculate number of rollovers
@@ -819,12 +833,12 @@ class FrictionCalculator:
                 num_rollovers = max(1, int(holding_days))
                 # Triple swap on Wednesday (accounts for weekend)
                 if is_triple_swap_day and num_rollovers > 0:
-                    num_rollovers += 2  # +2 extra days for weekend
+                    num_rollovers += TRIPLE_SWAP_EXTRA_DAYS  # +2 extra days for weekend
             else:
                 # Multi-day position: count full days
                 num_rollovers = int(holding_days)
                 if is_triple_swap_day and num_rollovers > 0:
-                    num_rollovers += 2
+                    num_rollovers += TRIPLE_SWAP_EXTRA_DAYS
 
             # For XAUUSD: swap_long=-7.2 pips, pip_value=1.0, qty=0.1
             # Intraday (crosses_rollover=False): swap = $0
@@ -845,19 +859,19 @@ class FrictionCalculator:
                 try:
                     tsd = int(self.costs.triple_swap_day)
                 except (TypeError, ValueError):
-                    tsd = 2
-                if tsd < 0 or tsd > 6:
-                    tsd = 2
+                    tsd = DEFAULT_TRIPLE_SWAP_DAY
+                if tsd < MIN_WEEKDAY or tsd > MAX_WEEKDAY:
+                    tsd = DEFAULT_TRIPLE_SWAP_DAY
                 is_triple_swap_day = now.weekday() == tsd
 
                 if crosses_rollover:
                     num_rollovers = max(1, int(holding_days))
                     if is_triple_swap_day and num_rollovers > 0:
-                        num_rollovers += 2
+                        num_rollovers += TRIPLE_SWAP_EXTRA_DAYS
                 else:
                     num_rollovers = int(holding_days)
                     if is_triple_swap_day and num_rollovers > 0:
-                        num_rollovers += 2
+                        num_rollovers += TRIPLE_SWAP_EXTRA_DAYS
 
                 swap_cost = notional * daily_rate * num_rollovers
         else:
@@ -885,7 +899,7 @@ class FrictionCalculator:
 
         return slippage_cost
 
-    def calculate_total_friction(
+    def calculate_total_friction(  # noqa: PLR0913
         self,
         quantity: float,
         side: str,
@@ -1003,7 +1017,7 @@ class FrictionCalculator:
         Returns:
             Tuple of (is_acceptable, current_spread, max_acceptable)
         """
-        import math
+        import math  # noqa: PLC0415
 
         self._load_learned_parameters()
         effective_multiplier = multiplier if multiplier is not None else self.spread_multiplier

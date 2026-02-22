@@ -200,7 +200,7 @@ class PrioritizedReplayBuffer:
     - Priority statistics tracking
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         capacity: int,
         state_dim: int,
@@ -257,7 +257,7 @@ class PrioritizedReplayBuffer:
         progress = min(self.frame_count / self.beta_frames, 1.0)
         return self.beta_start + progress * (1.0 - self.beta_start)
 
-    def add(
+    def add(  # noqa: PLR0913
         self,
         state: np.ndarray,
         action: int,

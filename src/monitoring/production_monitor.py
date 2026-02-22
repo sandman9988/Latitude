@@ -97,7 +97,7 @@ class ProductionMonitor:
     Collects metrics, detects alert conditions, exposes data via HTTP/JSON.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         # Alert thresholds
         alert_no_trade_hours: float = 4.0,
@@ -369,7 +369,7 @@ if __name__ == "__main__":
     )
 
     metrics_json = json.loads(monitor.get_metrics_json())
-    if abs(metrics_json["metrics"]["realized_pnl_day"] - 150.50) < 0.01:
+    if abs(metrics_json["metrics"]["realized_pnl_day"] - 150.50) < 0.01:  # noqa: PLR2004 — test sentinel
         print("  ✓ Metrics updated correctly")
     else:
         print("  ✗ Metrics update failed")
@@ -429,7 +429,7 @@ if __name__ == "__main__":
     if temp_file.exists():
         with open(temp_file) as f:
             saved = json.load(f)
-        if saved["metrics"]["trades_total"] == 42:
+        if saved["metrics"]["trades_total"] == 42:  # noqa: PLR2004 — test sentinel
             print("  ✓ Metrics persisted to file")
         else:
             print("  ✗ Metrics file mismatch")
@@ -452,7 +452,7 @@ if __name__ == "__main__":
 
         response = urllib.request.urlopen("http://localhost:8766/metrics", timeout=2)
         data = json.loads(response.read())
-        if data["metrics"]["trades_today"] == 5:
+        if data["metrics"]["trades_today"] == 5:  # noqa: PLR2004 — test sentinel
             print("  ✓ HTTP server working")
         else:
             print("  ✗ HTTP response mismatch")

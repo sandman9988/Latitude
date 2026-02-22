@@ -1,6 +1,6 @@
 # Start Here: cTrader Adaptive Trading Bot Documentation Index
 
-**Last Updated:** February 14, 2026  
+**Last Updated:** February 22, 2026  
 
 This page is the recommended entry point for the documentation set.
 
@@ -10,74 +10,64 @@ This page is the recommended entry point for the documentation set.
 
 ### **Current System Status**
 📄 **[CURRENT_STATE.md](CURRENT_STATE.md)** - **Single source of truth** for latest changes, fixes, and system status  
-📁 **[INDEX.md](INDEX.md)** - **Complete documentation navigation** with all 75+ docs organized by topic
+📁 **[INDEX.md](INDEX.md)** - **Complete documentation navigation** with all docs organized by topic
 
 ### **Master References**
-- **[MASTER_HANDBOOK.md](MASTER_HANDBOOK.md)** - Authoritative system design (1108 lines)
-- **[README.md](../README.md)** - Project overview and quick start
+- **[../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md)** - Authoritative system design & architecture
+- **[../README.md](../README.md)** - Project overview and quick start
 
 ---
 
-## Legacy Status Documents (Superseded by CURRENT_STATE.md)
-
-- ~~Consolidated Status and Gap Tracking~~ → See [CURRENT_STATE.md](CURRENT_STATE.md)
-- ~~Test Coverage Summary~~ → See [CURRENT_STATE.md](CURRENT_STATE.md) → Testing Checklist
-
 ## Quick Start
 
-- Project Overview: ../README.md
-- Master Handbook (Authoritative): ../MASTER_HANDBOOK.md
-- System Architecture: ../SYSTEM_ARCHITECTURE.md
-- System Flow: ../SYSTEM_FLOW.md
+- Project Overview: [../README.md](../README.md)
+- Master Handbook (Authoritative): [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md)
+- System Architecture: [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md)
+- System Flow: [architecture/SYSTEM_FLOW.md](architecture/SYSTEM_FLOW.md)
 
 ## Operations
 
-- Deployment Quickstart: guides/DEPLOYMENT_QUICKSTART.md
-- Running with Logs: ../RUNNING_WITH_LOGS.md
-- Monitoring Guide: guides/MONITORING_GUIDE.md
-- Pre-Launch Checklist: reports/PRE_LAUNCH_CHECKLIST.md
-- Disaster Recovery Runbook: ../DISASTER_RECOVERY_RUNBOOK.md
+- Deployment Quickstart: [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md)
+- Running with Logs: [operations/RUNNING_WITH_LOGS.md](operations/RUNNING_WITH_LOGS.md)
+- Monitoring Guide: [MONITORING_GUIDE.md](MONITORING_GUIDE.md)
+- Disaster Recovery Runbook: [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md)
 
 ## Scripts and Commands
 
-- Start bot with HUD: ../scripts/start_bot_with_hud.sh
-- Start HUD live: ../scripts/start_hud_live.sh
-- Daily health check: ../scripts/daily_health_check.sh
-- Monitoring (suite): ../scripts/monitoring/
-- Stream logs: ../scripts/stream_logs.sh
+- Phase 0 validation: `scripts/testing/phase0_validate_system.sh` (2-4 hour paper validation)
+- Quick test: `scripts/testing/quick_test.sh`
+- Monitoring suite: `scripts/monitoring/`
+- Stream logs: `scripts/stream_logs.sh`
+- Daily health check: `scripts/daily_health_check.sh`
 
 ## Configuration
 
-- Paper vs Live Configuration: guides/PAPER_VS_LIVE_CONFIG.md
-- Config directory: ../config/
-  - Trading config: ../config/ctrader_trade.cfg
-  - Quote config: ../config/ctrader_quote.cfg
-  - App tokens directory: ../config/cTraderAppTokens
+- Paper vs Live Configuration: [guides/PAPER_VS_LIVE_CONFIG.md](guides/PAPER_VS_LIVE_CONFIG.md)
+- Config directory: `../config/`
+  - Trading config: `../config/ctrader_trade.cfg`
+  - Quote config: `../config/ctrader_quote.cfg`
+  - App tokens directory: `../config/cTraderAppTokens`
 
 ## Key Components and Guides
 
-- Trade Manager Integration: ../TRADEMANAGER_INTEGRATION.md
-- Risk Manager Implementation: ../RISK_MANAGER_IMPLEMENTATION.md
-- Multi-Position Analysis: ../MULTI_POSITION_ANALYSIS.md
-- Multi-Position Implementation: ../MULTI_POSITION_IMPLEMENTATION.md
-- Reward Shaper: ../reward_shaper.py
-- Risk-Aware SAC Manager: ../risk_aware_sac_manager.py
+- Trigger + Harvester Workflow: [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md)
+- Risk Manager: [RISK_MANAGER_COMPLETE.md](RISK_MANAGER_COMPLETE.md)
+- Adaptive Parameters: [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md)
+- Multi-Position Analysis: [architecture/MULTI_POSITION_ANALYSIS.md](architecture/MULTI_POSITION_ANALYSIS.md)
+- Multi-Position Implementation: [architecture/MULTI_POSITION_IMPLEMENTATION.md](architecture/MULTI_POSITION_IMPLEMENTATION.md)
+- Online Learning Integration: [ONLINE_LEARNING_INTEGRATION.md](ONLINE_LEARNING_INTEGRATION.md)
 
 ## Verification & Tests
 
-- Decision Flow Verification: ../DECISION_FLOW_VERIFICATION.md
-- P0 Integration Verification: ../P0_INTEGRATION_VERIFICATION.md
-- Integration Status: docs/reports/INTEGRATION_STATUS.md
-- Test Entry Points:
-  - Core Safety: ../test_core_safety.py, ../test_core_safety_fixed.py
-  - Reward Calculations: ../test_reward_calculations.py
-  - Multi-Position: ../test_multi_position.py, tests/test_phase3_integration.py
-  - Risk Manager: ../test_risk_manager.py, ../test_risk_manager_rl.py
-  - HUD Integration: scripts/testing/test_hud_integration.py
+- Decision Flow Verification: [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md)
+- Test suite: `python -m pytest tests/` (2506 passing, 3 skipped)
+- Integration tests: `tests/integration/`
+- Validation tests: `tests/validation/`
 
 ## Security and Compliance
 
-- Security Practices: see ../CONSOLIDATED_DOCUMENTATION_AND_GAPS.md (Operational Security Practices)
+- See [CURRENT_STATE.md](CURRENT_STATE.md) → "Known Issues" for operational risk items
+- Never commit `.env`, `cTraderAppTokens`, or `*.cfg` credentials to git
 - .env template: ../.env.example
 - Token handling: ../config/cTraderAppTokens
 

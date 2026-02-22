@@ -206,8 +206,8 @@ The bot writes logs to multiple locations:
 
 1. **Console Output**: `bot_console.log` (main log, streamed by `stream_logs.sh`)
 2. **Python Logs**: `logs/python/bot.log`
-3. **cTrader Logs**: `ctrader_py_logs/app.log`
-4. **Startup Log**: `startup.log` (from run.sh)
+3. **cTrader Logs**: `logs/ctrader/app.log`
+4. **Startup Log**: `logs/startup.log` (from run.sh)
 
 ---
 

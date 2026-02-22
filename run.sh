@@ -16,7 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
 # Logging
-LOG_FILE="startup.log"
+mkdir -p logs 2>/dev/null || true
+LOG_FILE="logs/startup.log"
 log() {
     echo -e "$1" | tee -a "$LOG_FILE"
 }
@@ -178,7 +179,7 @@ check_configs() {
 
 # Create log directories
 setup_logging() {
-    mkdir -p logs/python ctrader_py_logs data store exports
+    mkdir -p logs/fix/QUOTE logs/fix/TRADE logs/audit logs/ctrader logs/python data store exports
     log "${GREEN}✓ Log directories ready${NC}"
     # Rotate logs on every startup (size-based, no-op when under threshold)
     local rotate_script
@@ -552,7 +553,7 @@ main() {
     log "  Trade Config:  ${CTRADER_CFG_TRADE}"
     log ""
     log "${YELLOW}Starting trading bot...${NC}"
-    log "  Log: ctrader_py_logs/ctrader_*.log"
+    log "  Log: logs/ctrader/ctrader_*.log"
     log "  Press Ctrl+C to stop"
     log ""
     log "=========================================="

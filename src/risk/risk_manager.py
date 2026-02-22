@@ -33,6 +33,47 @@ LOG = logging.getLogger(__name__)
 _ENTRY_REJECTED_MSG = "[RISK] Entry REJECTED: %s"
 _EXIT_REJECTED_MSG = "[RISK] Exit REJECTED: %s"
 
+# ── Risk budget adjustment thresholds ──────────────────────────────────────────
+RISK_BUDGET_BOOST_WIN_RATE: float = 0.55   # Win rate above this → increase budget
+RISK_BUDGET_BOOST_EQUITY_GAIN: float = 0.05  # Equity gain above this → increase budget
+RISK_BUDGET_CUT_WIN_RATE: float = 0.45   # Win rate below this → decrease budget
+RISK_BUDGET_CUT_EQUITY_LOSS: float = -0.10  # Equity loss below this → decrease budget
+RISK_BUDGET_CUT_PAYOFF_MIN: float = 0.8  # Payoff ratio below this → decrease budget
+
+# ── Portfolio health thresholds ────────────────────────────────────────────────
+HEALTH_CAUTION_UTILIZATION: float = 80.0  # Risk utilization % above → CAUTION
+HEALTH_CAUTION_CONCENTRATION: float = 0.8  # Concentration above → CAUTION
+HEALTH_EXHAUSTED_UTILIZATION: float = 90.0  # Risk utilization % above → warn exhausted
+HEALTH_HIGH_CONCENTRATION: float = 0.9  # Concentration above → warn high
+
+# ── RL / Q-learning thresholds ─────────────────────────────────────────────────
+RL_MIN_CONFIDENCE_FOR_SUGGESTION: float = 0.7  # Confidence above → suggest RL thresholds
+RL_MIN_Q_TABLE_SIZE: int = 10   # Minimum Q-table entries before recommendations
+RL_MIN_TRADES_FOR_CALIBRATION: int = 10  # Minimum trades for calibration bucket
+
+# ── Confidence bucket boundaries ──────────────────────────────────────────────
+CONF_BUCKET_55: float = 0.55
+CONF_BUCKET_65: float = 0.65
+CONF_BUCKET_75: float = 0.75
+CONF_BUCKET_85: float = 0.85
+CONF_BUCKET_95: float = 0.95
+
+# ── Calibration quality thresholds ────────────────────────────────────────────
+CALIBRATION_GOOD_ERROR: float = 0.1   # Error below this → well-calibrated
+CALIBRATION_DOMINANCE_RATIO: float = 0.7  # One agent must be 30% better to prefer it
+
+# ── Correlation breakdown thresholds ──────────────────────────────────────────
+CORRELATION_CRITICAL: float = 0.95   # → CRITICAL risk, CLOSE_ALL
+CORRELATION_HIGH: float = 0.90   # → HIGH risk, REDUCE_EXPOSURE
+CORRELATION_MODERATE: float = 0.85  # → MODERATE risk, REDUCE_EXPOSURE
+MIN_HISTORY_FOR_CORRELATION: int = 20  # Minimum bars needed for correlation check
+MIN_SYMBOLS_FOR_CORRELATION: int = 2  # Need at least 2 symbols
+MIN_SYMBOLS_FOR_ALLOCATION: int = 2  # Same for allocation
+
+# ── Misc numeric constants ─────────────────────────────────────────────────────
+PAYOFF_RATIO_RECENT_WINDOW: int = 10  # Number of recent trades for payoff ratio
+MIN_CALIBRATION_BUCKET_SIZE: int = 5  # Minimum outcomes per bucket to report calibration
+
 
 @dataclass
 class EntryValidation:
@@ -133,7 +174,7 @@ class RiskManager:
     This is the SINGLE POINT OF CONTROL for all risk decisions.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         circuit_breakers: CircuitBreakerManager,
         var_estimator: VaREstimator,
@@ -280,7 +321,7 @@ class RiskManager:
             if key in breakers_status and breakers_status[key].get("tripped", False)
         ]
 
-    def validate_entry(
+    def validate_entry(  # noqa: PLR0911, PLR0913
         self,
         action: int,
         confidence: float,
@@ -735,7 +776,7 @@ class RiskManager:
 
         # Good performance: increase budget (max 1.5x initial)
         # Require payoff >= 1.0 (avg win ≥ avg loss) as an EV sanity check.
-        if win_rate > 0.55 and equity_change > 0.05 and payoff_ratio >= 1.0:
+        if win_rate > RISK_BUDGET_BOOST_WIN_RATE and equity_change > RISK_BUDGET_BOOST_EQUITY_GAIN and payoff_ratio >= 1.0:
             new_budget = min(self.risk_budget_usd * 1.1, self.initial_risk_budget * 1.5)
             if new_budget > self.risk_budget_usd:
                 LOG.info(
@@ -748,7 +789,7 @@ class RiskManager:
 
         # Poor performance: decrease budget (min 0.5x initial)
         # Trigger on: low win_rate OR bad equity OR payoff < 0.8 (losses > wins)
-        elif win_rate < 0.45 or equity_change < -0.10 or payoff_ratio < 0.8:
+        elif win_rate < RISK_BUDGET_CUT_WIN_RATE or equity_change < RISK_BUDGET_CUT_EQUITY_LOSS or payoff_ratio < RISK_BUDGET_CUT_PAYOFF_MIN:
             new_budget = max(self.risk_budget_usd * 0.9, self.initial_risk_budget * 0.5)
             if new_budget < self.risk_budget_usd:
                 LOG.warning(
@@ -865,7 +906,7 @@ class RiskManager:
         """Determine portfolio health string."""
         if breakers_tripped:
             return "CRITICAL"
-        if risk_utilization > 80 or concentration > 0.8:
+        if risk_utilization > HEALTH_CAUTION_UTILIZATION or concentration > HEALTH_CAUTION_CONCENTRATION:
             return "CAUTION"
         return "HEALTHY"
 
@@ -880,9 +921,9 @@ class RiskManager:
         recs: list[str] = []
         if breakers_tripped:
             recs.append("STOP TRADING: Circuit breakers active")
-        if risk_utilization > 90:
+        if risk_utilization > HEALTH_EXHAUSTED_UTILIZATION:
             recs.append("Risk budget nearly exhausted - avoid new positions")
-        if concentration > 0.9:
+        if concentration > HEALTH_HIGH_CONCENTRATION:
             recs.append("High concentration - consider diversification")
         if regime == RegimeType.UNDERDAMPED:
             recs.append("High volatility regime - reduce position sizes")
@@ -907,7 +948,7 @@ class RiskManager:
             )
 
         rl_thresholds = self.get_rl_recommended_thresholds()
-        if rl_thresholds.get("confidence", 0) > 0.7:
+        if rl_thresholds.get("confidence", 0) > RL_MIN_CONFIDENCE_FOR_SUGGESTION:
             recommendations.append(
                 f"RL suggests: entry={rl_thresholds['entry_threshold']:.2f} "
                 f"exit={rl_thresholds['exit_threshold']:.2f}"
@@ -932,7 +973,7 @@ class RiskManager:
                 f"[{label}] Miscalibrated at {bucket:.0%}: "
                 f"{calib.predicted_success_rate:.0%} vs {calib.actual_success_rate:.0%}"
                 for bucket, calib in calibration.items()
-                if not calib.is_well_calibrated and calib.sample_size > 10
+                if not calib.is_well_calibrated and calib.sample_size > RL_MIN_TRADES_FOR_CALIBRATION
             )
 
         if predictor.recommendation and "Insufficient" not in predictor.recommendation:
@@ -1034,15 +1075,15 @@ class RiskManager:
 
     def _get_confidence_bucket(self, confidence: float) -> float:
         """Map confidence to calibration bucket (0.5, 0.6, ..., 1.0)"""
-        if confidence < 0.55:
+        if confidence < CONF_BUCKET_55:
             return 0.5
-        elif confidence < 0.65:
+        elif confidence < CONF_BUCKET_65:
             return 0.6
-        elif confidence < 0.75:
+        elif confidence < CONF_BUCKET_75:
             return 0.7
-        elif confidence < 0.85:
+        elif confidence < CONF_BUCKET_85:
             return 0.8
-        elif confidence < 0.95:
+        elif confidence < CONF_BUCKET_95:
             return 0.9
         else:
             return 1.0
@@ -1073,7 +1114,7 @@ class RiskManager:
         calibration_report = {}
 
         for bucket, outcomes in buckets.items():
-            if len(outcomes) < 5:  # Need minimum samples
+            if len(outcomes) < MIN_CALIBRATION_BUCKET_SIZE:  # Need minimum samples
                 continue
 
             confidences, results = zip(*outcomes, strict=True)
@@ -1088,7 +1129,7 @@ class RiskManager:
                 actual_success_rate=actual_rate,
                 sample_size=len(outcomes),
                 calibration_error=calibration_error,
-                is_well_calibrated=calibration_error < 0.1,  # Within 10%
+                is_well_calibrated=calibration_error < CALIBRATION_GOOD_ERROR,  # Within 10%
             )
 
         return calibration_report
@@ -1138,15 +1179,15 @@ class RiskManager:
         best_calibrated = "trigger" if trigger_avg_error < harvester_avg_error else "harvester"
 
         # Generate recommendation
-        if trigger_total < 10 and harvester_total < 10:
+        if trigger_total < RL_MIN_TRADES_FOR_CALIBRATION and harvester_total < RL_MIN_TRADES_FOR_CALIBRATION:
             recommendation = "Insufficient data - need more trades"
-        elif trigger_avg_error < 0.1 and harvester_avg_error < 0.1:
+        elif trigger_avg_error < CALIBRATION_GOOD_ERROR and harvester_avg_error < CALIBRATION_GOOD_ERROR:
             recommendation = "Both agents well-calibrated - trust both equally"
-        elif trigger_avg_error < harvester_avg_error * 0.7:
+        elif trigger_avg_error < harvester_avg_error * CALIBRATION_DOMINANCE_RATIO:
             recommendation = (
                 f"Trust TriggerAgent more" f" (error: {trigger_avg_error:.1%}" f" vs {harvester_avg_error:.1%})"
             )
-        elif harvester_avg_error < trigger_avg_error * 0.7:
+        elif harvester_avg_error < trigger_avg_error * CALIBRATION_DOMINANCE_RATIO:
             recommendation = (
                 f"Trust HarvesterAgent more" f" (error: {harvester_avg_error:.1%}" f" vs {trigger_avg_error:.1%})"
             )
@@ -1257,7 +1298,7 @@ class RiskManager:
                 "confidence": 0.8         # How confident in recommendation (0-1)
             }
         """
-        if len(self.q_table) < 10:  # Need sufficient learning
+        if len(self.q_table) < RL_MIN_Q_TABLE_SIZE:  # Need sufficient learning
             return {
                 "entry_threshold": self.min_confidence_entry,
                 "exit_threshold": self.min_confidence_exit,
@@ -1331,14 +1372,14 @@ class RiskManager:
             CorrelationBreakdown if multi-symbol data available, None otherwise
         """
         # Need at least 2 symbols and minimum history
-        if len(self.returns_history) < 2:
+        if len(self.returns_history) < MIN_SYMBOLS_FOR_CORRELATION:
             return None
 
         symbols_with_data = [
-            sym for sym, returns in self.returns_history.items() if len(returns) >= min(20, self.correlation_window)
+            sym for sym, returns in self.returns_history.items() if len(returns) >= min(MIN_HISTORY_FOR_CORRELATION, self.correlation_window)
         ]
 
-        if len(symbols_with_data) < 2:
+        if len(symbols_with_data) < MIN_SYMBOLS_FOR_CORRELATION:
             return None
 
         # Build returns matrix
@@ -1363,13 +1404,13 @@ class RiskManager:
         breakdown_detected = bool(avg_correlation > self.flash_crash_threshold)
 
         # Risk level
-        if avg_correlation > 0.95:
+        if avg_correlation > CORRELATION_CRITICAL:
             risk = "CRITICAL"
             action = "CLOSE_ALL"
-        elif avg_correlation > 0.90:
+        elif avg_correlation > CORRELATION_HIGH:
             risk = "HIGH"
             action = "REDUCE_EXPOSURE"
-        elif avg_correlation > 0.85:
+        elif avg_correlation > CORRELATION_MODERATE:
             risk = "MODERATE"
             action = "REDUCE_EXPOSURE"
         else:
@@ -1418,7 +1459,7 @@ class RiskManager:
         Returns:
             {symbol: allocated_capital_usd}
         """
-        if len(symbols) < 2 or self.correlation_matrix is None:
+        if len(symbols) < MIN_SYMBOLS_FOR_ALLOCATION or self.correlation_matrix is None:
             # Equal allocation fallback
             equal_alloc = total_capital / len(symbols)
             return dict.fromkeys(symbols, equal_alloc)
@@ -1426,10 +1467,10 @@ class RiskManager:
         # Calculate diversification score for each symbol
         # Higher score = better diversification (more negative/low correlations)
         symbols_with_data = [
-            sym for sym in symbols if sym in self.returns_history and len(self.returns_history[sym]) >= 20
+            sym for sym in symbols if sym in self.returns_history and len(self.returns_history[sym]) >= MIN_HISTORY_FOR_CORRELATION
         ]
 
-        if len(symbols_with_data) < 2:
+        if len(symbols_with_data) < MIN_SYMBOLS_FOR_CORRELATION:
             equal_alloc = total_capital / len(symbols)
             return dict.fromkeys(symbols, equal_alloc)
 

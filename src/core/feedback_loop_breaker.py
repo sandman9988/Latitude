@@ -23,6 +23,18 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# ── State tracking window sizes ────────────────────────────────────────────────
+_PERF_SNAPSHOT_WINDOW: int = 10   # Number of performance snapshots to retain
+_ENTROPY_WINDOW: int = 100        # Number of action-entropy values to retain
+
+# ── Signal severity thresholds ─────────────────────────────────────────────────
+SEVERITY_MODERATE: float = 0.5   # Above → escalate intervention from exploration to checkpoint
+SEVERITY_HIGH: float = 0.7       # Above → escalate from gentle to synthetic-injection
+
+# ── Minimum history sizes before detection is meaningful ──────────────────────
+MIN_SHARPE_HISTORY: int = 5       # Need at least 5 Sharpe snapshots for decay detection
+MIN_ENTROPY_HISTORY: int = 50     # Need at least 50 entropy values for collapse detection
+
 
 @dataclass
 class FeedbackLoopSignal:
@@ -52,7 +64,7 @@ class FeedbackLoopBreaker:
     4. **Nuclear**: Full reset to initialization (last resort)
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         # No-trade detection
         no_trade_window_bars: int = 240,  # 4 hours at 1-min bars
@@ -94,7 +106,7 @@ class FeedbackLoopBreaker:
         # Persistence
         self.state_file = state_file or Path("data/feedback_loop_breaker.json")
 
-    def update(
+    def update(  # noqa: PLR0912, PLR0913
         self,
         bars_since_last_trade: int,
         current_volatility: float,
@@ -121,17 +133,17 @@ class FeedbackLoopBreaker:
         # Track performance metrics
         if recent_sharpe is not None:
             self.recent_sharpes.append(recent_sharpe)
-            if len(self.recent_sharpes) > 10:  # Keep last 10 snapshots
+            if len(self.recent_sharpes) > _PERF_SNAPSHOT_WINDOW:  # Keep last 10 snapshots
                 self.recent_sharpes.pop(0)
 
         if recent_win_rate is not None:
             self.recent_win_rates.append(recent_win_rate)
-            if len(self.recent_win_rates) > 10:
+            if len(self.recent_win_rates) > _PERF_SNAPSHOT_WINDOW:
                 self.recent_win_rates.pop(0)
 
         if action_entropy is not None:
             self.recent_action_entropies.append(action_entropy)
-            if len(self.recent_action_entropies) > 100:
+            if len(self.recent_action_entropies) > _ENTROPY_WINDOW:
                 self.recent_action_entropies.pop(0)
 
         # Track circuit breaker duration
@@ -213,12 +225,12 @@ class FeedbackLoopBreaker:
                 "avg_volatility": avg_volatility,
                 "threshold_volatility": self.min_volatility_threshold,
             },
-            suggested_intervention="increase_exploration" if severity < 0.7 else "inject_synthetic_experiences",
+            suggested_intervention="increase_exploration" if severity < SEVERITY_HIGH else "inject_synthetic_experiences",
         )
 
     def _detect_performance_decay_loop(self) -> FeedbackLoopSignal | None:
         """Detect deteriorating performance spiral."""
-        if len(self.recent_sharpes) < 5:
+        if len(self.recent_sharpes) < MIN_SHARPE_HISTORY:
             return None  # Not enough history
 
         # Check for declining trend in Sharpe
@@ -244,12 +256,12 @@ class FeedbackLoopBreaker:
                 "recent_sharpe": recent_sharpe,
                 "decay_pct": decay_pct,
             },
-            suggested_intervention="restore_earlier_checkpoint" if severity > 0.5 else "increase_exploration",
+            suggested_intervention="restore_earlier_checkpoint" if severity > SEVERITY_MODERATE else "increase_exploration",
         )
 
     def _detect_exploration_collapse(self, exploration_rate: float | None) -> FeedbackLoopSignal | None:
         """Detect collapsed exploration (agent stuck in local minimum)."""
-        if len(self.recent_action_entropies) < 50:
+        if len(self.recent_action_entropies) < MIN_ENTROPY_HISTORY:
             return None
 
         avg_entropy = sum(self.recent_action_entropies) / len(self.recent_action_entropies)
@@ -494,7 +506,7 @@ if __name__ == "__main__":
 
     breaker6_reloaded = FeedbackLoopBreaker(state_file=temp_file)
     if breaker6_reloaded.load_state():
-        if breaker6_reloaded.bars_since_trade == 100:
+        if breaker6_reloaded.bars_since_trade == 100:  # noqa: PLR2004 — test sentinel value
             print("  ✓ State persistence working")
         else:
             print(f"  ✗ State mismatch: expected 100, got {breaker6_reloaded.bars_since_trade}")

@@ -82,7 +82,7 @@ class PerformanceTracker:
         self.max_consecutive_wins = 0
         self.max_consecutive_losses = 0
 
-    def add_trade(
+    def add_trade(  # noqa: PLR0913
         self,
         pnl: float,
         entry_time: dt.datetime,

@@ -57,6 +57,19 @@ from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Module-level constants (replaces magic literals in comparisons)
+# ---------------------------------------------------------------------------
+_MIN_STALENESS_SNAPSHOTS: int = 50           # minimum snapshots before staleness detection
+_PERF_DECAY_WIN_RATE_DROP: float = 0.10     # >10 pp win-rate drop triggers decay signal
+_PERF_DECAY_SHARPE_DROP: float = 0.3        # Sharpe drop > 0.3 triggers decay signal
+_PERF_DECAY_SEVERITY_MIN: float = 0.3       # minimum severity to emit a staleness signal
+_REGIME_SHIFT_FRACTION_MIN: float = 0.8     # >80% of recent bars in different regime
+_PARAM_DRIFT_FLOOR: float = 1e-6            # zero-guard for relative parameter drift
+_PARAM_DRIFT_THRESHOLD: float = 0.20        # >20% parameter change flags instability
+_CONFIDENCE_COLLAPSE_THRESHOLD: float = 0.5  # confidence below this is "low"
+_CONFIDENCE_LOW_FRACTION_MIN: float = 0.7   # >70% low-confidence bars triggers signal
+
 RegimeType = Literal["TRENDING", "MEAN_REVERTING", "TRANSITIONAL", "UNKNOWN"]
 
 
@@ -233,7 +246,7 @@ class ParameterStalenessDetector:
         """
         Detect staleness signals and compute overall staleness score.
         """
-        if not self.baseline_established or len(self.snapshots) < 50:
+        if not self.baseline_established or len(self.snapshots) < _MIN_STALENESS_SNAPSHOTS:
             return
 
         signals = []
@@ -308,11 +321,11 @@ class ParameterStalenessDetector:
         - Sharpe dropped >0.3
         - Both persisted for >50 bars
         """
-        if len(self.snapshots) < 50:
+        if len(self.snapshots) < _MIN_STALENESS_SNAPSHOTS:
             return None
 
         # Get recent performance (last 50 bars)
-        recent = list(self.snapshots)[-50:]
+        recent = list(self.snapshots)[-_MIN_STALENESS_SNAPSHOTS:]
         recent_win_rates = [s.performance["win_rate"] for s in recent]
         recent_sharpes = [s.performance["sharpe"] for s in recent]
 
@@ -326,13 +339,13 @@ class ParameterStalenessDetector:
         # Severity based on magnitude of drop
         severity = 0.0
 
-        if win_rate_drop > 0.10:  # >10pp drop
+        if win_rate_drop > _PERF_DECAY_WIN_RATE_DROP:  # >10pp drop
             severity = max(severity, SafeMath.safe_min([win_rate_drop * 5.0, 1.0], default=1.0))
 
-        if sharpe_drop > 0.3:  # Sharpe drop >0.3
+        if sharpe_drop > _PERF_DECAY_SHARPE_DROP:  # Sharpe drop >0.3
             severity = max(severity, SafeMath.safe_min([sharpe_drop * 2.0, 1.0], default=1.0))
 
-        if severity > 0.3:  # Significant decay
+        if severity > _PERF_DECAY_SEVERITY_MIN:  # Significant decay
             return StalenessSignal(
                 signal_type="performance_decay",
                 severity=severity,
@@ -373,7 +386,7 @@ class ParameterStalenessDetector:
         different_count = sum(1 for r in recent_regimes if r != baseline_regime)
         shift_fraction = different_count / len(recent_regimes)
 
-        if shift_fraction > 0.8:  # >80% of recent bars in different regime
+        if shift_fraction > _REGIME_SHIFT_FRACTION_MIN:  # >80% of recent bars in different regime
             return StalenessSignal(
                 signal_type="regime_shift",
                 severity=shift_fraction,
@@ -411,10 +424,7 @@ class ParameterStalenessDetector:
                 new_val = new_params[key]
 
                 # Relative change (avoid division by zero)
-                if abs(old_val) > 1e-6:
-                    drift = abs(new_val - old_val) / abs(old_val)
-                else:
-                    drift = abs(new_val - old_val)
+                drift = abs(new_val - old_val) / abs(old_val) if abs(old_val) > _PARAM_DRIFT_FLOOR else abs(new_val - old_val)
 
                 drifts[key] = drift
 
@@ -426,7 +436,7 @@ class ParameterStalenessDetector:
         avg_drift = SafeMath.safe_mean(list(drifts.values()), default=0.0)
 
         # Severity based on drift magnitude
-        if max_drift > 0.20:  # >20% change
+        if max_drift > _PARAM_DRIFT_THRESHOLD:  # >20% change
             severity = SafeMath.safe_min([max_drift * 3.0, 1.0], default=1.0)
 
             return StalenessSignal(
@@ -436,7 +446,7 @@ class ParameterStalenessDetector:
                     "window_bars": self.parameter_drift_window,
                     "max_drift": max_drift,
                     "avg_drift": avg_drift,
-                    "unstable_parameters": {k: v for k, v in drifts.items() if v > 0.20},
+                    "unstable_parameters": {k: v for k, v in drifts.items() if v > _PARAM_DRIFT_THRESHOLD},
                 },
                 recommendation="Learning may be unstable or chasing noise",
             )
@@ -449,19 +459,19 @@ class ParameterStalenessDetector:
 
         Returns staleness signal if avg_confidence <0.5 for >50 bars.
         """
-        if len(self.snapshots) < 50:
+        if len(self.snapshots) < _MIN_STALENESS_SNAPSHOTS:
             return None
 
-        recent = list(self.snapshots)[-50:]
+        recent = list(self.snapshots)[-_MIN_STALENESS_SNAPSHOTS:]
         confidences = [s.performance["avg_confidence"] for s in recent]
         avg_confidence = SafeMath.safe_mean(confidences, default=0.5)
 
-        if avg_confidence < 0.5:
+        if avg_confidence < _CONFIDENCE_COLLAPSE_THRESHOLD:
             # Count how many bars below threshold
-            low_confidence_count = sum(1 for c in confidences if c < 0.5)
+            low_confidence_count = sum(1 for c in confidences if c < _CONFIDENCE_COLLAPSE_THRESHOLD)
             low_fraction = low_confidence_count / len(confidences)
 
-            if low_fraction > 0.7:  # >70% of bars with low confidence
+            if low_fraction > _CONFIDENCE_LOW_FRACTION_MIN:  # >70% of bars with low confidence
                 severity = 1.0 - avg_confidence  # Lower confidence = higher severity
 
                 return StalenessSignal(
@@ -521,12 +531,12 @@ class ParameterStalenessDetector:
         Call this after manually resetting parameters or after
         confirming new regime is stable.
         """
-        if len(self.snapshots) < 50:
+        if len(self.snapshots) < _MIN_STALENESS_SNAPSHOTS:
             LOG.warning("Insufficient data to reset baseline: %d bars", len(self.snapshots))
             return
 
         # Use recent performance as new baseline
-        recent = list(self.snapshots)[-50:]
+        recent = list(self.snapshots)[-_MIN_STALENESS_SNAPSHOTS:]
         win_rates = [s.performance["win_rate"] for s in recent]
         sharpes = [s.performance["sharpe"] for s in recent]
         confidences = [s.performance["avg_confidence"] for s in recent]

@@ -505,14 +505,9 @@ class RewardShaper:
         # Runway utilization ratio
         utilization = actual_mfe / predicted_runway
 
-        # Logarithmic reward (symmetric around 1.0)
-        # - utilization = 1.0 → reward = 0.0 (perfect)
-        # - utilization > 1.0 → positive (exceeded prediction)
-        # - utilization < 1.0 → negative (fell short)
-        if utilization > 0:
-            base_reward = math.log(utilization)  # Natural log
-        else:
-            base_reward = RUNWAY_LOG_PENALTY  # No favorable movement - bad entry
+        # Logarithmic reward (symmetric around 1.0): >0 → log(util); =0 → floor penalty
+        # - utilization = 1.0 → 0.0 (perfect); > 1.0 → positive; < 1.0 → negative
+        base_reward = math.log(utilization) if utilization > 0 else RUNWAY_LOG_PENALTY
 
         # Scale reward
         try:
@@ -546,7 +541,7 @@ class RewardShaper:
             "predicted_runway": predicted_runway,
         }
 
-    def calculate_harvester_reward(
+    def calculate_harvester_reward(  # noqa: PLR0913
         self,
         exit_pnl: float,
         mfe: float,
@@ -646,7 +641,7 @@ class RewardShaper:
             return "FAIR"
         return "POOR"
 
-    def calculate_dual_agent_rewards(
+    def calculate_dual_agent_rewards(  # noqa: PLR0913
         self,
         # Trigger data
         actual_mfe: float,

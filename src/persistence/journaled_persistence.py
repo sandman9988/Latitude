@@ -87,8 +87,8 @@ class Journal:
         # Create directory if needed
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Open journal in append mode with line buffering
-        self.journal_file = open(self.journal_path, "a", buffering=1, encoding="utf-8")
+        # Open journal in append mode with line buffering — kept open for object lifetime
+        self.journal_file = open(self.journal_path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
 
         # Sequence tracking
         self.sequence_num = self._get_last_sequence() + 1
@@ -178,7 +178,7 @@ class Journal:
             },
         )
 
-    def log_trade_close(
+    def log_trade_close(  # noqa: PLR0913
         self, order_id: str, exit_price: float, pnl: float, mfe: float, mae: float, winner_to_loser: bool
     ):
         """Log trade close operation."""
@@ -280,8 +280,8 @@ class Journal:
 
             LOG.info("[JOURNAL] Rotated to: %s", archive_path.name)
 
-            # Open new journal
-            self.journal_file = open(self.journal_path, "a", buffering=1, encoding="utf-8")
+            # Open new journal — kept open for object lifetime
+            self.journal_file = open(self.journal_path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
 
             # Create checkpoint in new journal
             self.checkpoint()
@@ -321,8 +321,8 @@ class Journal:
 
         try:
             with open(self.journal_path, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
+                for raw_line in f:
+                    line = raw_line.strip()
                     if not line:
                         continue
 

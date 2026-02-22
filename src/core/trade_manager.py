@@ -127,8 +127,8 @@ class OrdType(Enum):
 class Order:
     """Represents a FIX order with full lifecycle tracking, using SafeMath for precision"""
 
-    def __init__(self, clord_id, symbol, side, ord_type, quantity, price=None, instrument_digits=2):
-        from src.utils.safe_math import SafeMath
+    def __init__(self, clord_id, symbol, side, ord_type, quantity, price=None, instrument_digits=2):  # noqa: PLR0913
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         self.clord_id = clord_id
         self.symbol = symbol
@@ -165,7 +165,7 @@ class Order:
         )
 
     def remaining_qty(self):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         return SafeMath.quantize(
             max(SafeMath.to_decimal(0.0, self.instrument_digits), self.quantity - self.filled_qty),
@@ -173,7 +173,7 @@ class Order:
         )
 
     def to_dict(self):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         return {
             "clord_id": self.clord_id,
@@ -197,7 +197,7 @@ class Order:
 
     @classmethod
     def from_dict(cls, data, instrument_digits=2):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         order = cls(
             clord_id=data.get("clord_id", ""),
@@ -219,7 +219,7 @@ class Order:
         order.avg_price = SafeMath.to_decimal(str(data.get("avg_price", 0.0)), instrument_digits)
         order.last_qty = SafeMath.to_decimal(str(data.get("last_qty", 0.0)), instrument_digits)
         order.last_px = SafeMath.to_decimal(str(data.get("last_px", 0.0)), instrument_digits)
-        from datetime import datetime
+        from datetime import datetime  # noqa: PLC0415
 
         order.created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else utc_now()
         order.updated_at = datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else utc_now()
@@ -231,7 +231,7 @@ class Order:
 class Position:
     """Represents current position for a symbol, using SafeMath for precision"""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         symbol,
         long_qty=0.0,
@@ -241,7 +241,7 @@ class Position:
         updated_at=None,
         instrument_digits=2,
     ):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         self.symbol = symbol
         self.instrument_digits = instrument_digits
@@ -252,7 +252,7 @@ class Position:
         self.updated_at = updated_at if updated_at else utc_now()
 
     def update_from_report(self, long_qty, short_qty, pos_id=None):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         self.long_qty = SafeMath.to_decimal(long_qty, self.instrument_digits)
         self.short_qty = SafeMath.to_decimal(short_qty, self.instrument_digits)
@@ -261,7 +261,7 @@ class Position:
         self.updated_at = utc_now()
 
     def update_from_fill(self, side, filled_qty, _avg_price):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         filled_qty = SafeMath.to_decimal(filled_qty, self.instrument_digits)
         if side == Side.BUY:
@@ -280,7 +280,7 @@ class Position:
         )
 
     def seed(self, net_qty, _entry_price=0.0):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         net_qty = SafeMath.to_decimal(net_qty, self.instrument_digits)
         if net_qty > 0:
@@ -302,7 +302,7 @@ class Position:
         )
 
     def to_dict(self):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         return {
             "symbol": self.symbol,
@@ -315,11 +315,11 @@ class Position:
 
     @classmethod
     def from_dict(cls, data, instrument_digits=2):
-        from src.utils.safe_math import SafeMath
+        from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         updated_at = None
         if data.get("updated_at"):
-            from datetime import datetime
+            from datetime import datetime  # noqa: PLC0415
 
             try:
                 updated_at = datetime.fromisoformat(data["updated_at"])
@@ -364,7 +364,7 @@ class TradeManager:
         pos = manager.get_position()
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         session_id: fix.SessionID,
         symbol_id: int,
@@ -722,7 +722,7 @@ class TradeManager:
             side: Order side (BUY/SELL)
             quantity: Order quantity
         """
-        import threading
+        import threading  # noqa: PLC0415
 
         def check_paper_fill():
             time.sleep(self.paper_fill_timeout)
@@ -857,7 +857,7 @@ class TradeManager:
             except Exception as e:
                 LOG.error("[PAPER] Error in fill callback: %s", e, exc_info=True)
 
-    def on_execution_report(self, msg: fix.Message):
+    def on_execution_report(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
         """
         Process ExecutionReport (35=8) from FIX session.
 
@@ -1115,7 +1115,7 @@ class TradeManager:
             LOG.info("[TRADEMGR] ✓ Requested positions (PosReqID=%s, retry=%d)", req_id, retry_count)
 
             # P0 FIX: Schedule timeout check (improved threading-based timeout)
-            import threading
+            import threading  # noqa: PLC0415
 
             def check_timeout():
                 time.sleep(self.position_request_timeout)

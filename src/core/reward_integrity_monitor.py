@@ -38,6 +38,13 @@ import numpy as np
 
 LOG = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Module-level constants (replaces magic literals in comparisons)
+# ---------------------------------------------------------------------------
+_MIN_TRADES_FOR_INTEGRITY: int = 10          # minimum history before outlier detection
+_REWARD_FLOOR: float = 1e-6                  # zero-guard for PnL / std / component totals
+_COMPONENT_DOMINANCE_PCT: float = 80.0       # % threshold for "dominated" component warning
+
 
 @dataclass
 class RewardPnLPair:
@@ -198,7 +205,7 @@ class RewardIntegrityMonitor:
         component_balance = self._analyze_component_balance()
 
         # Count sign mismatches
-        sign_mismatches = sum(1 for r, p in zip(self.rewards, self.pnls) if (r > 0 and p < 0) or (r < 0 and p > 0))
+        sign_mismatches = sum(1 for r, p in zip(self.rewards, self.pnls, strict=False) if (r > 0 and p < 0) or (r < 0 and p > 0))
 
         # Determine status
         is_gaming = correlation < self.correlation_threshold
@@ -260,7 +267,7 @@ class RewardIntegrityMonitor:
         Returns:
             List of trade IDs that are outliers
         """
-        if len(self.history) < 10:
+        if len(self.history) < _MIN_TRADES_FOR_INTEGRITY:
             return []
 
         outliers = []
@@ -268,7 +275,7 @@ class RewardIntegrityMonitor:
         # Calculate reward/P&L ratios
         ratios = []
         for pair in self.history:
-            if abs(pair.pnl) > 1e-6:  # Avoid division by zero
+            if abs(pair.pnl) > _REWARD_FLOOR:  # Avoid division by zero
                 ratio = pair.reward / pair.pnl
                 ratios.append((pair.trade_id, ratio))
 
@@ -280,7 +287,7 @@ class RewardIntegrityMonitor:
         mean_ratio = np.mean(ratio_values)
         std_ratio = np.std(ratio_values)
 
-        if std_ratio < 1e-6:  # All ratios same
+        if std_ratio < _REWARD_FLOOR:  # All ratios same
             return []
 
         for trade_id, ratio in ratios:
@@ -302,7 +309,7 @@ class RewardIntegrityMonitor:
 
         total_abs_sum = sum(self.component_sums.values())
 
-        if total_abs_sum < 1e-6:
+        if total_abs_sum < _REWARD_FLOOR:
             return {"status": "zero_components"}
 
         # Calculate percentage contribution
@@ -312,7 +319,7 @@ class RewardIntegrityMonitor:
         max_component = max(percentages, key=percentages.get)
         max_percentage = percentages[max_component]
 
-        is_dominated = max_percentage > 80.0
+        is_dominated = max_percentage > _COMPONENT_DOMINANCE_PCT
 
         if is_dominated:
             LOG.warning(

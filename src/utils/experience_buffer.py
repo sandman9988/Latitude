@@ -491,7 +491,7 @@ class ExperienceBuffer:
         Returns:
             True if save succeeded
         """
-        from pathlib import Path
+        from pathlib import Path  # noqa: PLC0415
 
         try:
             n = self.tree.n_entries
@@ -553,7 +553,7 @@ class ExperienceBuffer:
         Returns:
             True if load succeeded
         """
-        from pathlib import Path
+        from pathlib import Path  # noqa: PLC0415
 
         # Handle both with and without .npz extension
         path = Path(filepath)

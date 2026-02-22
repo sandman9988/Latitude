@@ -1,22 +1,28 @@
-# cTrader DDQN Trading Bot Requirements
+# cTrader DDQN Trading Bot — Runtime & Dev Dependencies
+# Install: pip install -r requirements.txt
+# For torch CPU-only (smaller download):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# For torch with CUDA, omit the index-url override.
 
-# Core dependencies
+# ── Runtime ───────────────────────────────────────────────────────────────────
 numpy>=1.24.0
-scipy
+scipy>=1.10.0
+pandas>=2.0.0
+matplotlib>=3.7.0
+torch>=2.0.0          # Required by bot_persistence.py (model checkpoints)
+python-dotenv>=1.0.0  # .env loading in launch scripts
 
-# QuickFIX Python bindings
-# Install manually from ../quickfix directory:
-# cd ../quickfix && pip install -e .
+# ── QuickFIX FIX-protocol bindings ────────────────────────────────────────────
+# Not on PyPI; install the C++ library separately:
+#   sudo apt install quickfix  (or build from source)
+# The Python bindings come from the system package; the code degrades
+# gracefully if quickfix is absent.
 
-# Monitoring & Analysis (optional but recommended)
-jupyter>=1.1.0
-plotly>=6.5.0
-pandas>=2.3.0
-prometheus-client>=0.23.0
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest>=9.0.0
+pytest-cov>=5.0.0
+coverage[toml]>=7.0.0
 
-# Tooling
-black>=24.3.0
-
-# Optional: For DDQN model support
-# Uncomment if you want to use trained models
-# torch>=2.0.0
+# ── Dev tooling ───────────────────────────────────────────────────────────────
+ruff>=0.3.0
+black>=24.0.0

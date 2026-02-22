@@ -35,7 +35,7 @@ class TransactionLogger:
     - Component health changes
     """
 
-    def __init__(self, log_dir: str = "log", filename: str = "transactions.jsonl"):
+    def __init__(self, log_dir: str = "logs/audit", filename: str = "transactions.jsonl"):
         """
         Initialize transaction logger.
 
@@ -181,7 +181,7 @@ class DecisionLogger:
     - Reasoning/features that influenced decision
     """
 
-    def __init__(self, log_dir: str = "log", filename: str = "decisions.jsonl"):
+    def __init__(self, log_dir: str = "logs/audit", filename: str = "decisions.jsonl"):
         """
         Initialize decision logger.
 
@@ -195,7 +195,7 @@ class DecisionLogger:
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
 
-    def log_decision(
+    def log_decision(  # noqa: PLR0913
         self, agent: str, decision: str, confidence: float, context: dict[str, Any], reasoning: dict[str, Any] = None,
         trade_id: str | None = None,
     ):
@@ -228,7 +228,7 @@ class DecisionLogger:
         except Exception as e:
             LOG.error("[DECISION] Failed to write decision log: %s", e)
 
-    def log_trigger_decision(
+    def log_trigger_decision(  # noqa: PLR0913
         self,
         decision: str,
         confidence: float,
@@ -262,7 +262,7 @@ class DecisionLogger:
             trade_id=trade_id,
         )
 
-    def log_harvester_decision(
+    def log_harvester_decision(  # noqa: PLR0913
         self,
         decision: str,
         confidence: float,

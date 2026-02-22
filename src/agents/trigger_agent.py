@@ -37,10 +37,16 @@ LOG = logging.getLogger(__name__)
 
 MIN_FEATURE_COLS = 3
 IMBALANCE_INDEX = 4
+VOL_Z_INDEX = 3           # state array column index for vol_z
+VPIN_Z_INDEX = 5          # state array column index for vpin_z
 TILT_SCALE = 0.1
 PAPER_EPSILON = 0.15
 PAPER_BASE_THRESHOLD = 0.15
 LIVE_BASE_THRESHOLD = 0.3
+_UTILIZATION_BAD_THRESHOLD: float = 0.3   # utilization below this is a bad entry
+_UTILIZATION_OUTLIER_LOW: float = 0.2     # below this is an outlier (too poor)
+_UTILIZATION_OUTLIER_HIGH: float = 2.0    # above this is an outlier (excessive)
+_TRAINING_LOG_PERIOD: int = 100           # steps before switching to reduced log frequency
 PREDICTED_RUNWAY_FALLBACK = 0.0015
 Q_RUNWAY_MIN = 0.0010
 Q_RUNWAY_MAX = 0.0050
@@ -245,7 +251,7 @@ class TriggerAgent:
             LOG.warning("[TRIGGER] Failed to load model: %s. Using fallback.", e)
             self.use_torch = False
 
-    def decide(  # noqa: PLR0913, PLR0911
+    def decide(  # noqa: PLR0911, PLR0913, PLR0915
         self,
         state: np.ndarray,
         current_position: int = 0,
@@ -466,9 +472,9 @@ class TriggerAgent:
         ma_diff   = float(state[-1, 2])
         ret1      = float(state[-1, 0])
         ret5      = float(state[-1, 1])
-        vol_z     = float(state[-1, 3]) if state.shape[1] > 3 else 0.0
+        vol_z     = float(state[-1, VOL_Z_INDEX]) if state.shape[1] > VOL_Z_INDEX else 0.0
         imbalance = float(state[-1, IMBALANCE_INDEX]) if state.shape[1] > IMBALANCE_INDEX else 0.0
-        vpin_z    = float(state[-1, 5]) if state.shape[1] > 5 else 0.0
+        vpin_z    = float(state[-1, VPIN_Z_INDEX]) if state.shape[1] > VPIN_Z_INDEX else 0.0
 
         # Regime-adjusted threshold (same adaptive logic as before)
         paper_mode = os.environ.get("PAPER_MODE") == "1"
@@ -651,7 +657,7 @@ class TriggerAgent:
             if self.param_manager is not None:
                 try:
                     utilization = actual_mfe / predicted_runway if predicted_runway > 0 else 0.0
-                    if utilization < 0.3:
+                    if utilization < _UTILIZATION_BAD_THRESHOLD:
                         # Bad entry - raise confidence floor to be more selective
                         gradient = 0.05
                     elif utilization > 1.0:
@@ -686,7 +692,7 @@ class TriggerAgent:
                     # wrong (too aggressive or too timid). Pull toward a
                     # neutral signal; leave the absolute magnitude to drift
                     # based on regime-specific performance over time.
-                    if utilization < 0.2 or utilization > 2.0:
+                    if utilization < _UTILIZATION_OUTLIER_LOW or utilization > _UTILIZATION_OUTLIER_HIGH:
                         # Outlier trade — soften the regime signal slightly
                         self.param_manager.update(
                             self.symbol,
@@ -838,7 +844,7 @@ class TriggerAgent:
         self.training_steps += 1
 
         # Log every 10 steps (more frequent during early training)
-        log_interval = 10 if self.training_steps < 100 else 100
+        log_interval = 10 if self.training_steps < _TRAINING_LOG_PERIOD else _TRAINING_LOG_PERIOD
         if self.training_steps % log_interval == 0:
             LOG.info(
                 "[TRIGGER] Training step %d: loss=%.4f, mean_q=%.3f, mean_reward=%.4f, mean_td=%.4f, buffer=%d",

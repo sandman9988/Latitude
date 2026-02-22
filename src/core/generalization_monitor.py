@@ -13,15 +13,15 @@ Key Metrics:
 Reference: MQL5 GeneralizationMonitor.mqh
 """
 
-# Generalization detection thresholds
-OVERFITTING_GAP_THRESHOLD: float = 0.1  # Training significantly better than live
-UNDERFITTING_THRESHOLD: float = -0.05  # Both train and live performing poorly
-
 import logging
 from collections import deque
 from enum import Enum
 
 import numpy as np
+
+# Generalization detection thresholds
+OVERFITTING_GAP_THRESHOLD: float = 0.1  # Training significantly better than live
+UNDERFITTING_THRESHOLD: float = -0.05  # Both train and live performing poorly
 
 LOG = logging.getLogger(__name__)
 

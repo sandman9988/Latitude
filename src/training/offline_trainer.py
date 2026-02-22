@@ -34,11 +34,12 @@ Caller: train_offline.py spawns one OfflineTrainer.run() per job in a
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -56,6 +57,9 @@ DEQUE_MAXLEN: int = 500            # Rolling bars deque max length
 REWARD_CLIP: float = 2.0           # Hardcoded to match live bot
 TRIGGER_REWARD_CLIP: float = 0.5
 MIN_VALIDATION_TRADES: int = 5     # Below this ZOmega is not meaningful
+_STD_FLOOR: float = 1e-10          # Minimum σ before treating as flat returns
+_MFE_FLOOR: float = 1e-8           # Minimum MFE to compute capture ratio
+_BAR_SPREAD_COL_IDX: int = 5       # Index of spread column in bar tuple
 
 # ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -113,7 +117,7 @@ def z_omega(returns: list[float], threshold: float = 0.0) -> float:
 
     arr = np.array(returns, dtype=np.float64)
     sig = arr.std()
-    if sig < 1e-10:
+    if sig < _STD_FLOOR:
         # All returns identical — edge case, treat as neutral
         return 1.0
 
@@ -121,7 +125,7 @@ def z_omega(returns: list[float], threshold: float = 0.0) -> float:
     gains  = np.maximum(z - threshold, 0.0).sum()
     losses = np.maximum(threshold - z, 0.0).sum()
 
-    if losses < 1e-10:
+    if losses < _STD_FLOOR:
         return float("inf")
     return float(gains / losses)
 
@@ -162,7 +166,7 @@ class _Simulator:
     def step(self, bar: tuple, bar_idx: int) -> None:
         """Process one bar."""
         self.bars.append(bar)
-        self._cur_spread_pts = float(bar[5]) if len(bar) > 5 else 0.0
+        self._cur_spread_pts = float(bar[_BAR_SPREAD_COL_IDX]) if len(bar) > _BAR_SPREAD_COL_IDX else 0.0
 
         if len(self.bars) < MIN_BARS_FOR_ENTRY:
             return
@@ -253,7 +257,7 @@ class _Simulator:
         spread_cost = (self.entry_spread_pts + self._cur_spread_pts) * self._pt
         pnl_pts = (exit_price - self.entry_price) * self.cur_pos - spread_cost
         capture = self.mfe > 0 and pnl_pts > 0
-        capture_ratio = (pnl_pts / self.mfe) if self.mfe > 1e-8 else 0.0
+        capture_ratio = (pnl_pts / self.mfe) if self.mfe > _MFE_FLOOR else 0.0
 
         # Build rewards using the same formula as the live bot
         # Trigger reward: normalised outcome (no prediction accuracy in offline)
@@ -285,14 +289,12 @@ class _Simulator:
             capture_reward=float(capture_reward),
         ))
 
-        try:
+        with contextlib.suppress(Exception):
             self.policy.on_exit(
                 exit_price=exit_price,
                 capture_ratio=capture_ratio,
                 was_wtl=not capture,
             )
-        except Exception:
-            pass
 
         self.cur_pos = 0
         self.entry_price = 0.0
@@ -367,7 +369,7 @@ class OfflineTrainer:
                             (overrides EPSILON_END env var, default 0.05).
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         symbol: str,
         timeframe_minutes: int,
@@ -417,10 +419,11 @@ class OfflineTrainer:
                 error=str(exc),
             )
 
-    def _run_inner(self, label: str, t0: float) -> TrainResult:
+    def _run_inner(self, label: str, t0: float) -> TrainResult:  # noqa: PLR0912, PLR0915
         # Lazy import to avoid circular imports and allow multiprocessing fork
-        import os
-        from src.agents.dual_policy import DualPolicy
+        import os  # noqa: PLC0415
+
+        from src.agents.dual_policy import DualPolicy  # noqa: PLC0415
 
         n_total = len(self.bars)
         n_train = int(n_total * self.train_split)

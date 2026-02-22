@@ -1,8 +1,8 @@
 # cTrader DDQN Bot - Documentation Index
 
-**Last Updated:** February 14, 2026  
+**Last Updated:** February 22, 2026  
 **Branch:** update-1.1-mfe-mae-tracking-v2  
-**System Status:** ✅ Operational (Markets Closed - Weekend)
+**System Status:** ✅ Operational — test suite green (2506 passed, 0 failed)
 
 ---
 
@@ -20,15 +20,15 @@
 - [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) - Emergency procedures
 
 ### 💻 **Developers**
-- [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Original design reference (37 days old)
-- [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) - Technical architecture 
+- [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) - Authoritative system design & architecture
+- [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) - Technical architecture
 - [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Codebase organization
 - [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) - Parameter learning system
 
-### 📊 **Phase Implementation** (Historical)
-- [PHASE1_SUMMARY.md](PHASE1_SUMMARY.md) - Defensive programming (2024)
-- [PHASE2_SUMMARY.md](PHASE2_SUMMARY.md) - Advanced RL features (2025)
-- [PHASE3_QUICK_REFERENCE.md](PHASE3_QUICK_REFERENCE.md) - Dual-agent architecture (2026)
+### 📊 **Dual-Agent Architecture**
+- [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md) - TriggerAgent + HarvesterAgent workflow
+- [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) - Agent decision logic
+- [COMPOSITE_PROBABILITY_PREDICTOR.md](COMPOSITE_PROBABILITY_PREDICTOR.md) - Entry probability model
 
 ---
 
@@ -39,10 +39,10 @@ Core documentation that operators and developers reference frequently.
 
 | Document | Purpose | Audience | Freshness |
 |----------|---------|----------|-----------|
-| **[CURRENT_STATE.md](CURRENT_STATE.md)** | **Latest system status** | All | ✅ Today |
-| [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) | Original design reference | Developers | 37d old |
-| [MONITORING_GUIDE.md](MONITORING_GUIDE.md) | Health checks & alerts | Operators | 33d old |
-| [QUICKSTART.md](QUICKSTART.md) | Fast setup guide | New users | 33d old |
+| **[CURRENT_STATE.md](CURRENT_STATE.md)** | **Latest system status** | All | ✅ Feb 22 |
+| [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers | Current |
+| [MONITORING_GUIDE.md](MONITORING_GUIDE.md) | Health checks & alerts | Operators | Current |
+| [QUICKSTART.md](QUICKSTART.md) | Fast setup guide | New users | Current |
 
 ### `/docs/guides` (User Guides)
 Step-by-step instructions for common tasks.
@@ -73,16 +73,6 @@ Day-to-day operational procedures.
 | [HUD_QUICK_REFERENCE.md](operations/HUD_QUICK_REFERENCE.md) | Dashboard guide |
 | [RUNNING_WITH_LOGS.md](operations/RUNNING_WITH_LOGS.md) | Log configuration |
 
-### `/docs/reports` (Status Reports)
-Point-in-time status reports and completion summaries.
-
-| Report | Date | Purpose |
-|--------|------|---------|
-| [ERROR_REDUCTION_REPORT.md](reports/ERROR_REDUCTION_REPORT.md) | Jan 2026 | Error analysis |
-| [PHASE3_INTEGRATION_COMPLETE.md](reports/PHASE3_INTEGRATION_COMPLETE.md) | Jan 2026 | Dual-agent completion |
-| [INTEGRATION_STATUS.md](reports/INTEGRATION_STATUS.md) | Jan 2026 | Component integration |
-| [PRE_LAUNCH_CHECKLIST.md](reports/PRE_LAUNCH_CHECKLIST.md) | Jan 2026 | Production readiness |
-
 ---
 
 ## 🎯 Documentation by Use Case
@@ -93,9 +83,9 @@ Point-in-time status reports and completion summaries.
 3. [MONITORING_GUIDE.md](MONITORING_GUIDE.md) - Health monitoring
 
 ### "How does it work?"
-1. [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Design philosophy
+1. [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) - Design philosophy
 2. [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) - Technical details
-3. [PHASE3_QUICK_REFERENCE.md](PHASE3_QUICK_REFERENCE.md) - Current implementation
+3. [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md) - Dual-agent implementation
 
 ### "Something went wrong!"
 1. **[CURRENT_STATE.md](CURRENT_STATE.md)** - Check known issues first
@@ -115,7 +105,19 @@ Point-in-time status reports and completion summaries.
 
 ---
 
-## 🔄 Recent Changes (Last 7 Days)
+## 🔄 Recent Changes
+
+### February 22, 2026 ✅ (Housekeeping)
+- **Fixed:** QuickFIX namespace-package type-annotation crash (`trade_manager_integration.py`) — 10 tests unblocked
+- **Fixed:** Universe registry stage-demotion bug (`train_offline.py`) — LIVE/MICRO instruments no longer demoted to PAPER
+- **Updated:** CURRENT_STATE.md, INDEX.md, 00_START_HERE.md, DOCS_INDEX.md, README.md, PROJECT_STRUCTURE.md
+- **Tests:** 2506 passed, 3 skipped, 0 failures
+
+### February 20, 2026 ✅
+- **Fixed:** Log flood eliminated (24 LOG.info demoted to LOG.debug in ctrader_ddqn_paper.py)
+- **Fixed:** Model weight load verification now calls torch.load() (self_test.py)
+- **Fixed:** QuickFIX importable check added as CRITICAL self-test
+- **Fixed:** Circuit breaker schema key bug (is_tripped vs tripped)
 
 ### February 14, 2026 ✅
 - **Created:** [CURRENT_STATE.md](CURRENT_STATE.md) - Comprehensive system status
@@ -123,15 +125,6 @@ Point-in-time status reports and completion summaries.
 - **Implemented:** Stop loss adaptive learning (mirrors TP learning)
 - **Verified:** Friction costs correctly applied in exits
 - **Enhanced:** Defensive programming (10 critical areas hardened)
-
-### February 13, 2026
-- Fixed emergency stop loss bypass issue (DDQN model was ignoring SL)
-- Verified stop loss now triggers correctly (tested at MAE=1.53%)
-
-### February 7-13, 2026
-- Implemented foreign position auto-close (only XAUUSD positions kept)
-- Enhanced MFE/MAE tracking with validation
-- Added comprehensive error handling and defensive checks
 
 ---
 

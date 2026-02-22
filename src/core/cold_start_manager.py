@@ -44,6 +44,13 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Module-level constants (replaces magic literals in comparisons)
+# ---------------------------------------------------------------------------
+_PAPER_MIN_TRADES: int = 10      # min trades before paper-trading graduation check
+_MICRO_MIN_TRADES: int = 20      # min trades before micro-position graduation check
+_PRODUCTION_MIN_TRADES: int = 50  # min trades before production demotion check
+
 
 class WarmupPhase(Enum):
     """Warmup phases with increasing risk."""
@@ -85,7 +92,7 @@ class ColdStartManager:
     Can be demoted back to earlier phases if performance degrades.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         # Phase 1: Observation
         observation_min_bars: int = 100,
@@ -207,7 +214,7 @@ class ColdStartManager:
         if self.bars_in_current_phase < self.paper_min_bars:
             return None  # Not enough bars
 
-        if self.trades_in_current_phase < 10:
+        if self.trades_in_current_phase < _PAPER_MIN_TRADES:
             return None  # Not enough trades to evaluate
 
         # Calculate metrics
@@ -248,7 +255,7 @@ class ColdStartManager:
         if self.bars_in_current_phase < self.micro_min_bars:
             return None
 
-        if self.trades_in_current_phase < 20:
+        if self.trades_in_current_phase < _MICRO_MIN_TRADES:
             return None  # Need more real trades
 
         metrics = self._calculate_current_metrics()
@@ -289,7 +296,7 @@ class ColdStartManager:
 
         Returns MICRO_POSITIONS if demotion needed, None otherwise.
         """
-        if self.trades_in_current_phase < 50:
+        if self.trades_in_current_phase < _PRODUCTION_MIN_TRADES:
             return None  # Not enough data to judge
 
         metrics = self._calculate_current_metrics()
@@ -571,7 +578,8 @@ if __name__ == "__main__":
     print("\nTest 6: State persistence")
     import tempfile
 
-    temp_file = Path(tempfile.NamedTemporaryFile(suffix=".json", delete=False).name)
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as _tf:
+        temp_file = Path(_tf.name)
     mgr6 = ColdStartManager(state_file=temp_file)
     mgr6.current_phase = WarmupPhase.MICRO_POSITIONS
     mgr6.bars_in_current_phase = 123
@@ -579,7 +587,7 @@ if __name__ == "__main__":
 
     mgr6_reload = ColdStartManager(state_file=temp_file)
     if mgr6_reload.load_state():
-        if mgr6_reload.current_phase == WarmupPhase.MICRO_POSITIONS and mgr6_reload.bars_in_current_phase == 123:
+        if mgr6_reload.current_phase == WarmupPhase.MICRO_POSITIONS and mgr6_reload.bars_in_current_phase == 123:  # noqa: PLR2004
             print("  ✓ State persistence working")
         else:
             print("  ✗ State mismatch")

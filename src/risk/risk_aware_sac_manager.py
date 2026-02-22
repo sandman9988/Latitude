@@ -38,6 +38,18 @@ from scipy.stats import genpareto
 
 LOG = logging.getLogger(__name__)
 
+# ── Statistical guard constants ────────────────────────────────────────────────
+_STD_FLOOR: float = 1e-12      # Minimum std/var before treating series as constant
+_MIN_KURT_SAMPLES: int = 4     # Minimum samples for rolling kurtosis
+_MIN_VPIN_SAMPLES: int = 2     # Minimum VPIN samples for z-score
+_MIN_GPD_SAMPLES: int = 20     # Minimum return samples for GPD hazard estimation
+_MIN_GPD_EXCEEDANCES: int = 3  # Minimum exceedances above threshold for GPD fit
+_VPIN_RECENT_FRACTION: int = 4  # Use len//4 of series as "recent" window
+_VPIN_RECENT_CAP: int = 50     # Cap on recent window length
+
+# ── Exposure threshold constants ───────────────────────────────────────────────
+EXTREME_HAZARD_THRESHOLD: float = 0.1  # Hazard above this → count extreme event
+
 
 class RiskAwareSACManager:
     """
@@ -62,7 +74,7 @@ class RiskAwareSACManager:
         reward -= hazard_penalty_weight * hazard
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         window: int = 500,
         kurt_max: float = 3.0,
@@ -182,7 +194,7 @@ class RiskAwareSACManager:
                     self.latest_hazard,
                 )
 
-        if self.latest_hazard > 0.1:
+        if self.latest_hazard > EXTREME_HAZARD_THRESHOLD:
             self.extreme_hazard_events += 1
 
         return self.latest_exposure, self.latest_hazard
@@ -201,13 +213,13 @@ class RiskAwareSACManager:
         float
             Excess kurtosis value
         """
-        if len(self.ret_buf) < 4:
+        if len(self.ret_buf) < _MIN_KURT_SAMPLES:
             return 0.0
 
         arr = np.array(self.ret_buf, dtype=np.float64)
 
         # Handle edge cases
-        if arr.std() < 1e-12:
+        if arr.std() < _STD_FLOOR:
             return 0.0
 
         mean = arr.mean()
@@ -236,14 +248,14 @@ class RiskAwareSACManager:
         float
             Z-score of VPIN metric
         """
-        if len(self.vpin_buf) < 2:
+        if len(self.vpin_buf) < _MIN_VPIN_SAMPLES:
             return 0.0
 
         arr = np.array(self.vpin_buf, dtype=np.float64)
 
         # Use recent window for "current" mean
-        recent_window = min(50, len(arr) // 4)
-        if recent_window < 2:
+        recent_window = min(_VPIN_RECENT_CAP, len(arr) // _VPIN_RECENT_FRACTION)
+        if recent_window < _MIN_VPIN_SAMPLES:
             return 0.0
 
         recent_mean = arr[-recent_window:].mean()
@@ -252,7 +264,7 @@ class RiskAwareSACManager:
         hist_mean = arr.mean()
         hist_std = arr.std(ddof=0)
 
-        if hist_std < 1e-12:
+        if hist_std < _STD_FLOOR:
             return 0.0
 
         z_score = (recent_mean - hist_mean) / hist_std
@@ -272,7 +284,7 @@ class RiskAwareSACManager:
         float
             Tail-risk probability in [0, 1]
         """
-        if len(self.ret_buf) < 20:
+        if len(self.ret_buf) < _MIN_GPD_SAMPLES:
             return 0.0
 
         arr = np.array(self.ret_buf, dtype=np.float64)
@@ -283,7 +295,7 @@ class RiskAwareSACManager:
         # Extract exceedances (values above threshold)
         exceedances = arr[arr > threshold] - threshold
 
-        if len(exceedances) < 3:
+        if len(exceedances) < _MIN_GPD_EXCEEDANCES:
             return 0.0
 
         try:
@@ -424,13 +436,13 @@ def rolling_kurtosis(arr: np.ndarray, window: int) -> float:
         Excess kurtosis
     """
     x = arr[-window:]
-    if len(x) < 4:
+    if len(x) < _MIN_KURT_SAMPLES:
         return 0.0
 
     mean = x.mean()
     var = x.var(ddof=0)
 
-    if var < 1e-12:
+    if var < _STD_FLOOR:
         return 0.0
 
     m4 = ((x - mean) ** 4).mean()
@@ -456,14 +468,14 @@ def vpin_zscore(vpin_arr: np.ndarray, window: int) -> float:
         Z-score
     """
     arr = vpin_arr[-window:]
-    if len(arr) < 2:
+    if len(arr) < _MIN_VPIN_SAMPLES:
         return 0.0
 
-    recent_mean = arr[-min(50, len(arr) // 4) :].mean()
+    recent_mean = arr[-min(_VPIN_RECENT_CAP, len(arr) // _VPIN_RECENT_FRACTION):].mean()
     hist_mean = arr.mean()
     hist_std = arr.std(ddof=0)
 
-    if hist_std < 1e-12:
+    if hist_std < _STD_FLOOR:
         return 0.0
 
     return float((recent_mean - hist_mean) / hist_std)
@@ -487,13 +499,13 @@ def truncated_gpd_hazard(arr: np.ndarray, shape_par: float = 0.8, tail_percentil
     float
         Tail probability in [0, 1]
     """
-    if len(arr) < 10:
+    if len(arr) < _MIN_GPD_SAMPLES:
         return 0.0
 
     threshold = np.percentile(arr, tail_percentile * 100)
     exceedances = arr[arr > threshold] - threshold
 
-    if len(exceedances) < 3:
+    if len(exceedances) < _MIN_GPD_EXCEEDANCES:
         return 0.0
 
     try:

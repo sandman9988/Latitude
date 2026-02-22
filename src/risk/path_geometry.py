@@ -15,13 +15,13 @@ From MASTER_HANDBOOK.md: Path-Centric Experience Design
 From C# Skeleton: AdaptiveRL_cTrader_Skeleton_v0_1/Core/PathGeometry.cs
 """
 
-# Path geometry calculation constants
-MIN_BARS_FOR_GEOMETRY: int = 3  # Need at least 3 bars for derivatives
-
 import logging
 from collections import deque
 
 import numpy as np
+
+# Path geometry calculation constants
+MIN_BARS_FOR_GEOMETRY: int = 3  # Need at least 3 bars for derivatives
 
 LOG = logging.getLogger(__name__)
 

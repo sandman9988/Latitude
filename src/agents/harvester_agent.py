@@ -100,7 +100,7 @@ class HarvesterAgent:
         - confidence: [0, 1] from softmax probabilities
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         window: int = 64,
         n_features: int = 10,
@@ -179,7 +179,7 @@ class HarvesterAgent:
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for harvester agent."""
         try:
-            import torch
+            import torch  # noqa: PLC0415
             from torch import nn  # noqa: PLC0415 - conditional import for optional torch dependency
 
             class HarvesterQNet(nn.Module):
@@ -319,7 +319,7 @@ class HarvesterAgent:
 
             return action, confidence
 
-    def decide(
+    def decide(  # noqa: PLR0913
         self,
         market_state: np.ndarray,
         mfe: float,
@@ -497,7 +497,7 @@ class HarvesterAgent:
             return True
         return False
 
-    def _fallback_strategy(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> int:
+    def _fallback_strategy(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> int:  # noqa: PLR0911
         """Fallback exit strategy when no model loaded.
 
         Rules (designed for profit protection on M5):
@@ -549,7 +549,7 @@ class HarvesterAgent:
 
         return 0  # HOLD
 
-    def quick_exit_check(
+    def quick_exit_check(  # noqa: PLR0911
         self, mfe: float, mae: float, entry_price: float, current_price: float, direction: int
     ) -> bool:
         """
@@ -755,7 +755,7 @@ class HarvesterAgent:
         exp_x = np.exp((x - np.max(x)) / temperature)
         return exp_x / exp_x.sum()
 
-    def update_from_trade(self, capture_ratio: float, was_wtl: bool):
+    def update_from_trade(self, capture_ratio: float, was_wtl: bool):  # noqa: PLR0912
         """
         Update harvester exit thresholds based on trade outcome.
 
@@ -871,7 +871,7 @@ class HarvesterAgent:
         except (AttributeError, ValueError, TypeError, OSError) as exc:
             LOG.warning("[HARVESTER] Failed to update parameters: %s", exc)
 
-    def add_experience(
+    def add_experience(  # noqa: PLR0913
         self,
         state: np.ndarray,
         action: int,

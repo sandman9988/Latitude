@@ -48,14 +48,13 @@ import argparse
 import json
 import logging
 import multiprocessing
-import os
 import re
 import shutil
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -123,14 +122,16 @@ def _register_universe(
     better_score = z_omega > existing.get("z_omega", 0.0)
 
     if not already_paper or better_score:
+        # Preserve stage if already at PAPER or above (MICRO/LIVE) — never demote
+        new_stage = current_stage if already_paper else "PAPER"
         instruments[symbol] = {
             **existing,
-            "stage":             "PAPER",
+            "stage":             new_stage,
             "timeframe_minutes": timeframe_minutes,
             "z_omega":           z_omega,
             "weights_path":      weights_path,
-            "promoted_at":       existing.get("promoted_at") or datetime.now(timezone.utc).isoformat(),
-            "updated_at":        datetime.now(timezone.utc).isoformat(),
+            "promoted_at":       existing.get("promoted_at") or datetime.now(UTC).isoformat(),
+            "updated_at":        datetime.now(UTC).isoformat(),
             "paper_pid":         existing.get("paper_pid"),
             "paper_started_at":  existing.get("paper_started_at"),
         }
@@ -140,8 +141,8 @@ def _register_universe(
         tmp.replace(_UNIVERSE_PATH)
         if already_paper:
             LOG.info(
-                "[UNIVERSE] %s M%d → PAPER updated  (ZOmega %.4f → %.4f)",
-                symbol, timeframe_minutes, existing.get("z_omega", 0.0), z_omega,
+                "[UNIVERSE] %s M%d ZOmega updated  (%.4f → %.4f)  stage=%s preserved",
+                symbol, timeframe_minutes, existing.get("z_omega", 0.0), z_omega, new_stage,
             )
         else:
             LOG.info(
@@ -150,8 +151,8 @@ def _register_universe(
             )
     else:
         LOG.info(
-            "[UNIVERSE] %s already PAPER ZΩ=%.4f, new ZΩ=%.4f — keeping best",
-            symbol, existing.get("z_omega", 0.0), z_omega,
+            "[UNIVERSE] %s already %s ZΩ=%.4f, new ZΩ=%.4f — keeping best",
+            symbol, current_stage, existing.get("z_omega", 0.0), z_omega,
         )
 
 # ── Import training modules ────────────────────────────────────────────────────
@@ -168,7 +169,7 @@ def _load_symbol_digits(symbol: str) -> int:
     try:
         _specs_path = Path("config/symbol_specs.json")
         if _specs_path.exists():
-            import json as _j
+            import json as _j  # noqa: PLC0415
             specs = _j.loads(_specs_path.read_text())
             base = re.sub(r"[+.].*$", "", symbol)  # XAUUSD+→XAUUSD, XAUUSD.CRP→XAUUSD
             entry = specs.get(symbol) or specs.get(base)
@@ -191,7 +192,7 @@ class Job:
 
 # ── Worker function (runs in child process) ────────────────────────────────────
 
-def _run_job(
+def _run_job(  # noqa: PLR0913
     symbol: str,
     timeframe_minutes: int,
     bars_file: str,
@@ -210,13 +211,13 @@ def _run_job(
     Child-process entry point.  Returns a dict (not a TrainResult) so it
     can be pickled cleanly across the process boundary.
     """
-    import logging as _log
+    import logging as _log  # noqa: PLC0415
     _log.basicConfig(level=logging.INFO,
                      format="%(asctime)s [%(levelname)s][%(process)d] %(name)s: %(message)s")
     logger = _log.getLogger("train_offline.worker")
 
-    from src.training.historical_loader import load_csv, load_jsonl_cache
-    from src.training.offline_trainer import OfflineTrainer
+    from src.training.historical_loader import load_csv, load_jsonl_cache  # noqa: PLC0415
+    from src.training.offline_trainer import OfflineTrainer  # noqa: PLC0415
 
     label = f"{symbol}_M{timeframe_minutes}"
     logger.info("[WORKER] Starting %s from %s", label, bars_file)
@@ -300,7 +301,7 @@ def _detect_symbol(filename: str) -> str | None:
     return m2.group(1) if m2 else None
 
 
-def discover_jobs(
+def discover_jobs(  # noqa: PLR0912
     paths: list[str],
     symbol_filter: list[str] | None = None,
     tf_filter: list[str] | None = None,
@@ -405,14 +406,14 @@ def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], lis
 
         # 2 + 3 + 4. Open, read header, count rows
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(path, encoding="utf-8", errors="replace") as fh:
                 first = fh.readline()
                 if not first.strip():
                     errors.append(f"[PREFLIGHT] {label}: file is empty: {path}")
                     continue
 
                 if j.file_format == "jsonl":
-                    import json as _json
+                    import json as _json  # noqa: PLC0415
                     try:
                         _json.loads(first)
                     except Exception as exc:
@@ -469,7 +470,7 @@ def select_best(results: list[dict]) -> dict[str, dict]:
 def copy_best_weights(best: dict[str, dict], dest_dir: Path) -> None:
     """Copy winning weight files to dest_dir/{symbol}_{agent}.npz."""
     dest_dir.mkdir(parents=True, exist_ok=True)
-    for sym, r in best.items():
+    for _sym, r in best.items():
         paths_str = r.get("weights_path", "")
         if not paths_str:
             continue
@@ -567,7 +568,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _execute_pool(
+def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
     jobs: list,
     n_workers: int,
     args,
@@ -705,7 +706,7 @@ def _execute_pool(
     return round_results
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -717,7 +718,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler("log/train_offline.log", mode="a"),
+            logging.FileHandler("logs/train_offline.log", mode="a"),
         ],
     )
 
@@ -757,7 +758,7 @@ def main(argv: list[str] | None = None) -> int:
     # ── Write initial status for HUD ─────────────────────────────────────────
     _ot_status: dict = {
         "status": "running",
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
         "completed_at": None,
         "total_jobs": len(jobs),
         "elapsed_s": 0.0,
@@ -827,7 +828,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Write final status ────────────────────────────────────────────────────
     _ot_status["status"] = "complete"
-    _ot_status["completed_at"] = datetime.now(timezone.utc).isoformat()
+    _ot_status["completed_at"] = datetime.now(UTC).isoformat()
     _ot_status["elapsed_s"] = total_s
     _write_status(_ot_status)
 
@@ -845,7 +846,7 @@ def main(argv: list[str] | None = None) -> int:
         best_dir = Path(args.checkpoint_dir) / "best"
         copy_best_weights(best, best_dir)
         LOG.info("Best weights written to %s/", best_dir)
-        print(f"\nBest weights by ZOmega:")
+        print("\nBest weights by ZOmega:")
         promoted: list[str] = []
         for sym, r in sorted(best.items()):
             zo = r.get("z_omega", 0.0)

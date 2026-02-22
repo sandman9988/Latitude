@@ -95,7 +95,7 @@ class DDQNNetwork:
         - Soft target updates
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         state_dim: int,
         n_actions: int,
@@ -245,7 +245,7 @@ class DDQNNetwork:
         q_values, _ = self.forward(state, use_target=use_target)
         return q_values
 
-    def train_batch(
+    def train_batch(  # noqa: PLR0913
         self,
         states: np.ndarray,
         actions: np.ndarray,
@@ -394,7 +394,7 @@ class DDQNNetwork:
         if total_norm > self.grad_clip_norm:
             scale = self.grad_clip_norm / (total_norm + 1e-8)
             for g in gradients:
-                g *= scale
+                g *= scale  # noqa: PLW2901 — in-place numpy mutation is intentional
 
         return total_norm
 

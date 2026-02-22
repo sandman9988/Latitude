@@ -23,7 +23,7 @@ NC='\033[0m'
 LOGFILE=""
 if [ $# -eq 0 ]; then
     # Try multiple locations
-    for dir in logs/live_micro logs/phase0_validation ctrader_py_logs; do
+    for dir in logs/live_micro logs/phase0_validation logs/ctrader; do
         if [ -d "$dir" ]; then
             LOGFILE=$(ls -t "$dir"/*.log 2>/dev/null | head -1)
             if [ -n "$LOGFILE" ]; then

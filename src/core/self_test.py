@@ -13,7 +13,7 @@ INFO      – diagnostic-only; no action required.
 
 Usage
 -----
-    from src.core.self_test import run_self_test                                                                                                                                                                                                                                                                
+    from src.core.self_test import run_self_test
     run_self_test()          # raises SystemExit(1) on any CRITICAL failure
 """
 
@@ -173,9 +173,9 @@ def _chk_data_dir() -> tuple[Sev, str]:
 
 
 def _chk_log_dir() -> tuple[Sev, str]:
-    for d in ("logs", "ctrader_py_logs", "log"):
-        Path(d).mkdir(exist_ok=True)
-    return Sev.PASS, "logs/, ctrader_py_logs/, log/"
+    for d in ("logs", "logs/fix", "logs/audit", "logs/ctrader"):
+        Path(d).mkdir(parents=True, exist_ok=True)
+    return Sev.PASS, "logs/ (fix/, audit/, ctrader/)"
 
 
 def _chk_qty() -> tuple[Sev, str]:

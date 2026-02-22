@@ -1,7 +1,7 @@
 """
 test_decision_log_correlation.py
 =================================
-Validates invariants on the JSONL audit decision log (log/decisions.jsonl):
+Validates invariants on the JSONL audit decision log (logs/audit/decisions.jsonl):
 
 Invariants:
   1. Every LONG/SHORT trigger entry must eventually be followed by a
@@ -20,7 +20,7 @@ Unit tests (no file I/O — pure logic on synthetic sequences):
   8. trade_id cleared after CLOSE.
   9. Recovered positions get a "rcv_" prefixed trade_id (not None).
 
-Live log test (skipped if log/decisions.jsonl does not exist):
+Live log test (skipped if logs/audit/decisions.jsonl does not exist):
   10. Scan real log file and report any violations of invariants 1–5.
 """
 from __future__ import annotations
@@ -39,7 +39,7 @@ from src.monitoring.audit_logger import DecisionLogger
 # Helpers
 # ---------------------------------------------------------------------------
 
-LIVE_LOG = Path("log/decisions.jsonl")
+LIVE_LOG = Path("logs/audit/decisions.jsonl")
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -393,7 +393,7 @@ class TestSequenceInvariants:
 # Live log test
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(not LIVE_LOG.exists(), reason="log/decisions.jsonl not present")
+@pytest.mark.skipif(not LIVE_LOG.exists(), reason="logs/audit/decisions.jsonl not present")
 def test_live_log_correlation():
     """
     Scan the real audit log for correlation violations.

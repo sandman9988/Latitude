@@ -30,6 +30,8 @@ MIN_BARS_FOR_FEATURES: int = 70
 RETURN_LAG_SHORT: int = 2
 RETURN_LAG_MEDIUM: int = 6
 TEST_ENTRY_PRICE: float = 100000.0
+_FEATURE_VARIANCE_FLOOR: float = 1e-6  # minimum std to treat a feature column as variable
+_MIN_SEED_BARS: int = 3                # minimum bars required to seed the regime detector
 
 
 class DualPolicy:
@@ -46,7 +48,7 @@ class DualPolicy:
     - If DDQN_DUAL_AGENT=1: Uses dual-agent architecture
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         window: int = 64,
         enable_regime_detection: bool = True,
@@ -153,7 +155,7 @@ class DualPolicy:
 
         LOG.info("[DUAL_POLICY] Initialized with TriggerAgent + HarvesterAgent")
 
-    def decide_entry(
+    def decide_entry(  # noqa: PLR0913
         self,
         bars: deque,
         imbalance: float = 0.0,
@@ -275,7 +277,7 @@ class DualPolicy:
 
         return action, confidence, predicted_runway
 
-    def decide_exit(
+    def decide_exit(  # noqa: PLR0913
         self,
         bars: deque,
         current_price: float,
@@ -383,7 +385,7 @@ class DualPolicy:
             entry_price,
         )
 
-    def on_recovery(
+    def on_recovery(  # noqa: PLR0913
         self, direction: int, entry_price: float, entry_time, mfe: float = 0.0, mae: float = 0.0, ticks_held: int = 0
     ):
         """
@@ -488,7 +490,7 @@ class DualPolicy:
             self.mae = max(self.mae, -profit)
 
 
-    def _build_state(
+    def _build_state(  # noqa: PLR0913, PLR0915
         self,
         bars: deque,
         imbalance: float,
@@ -655,7 +657,7 @@ class DualPolicy:
         # Instead, preserve their raw values for the DDQN to learn from.
         mu = feats.mean(axis=0, keepdims=True)
         sd = feats.std(axis=0, keepdims=True)
-        variable_mask = sd.flatten() > 1e-6  # True for columns with actual variance
+        variable_mask = sd.flatten() > _FEATURE_VARIANCE_FLOOR  # True for columns with actual variance
         # Only normalize variable columns; leave constant columns as-is.
         # Clip to ±5σ after z-scoring to contain market-shock spikes without
         # discarding the signal (features beyond ±5σ carry no extra gradient signal).
@@ -686,7 +688,7 @@ class DualPolicy:
             return
         window = getattr(self.regime_detector, "window_size", 50)
         seed_bars = list(bars)[-window:]
-        if len(seed_bars) < 3:
+        if len(seed_bars) < _MIN_SEED_BARS:
             return
         for bar in seed_bars:
             try:
@@ -840,8 +842,8 @@ class DualPolicy:
         Returns:
             True if all saves succeeded
         """
-        import json
-        from pathlib import Path
+        import json  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
 
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
         success = True
@@ -862,13 +864,11 @@ class DualPolicy:
                 success = False
 
         # 2. Save experience buffers
-        if self.trigger.buffer is not None:
-            if not self.trigger.buffer.save(f"{checkpoint_dir}/trigger_buffer"):
-                success = False
+        if self.trigger.buffer is not None and not self.trigger.buffer.save(f"{checkpoint_dir}/trigger_buffer"):
+            success = False
 
-        if self.harvester.buffer is not None:
-            if not self.harvester.buffer.save(f"{checkpoint_dir}/harvester_buffer"):
-                success = False
+        if self.harvester.buffer is not None and not self.harvester.buffer.save(f"{checkpoint_dir}/harvester_buffer"):
+            success = False
 
         # 3. Save training metadata (epsilon, steps, etc.)
         metadata = {
@@ -910,7 +910,7 @@ class DualPolicy:
 
         return success
 
-    def load_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:
+    def load_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:  # noqa: PLR0912, PLR0915
         """Load training state from a previous checkpoint.
 
         Called during startup to resume training from where it left off.
@@ -921,8 +921,8 @@ class DualPolicy:
         Returns:
             True if checkpoint was found and loaded (at least partially)
         """
-        import json
-        from pathlib import Path
+        import json  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
 
         cp = Path(checkpoint_dir)
         if not cp.exists():
@@ -950,14 +950,12 @@ class DualPolicy:
 
         # 2. Load experience buffers
         trigger_buf = cp / "trigger_buffer.npz"
-        if trigger_buf.exists() and self.trigger.buffer is not None:
-            if self.trigger.buffer.load(str(trigger_buf)):
-                loaded_anything = True
+        if trigger_buf.exists() and self.trigger.buffer is not None and self.trigger.buffer.load(str(trigger_buf)):
+            loaded_anything = True
 
         harvester_buf = cp / "harvester_buffer.npz"
-        if harvester_buf.exists() and self.harvester.buffer is not None:
-            if self.harvester.buffer.load(str(harvester_buf)):
-                loaded_anything = True
+        if harvester_buf.exists() and self.harvester.buffer is not None and self.harvester.buffer.load(str(harvester_buf)):
+            loaded_anything = True
 
         # 3. Load training metadata
         meta_path = cp / "training_metadata.json"

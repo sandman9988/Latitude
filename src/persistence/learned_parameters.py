@@ -120,7 +120,7 @@ class InstrumentParameters:
         self.params: dict[str, AdaptiveParam] = {}
         self.creation_time = time.time()
 
-    def add_param(
+    def add_param(  # noqa: PLR0913
         self,
         name: str,
         initial_value: float,
@@ -673,7 +673,7 @@ class LearnedParametersManager:
         param = instrument.params[param_name]
         clamped = max(param.min_bound, min(param.max_bound, value))
         param.value = clamped
-        import time
+        import time  # noqa: PLC0415
         param.last_update_time = time.time()
         param.update_count += 1
         # Reset velocity so momentum does not carry stale direction forward

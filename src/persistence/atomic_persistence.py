@@ -97,7 +97,7 @@ class AtomicPersistence:
             logger.error("Failed to save %s: %s", filename, e)
             return False
 
-    def load_json(self, filename: str, verify_crc: bool = True) -> dict[str, Any] | None:
+    def load_json(self, filename: str, verify_crc: bool = True) -> dict[str, Any] | None:  # noqa: PLR0911
         """
         Load JSON with CRC32 verification
 

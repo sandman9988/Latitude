@@ -1,8 +1,9 @@
 Project Structure - ctrader_trading_bot
 ========================================
+Last Updated: February 22, 2026
 
 📦 ctrader_trading_bot/
-├── 📂 src/                     # Source Code (50 modules)
+├── 📂 src/                     # Source Code (55 modules)
 │   ├── 📂 agents/              # Agent Implementations
 │   │   ├── agent_arena.py
 │   │   ├── dual_policy.py
@@ -24,7 +25,9 @@ Project Structure - ctrader_trading_bot
 │   │   ├── parameter_staleness.py
 │   │   ├── reward_integrity_monitor.py
 │   │   ├── reward_shaper.py
+│   │   ├── self_test.py
 │   │   ├── trade_manager.py
+│   │   ├── trade_manager_integration.py
 │   │   └── __init__.py
 │   ├── 📂 features/            # Feature Engineering
 │   │   ├── event_time_features.py
@@ -40,6 +43,7 @@ Project Structure - ctrader_trading_bot
 │   │   ├── performance_tracker.py
 │   │   ├── production_monitor.py
 │   │   ├── trade_analyzer.py
+│   │   ├── trade_audit_logger.py
 │   │   ├── trade_exporter.py
 │   │   └── __init__.py
 │   ├── 📂 persistence/         # State Management
@@ -50,11 +54,17 @@ Project Structure - ctrader_trading_bot
 │   │   └── __init__.py
 │   ├── 📂 risk/                # Risk Management
 │   │   ├── circuit_breakers.py
+│   │   ├── emergency_close.py
 │   │   ├── friction_costs.py
 │   │   ├── path_geometry.py
 │   │   ├── risk_aware_sac_manager.py
 │   │   ├── risk_manager.py  ⭐ Risk Manager
 │   │   ├── var_estimator.py
+│   │   └── __init__.py
+│   ├── 📂 training/            # Offline Training
+│   │   ├── bar_experience_cache.py
+│   │   ├── historical_loader.py
+│   │   ├── offline_trainer.py
 │   │   └── __init__.py
 │   ├── 📂 utils/               # Utilities
 │   │   ├── experience_buffer.py
@@ -67,28 +77,24 @@ Project Structure - ctrader_trading_bot
 │   │   └── __init__.py
 │   └── __init__.py
 │
-├── 📂 tests/                   # Test Suite (23 tests)
-│   ├── 📂 integration/         # Integration Tests (4)
+├── 📂 tests/                   # Test Suite (131 files, 2506 passing)
+│   ├── 📂 integration/         # Integration Tests (5 files)
 │   │   ├── test_harvester_integration.py
 │   │   ├── test_phase3_5_integration.py
+│   │   ├── test_pnl_calculation.py
 │   │   ├── test_risk_aware_sac.py
 │   │   ├── test_risk_manager_rl.py
 │   │   └── __init__.py
-│   ├── 📂 unit/                # Unit Tests (7)
-│   │   ├── test_calculation_safety.py
-│   │   ├── test_core_safety_fixed.py
-│   │   ├── test_core_safety.py
-│   │   ├── test_critical_components.py
-│   │   ├── test_math_verification.py
-│   │   ├── test_multi_position.py
-│   │   ├── test_reward_calculations.py
-│   │   └── __init__.py
-│   ├── 📂 validation/          # Validation Tests (12)
+│   ├── 📂 unit/                # Unit Tests (107 files)
+│   │   └── ... (see tests/unit/ for full list)
+│   ├── 📂 validation/          # Validation Tests (14 files)
 │   │   ├── test_bar_building.py
 │   │   ├── test_bar_closure_flow.py
 │   │   ├── test_composite_predictor.py
 │   │   ├── test_decision_flow.py
+│   │   ├── test_decision_log_correlation.py
 │   │   ├── test_decision_log_format.py
+│   │   ├── test_harvester_desired_variable.py
 │   │   ├── test_harvester_exit.py
 │   │   ├── test_harvester_flow.py
 │   │   ├── test_hud_plumbing.py
@@ -98,9 +104,14 @@ Project Structure - ctrader_trading_bot
 │   │   ├── verify_runtime.py
 │   │   └── __init__.py
 │   ├── test_depth_gate.py
+│   ├── test_p0_integration.py
+│   ├── test_phase1_fixes.py
+│   ├── test_phase2_integration.py
+│   ├── test_phase3_dual_agent.py
+│   ├── test_reward_calculations.py
 │   └── __init__.py
 │
-├── 📂 docs/                    # Documentation (17 docs)
+├── 📂 docs/                    # Documentation (36 markdown files)
 │   ├── 📂 architecture/        # System Design
 │   │   ├── DECISION_FLOW_VERIFICATION.md
 │   │   ├── MULTI_POSITION_ANALYSIS.md
@@ -108,81 +119,94 @@ Project Structure - ctrader_trading_bot
 │   │   ├── ORDER_EXECUTION_FLOW.md
 │   │   ├── SYSTEM_ARCHITECTURE.md
 │   │   └── SYSTEM_FLOW.md
-│   ├── 📂 gap_analysis/        # Gap Tracking
-│   │   ├── AGENT_TRAINING_GAP_ANALYSIS.md
-│   │   ├── FLOW_GAP_ANALYSIS.md
-│   │   ├── GAP_ANALYSIS_AND_REMEDIATION_SCHEDULE.md
-│   │   ├── GAP_CLOSURE_FINAL_2026-01-11.md
-│   │   ├── GAP_CLOSURE_SUMMARY_2026-01-11.md
-│   │   ├── GAP_FIXES_APPLIED.md
-│   │   └── PRODUCTION_DEPLOYMENT_GAPS.md
-│   ├── 📂 operations/          # Operations Guides
-│   │   ├── DISASTER_RECOVERY_RUNBOOK.md
+│   ├── 📂 guides/              # User Guides
+│   │   ├── ADAPTIVE_PARAMETERS_GUIDE.md
+│   │   ├── DEPLOYMENT_QUICKSTART.md
+│   │   ├── PAPER_VS_LIVE_CONFIG.md
+│   │   └── TRADE_LOGGING_GUIDE.md
+│   ├── 📂 operations/          # Operations Runbooks
+│   │   ├── DISASTER_RECOVERY_RUNBOOK.md  ⭐ Emergency Procedures
 │   │   ├── HUD_QUICK_REFERENCE.md
 │   │   ├── HUD_REVIEW_REPORT.md
 │   │   └── RUNNING_WITH_LOGS.md
+│   ├── 00_START_HERE.md
+│   ├── COMPOSITE_PROBABILITY_PREDICTOR.md
+│   ├── CRITICAL_FLOW_ANALYSIS.md
+│   ├── CURRENT_STATE.md  ⭐ Latest Status
+│   ├── DATABASE_MIGRATION_ANALYSIS.md
+│   ├── DISASTER_RECOVERY_RUNBOOK.md  (legacy — prefer operations/ version)
 │   ├── DOCS_INDEX.md
-│   └── MASTER_HANDBOOK.md  ⭐ Main Handbook
+│   ├── EMERGENCY_CLOSE.md
+│   ├── FEATURE_ENGINEERING_LESSONS.md
+│   ├── INDEX.md  ⭐ Documentation Index
+│   ├── LEARNED_PARAMS_UPDATE.md
+│   ├── MONITORING_GUIDE.md
+│   ├── ONLINE_LEARNING_INTEGRATION.md
+│   ├── PROJECT_STRUCTURE.md
+│   ├── QUICKSTART.md
+│   ├── RISK_MANAGER_COMPLETE.md
+│   ├── RISK_MANAGER_ENHANCEMENT_SUMMARY.md
+│   ├── RISK_MANAGER_RL_CORRELATION.md
+│   ├── TICKET_TRACKING_IMPLEMENTATION.md
+│   ├── TICKET_TRACKING_VERIFICATION.md
+│   ├── TRAINING_TO_PRODUCTION_GUIDE.md
+│   ├── TREE_VIEW.txt  (this file)
+│   └── TRIGGER_HARVEST_WORKFLOW.md
 │
-├── 📂 archive/                 # Archived Files
-│   ├── 📂 old_docs/           # Old Documentation
-│   │   ├── CALCULATION_AUDIT.md
-│   │   ├── CALCULATION_SAFETY_SUMMARY.md
-│   │   ├── CONSOLIDATED_DOCUMENTATION_AND_GAPS.md
-│   │   ├── IMPLEMENTATION_INVENTORY.md
-│   │   ├── MATH_REVIEW_SUMMARY.md
-│   │   ├── MATH_VERIFICATION_AUDIT.md
-│   │   ├── RISK_MANAGER_IMPLEMENTATION.md
-│   │   ├── TEST_COVERAGE_SUMMARY.md
-│   │   └── TRADEMANAGER_INTEGRATION.md
-│   ├── 📂 old_scripts/        # Old Scripts
-│   │   └── PROJECT_REORGANIZATION.sh
-│   ├── 📂 unused_modules/     # Unused Modules
-│   ├── trade_manager_example.py
-│   └── trade_manager_safety.py
-│
-├── 📂 config/                  # Configuration Files
-│   ├── ctrader_fix_quote.cfg
-│   └── ctrader_fix_trade.cfg
+├── 📂 config/                  # FIX Configuration Files
+│   ├── ctrader_quote.cfg
+│   ├── ctrader_trade.cfg
+│   ├── cTraderAppTokens
+│   ├── FIX44_ctrader.xml
+│   ├── profile_presets.json
+│   └── symbol_specs.json
 │
 ├── 📂 data/                    # Runtime Data
-│   ├── 📂 models/
+│   ├── learned_parameters.json  (with backups)
+│   ├── universe.json
+│   ├── trade_log.jsonl
+│   ├── 📂 checkpoints/
+│   ├── 📂 sessions/
 │   ├── 📂 state/
-│   └── 📂 telemetry/
+│   └── 📂 store/
 │
-├── 📂 logs/                    # Logging
-│   └── 📂 archived/           # Archived Logs (150+ files)
+├── 📂 logs/                    # Application Logs
 │
 ├── 📂 scripts/                 # Utility Scripts
 │   ├── 📂 monitoring/
+│   │   ├── health_check.sh
+│   │   ├── monitor_agents.sh
+│   │   ├── monitor.sh
+│   │   └── watchdog.sh
 │   └── 📂 testing/
-│
-├── 📂 .github/                 # GitHub Config
-│   └── 📂 workflows/
+│       ├── phase0_validate_system.sh  ⭐ Pre-live validation
+│       ├── quick_test.sh
+│       └── test_production_reliability.sh
 │
 ├── 🔧 run.sh                  ⭐ Main Launcher
+├── 🔧 start_production.sh     # Production start script
+├── 🔧 start_pipeline.sh       # Pipeline start
+├── 🔧 start_training.sh       # Training start
+├── 🐍 train_offline.py        # Offline training pipeline
+├── 🐍 run_universe.py         # Universe management
+├── 🐍 emergency_close_all.py  # Emergency position close
 ├── 📋 requirements.txt
 ├── ⚙️  pyproject.toml
 ├── 📖 README.md
-├── 📖 PROJECT_STRUCTURE.md
-├── 📖 REORGANIZATION_SUMMARY.md
-├── 🐍 REORGANIZE_PROJECT.py
-├── 🔐 .env
-├── 📝 .gitignore
-└── 🛠️  ctrader-bot@.service
+├── 📖 MASTER_HANDBOOK.md  ⭐ Authoritative Design Reference
+├── 📖 HEDGING_MODE_DESIGN.md
+└── ⚙️  ctrader-bot@.service
 
 ═══════════════════════════════════════════════════════════════
 Key Statistics:
 ═══════════════════════════════════════════════════════════════
-📦 Source Code:        50 Python modules (organized by function)
-🧪 Tests:             23 test files (unit, integration, validation)
-📚 Documentation:      17 markdown files (organized by category)
-🗃️  Archived:          12 old files (preserved but not in active use)
-📋 Logs:              150+ archived log files
+📦 Source Code:        55 Python modules (organized by function)
+🧪 Tests:             131 test files (2506 passing, 3 skipped, 0 failed)
+📚 Documentation:      36 markdown files (organized by category)
 
 Main Entry Points:
 ═══════════════════════════════════════════════════════════════
-🚀 Launch Bot:         ./run.sh --with-hud
+🚀 Launch Bot:         ./run.sh [--with-hud | --bot-only | --hud-only]
 🎯 Main Bot:          src/core/ctrader_ddqn_paper.py
 📊 HUD:               src/monitoring/hud_tabbed.py
 🛡️  Risk Manager:     src/risk/risk_manager.py
@@ -190,7 +214,8 @@ Main Entry Points:
 
 Documentation:
 ═══════════════════════════════════════════════════════════════
-📖 Main Handbook:     docs/MASTER_HANDBOOK.md
-📖 Project Structure: PROJECT_STRUCTURE.md
-📖 Reorganization:    REORGANIZATION_SUMMARY.md
-📖 README:            README.md
+📖 Main Handbook:     MASTER_HANDBOOK.md (root)
+📖 Current State:     docs/CURRENT_STATE.md
+📖 Doc Index:         docs/INDEX.md
+📖 Project Struct:    docs/PROJECT_STRUCTURE.md
+📖 Quickstart:        docs/QUICKSTART.md

@@ -113,7 +113,6 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 from src.agents.dual_policy import DualPolicy
-from src.training.bar_experience_cache import BarExperienceCache
 from src.core.adaptive_regularization import AdaptiveRegularization
 from src.core.broker_execution_model import BrokerExecutionModel, OrderSide
 from src.core.order_book import OrderBook, VPINCalculator
@@ -133,6 +132,7 @@ from src.risk.emergency_close import create_emergency_closer
 from src.risk.friction_costs import FrictionCalculator
 from src.risk.path_geometry import PathGeometry
 from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator, position_size_from_var
+from src.training.bar_experience_cache import BarExperienceCache
 from src.utils.non_repaint_guards import NonRepaintBarAccess
 from src.utils.ring_buffer import RollingStats
 
@@ -177,6 +177,9 @@ MAX_LOG_ENTRIES: int = 1000              # Maximum decision-log entries kept in 
 # Position and trading constants
 MIN_BARS_FOR_VAR_UPDATE: int = 2
 MIN_BARS_FOR_PREV_CLOSE: int = 2
+MIN_BARS_FOR_REGIME_SEED: int = 10      # minimum bars before seeding regime detector from history
+MIN_BARS_FOR_PATH_GEOMETRY: int = 3     # minimum bars before path-geometry update
+_IMBALANCE_BLEND_FLOOR: float = 1e-6   # zero-guard for real-vs-QFI imbalance blend
 MIN_TRADE_HISTORY_EXPLORATION: int = 20
 
 # Action constants for policy decisions
@@ -225,7 +228,7 @@ def _redact_fix(s: str) -> str:
 
 
 def setup_logging() -> logging.Logger:
-    logdir = os.environ.get("PY_LOGDIR", "ctrader_py_logs").strip()
+    logdir = os.environ.get("PY_LOGDIR", "logs/ctrader").strip()
     Path(logdir).mkdir(parents=True, exist_ok=True)
 
     # Python 3.12: utcnow() deprecates; use timezone-aware UTC.
@@ -726,7 +729,7 @@ class MFEMAETracker:
 # FIX application
 # ----------------------------
 class CTraderFixApp(fix.Application):
-    def __init__(self, symbol_id: int, qty: float, timeframe_minutes: int = 15, symbol: str = "XAUUSD"):
+    def __init__(self, symbol_id: int, qty: float, timeframe_minutes: int = 15, symbol: str = "XAUUSD"):  # noqa: PLR0915
         super().__init__()
 
         self.symbol = symbol  # Instrument-agnostic: BTCUSD, XAUUSD, etc.
@@ -1066,8 +1069,8 @@ class CTraderFixApp(fix.Application):
         self.max_component_errors = 5
 
         # Audit logging for transaction trail and decision debugging
-        self.transaction_log = TransactionLogger(log_dir="log", filename="transactions.jsonl")
-        self.decision_log = DecisionLogger(log_dir="log", filename="decisions.jsonl")
+        self.transaction_log = TransactionLogger(log_dir="logs/audit", filename="transactions.jsonl")
+        self.decision_log = DecisionLogger(log_dir="logs/audit", filename="decisions.jsonl")
 
         LOG.info("[INIT] ✓ Bot initialized: %s (ID:%d) M%d | Contract=%.0f | Online learning=%s",
             symbol, symbol_id, timeframe_minutes, self.contract_size, enable_online_learning)
@@ -1134,7 +1137,7 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.warning("[METRICS] Failed to flush production metrics: %s", e)
 
-    def _monitor_connection_health(self):
+    def _monitor_connection_health(self):  # noqa: PLR0912, PLR0915
         """
         Background thread to monitor connection health via heartbeat timestamps.
 
@@ -1489,7 +1492,7 @@ class CTraderFixApp(fix.Application):
         - _avg_trade_duration_mins: EMA (α=0.1) over trade durations
         """
         try:
-            import pathlib
+            import pathlib  # noqa: PLC0415
             trade_log_path = pathlib.Path(self.hud_data_dir) / "trade_log.jsonl"
             if not trade_log_path.exists():
                 return
@@ -1520,7 +1523,7 @@ class CTraderFixApp(fix.Application):
                 return
 
             # Sort by exit_time ascending
-            import datetime as dt_mod
+            import datetime as dt_mod  # noqa: PLC0415
             def _parse_ts(s: str) -> float:
                 try:
                     return dt_mod.datetime.fromisoformat(s).timestamp()
@@ -1598,7 +1601,7 @@ class CTraderFixApp(fix.Application):
             # Assign a recovery trade_id so harvester HOLD/CLOSE entries from
             # a resumed position are still correlated in the audit log.
             if self.current_trade_id is None:
-                import uuid
+                import uuid  # noqa: PLC0415
                 self.current_trade_id = f"rcv_{str(uuid.uuid4())[:8]}"
                 LOG.info("[STARTUP] Assigned recovery trade_id=%s for persisted position", self.current_trade_id)
 
@@ -1860,7 +1863,7 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[TRADE] Error loading symbol_specs.json: %s", e)
 
-    def on_security_list(self, msg: fix.Message):
+    def on_security_list(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
         """Parse SecurityList (35=y) response and populate symbol_id_cache.
 
         Maps symbol names to broker IDs for dynamic symbol resolution.
@@ -1968,7 +1971,7 @@ class CTraderFixApp(fix.Application):
         fix.Session.sendToTarget(req, self.trade_sid)
         LOG.info("[TRADE] Requested SecurityDefinition for symbolId=%s", self.symbol_id)
 
-    def on_security_definition(self, msg: fix.Message):
+    def on_security_definition(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
         """
         Parse SecurityDefinition response from cTrader.
 
@@ -2082,7 +2085,7 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[TRADE] Error parsing SecurityDefinition: %s", e, exc_info=True)
 
-    def on_md_snapshot(self, msg: fix.Message):
+    def on_md_snapshot(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
         self.last_market_data_time = time.time()
         try:
             no = fix.NoMDEntries()
@@ -2173,7 +2176,7 @@ class CTraderFixApp(fix.Application):
         self._export_order_book()
         self.try_bar_update()
 
-    def on_md_incremental(self, msg: fix.Message):
+    def on_md_incremental(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
         self.last_market_data_time = time.time()
         try:
             no = fix.NoMDEntries()
@@ -2537,11 +2540,11 @@ class CTraderFixApp(fix.Application):
                     self.var_estimator.update_return(SafeMath.safe_div(curr_c - prev_c, prev_c, 0.0))
 
             # Seed regime detector and path geometry
-            if hasattr(self.policy, "seed_regime_from_bars") and len(self.bars) >= 10:
+            if hasattr(self.policy, "seed_regime_from_bars") and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED:
                 self.policy.seed_regime_from_bars(self.bars)
 
             realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
-            if len(self.bars) >= 3 and realized_vol > 0:
+            if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
                 self.path_geometry.update(self.bars, realized_vol)
 
             LOG.info(
@@ -2553,7 +2556,7 @@ class CTraderFixApp(fix.Application):
 
     # ── Harvester tick evaluation ─────────────────────────────────────────
 
-    def _evaluate_harvester_on_tick(self):
+    def _evaluate_harvester_on_tick(self):  # noqa: PLR0912
         """
         Full Harvester evaluation on every tick for responsive exit decisions.
         Evaluates EACH individual position independently (not net position).
@@ -2748,7 +2751,7 @@ class CTraderFixApp(fix.Application):
                 clord_id,
             )
 
-    def on_position_report(self, msg: fix.Message):
+    def on_position_report(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
         # Route to TradeManager first
         self.trade_integration.handle_position_report(msg)
 
@@ -2928,7 +2931,7 @@ class CTraderFixApp(fix.Application):
 
         return pnl
 
-    def _process_trade_completion(self, summary: dict, exit_price: float):
+    def _process_trade_completion(self, summary: dict, exit_price: float):  # noqa: PLR0912, PLR0915
         """Process a completed trade round-trip for experience collection and performance tracking.
 
         Called from:
@@ -3596,7 +3599,7 @@ class CTraderFixApp(fix.Application):
     # ----------------------------
     # Strategy: run on bar close (M1/M15 configurable)
     # ----------------------------
-    def on_bar_close(self, bar):
+    def on_bar_close(self, bar):  # noqa: PLR0911, PLR0912, PLR0915
         t, o, h, low_price, c = bar
 
         LOG.debug(f"[BAR] on_bar_close called: t={t}, o={o}, h={h}, l={low_price}, c={c}")
@@ -3696,12 +3699,8 @@ class CTraderFixApp(fix.Application):
             (self._bid_refresh_count - self._ask_refresh_count) / _qfi_total
             if _qfi_total > 0 else 0.0
         )
-        if self._has_real_sizes and abs(imbalance) > 1e-6:
-            # Broker sends real notional sizes: blend size signal + quote flow equally
-            imbalance = 0.5 * imbalance + 0.5 * _qfi
-        else:
-            # Uniform/absent sizes: QFI is the sole live signal
-            imbalance = _qfi
+        # Blend real notional sizes with QFI if available, else use QFI solely
+        imbalance = 0.5 * imbalance + 0.5 * _qfi if self._has_real_sizes and abs(imbalance) > _IMBALANCE_BLEND_FLOOR else _qfi
         LOG.debug(
             "[IMBALANCE] bid_refreshes=%d ask_refreshes=%d qfi=%.3f "
             "depth_imb=%.3f final=%.3f real_sizes=%s",
@@ -3923,7 +3922,7 @@ class CTraderFixApp(fix.Application):
                 # Stamp a new trade_id for LONG/SHORT entries so all subsequent
                 # harvester HOLD/CLOSE entries can be correlated to this trigger.
                 if action != 0:  # LONG or SHORT
-                    import uuid
+                    import uuid  # noqa: PLC0415
                     self.current_trade_id = str(uuid.uuid4())[:8]
                 # NO_ENTRY has no open trade — don't stamp a (possibly stale) trade_id
                 _bar_trade_id = self.current_trade_id if action != 0 else None
@@ -4460,7 +4459,7 @@ class CTraderFixApp(fix.Application):
 
         return order
 
-    def _export_hud_data(self):
+    def _export_hud_data(self):  # noqa: PLR0912, PLR0915
         """Export real-time data to JSON files for HUD display.
 
         Called every bar close to keep HUD updated with:
@@ -4696,7 +4695,7 @@ class CTraderFixApp(fix.Application):
             if (
                 hasattr(self.policy, "seed_regime_from_bars")
                 and getattr(self.policy, "current_regime", "UNKNOWN") == "UNKNOWN"
-                and len(self.bars) >= 10
+                and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED
             ):
                 self.policy.seed_regime_from_bars(self.bars)
 
@@ -4710,7 +4709,7 @@ class CTraderFixApp(fix.Application):
 
             # Path geometry features — recompute fresh from current bars so HUD
             # always reflects live market state, not just the last entry/exit call.
-            if len(self.bars) >= 3 and realized_vol > 0:
+            if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
                 geom = self.path_geometry.update(self.bars, realized_vol)
             else:
                 geom = self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
@@ -4971,7 +4970,7 @@ def require_env(name: str) -> str:
     return v
 
 
-def main():
+def main():  # noqa: PLR0912, PLR0915
     # Setup signal handlers for graceful shutdown
     app = None
 

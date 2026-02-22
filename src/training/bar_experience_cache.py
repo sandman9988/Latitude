@@ -53,7 +53,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -139,7 +138,7 @@ class BarExperienceCache:
             LOG.debug("[CACHE] snapshot_entry failed: %s", exc)
             self._entry_bars_snapshot = None
 
-    def record_trade(
+    def record_trade(  # noqa: PLR0913
         self,
         *,
         bars: deque,
@@ -207,9 +206,9 @@ class BarExperienceCache:
         tail = list(bars)[-self.bars_to_store :]
         result = []
         for b in tail:
-            t, o, h, l, c = b[0], b[1], b[2], b[3], b[4]
+            t, o, h, lo, c = b[0], b[1], b[2], b[3], b[4]
             ts = t.isoformat() if hasattr(t, "isoformat") else str(t)
-            result.append([ts, float(o), float(h), float(l), float(c)])
+            result.append([ts, float(o), float(h), float(lo), float(c)])
         return result
 
     def _append(self, record: dict[str, Any]) -> None:

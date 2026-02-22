@@ -26,6 +26,14 @@ LOG = logging.getLogger(__name__)
 # RegimeType from regime_detector (Literal type)
 RegimeType = Literal["TRENDING", "MEAN_REVERTING", "TRANSITIONAL", "UNKNOWN"]
 
+# ---------------------------------------------------------------------------
+# Self-test sentinel constants — used only in the _test_* functions below
+# ---------------------------------------------------------------------------
+_TEST_MID_PRICE: float = 50000.0              # reference mid price (BTC-like)
+_TEST_QTY: float = 0.10                       # reference lot size for tests
+_TEST_ZERO_IMPACT_TOLERANCE_BPS: float = 0.01  # near-zero bps tolerance
+_TEST_MIN_LARGE_IMPACT_BPS: float = 10.0       # minimum impact expected for a large order
+_TEST_COST_CAP_BPS: float = 50.0              # cost-cap value matched in _test_cost_cap()
 
 class OrderSide(Enum):
     """Order side for slippage calculation"""
@@ -71,7 +79,7 @@ class BrokerExecutionModel:
         adjusted_qty = costs.cost_adjusted_size
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         typical_spread_bps: float = 5.0,
         base_slippage_bps: float = 2.0,
@@ -111,7 +119,7 @@ class BrokerExecutionModel:
             size_impact_coefficient,
         )
 
-    def estimate_execution_costs(
+    def estimate_execution_costs(  # noqa: PLR0913
         self,
         side: OrderSide,
         quantity: float,
@@ -197,14 +205,12 @@ class BrokerExecutionModel:
 
     def _get_regime_multiplier(self, regime: RegimeType) -> float:
         """Get slippage multiplier for given regime."""
-        if regime == "TRANSITIONAL":  # High volatility/uncertainty
-            return self.volatile_multiplier
-        elif regime == "TRENDING":
-            return self.trending_multiplier
-        elif regime == "MEAN_REVERTING":
-            return self.mean_reverting_multiplier
-        else:
-            return 1.0  # Unknown regime = no adjustment
+        _multipliers: dict[str, float] = {
+            "TRANSITIONAL": self.volatile_multiplier,   # High volatility/uncertainty
+            "TRENDING": self.trending_multiplier,
+            "MEAN_REVERTING": self.mean_reverting_multiplier,
+        }
+        return _multipliers.get(regime, 1.0)  # Unknown regime = no adjustment
 
     def adjust_position_size_for_costs(
         self,
@@ -297,10 +303,10 @@ def _test_basic_execution_costs():
     assert costs.total_slippage_bps >= expected_min, f"Expected >= {expected_min}, got {costs.total_slippage_bps}"
 
     # Buy should pay above mid
-    assert costs.expected_fill_price > 50000.0, "BUY should pay above mid"
+    assert costs.expected_fill_price > _TEST_MID_PRICE, "BUY should pay above mid"
 
     # Adjusted size should be less
-    assert costs.cost_adjusted_size < 0.10, "Cost-adjusted size should be less"
+    assert costs.cost_adjusted_size < _TEST_QTY, "Cost-adjusted size should be less"
 
     LOG.info("✓ _test_basic_execution_costs PASSED")
 
@@ -375,10 +381,10 @@ def _test_size_impact():
     assert small.size_impact_bps < 1.0, "Small order should have minimal size impact"
 
     # Normal should have zero size impact
-    assert abs(normal.size_impact_bps) < 0.01, "Normal order should have ~zero size impact"
+    assert abs(normal.size_impact_bps) < _TEST_ZERO_IMPACT_TOLERANCE_BPS, "Normal order should have ~zero size impact"
 
     # Large order should have significant impact
-    assert large.size_impact_bps > 10.0, "Large order should have significant size impact"
+    assert large.size_impact_bps > _TEST_MIN_LARGE_IMPACT_BPS, "Large order should have significant size impact"
 
     LOG.info("✓ _test_size_impact PASSED")
 
@@ -396,7 +402,7 @@ def _test_cost_cap():
     )
 
     # Should be capped
-    assert costs.total_slippage_bps <= 50.0, f"Cost should be capped at 50 bps, got {costs.total_slippage_bps}"
+    assert costs.total_slippage_bps <= _TEST_COST_CAP_BPS, f"Cost should be capped at 50 bps, got {costs.total_slippage_bps}"
 
     LOG.info("✓ _test_cost_cap PASSED")
 

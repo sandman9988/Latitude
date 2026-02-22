@@ -17,9 +17,6 @@ ENV/
 *.log
 *.out
 logs/
-log/
-ctrader_py_logs/
-ctrader_py_logs */
 
 # Data & Exports
 data/

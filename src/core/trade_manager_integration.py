@@ -7,6 +7,8 @@ to centralize all order and position management.
 Enhanced with defense-in-depth safety layer and state persistence.
 """
 
+from __future__ import annotations
+
 import logging
 from typing import TYPE_CHECKING
 
@@ -27,6 +29,12 @@ if TYPE_CHECKING:
 
 LOG = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Module-level constants (replaces magic literals in comparisons)
+# ---------------------------------------------------------------------------
+_PRICE_NORMALIZE_TOLERANCE: float = 1e-10   # float tolerance for price-normalization diff check
+_MIN_OPEN_POSITION_QTY: float = 0.0001      # minimum qty considered an open position
+
 _MSG_RECOVERED_ENTRY = "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)"
 
 
@@ -37,7 +45,7 @@ class TradeManagerIntegration:
     Centralizes order management with state persistence and recovery.
     """
 
-    def __init__(self, app: "CTraderFixApp"):
+    def __init__(self, app: CTraderFixApp):
         """
         Initialize TradeManager integration.
 
@@ -135,7 +143,7 @@ class TradeManagerIntegration:
 
         try:
             # Check if paper mode is enabled (check app attribute first, then env var)
-            import os
+            import os  # noqa: PLC0415
 
             paper_mode = getattr(self.app, "paper_mode", None)
             if paper_mode is None:
@@ -190,7 +198,7 @@ class TradeManagerIntegration:
             LOG.error("[INTEGRATION] Failed to initialize TradeManager: %s", e, exc_info=True)
             return False
 
-    def on_order_filled(self, order: Order):
+    def on_order_filled(self, order: Order):  # noqa: PLR0912, PLR0915
         """
         Callback when order fills.
 
@@ -370,7 +378,7 @@ class TradeManagerIntegration:
             # Create tracker
             with self.app._tracker_lock:
                 if position_id not in self.app.mfe_mae_trackers:
-                    from src.core.ctrader_ddqn_paper import MFEMAETracker
+                    from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
 
                     self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
                     # Store ticket on tracker for later reference
@@ -407,7 +415,7 @@ class TradeManagerIntegration:
 
             # Create recorder if doesn't exist
             if position_id not in self.app.path_recorders:
-                from src.core.ctrader_ddqn_paper import PathRecorder
+                from src.core.ctrader_ddqn_paper import PathRecorder  # noqa: PLC0415
 
                 self.app.path_recorders[position_id] = PathRecorder(position_id)
                 LOG.info("[MULTI-POS] Created path recorder for position: %s", position_id)
@@ -596,7 +604,7 @@ class TradeManagerIntegration:
             return
 
         # Defensive: Validate price
-        import math
+        import math  # noqa: PLC0415
 
         if not (math.isfinite(current_price) and current_price > 0):
             LOG.error("[TRAILING-STOP] Invalid price: %s", current_price)
@@ -660,7 +668,7 @@ class TradeManagerIntegration:
         if hasattr(self.app, "friction_calculator"):
             original_price = stop_price
             stop_price = self.app.friction_calculator.normalize_price(stop_price)
-            if abs(original_price - stop_price) > 1e-10:
+            if abs(original_price - stop_price) > _PRICE_NORMALIZE_TOLERANCE:
                 LOG.debug(
                     "[TRAILING-STOP] Price normalized: %.8f → %.8f (digits=%d)",
                     original_price,
@@ -711,7 +719,7 @@ class TradeManagerIntegration:
         self.entry_price = None
         self.position_direction = 0
 
-    def close_position(self, position_id: str | None = None, reason: str = "MANUAL") -> bool:
+    def close_position(self, position_id: str | None = None, reason: str = "MANUAL") -> bool:  # noqa: PLR0911
         """
         Close a specific position by ID or ticket.
 
@@ -822,7 +830,7 @@ class TradeManagerIntegration:
             )
 
             # CRITICAL FIX: Clean up stale trackers when position is FLAT
-            if self.app.cur_pos == 0 and abs(self.trade_manager.position.net_qty) < 0.0001:
+            if self.app.cur_pos == 0 and abs(self.trade_manager.position.net_qty) < _MIN_OPEN_POSITION_QTY:
                 self.cleanup_stale_trackers()
         else:
             LOG.warning("[INTEGRATION] PositionReport received but TradeManager not initialized")
@@ -911,7 +919,7 @@ class TradeManagerIntegration:
         except Exception as e:
             LOG.error("[INTEGRATION] Failed to persist state: %s", e, exc_info=True)
 
-    def _recover_state(self) -> bool:
+    def _recover_state(self) -> bool:  # noqa: PLR0912, PLR0915
         """Recover position and trailing stop state after crash/restart.
 
         Returns:
@@ -947,13 +955,13 @@ class TradeManagerIntegration:
             position_data = state.get("position")
             position_recovered = False
             if position_data and self.trade_manager:
-                from src.core.trade_manager import Position
+                from src.core.trade_manager import Position  # noqa: PLC0415
 
                 recovered_pos = Position.from_dict(position_data)
                 # HEDGING MODE: Check if ANY real positions exist (not just net_qty)
                 # BUT: For recovery purposes, only restore if we have active trackers or tickets
                 # (net_qty=0 with no trackers/tickets means positions were closed)
-                has_position = abs(recovered_pos.long_qty) > 0.0001 or abs(recovered_pos.short_qty) > 0.0001
+                has_position = abs(recovered_pos.long_qty) > _MIN_OPEN_POSITION_QTY or abs(recovered_pos.short_qty) > _MIN_OPEN_POSITION_QTY
 
                 # Check if we have active trackers or tickets (indicates real open positions)
                 has_trackers = len(state.get("active_trackers", {})) > 0
@@ -1008,7 +1016,7 @@ class TradeManagerIntegration:
             # MULTI-POSITION: Restore all active trackers from state
             active_trackers = state.get("active_trackers", {})
             if active_trackers and hasattr(self.app, "mfe_mae_trackers"):
-                from src.core.ctrader_ddqn_paper import MFEMAETracker
+                from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
 
                 for pos_id, tracker_data in active_trackers.items():
                     try:
@@ -1064,7 +1072,7 @@ class TradeManagerIntegration:
             # HEDGING MODE: Restore broker ticket mappings (new format)
             position_tickets = state.get("position_tickets", {})
             if position_tickets and hasattr(self.app, "mfe_mae_trackers"):
-                from src.core.ctrader_ddqn_paper import MFEMAETracker
+                from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
 
                 for ticket, ticket_data in position_tickets.items():
                     position_id = ticket_data["position_id"]
@@ -1099,7 +1107,7 @@ class TradeManagerIntegration:
                 if position_tickets and hasattr(self.app, "policy"):
                     # Use the last ticket (most recent position)
                     last_ticket_data = list(position_tickets.values())[-1]
-                    import datetime as dt
+                    import datetime as dt  # noqa: PLC0415
 
                     # Get MFE/MAE from tracker if available
                     position_id = last_ticket_data.get("position_id")
@@ -1144,7 +1152,7 @@ class TradeManagerIntegration:
                 if hasattr(self.app, "policy"):
                     # Use the last tracker (most recent position)
                     last_tracker = list(active_trackers.values())[-1]
-                    import datetime as dt
+                    import datetime as dt  # noqa: PLC0415
 
                     mfe = last_tracker.get("mfe", 0.0)
                     mae = last_tracker.get("mae", 0.0)
@@ -1178,7 +1186,7 @@ class TradeManagerIntegration:
             elif position_recovered and self.entry_price and self.position_direction != 0:
                 position_id = f"{self.app.symbol_id}_net"
                 if hasattr(self.app, "mfe_mae_trackers"):
-                    from src.core.ctrader_ddqn_paper import MFEMAETracker
+                    from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
 
                     if position_id not in self.app.mfe_mae_trackers:
                         self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
@@ -1192,7 +1200,7 @@ class TradeManagerIntegration:
 
                     # Notify DualPolicy
                     if hasattr(self.app, "policy"):
-                        import datetime as dt
+                        import datetime as dt  # noqa: PLC0415
 
                         # Get MFE/MAE from tracker if available
                         mfe, mae = 0.0, 0.0
@@ -1231,9 +1239,13 @@ class TradeManagerIntegration:
             if hasattr(self.app, "policy") and hasattr(self.app.policy, "_update_mfe_mae"):
                 # Calculate mid_price from best bid/ask if available
                 mid_price = None
-                if hasattr(self.app, "best_bid") and hasattr(self.app, "best_ask"):
-                    if self.app.best_bid and self.app.best_ask:
-                        mid_price = (self.app.best_bid + self.app.best_ask) / 2.0
+                if (
+                    hasattr(self.app, "best_bid")
+                    and hasattr(self.app, "best_ask")
+                    and self.app.best_bid
+                    and self.app.best_ask
+                ):
+                    mid_price = (self.app.best_bid + self.app.best_ask) / 2.0
 
                 if mid_price and mid_price > 0:
                     try:
@@ -1270,7 +1282,7 @@ class TradeManagerIntegration:
         """
         try:
             # Give TradeManager a moment to process PositionReport
-            import time
+            import time  # noqa: PLC0415
 
             time.sleep(0.1)
 
@@ -1335,7 +1347,7 @@ class TradeManagerIntegration:
             return f"{self.app.symbol_id}_{order.clord_id}"
 
         # Fallback: use timestamp-based ID
-        import time
+        import time  # noqa: PLC0415
 
         return f"{self.app.symbol_id}_{int(time.time() * 1000)}"
 

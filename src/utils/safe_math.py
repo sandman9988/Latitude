@@ -25,7 +25,7 @@ class SafeMath:
     @staticmethod
     def to_decimal(value, digits: int):
         """Convert value to Decimal with instrument-specific digits."""
-        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation  # noqa: PLC0415
 
         try:
             dec = Decimal(str(value))
@@ -37,7 +37,7 @@ class SafeMath:
     @staticmethod
     def quantize(value, digits: int):
         """Quantize an existing Decimal to instrument-specific digits."""
-        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation  # noqa: PLC0415
 
         try:
             quant = Decimal("1").scaleb(-digits)
@@ -347,12 +347,12 @@ def safe_array_operation(arr: np.ndarray, operation: str, default: float = 0.0) 
         return default
 
     operations = {
-        "mean": lambda x: np.mean(x),
-        "std": lambda x: np.std(x),
-        "min": lambda x: np.min(x),
-        "max": lambda x: np.max(x),
-        "sum": lambda x: np.sum(x),
-        "median": lambda x: np.median(x),
+        "mean": np.mean,
+        "std": np.std,
+        "min": np.min,
+        "max": np.max,
+        "sum": np.sum,
+        "median": np.median,
     }
 
     if operation not in operations:

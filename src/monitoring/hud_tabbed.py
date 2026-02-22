@@ -42,6 +42,95 @@ VPIN_ELEVATED_TOXICITY_THRESHOLD: float = 1.0
 IMBALANCE_BUY_THRESHOLD: float = 0.3
 IMBALANCE_SELL_THRESHOLD: float = -0.3
 
+# Price-decimals heuristic fallback thresholds
+_PRICE_REF_HIGH: float = 1000.0        # ref_price ≥ 1000 → 2 dp (BTC / Gold)
+_PRICE_REF_MED: float = 10.0           # ref_price ≥ 10 → 3 dp; else 5 dp
+
+# Z-Omega quality display bands (training/paper pipeline)
+Z_OMEGA_OFFLINE_WARM_MIN: float = 0.8   # zo ≥ 0.8 → yellow in offline results
+Z_OMEGA_POSITIVE_MIN: float = 0.5       # zo > 0.5 → green in paper pipeline
+
+# Agent confidence display bands (°healthy°: 0.55 – 0.85)
+CONF_HEALTHY_LOW: float = 0.55          # lower bound of healthy confidence range
+CONF_HEALTHY_HIGH: float = 0.85         # upper bound of healthy confidence range
+CONF_WARM_LOW: float = 0.50             # lower bound of warm confidence range
+
+# Beta (Importance Sampling) display bands
+BETA_HOT_MIN: float = 0.8               # beta > 0.8 → fully corrected (green)
+BETA_WARM_MIN: float = 0.6              # beta > 0.6 → warm (yellow)
+
+# Epsilon (exploration rate) display bands
+EPS_HOT_MAX: float = 0.05              # eps < 0.05 → HOT (green)
+EPS_WARM_MAX: float = 0.2              # eps < 0.2 → WARM (yellow); else COLD
+
+# Buffer fill thresholds (fraction 0–1, used inside _pct_bar helper)
+_BUF_FILL_HIGH: float = 0.5            # fraction > 0.5 → green
+_BUF_FILL_WARN: float = 0.1            # fraction > 0.1 → yellow
+
+# Buffer %-age thresholds (percent-scale 0–100, used in overview row logic)
+BUF_PCT_HIGH: float = 50.0             # >50 % fill → green
+BUF_PCT_WARN: float = 10.0             # >10 % fill → yellow
+
+# Trend sparkline helper thresholds
+TREND_MIN_SAMPLES: int = 6             # minimum history values before trend calc
+TREND_DELTA_POS: float = 3.0           # delta_pct > +3 → DEGRADING (red)
+TREND_DELTA_NEG: float = -3.0          # delta_pct < -3 → IMPROVING (green)
+TREND_SPARK_TAIL: int = 20             # last N values for sparkline
+TREND_STEP_PAIRS_MIN: int = 2          # history pairs needed for velocity calc
+TREND_RATE_HIGH: float = 5.0           # > 5 steps/min → active training (green)
+TREND_RATE_WARN: float = 1.0           # > 1 step/min → slow training (yellow)
+
+# VPIN Z thresholds reused in overview and decision-log rows
+_VPIN_OV_HIGH: float = 2.0             # same value as VPIN_HIGH_TOXICITY_THRESHOLD
+_VPIN_OV_ELEVATED: float = 1.5         # elevated threshold used in overview row
+
+# Spread / VaR / Vol colour bands
+SPREAD_OK_MAX: float = 0.0002          # spread < 0.0002 → green
+SPREAD_WARN_MAX: float = 0.0005        # spread < 0.0005 → yellow
+VAR_WARN_PCT: float = 1.5              # VaR % > 1.5 → yellow
+VAR_HIGH_PCT: float = 3.0              # VaR % > 3 → red
+VOL_HIGH_PCT: float = 2.0              # vol % > 2 → red
+VOL_WARN_PCT: float = 1.0              # vol % > 1 → yellow
+RUNWAY_WARN_BARS: float = 1.0          # runway < 1 bar → yellow
+RUNWAY_OK_BARS: float = 3.0            # runway > 3 bars → green
+EFF_HIGH_THRESHOLD: float = 0.6        # path efficiency > 0.6 → green
+EFF_WARN_THRESHOLD: float = 0.3        # path efficiency > 0.3 → yellow
+_BUDGET_OK_MIN: float = 10.0           # risk_budget > 10 USD → green
+
+# Payoff / profit-factor colour bands
+_PAYOFF_FLOOR: float = 1e-9            # zero guard: avg_win / avg_loss
+PAYOFF_GOOD_MIN: float = 1.5           # payoff ≥ 1.5 → green
+PROFIT_FACTOR_GOOD_MIN: float = 1.2    # PF ≥ 1.2 → green
+DD_HIGH_PCT: float = 5.0               # drawdown > 5 % → red
+DD_WARN_PCT: float = 2.0               # drawdown > 2 % → yellow
+
+# _fmt_dur conversion constants
+_DURATION_HOUR_MINS: float = 90.0      # < 90 min → show as minutes
+_DURATION_DAY_MINS: float = 1440.0     # < 1440 min (24 h) → show as hours
+
+# Prediction convergence colour bands
+RUNWAY_DELTA_OK_MAX: float = 1.0       # |delta| < 1 pt → perfect (green)
+RUNWAY_DELTA_WARN_MAX: float = 3.0     # |delta| > 3 pts → bad (red)
+RUNWAY_ACCURACY_GOOD: float = 0.70     # accuracy > 0.70 → green
+RUNWAY_ACCURACY_WARN: float = 0.40     # accuracy > 0.40 → yellow
+CONF_CALIB_OK_MAX: float = 0.15        # calibration error < 0.15 → green
+CONF_CALIB_WARN_MAX: float = 0.30      # calibration error < 0.30 → yellow
+PLATT_ADAPTED_DELTA: float = 0.05      # |platt_a − 1.0| or |platt_b| > 0.05 → adapted
+
+# Decision log display
+_DEC_LOG_TS_MIN_LEN: int = 19          # timestamp ≥ 19 chars has full HH:MM:SS
+_DEC_LOG_VPIN_WARN: float = 2.0        # |vpin_z| > 2 → flag warning icon
+
+# Data-freshness thresholds (footer)
+DATA_STALE_SECS: float = 15.0          # bot age > 15 s → "silent" warning
+DATA_AGING_SECS: float = 5.0           # bot age > 5 s → "aging" warning
+
+# Position sizing zero-guard
+_QTY_FLOOR: float = 1e-9               # guard division in qty-usage ratio
+
+# Signal synthesis imbalance direction hint
+_IMBALANCE_DIRECTION_HINT: float = 0.1  # |imbalance| > 0.1 used for directional hint
+
 
 class TabbedHUD:
     """Real-time tabbed HUD for trading bot monitoring"""
@@ -129,7 +218,7 @@ class TabbedHUD:
         if self.thread:
             self.thread.join(timeout=2)
 
-    def _check_input(self):
+    def _check_input(self):  # noqa: PLR0912
         """Check for keyboard input (non-blocking)"""
         try:
             if select.select([sys.stdin], [], [], 0)[0]:
@@ -173,7 +262,7 @@ class TabbedHUD:
                 print(f"\033[0mHUD Error: {e}")
                 time.sleep(2)
 
-    def _refresh_data(self):
+    def _refresh_data(self):  # noqa: PLR0912, PLR0915
         """Refresh all data from bot exports"""
         # Capture heartbeat timestamp in UTC so header labelling stays accurate
         self.last_update = datetime.now(UTC)
@@ -232,7 +321,7 @@ class TabbedHUD:
         _uni_path = self.data_dir / "universe.json"
         if _uni_path.exists():
             try:
-                import os as _os
+                import os as _os  # noqa: PLC0415
                 _uni_raw: dict = json.loads(_uni_path.read_text())
                 for _sym, _entry in _uni_raw.items():
                     _pid = _entry.get("paper_pid")
@@ -354,7 +443,7 @@ class TabbedHUD:
                 )
         return profiles
 
-    def _compute_metrics_from_trade_log(self):
+    def _compute_metrics_from_trade_log(self):  # noqa: PLR0915
         """Compute performance metrics directly from trade_log.jsonl when snapshot is empty"""
         trade_file = Path("data/trade_log.jsonl")
         if not trade_file.exists():
@@ -363,10 +452,10 @@ class TabbedHUD:
         try:
             trades = []
             with open(trade_file, encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        trades.append(json.loads(line))
+                for raw_line in f:
+                    stripped = raw_line.strip()
+                    if stripped:
+                        trades.append(json.loads(stripped))
         except Exception:
             return
         if not trades:
@@ -410,9 +499,11 @@ class TabbedHUD:
             max_cw = max_cl = cw = cl = 0
             for p in pnls:
                 if p > 0:
-                    cw += 1; cl = 0
+                    cw += 1
+                    cl = 0
                 else:
-                    cl += 1; cw = 0
+                    cl += 1
+                    cw = 0
                 max_cw = max(max_cw, cw)
                 max_cl = max(max_cl, cl)
             return {
@@ -480,9 +571,9 @@ class TabbedHUD:
         except Exception:
             pass
         # Heuristic fallback: gold/BTC ≥1000 → 2dp; majors → 5dp
-        if ref_price >= 1000:
+        if ref_price >= _PRICE_REF_HIGH:
             return 2
-        if ref_price >= 10:
+        if ref_price >= _PRICE_REF_MED:
             return 3
         return 5
 
@@ -512,7 +603,7 @@ class TabbedHUD:
             except Exception:  # noqa: BLE001 — terminal may lose raw-mode capability
                 pass
 
-    def _show_help(self):
+    def _show_help(self):  # noqa: PLR0915
         """Display help screen with keyboard shortcuts and information"""
         self._disable_raw_mode()
         try:
@@ -759,7 +850,7 @@ class TabbedHUD:
         # Always render footer (bottom menu)
         self._render_footer()
 
-    def _render_training(self):
+    def _render_training(self):  # noqa: PLR0912, PLR0915
         """Render agent training status"""
         ts = self.training_stats
         pm = self.production_metrics.get("metrics", {})
@@ -767,8 +858,12 @@ class TabbedHUD:
         HARV_CAP = 10_000
         BAR_LEN = 26
 
-        _G = "\033[92m"; _Y = "\033[93m"; _R = "\033[91m"
-        _B = "\033[94m"; _DIM = "\033[90m"; _RST = "\033[0m"
+        _G = "\033[92m"
+        _Y = "\033[93m"
+        _R = "\033[91m"
+        _B = "\033[94m"
+        _DIM = "\033[90m"
+        _RST = "\033[0m"
 
         # ── Offline Training (rendered FIRST so it's always visible) ──────────
         ofs = self.offline_stats
@@ -798,7 +893,7 @@ class TabbedHUD:
 
             _results = ofs.get("results", [])
             if _results:
-                sym_w = max(6, max(len(r.get("symbol", "")) for r in _results))
+                sym_w = max(6, *(len(r.get("symbol", "")) for r in _results))
                 print()
                 print(f"    {'Symbol':<{sym_w}}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  ZOmega")
                 print(f"    {'─'*sym_w}  {'─'*5}  {'─'*9}  {'─'*38}  {'─'*8}")
@@ -819,7 +914,7 @@ class TabbedHUD:
                     vtrades = r.get("val_trades", 0)
                     steps   = r.get("total_train_steps", 0)
                     if zo is not None and jstatus == "done":
-                        zo_col = _G if zo >= 1.0 else (_Y if zo >= 0.8 else _R)
+                        zo_col = _G if zo >= 1.0 else (_Y if zo >= Z_OMEGA_OFFLINE_WARM_MIN else _R)
                         zo_str = f"{zo_col}{zo:8.4f}\033[0m"
                     else:
                         zo_str = f"{_DIM}{'—':>8}\033[0m"
@@ -874,7 +969,7 @@ class TabbedHUD:
                 zo      = entry.get("z_omega")
                 zo_str  = f"{zo:8.4f}" if zo is not None else f"{'—':>8}"
                 if zo is not None:
-                    zo_col = _G if zo > 0.5 else (_Y if zo > 0 else _R)
+                    zo_col = _G if zo > Z_OMEGA_POSITIVE_MIN else (_Y if zo > 0 else _R)
                     zo_str = f"{zo_col}{zo_str}{_RST}"
                 pid_alive = entry.get("_pid_alive", False)
                 pid       = entry.get("paper_pid")
@@ -899,53 +994,53 @@ class TabbedHUD:
         def _pct_bar(val: int, cap: int) -> str:
             pct = min(val / cap, 1.0) if cap > 0 else 0.0
             filled = int(BAR_LEN * pct)
-            col = _G if pct > 0.5 else (_Y if pct > 0.1 else _R)
+            col = _G if pct > _BUF_FILL_HIGH else (_Y if pct > _BUF_FILL_WARN else _R)
             return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}]{_RST} {pct * 100:5.1f}%"
 
         def _eps_bar(eps: float) -> str:
             pct = max(0.0, min(eps, 1.0))
             filled = int(BAR_LEN * pct)
-            bracket = f"{_R}COLD{_RST}" if eps > 0.2 else (f"{_Y}WARM{_RST}" if eps > 0.05 else f"{_G}HOT{_RST}")
-            col = _R if eps > 0.2 else (_Y if eps > 0.05 else _G)
+            bracket = f"{_R}COLD{_RST}" if eps > EPS_WARM_MAX else (f"{_Y}WARM{_RST}" if eps > EPS_HOT_MAX else f"{_G}HOT{_RST}")
+            col = _R if eps > EPS_WARM_MAX else (_Y if eps > EPS_HOT_MAX else _G)
             return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}] {eps:.4f}{_RST} {bracket}"
 
         def _beta_bar(beta: float) -> str:
             pct = max(0.0, min((beta - 0.4) / 0.6, 1.0))
             filled = int(BAR_LEN * pct)
-            col = _G if beta > 0.8 else (_Y if beta > 0.6 else _DIM)
+            col = _G if beta > BETA_HOT_MIN else (_Y if beta > BETA_WARM_MIN else _DIM)
             return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}] {beta:.4f}{_RST}  (0.4 cold→1.0 fully corrected)"
 
         def _trend(hist: deque) -> str:
             vals = [v for v in list(hist) if v > 0]
-            if len(vals) < 6:
+            if len(vals) < TREND_MIN_SAMPLES:
                 return f"{_DIM}→ — (need more samples){_RST}"
             half = len(vals) // 2
             old_mean = sum(vals[:half]) / half
             new_mean = sum(vals[half:]) / (len(vals) - half)
             delta_pct = (new_mean - old_mean) / old_mean * 100 if old_mean > 0 else 0
-            if delta_pct < -3:
+            if delta_pct < TREND_DELTA_NEG:
                 return f"{_G}↓ {abs(delta_pct):.1f}% IMPROVING{_RST}"
-            elif delta_pct > 3:
+            elif delta_pct > TREND_DELTA_POS:
                 return f"{_R}↑ +{delta_pct:.1f}% DEGRADING{_RST}"
             else:
                 return f"{_Y}→ {delta_pct:+.1f}% STABLE{_RST}"
 
         def _spark(hist: deque) -> str:
             vals = [v for v in list(hist) if v > 0]
-            if len(vals) < 2:
+            if len(vals) < TREND_STEP_PAIRS_MIN:
                 return ""
-            return self._create_sparkline(vals[-20:])
+            return self._create_sparkline(vals[-TREND_SPARK_TAIL:])
 
         def _velocity(step_hist: deque) -> str:
             pairs = list(step_hist)
-            if len(pairs) < 2:
+            if len(pairs) < TREND_STEP_PAIRS_MIN:
                 return f"{_DIM}—{_RST}"
             dt = pairs[-1][0] - pairs[0][0]
             ds = pairs[-1][1] - pairs[0][1]
             if dt <= 0 or ds <= 0:
                 return f"{_DIM}0 steps/min{_RST}"
             rate = ds / dt * 60
-            col = _G if rate > 5 else (_Y if rate > 1 else _DIM)
+            col = _G if rate > TREND_RATE_HIGH else (_Y if rate > TREND_RATE_WARN else _DIM)
             return f"{col}{rate:.1f} steps/min{_RST}"
 
         # ── Trigger Agent ─────────────────────────────────────────────────────
@@ -954,7 +1049,7 @@ class TabbedHUD:
         trig_loss  = ts.get("trigger_loss", 0.0)
         trig_eps   = ts.get("trigger_epsilon", 0.0)
         trig_ready = ts.get("trigger_ready", False)
-        trig_td    = ts.get("trigger_td_error", 0.0)
+        ts.get("trigger_td_error", 0.0)
         trig_conf  = pm.get("trigger_confidence_avg", 0.5)
 
         ready_t = f"{_G}✓ Ready{_RST}" if trig_ready else f"{_Y}⏳ Filling…{_RST}"
@@ -968,7 +1063,7 @@ class TabbedHUD:
         _sp = _spark(self._trig_loss_hist)
         if _sp:
             print(f"    Hist:   {_sp}")
-        _cc = _G if 0.55 < trig_conf < 0.85 else (_Y if 0.50 < trig_conf <= 0.55 else _R)
+        _cc = _G if CONF_HEALTHY_LOW < trig_conf < CONF_HEALTHY_HIGH else (_Y if CONF_WARM_LOW < trig_conf <= CONF_HEALTHY_LOW else _R)
         print(f"    Conf:   {_cc}{trig_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
         print()
 
@@ -978,7 +1073,7 @@ class TabbedHUD:
         harv_loss     = ts.get("harvester_loss", 0.0)
         harv_beta     = ts.get("harvester_beta", 0.4)
         harv_ready    = ts.get("harvester_ready", False)
-        harv_td       = ts.get("harvester_td_error", 0.0)
+        ts.get("harvester_td_error", 0.0)
         harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
         harv_conf     = pm.get("harvester_confidence_avg", 0.5)
 
@@ -993,7 +1088,7 @@ class TabbedHUD:
         _sp = _spark(self._harv_loss_hist)
         if _sp:
             print(f"    Hist:   {_sp}")
-        _cc = _G if 0.55 < harv_conf < 0.85 else (_Y if 0.50 < harv_conf <= 0.55 else _R)
+        _cc = _G if CONF_HEALTHY_LOW < harv_conf < CONF_HEALTHY_HIGH else (_Y if CONF_WARM_LOW < harv_conf <= CONF_HEALTHY_LOW else _R)
         print(f"    Conf:   {_cc}{harv_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
         print(f"    Min-hold: {harv_min_hold} ticks")
         print()
@@ -1074,7 +1169,7 @@ class TabbedHUD:
         print("".join(tabs))
         print("─" * 80)
 
-    def _render_overview(self):
+    def _render_overview(self):  # noqa: PLR0915
         """Render overview tab - compact summary"""
         # Position
         print("\n\033[1m📊 POSITION\033[0m")
@@ -1177,13 +1272,18 @@ class TabbedHUD:
         vpin_z = self.market_stats.get("vpin_z", 0)
         imb = self.market_stats.get("imbalance", 0)
 
-        vpin_status = "\033[91m⚠️ HIGH\033[0m" if abs(vpin_z) > 2.0 else "\033[92m✓\033[0m"
+        vpin_status = "\033[91m⚠️ HIGH\033[0m" if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD else "\033[92m✓\033[0m"
         _has_real = self.market_stats.get("has_real_sizes", False)
         _imb_label = "Imb" if _has_real else "QFI"
         print(f"  Spread: {spread:.5f}  |  VPIN: {vpin:.3f} {vpin_status}  |  {_imb_label}: {imb:+.3f}")
 
         # ── System health (expanded) ──────────────────────────────────────────
-        _G = "\033[92m"; _Y = "\033[93m"; _R = "\033[91m"; _B = "\033[94m"; _DIM = "\033[90m"; _RST = "\033[0m"
+        _G = "\033[92m"
+        _Y = "\033[93m"
+        _R = "\033[91m"
+        _B = "\033[94m"
+        _DIM = "\033[90m"
+        _RST = "\033[0m"
 
         def _ok(s: str) -> str: return f"{_G}✓ {s}{_RST}"
         def _warn(s: str) -> str: return f"{_Y}⚡ {s}{_RST}"
@@ -1200,10 +1300,10 @@ class TabbedHUD:
         _bc_path = self.data_dir / "bot_config.json"
         _ref_path = _ob_path if _ob_path.exists() else (_bc_path if _bc_path.exists() else None)
         if _ref_path is not None:
-            import os as _os
+            import os as _os  # noqa: PLC0415
             _file_age = time.time() - _os.path.getmtime(_ref_path)
             _age_str = f"{_file_age:.0f}s"
-            _data_item = _ok(f"Data {_age_str}") if _file_age < 5 else (_warn(f"Data {_age_str}") if _file_age < 15 else _bad(f"Bot silent {_age_str}"))
+            _data_item = _ok(f"Data {_age_str}") if _file_age < DATA_AGING_SECS else (_warn(f"Data {_age_str}") if _file_age < DATA_STALE_SECS else _bad(f"Bot silent {_age_str}"))
         else:
             _data_item = _bad("No data")
 
@@ -1221,34 +1321,36 @@ class TabbedHUD:
 
         # ── Row 2: Risk ───────────────────────────────────────────────────────
         _vol = float(self.risk_stats.get("realized_vol", 0)) * 100
-        _vol_col = _G if _vol < 1.0 else (_Y if _vol < 2.0 else _R)
+        _vol_col = _G if _vol < VOL_WARN_PCT else (_Y if _vol < VOL_HIGH_PCT else _R)
         _vol_item = f"Vol: {_vol_col}{_vol:.2f}%{_RST}"
 
         _var = float(self.risk_stats.get("var", 0)) * 100
-        _var_col = _G if _var < 1.5 else (_Y if _var < 3.0 else _R)
+        _var_col = _G if _var < VAR_WARN_PCT else (_Y if _var < VAR_HIGH_PCT else _R)
         _var_item = f"VaR: {_var_col}{_var:.2f}%{_RST}"
 
         _budget = float(self.risk_stats.get("risk_budget_usd", 0))
-        _budget_col = _G if _budget > 10 else (_Y if _budget > 0 else _R)
+        _budget_col = _G if _budget > _BUDGET_OK_MIN else (_Y if _budget > 0 else _R)
         _budget_item = f"Budget: {_budget_col}${_budget:.2f}{_RST}"
 
         _eff = float(self.risk_stats.get("efficiency", 0))
-        _eff_col = _G if _eff > 0.6 else (_Y if _eff > 0.3 else _R)
+        _eff_col = _G if _eff > EFF_HIGH_THRESHOLD else (_Y if _eff > EFF_WARN_THRESHOLD else _R)
         _eff_item = f"Eff: {_eff_col}{_eff:.2f}{_RST}"
 
         print(f"  {_vol_item}  │  {_var_item}  │  {_budget_item}  │  {_eff_item}")
 
         # ── Row 3: Buffers ────────────────────────────────────────────────────
-        _TRIG_CAP = 2_000; _HARV_CAP = 10_000
+        _TRIG_CAP = 2_000
+        _HARV_CAP = 10_000
         _trig_buf = self.training_stats.get("trigger_buffer_size", 0)
         _harv_buf = self.training_stats.get("harvester_buffer_size", 0)
         _trig_pct = _trig_buf / _TRIG_CAP * 100
         _harv_pct = _harv_buf / _HARV_CAP * 100
         _trig_rdy = self.training_stats.get("trigger_ready", False)
         _harv_rdy = self.training_stats.get("harvester_ready", False)
-        _trig_col = _G if _trig_pct > 50 else (_Y if _trig_pct > 10 else _R)
-        _harv_col = _G if _harv_pct > 50 else (_Y if _harv_pct > 10 else _R)
-        _rdy_icon = lambda r: f"{_G}✓{_RST}" if r else f"{_Y}…{_RST}"
+        _trig_col = _G if _trig_pct > BUF_PCT_HIGH else (_Y if _trig_pct > BUF_PCT_WARN else _R)
+        _harv_col = _G if _harv_pct > BUF_PCT_HIGH else (_Y if _harv_pct > BUF_PCT_WARN else _R)
+        def _rdy_icon(r):
+            return f"{_G}✓{_RST}" if r else f"{_Y}…{_RST}"
         print(
             f"  Trig buf: {_trig_col}{_trig_buf:,}/{_TRIG_CAP:,} ({_trig_pct:.0f}%){_RST} {_rdy_icon(_trig_rdy)}  │  "
             f"Harv buf: {_harv_col}{_harv_buf:,}/{_HARV_CAP:,} ({_harv_pct:.0f}%){_RST} {_rdy_icon(_harv_rdy)}"
@@ -1261,9 +1363,10 @@ class TabbedHUD:
         _harv_steps = self.training_stats.get("harvester_training_steps", 0)
         _trig_loss = self.training_stats.get("trigger_loss", None)
         _harv_loss = self.training_stats.get("harvester_loss", None)
-        _eps_col = _G if _eps < 0.05 else (_Y if _eps < 0.2 else _R)
-        _eps_lbl = "HOT" if _eps < 0.05 else ("WARM" if _eps < 0.2 else "COLD")
-        _loss_str = lambda v: (f"{v:.4f}" if v is not None else "n/a")
+        _eps_col = _G if _eps < EPS_HOT_MAX else (_Y if _eps < EPS_WARM_MAX else _R)
+        _eps_lbl = "HOT" if _eps < EPS_HOT_MAX else ("WARM" if _eps < EPS_WARM_MAX else "COLD")
+        def _loss_str(v):
+            return (f"{v:.4f}" if v is not None else "n/a")
         print(
             f"  ε={_eps_col}{_eps:.4f} {_eps_lbl}{_RST}  steps={_trig_steps:,}  loss={_loss_str(_trig_loss)}  │  "
             f"β={_beta:.4f}  steps={_harv_steps:,}  loss={_loss_str(_harv_loss)}"
@@ -1274,9 +1377,9 @@ class TabbedHUD:
         _vpin = float(self.market_stats.get("vpin", 0))
         _vpin_z = float(self.market_stats.get("vpin_z", 0))
         _runway = float(self.risk_stats.get("runway", 0))
-        _spread_col = _G if _spread < 0.0002 else (_Y if _spread < 0.0005 else _R)
-        _vpin_col = _R if abs(_vpin_z) > 2.0 else (_Y if abs(_vpin_z) > 1.5 else _G)
-        _runway_col = _G if _runway > 3 else (_Y if _runway > 1 else _R)
+        _spread_col = _G if _spread < SPREAD_OK_MAX else (_Y if _spread < SPREAD_WARN_MAX else _R)
+        _vpin_col = _R if abs(_vpin_z) > _VPIN_OV_HIGH else (_Y if abs(_vpin_z) > _VPIN_OV_ELEVATED else _G)
+        _runway_col = _G if _runway > RUNWAY_OK_BARS else (_Y if _runway > RUNWAY_WARN_BARS else _R)
         print(
             f"  Spread: {_spread_col}{_spread:.5f}{_RST}  │  "
             f"VPIN: {_vpin_col}{_vpin:.3f} (z={_vpin_z:+.1f}){_RST}  │  "
@@ -1303,7 +1406,7 @@ class TabbedHUD:
                 detail = f"  \033[90m{r['detail']}\033[0m" if r.get("detail") else ""
                 print(f"  {col}{icon} {r['name']}\033[0m{detail}")
 
-    def _render_performance(self):
+    def _render_performance(self):  # noqa: PLR0915
         """Render detailed performance metrics"""
         src = "  \033[90m(source: trade_log.jsonl)\033[0m" if self._metrics_from_trade_log else ""
         print(f"\n\033[1m📈 PERFORMANCE METRICS\033[0m{src}\n")
@@ -1328,7 +1431,7 @@ class TabbedHUD:
             maxdd = metrics.get("max_drawdown", 0.0)  # already a % of peak equity
 
             pnl_color = self._pnl_color(pnl)
-            dd_color = "\033[91m" if maxdd > 5 else ("\033[93m" if maxdd > 2 else "\033[92m")
+            dd_color = "\033[91m" if maxdd > DD_HIGH_PCT else ("\033[93m" if maxdd > DD_WARN_PCT else "\033[92m")
 
             print(
                 f"  {label:<9} {trades:>7} {wr:>6.1f}% {pnl_color}{pnl:>+10.2f}\033[0m "
@@ -1350,10 +1453,10 @@ class TabbedHUD:
         # Payoff ratio: avg_win / |avg_loss| — the core RL reward sanity check.
         # >1 means wins are larger than losses; target ≥ 1.5 for positive EV.
         abs_loss = abs(avg_loss)
-        payoff   = avg_win / abs_loss if abs_loss > 1e-9 else 0.0
-        pay_col  = "\033[92m" if payoff >= 1.5 else ("\033[93m" if payoff >= 1.0 else "\033[91m")
+        payoff   = avg_win / abs_loss if abs_loss > _PAYOFF_FLOOR else 0.0
+        pay_col  = "\033[92m" if payoff >= PAYOFF_GOOD_MIN else ("\033[93m" if payoff >= 1.0 else "\033[91m")
         exp_col  = "\033[92m" if expect > 0 else "\033[91m"
-        pf_col   = "\033[92m" if profit_f >= 1.2 else ("\033[93m" if profit_f >= 1.0 else "\033[91m")
+        pf_col   = "\033[92m" if profit_f >= PROFIT_FACTOR_GOOD_MIN else ("\033[93m" if profit_f >= 1.0 else "\033[91m")
 
         print(f"  Payoff ratio:     {pay_col}{payoff:>7.2f}x\033[0m  \033[90m(avg_win/|avg_loss|  target ≥1.5)\033[0m")
         print(f"  Avg W / Avg L:    {avg_win:>+8.2f} / {avg_loss:>+8.2f}")
@@ -1366,10 +1469,13 @@ class TabbedHUD:
         pm = self.production_metrics.get("metrics", {})
         if pm:
             def _fmt_dur(mins: float) -> str:
-                if mins <= 0: return "—"
-                if mins < 90: return f"{mins:.0f}m"
-                if mins < 1440: return f"{mins / 60:.1f}h"
-                return f"{mins / 1440:.1f}d"
+                if mins <= 0:
+                    return "—"
+                if mins < _DURATION_HOUR_MINS:
+                    return f"{mins:.0f}m"
+                if mins < _DURATION_DAY_MINS:
+                    return f"{mins / 60:.1f}h"
+                return f"{mins / _DURATION_DAY_MINS:.1f}d"
             avg_dur    = pm.get("avg_trade_duration_mins", 0.0)
             last_trade = pm.get("last_trade_mins_ago", 0.0)
             print(f"\n  Avg hold time:    {_fmt_dur(avg_dur):>8}")
@@ -1384,15 +1490,15 @@ class TabbedHUD:
 
             # Runway delta: green when |delta| < 1pt, yellow < 3pt, red otherwise
             delta_col = ("\033[92m" if abs(rw_delta) < 1.0
-                         else ("\033[93m" if abs(rw_delta) < 3.0 else "\033[91m"))
+                         else ("\033[93m" if abs(rw_delta) < RUNWAY_DELTA_WARN_MAX else "\033[91m"))
             # Runway accuracy: green > 0.7, yellow > 0.4, red otherwise
-            acc_col   = ("\033[92m" if rw_acc > 0.70
-                         else ("\033[93m" if rw_acc > 0.40 else "\033[91m"))
+            acc_col   = ("\033[92m" if rw_acc > RUNWAY_ACCURACY_GOOD
+                         else ("\033[93m" if rw_acc > RUNWAY_ACCURACY_WARN else "\033[91m"))
             # Calibration error: green < 0.15, yellow < 0.30, red otherwise
-            cc_col    = ("\033[92m" if cc_err < 0.15
-                         else ("\033[93m" if cc_err < 0.30 else "\033[91m"))
+            cc_col    = ("\033[92m" if cc_err < CONF_CALIB_OK_MAX
+                         else ("\033[93m" if cc_err < CONF_CALIB_WARN_MAX else "\033[91m"))
             # Platt params: grey = default (1.0/0.0), blue = adapted
-            pa_col = "\033[94m" if abs(platt_a - 1.0) > 0.05 or abs(platt_b) > 0.05 else "\033[90m"
+            pa_col = "\033[94m" if abs(platt_a - 1.0) > PLATT_ADAPTED_DELTA or abs(platt_b) > PLATT_ADAPTED_DELTA else "\033[90m"
 
             print("\n\033[1m🎯 PREDICTION CONVERGENCE\033[0m  \033[90m(EMA-10 trades)\033[0m\n")
             print(
@@ -1416,21 +1522,21 @@ class TabbedHUD:
                 f"\033[90m(grey=default, blue=adapted)\033[0m"
             )
 
-    def _render_decision_log(self):
+    def _render_decision_log(self):  # noqa: PLR0912, PLR0915
         """Render the Decision Log tab (Tab 6)"""
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
 
         # ── Try rich JSONL source first ────────────────────────────────────
-        jsonl_file = Path("log/decisions.jsonl")
+        jsonl_file = Path("logs/audit/decisions.jsonl")
         entries_jsonl: list[dict] = []
         if jsonl_file.exists():
             try:
                 with open(jsonl_file, encoding="utf-8") as f:
                     lines = f.readlines()
-                for line in lines[-20:]:
-                    line = line.strip()
-                    if line:
-                        entries_jsonl.append(json.loads(line))
+                for raw_line in lines[-20:]:
+                    stripped = raw_line.strip()
+                    if stripped:
+                        entries_jsonl.append(json.loads(stripped))
             except Exception:
                 entries_jsonl = []
 
@@ -1452,7 +1558,7 @@ class TabbedHUD:
             for entry in entries_jsonl:
                 ts_raw = entry.get("timestamp", "?")
                 try:
-                    ts_str = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+                    ts_str = ts_raw[11:19] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw
                 except Exception:
                     ts_str = str(ts_raw)[:8]
 
@@ -1476,7 +1582,7 @@ class TabbedHUD:
                 else:
                     color = "\033[0m"
 
-                vpin_flag = "\033[91m⚠\033[0m" if abs(vpin_z) > 2.0 else " "
+                vpin_flag = "\033[91m⚠\033[0m" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
                 dec = self._price_decimals(price)
                 print(
                     f"  {ts_str:<8} {agent:<10} {color}{decision:<10}\033[0m "
@@ -1490,7 +1596,7 @@ class TabbedHUD:
         if not log_file.exists():
             print("  ⚠️  No decision log found.")
             print("\n  Expected files:")
-            print("    log/decisions.jsonl  (rich — primary)")
+            print("    logs/audit/decisions.jsonl  (rich — primary)")
             print("    data/decision_log.json  (legacy — fallback)")
             return
 
@@ -1536,7 +1642,7 @@ class TabbedHUD:
         print("  " + "─" * 76)
         print(f"\n  Total decisions logged: {len(entries)}")
 
-    def _render_risk(self):
+    def _render_risk(self):  # noqa: PLR0915
         """Render risk management details"""
         print("\n\033[1m⚠️  RISK MANAGEMENT\033[0m\n")
 
@@ -1558,8 +1664,8 @@ class TabbedHUD:
         vol      = rs.get("realized_vol", 0) * 100
 
         kurt_col = "\033[91m" if kurtosis > KURTOSIS_FAT_TAIL_THRESHOLD else "\033[92m"
-        var_col  = "\033[91m" if var > 3.0 else ("\033[93m" if var > 1.5 else "\033[92m")
-        vol_col  = "\033[91m" if vol > 2.0 else ("\033[93m" if vol > 1.0 else "\033[92m")
+        var_col  = "\033[91m" if var > VAR_HIGH_PCT else ("\033[93m" if var > VAR_WARN_PCT else "\033[92m")
+        vol_col  = "\033[91m" if vol > VOL_HIGH_PCT else ("\033[93m" if vol > VOL_WARN_PCT else "\033[92m")
 
         print(f"    VaR 95%:           {var_col}{var:>9.3f}%\033[0m  \033[90m(position loss at 95th pct)\033[0m")
         print(f"    Realized vol:      {vol_col}{vol:>9.3f}%\033[0m")
@@ -1601,9 +1707,9 @@ class TabbedHUD:
             if feas > FEASIBILITY_HIGH_THRESHOLD
             else ("\033[93m" if feas > FEASIBILITY_MEDIUM_THRESHOLD else "\033[91m")
         )
-        eff_col = "\033[92m" if eff > 0.6 else ("\033[93m" if eff > 0.3 else "\033[91m")
+        eff_col = "\033[92m" if eff > EFF_HIGH_THRESHOLD else ("\033[93m" if eff > EFF_WARN_THRESHOLD else "\033[91m")
         gam_col = "\033[92m" if gamma > 0 else "\033[91m"
-        rwy_col = "\033[92m" if runway > 3 else ("\033[93m" if runway > 1 else "\033[91m")
+        rwy_col = "\033[92m" if runway > RUNWAY_OK_BARS else ("\033[93m" if runway > RUNWAY_WARN_BARS else "\033[91m")
 
         print(f"    Efficiency:        {eff_col}{eff:>10.3f}\033[0m  \033[90m(path directness; 1=straight trend)\033[0m")
         print(f"    Gamma (γ):         {gam_col}{gamma:>+10.3f}\033[0m  \033[90m(price acceleration; +ve favours longs)\033[0m")
@@ -1630,8 +1736,8 @@ class TabbedHUD:
         qty_color = "\033[92m" if risk_final_qty == risk_req_qty else "\033[93m"
 
         # % of budget consumed by this sizing decision
-        budget_used_pct = (risk_final_qty / risk_req_qty * 100) if risk_req_qty > 1e-9 else 100.0
-        capped = risk_req_qty > 1e-9 and risk_final_qty < risk_req_qty * 0.999
+        budget_used_pct = (risk_final_qty / risk_req_qty * 100) if risk_req_qty > _QTY_FLOOR else 100.0
+        capped = risk_req_qty > _QTY_FLOOR and risk_final_qty < risk_req_qty * 0.999
 
         print(f"    Risk budget:       {risk_budget:>10.2f} USD")
         print(f"    Requested qty:     {risk_req_qty:>10.4f}")
@@ -1641,7 +1747,7 @@ class TabbedHUD:
         print(f"    Vol cap:           {vol_cap * 100:>9.2f}%  \033[90m(max position vol allowed)\033[0m")
         print(f"    Vol reference:     {vol_ref * 100:>9.3f}%  \033[90m(baseline for cap calc)\033[0m")
 
-    def _render_market(self):
+    def _render_market(self):  # noqa: PLR0912, PLR0915
         """Render market microstructure"""
         print("\n\033[1m🔬 MARKET MICROSTRUCTURE\033[0m\n")
 
@@ -1671,7 +1777,7 @@ class TabbedHUD:
 
         print(f"    {'SIZE':>8}  {'BID':>{dec+6}}  {'ASK':<{dec+6}}  {'SIZE':<8}")
         print("    " + "─" * (BAR * 2 + dec * 2 + 18))
-        for ask_row, bid_row in zip(reversed(padded_asks), padded_bids):
+        for ask_row, bid_row in zip(reversed(padded_asks), padded_bids, strict=False):
             a_px, a_sz = ask_row
             b_px, b_sz = bid_row
             b_bar = int(BAR * b_sz / max_sz) if b_sz > 0 else 0
@@ -1687,7 +1793,7 @@ class TabbedHUD:
 
         # Order flow toxicity
         print("  \033[1m☢️  ORDER FLOW TOXICITY (VPIN)\033[0m")
-        vpin = ms.get("vpin", 0)
+        ms.get("vpin", 0)
         vpin_z = ms.get("vpin_z", 0)
 
         if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD:
@@ -1728,7 +1834,7 @@ class TabbedHUD:
             imb_status = "\033[93m⚖️  BALANCED\033[0m"
 
         print(f"    Imbalance:         {imbalance:>+12.4f}")
-        print(f"    Signal source:     {signal_source}  (updates: {qfi_updates})") 
+        print(f"    Signal source:     {signal_source}  (updates: {qfi_updates})")
         print(f"    Status:            {imb_status}")
 
         # Imbalance visualization
@@ -1763,7 +1869,7 @@ class TabbedHUD:
         if gate:
             signals.append("\033[91m✗ Depth gate active — no new entries\033[0m")
         if rs_regime == "TRENDING" and not toxic and rs_feas > FEASIBILITY_HIGH_THRESHOLD:
-            dir_hint = "LONG" if imbalance > 0.1 else ("SHORT" if imbalance < -0.1 else "either direction")
+            dir_hint = "LONG" if imbalance > _IMBALANCE_DIRECTION_HINT else ("SHORT" if imbalance < -_IMBALANCE_DIRECTION_HINT else "either direction")
             signals.append(f"\033[92m✓ Trending + clean flow → favours {dir_hint}\033[0m")
         if rs_regime == "MEAN_REVERTING" and not toxic:
             signals.append("\033[93m⚡ Mean-reverting — shorter hold, tighter target\033[0m")
@@ -1784,11 +1890,11 @@ class TabbedHUD:
         _bc = self.data_dir / "bot_config.json"
         _fp = _ob if _ob.exists() else (_bc if _bc.exists() else None)
         if _fp is not None:
-            import os as _os2
+            import os as _os2  # noqa: PLC0415
             _fage = time.time() - _os2.path.getmtime(_fp)
-            if _fage > 15:
+            if _fage > DATA_STALE_SECS:
                 freshness = f"\033[91m⚠️  Bot silent ({_fage:.0f}s)\033[0m"
-            elif _fage > 5:
+            elif _fage > DATA_AGING_SECS:
                 freshness = f"\033[93m⚡ Data aging ({_fage:.0f}s)\033[0m"
             else:
                 freshness = f"\033[92m✓ Data fresh ({_fage:.1f}s)\033[0m"
@@ -1847,7 +1953,7 @@ def main():
     hud = TabbedHUD(refresh_rate=1.0)
 
     # Ignore Ctrl+C in HUD to prevent accidental termination when copying
-    import signal
+    import signal  # noqa: PLC0415
 
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 

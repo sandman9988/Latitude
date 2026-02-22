@@ -29,14 +29,14 @@ if [ -f "bot_console.log" ]; then
     LOG_FILE="bot_console.log"
 elif [ -f "logs/python/bot.log" ]; then
     LOG_FILE="logs/python/bot.log"
-elif [ -f "ctrader_py_logs/app.log" ]; then
-    LOG_FILE="ctrader_py_logs/app.log"
+elif [ -f "logs/ctrader/app.log" ]; then
+    LOG_FILE="logs/ctrader/app.log"
 else
     echo -e "${YELLOW}⚠ No log file found yet. Waiting for bot to start...${NC}"
     echo -e "${BLUE}  Watching for log files in:${NC}"
     echo "    - bot_console.log"
     echo "    - logs/python/bot.log"
-    echo "    - ctrader_py_logs/app.log"
+    echo "    - logs/ctrader/app.log"
     echo ""
     
     # Wait for log file to appear
@@ -46,8 +46,8 @@ else
             LOG_FILE="bot_console.log"
         elif [ -f "logs/python/bot.log" ]; then
             LOG_FILE="logs/python/bot.log"
-        elif [ -f "ctrader_py_logs/app.log" ]; then
-            LOG_FILE="ctrader_py_logs/app.log"
+        elif [ -f "logs/ctrader/app.log" ]; then
+            LOG_FILE="logs/ctrader/app.log"
         fi
     done
 fi

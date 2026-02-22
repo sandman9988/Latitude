@@ -366,7 +366,7 @@ class CircuitBreakerManager:
     - Set emergency_closer via set_emergency_closer() method
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         sortino_threshold: float | None = None,
         kurtosis_threshold: float | None = None,
@@ -605,9 +605,9 @@ class CircuitBreakerManager:
         Args:
             filepath: Path to save state file
         """
-        import json
-        import time as _time
-        from pathlib import Path
+        import json  # noqa: PLC0415
+        import time as _time  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
 
         state = {
             "timestamp": _time.time(),
@@ -648,9 +648,9 @@ class CircuitBreakerManager:
         Returns:
             True if state restored, False if file not found
         """
-        import json
-        from collections import deque
-        from pathlib import Path
+        import json  # noqa: PLC0415
+        from collections import deque  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
 
         if not Path(filepath).exists():
             return False
