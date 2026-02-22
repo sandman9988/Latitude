@@ -419,7 +419,30 @@ class OfflineTrainer:
                 error=str(exc),
             )
 
-    def _run_inner(self, label: str, t0: float) -> TrainResult:  # noqa: PLR0912, PLR0915
+    @staticmethod
+    def _restore_env_vars(orig_start: str | None, orig_end: str | None, orig_gates: str | None) -> None:
+        """Restore EPSILON_START, EPSILON_END, DISABLE_GATES env vars to their original values."""
+        import os  # noqa: PLC0415
+        for key, original in [("EPSILON_START", orig_start), ("EPSILON_END", orig_end), ("DISABLE_GATES", orig_gates)]:
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+
+    def _warm_start_weights(self, policy, label: str) -> None:
+        """Load pre-trained weights for both agents if warm_start is enabled."""
+        if not self.warm_start:
+            return
+        for agent_name, agent in [("trigger", policy.trigger), ("harvester", policy.harvester)]:
+            ckpt = self.checkpoint_dir / f"{label}_{agent_name}_offline.npz"
+            if ckpt.exists() and agent.ddqn is not None:
+                try:
+                    agent.ddqn.load_weights(str(ckpt))
+                    LOG.info("[OFFLINE] %s warm-started from %s", label, ckpt.name)
+                except Exception as exc:
+                    LOG.warning("[OFFLINE] %s could not load %s: %s", label, ckpt.name, exc)
+
+    def _run_inner(self, label: str, t0: float) -> TrainResult:
         # Lazy import to avoid circular imports and allow multiprocessing fork
         import os  # noqa: PLC0415
 
@@ -468,29 +491,10 @@ class OfflineTrainer:
         )
 
         # Restore env vars immediately after construction
-        if _orig_eps_start is None:
-            os.environ.pop("EPSILON_START", None)
-        else:
-            os.environ["EPSILON_START"] = _orig_eps_start
-        if _orig_eps_end is None:
-            os.environ.pop("EPSILON_END", None)
-        else:
-            os.environ["EPSILON_END"] = _orig_eps_end
-        if _orig_disable_gates is None:
-            os.environ.pop("DISABLE_GATES", None)
-        else:
-            os.environ["DISABLE_GATES"] = _orig_disable_gates
+        self._restore_env_vars(_orig_eps_start, _orig_eps_end, _orig_disable_gates)
 
         # ── Warm start: load existing checkpoint weights ───────────────────────
-        if self.warm_start:
-            for agent_name, agent in [("trigger", policy.trigger), ("harvester", policy.harvester)]:
-                ckpt = self.checkpoint_dir / f"{label}_{agent_name}_offline.npz"
-                if ckpt.exists() and agent.ddqn is not None:
-                    try:
-                        agent.ddqn.load_weights(str(ckpt))
-                        LOG.info("[OFFLINE] %s warm-started from %s", label, ckpt.name)
-                    except Exception as exc:
-                        LOG.warning("[OFFLINE] %s could not load %s: %s", label, ckpt.name, exc)
+        self._warm_start_weights(policy, label)
 
         # ── Multi-epoch training pass ──────────────────────────────────────────
         _progress_path = Path(f"data/offline_progress_{self.symbol}_M{self.timeframe_minutes}.json")

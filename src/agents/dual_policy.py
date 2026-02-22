@@ -901,7 +901,86 @@ class DualPolicy:
 
         return success
 
-    def load_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:  # noqa: PLR0912, PLR0915
+    def _ckpt_load_weights(self, cp) -> bool:
+        """Load DDQN weights for trigger and harvester. Returns True if any loaded."""
+        loaded = False
+        trigger_weights = cp / "trigger_ddqn_weights.npz"
+        if trigger_weights.exists() and self.trigger.ddqn is not None:
+            try:
+                self.trigger.ddqn.load_weights(str(trigger_weights))
+                loaded = True
+            except Exception as e:
+                LOG.error("[CHECKPOINT] Failed to load trigger weights: %s", e)
+        harvester_weights = cp / "harvester_ddqn_weights.npz"
+        if harvester_weights.exists() and self.harvester.ddqn is not None:
+            try:
+                self.harvester.ddqn.load_weights(str(harvester_weights))
+                loaded = True
+            except Exception as e:
+                LOG.error("[CHECKPOINT] Failed to load harvester weights: %s", e)
+        return loaded
+
+    def _ckpt_load_buffers(self, cp) -> bool:
+        """Load experience replay buffers. Returns True if any loaded."""
+        loaded = False
+        trigger_buf = cp / "trigger_buffer.npz"
+        if trigger_buf.exists() and self.trigger.buffer is not None and self.trigger.buffer.load(str(trigger_buf)):
+            loaded = True
+        harvester_buf = cp / "harvester_buffer.npz"
+        if (harvester_buf.exists() and self.harvester.buffer is not None
+                and self.harvester.buffer.load(str(harvester_buf))):
+            loaded = True
+        return loaded
+
+    def _ckpt_load_metadata(self, cp) -> bool:
+        """Load training metadata (steps, epsilon, Platt params). Returns True if loaded."""
+        import json  # noqa: PLC0415
+        meta_path = cp / "training_metadata.json"
+        if not meta_path.exists():
+            return False
+        try:
+            with open(meta_path) as f:
+                metadata = json.load(f)
+            self.trigger.training_steps = metadata.get("trigger_training_steps", 0)
+            self.trigger.epsilon = metadata.get("trigger_epsilon", self.trigger.epsilon)
+            self.harvester.training_steps = metadata.get("harvester_training_steps", 0)
+            if self.trigger.ddqn is not None:
+                self.trigger.ddqn.training_steps = self.trigger.training_steps
+            if self.harvester.ddqn is not None:
+                self.harvester.ddqn.training_steps = self.harvester.training_steps
+            if hasattr(self.trigger, "platt_a"):
+                self.trigger.platt_a = metadata.get("trigger_platt_a", 1.0)
+                self.trigger.platt_b = metadata.get("trigger_platt_b", 0.0)
+            LOG.info("[CHECKPOINT] Restored metadata: %s", metadata)
+            return True
+        except Exception as e:
+            LOG.error("[CHECKPOINT] Failed to load metadata: %s", e)
+            return False
+
+    def _ckpt_restore_regime(self, cp) -> bool:
+        """Restore regime detector state from checkpoint. Returns True if loaded."""
+        import json  # noqa: PLC0415
+        regime_path = cp / "regime_state.json"
+        if not (regime_path.exists() and self.regime_detector):
+            return False
+        try:
+            with open(regime_path) as f:
+                regime_state = json.load(f)
+            prices = regime_state.get("price_buffer", [])
+            if prices:
+                self.regime_detector.price_buffer = list(prices)
+                self.regime_detector._update_regime()
+                self.current_regime = self.regime_detector.current_regime
+                self.current_zeta = self.regime_detector.current_zeta
+                self._sync_replay_buffer_regime()
+                LOG.info("[CHECKPOINT] Restored regime state: regime=%s zeta=%.3f (%d prices)",
+                         self.current_regime, self.current_zeta, len(prices))
+                return True
+        except Exception as e:
+            LOG.warning("[CHECKPOINT] Failed to restore regime state: %s", e)
+        return False
+
+    def load_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:
         """Load training state from a previous checkpoint.
 
         Called during startup to resume training from where it left off.
@@ -912,7 +991,6 @@ class DualPolicy:
         Returns:
             True if checkpoint was found and loaded (at least partially)
         """
-        import json  # noqa: PLC0415
         from pathlib import Path  # noqa: PLC0415
 
         cp = Path(checkpoint_dir)
@@ -920,80 +998,12 @@ class DualPolicy:
             LOG.info("[CHECKPOINT] No checkpoint directory found at %s", checkpoint_dir)
             return False
 
-        loaded_anything = False
-
-        # 1. Load DDQN weights
-        trigger_weights = cp / "trigger_ddqn_weights.npz"
-        if trigger_weights.exists() and self.trigger.ddqn is not None:
-            try:
-                self.trigger.ddqn.load_weights(str(trigger_weights))
-                loaded_anything = True
-            except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to load trigger weights: %s", e)
-
-        harvester_weights = cp / "harvester_ddqn_weights.npz"
-        if harvester_weights.exists() and self.harvester.ddqn is not None:
-            try:
-                self.harvester.ddqn.load_weights(str(harvester_weights))
-                loaded_anything = True
-            except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to load harvester weights: %s", e)
-
-        # 2. Load experience buffers
-        trigger_buf = cp / "trigger_buffer.npz"
-        if trigger_buf.exists() and self.trigger.buffer is not None and self.trigger.buffer.load(str(trigger_buf)):
-            loaded_anything = True
-
-        harvester_buf = cp / "harvester_buffer.npz"
-        if harvester_buf.exists() and self.harvester.buffer is not None and self.harvester.buffer.load(str(harvester_buf)):
-            loaded_anything = True
-
-        # 3. Load training metadata
-        meta_path = cp / "training_metadata.json"
-        if meta_path.exists():
-            try:
-                with open(meta_path) as f:
-                    metadata = json.load(f)
-
-                self.trigger.training_steps = metadata.get("trigger_training_steps", 0)
-                self.trigger.epsilon = metadata.get("trigger_epsilon", self.trigger.epsilon)
-                self.harvester.training_steps = metadata.get("harvester_training_steps", 0)
-
-                # Sync DDQN network training_steps
-                if self.trigger.ddqn is not None:
-                    self.trigger.ddqn.training_steps = self.trigger.training_steps
-                if self.harvester.ddqn is not None:
-                    self.harvester.ddqn.training_steps = self.harvester.training_steps
-
-                # Restore Platt calibration
-                if hasattr(self.trigger, "platt_a"):
-                    self.trigger.platt_a = metadata.get("trigger_platt_a", 1.0)
-                    self.trigger.platt_b = metadata.get("trigger_platt_b", 0.0)
-
-                LOG.info("[CHECKPOINT] Restored metadata: %s", metadata)
-                loaded_anything = True
-            except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to load metadata: %s", e)
-
-        # 4. Restore regime detector price buffer so regime is immediately available
-        regime_path = cp / "regime_state.json"
-        if regime_path.exists() and self.regime_detector:
-            try:
-                with open(regime_path) as f:
-                    regime_state = json.load(f)
-                prices = regime_state.get("price_buffer", [])
-                if prices:
-                    self.regime_detector.price_buffer = list(prices)
-                    # Force a regime recalculation from restored buffer
-                    self.regime_detector._update_regime()
-                    self.current_regime = self.regime_detector.current_regime
-                    self.current_zeta = self.regime_detector.current_zeta
-                    self._sync_replay_buffer_regime()
-                    LOG.info("[CHECKPOINT] Restored regime state: regime=%s zeta=%.3f (%d prices)",
-                             self.current_regime, self.current_zeta, len(prices))
-                    loaded_anything = True
-            except Exception as e:
-                LOG.warning("[CHECKPOINT] Failed to restore regime state: %s", e)
+        loaded_anything = (
+            self._ckpt_load_weights(cp)
+            | self._ckpt_load_buffers(cp)
+            | self._ckpt_load_metadata(cp)
+            | self._ckpt_restore_regime(cp)
+        )
 
         if loaded_anything:
             LOG.info(
