@@ -251,7 +251,69 @@ class TriggerAgent:
             LOG.warning("[TRIGGER] Failed to load model: %s. Using fallback.", e)
             self.use_torch = False
 
-    def decide(  # noqa: PLR0911, PLR0913, PLR0915
+    def _try_training_decision(self, state: np.ndarray) -> tuple[int, float, float] | None:
+        """
+        Attempt an epsilon-greedy or forced-exploration decision (training / paper mode).
+
+        Returns the action tuple when a training decision is made, or None when
+        the caller should continue to the live-mode logic.
+        """
+        # Epsilon-greedy: randomly explore with probability ε
+        if random.random() < self.epsilon:
+            action = random.choice([1, 2])
+            LOG.info(
+                "[TRIGGER] EXPLORE: random action=%d (ε=%.3f, bars_flat=%d)",
+                action, self.epsilon, self.bars_since_trade,
+            )
+            self._decay_epsilon()
+            self.bars_since_trade = 0
+            self.last_state = state.copy()
+            self.last_action = action
+            return action, 0.5, PREDICTED_RUNWAY_FALLBACK
+
+        # Forced entry when idle for too many bars
+        if self.force_exploration and self.bars_since_trade >= self.max_bars_inactive:
+            action = random.choice([1, 2])
+            LOG.info("[TRIGGER] FORCED ENTRY after %d bars flat: action=%d", self.bars_since_trade, action)
+            self.bars_since_trade = 0
+            self.last_state = state.copy()
+            self.last_action = action
+            return action, 0.5, PREDICTED_RUNWAY_FALLBACK
+
+        return None  # Carry on to normal model decision
+
+    def _decide_numpy_path(
+        self, state: np.ndarray, regime_threshold_adj: float, friction_cost: float
+    ) -> tuple[int, float, float]:
+        """決 Decision path for the numpy-based DDQN or MA-crossover fallback."""
+        if self.ddqn is not None and self.enable_training and self.training_steps > 0:
+            flat_state = state.reshape(1, -1).astype(np.float64)
+            q_values = self.ddqn.predict(flat_state).flatten()
+            action = int(np.argmax(q_values))
+            probs = self._softmax(q_values)
+            confidence = float(probs[action])
+            gross_runway = self._q_to_runway(float(q_values[action]))
+            predicted_runway = max(0.0, gross_runway - friction_cost)
+            LOG.debug(
+                "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, runway=%.4f",
+                q_values, action, confidence, predicted_runway,
+            )
+        else:
+            action, confidence, predicted_runway = self._fallback_decide(state, regime_threshold_adj)
+            if action == 0:
+                return 0, 0.0, 0.0
+
+        self.last_state = state.copy()
+        self.last_action = action
+
+        if not self.paper_mode and confidence < self.confidence_floor:
+            LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", confidence, self.confidence_floor)
+            return 0, confidence, 0.0
+
+        self._decay_epsilon()
+        return action, confidence, predicted_runway
+
+    def decide(  # noqa: PLR0911, PLR0913
         self,
         state: np.ndarray,
         current_position: int = 0,
@@ -279,162 +341,55 @@ class TriggerAgent:
             - confidence: [0, 1] Platt-calibrated probability
             - predicted_runway: Expected MFE as percentage (e.g., 0.002 = 0.2% of entry price)
         """
-        # Track bars since last trade for forced exploration
         self.bars_since_trade += 1
 
-        # Don't signal entry if already in position
         if current_position != 0:
-            self.bars_since_trade = 0  # Reset when in position
+            self.bars_since_trade = 0
             return 0, 0.0, 0.0  # NO_ENTRY
 
-        # TRAINING MODE: Epsilon-greedy exploration
-        # Philosophy: No gates in training - learn through rewards
+        # TRAINING MODE: epsilon-greedy / forced-exploration (no gates applied)
         if self.paper_mode or self.disable_gates:
-            # Random exploration with epsilon probability
-            if random.random() < self.epsilon:
-                # Random action: 1=LONG, 2=SHORT (exclude 0=HOLD for faster learning)
-                action = random.choice([1, 2])
-                LOG.info(
-                    "[TRIGGER] EXPLORE: random action=%d (ε=%.3f, bars_flat=%d)",
-                    action,
-                    self.epsilon,
-                    self.bars_since_trade,
-                )
-                self._decay_epsilon()
-                self.bars_since_trade = 0  # Reset counter when taking action
-                self.last_state = state.copy()  # FIX: Store state for experience creation
-                self.last_action = action
-                return action, 0.5, PREDICTED_RUNWAY_FALLBACK
+            result = self._try_training_decision(state)
+            if result is not None:
+                return result
 
-            # Forced exploration after too many bars flat
-            if self.force_exploration and self.bars_since_trade >= self.max_bars_inactive:
-                action = random.choice([1, 2])  # Force LONG or SHORT
-                LOG.info(
-                    "[TRIGGER] FORCED ENTRY after %d bars flat: action=%d",
-                    self.bars_since_trade,
-                    action,
-                )
-                self.bars_since_trade = 0
-                self.last_state = state.copy()  # FIX: Store state for experience creation
-                self.last_action = action
-                return action, 0.5, PREDICTED_RUNWAY_FALLBACK
-
-        # LIVE MODE: Feasibility gate (only if not disabled)
+        # LIVE MODE: feasibility gate
         if not self.disable_gates and feasibility < self.feasibility_threshold:
-            LOG.debug(
-                "[TRIGGER] BLOCKED by feasibility gate: %.3f < %.3f",
-                feasibility,
-                self.feasibility_threshold,
-            )
+            LOG.debug("[TRIGGER] BLOCKED by feasibility gate: %.3f < %.3f", feasibility, self.feasibility_threshold)
             return 0, 0.0, 0.0  # NO_ENTRY
 
         if not self.use_torch:
-            # Use DDQN network if available (online learning), else fallback to MA crossover
-            if self.ddqn is not None and self.enable_training and self.training_steps > 0:
-                # DDQN-based decision (numpy network, trained online)
-                flat_state = state.reshape(1, -1).astype(np.float64)
-                q_values = self.ddqn.predict(flat_state).flatten()  # flatten (1,N) → (N,)
-                action = int(np.argmax(q_values))
+            return self._decide_numpy_path(state, regime_threshold_adj, friction_cost)
 
-                # Confidence from softmax
-                probs = self._softmax(q_values)
-                confidence = float(probs[action])
-
-                # Predicted runway from Q-value
-                gross_runway = self._q_to_runway(float(q_values[action]))
-                predicted_runway = max(0.0, gross_runway - friction_cost)
-
-                # Store last state for experience creation
-                self.last_state = state.copy()
-                self.last_action = action
-
-                LOG.debug(
-                    "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, runway=%.4f",
-                    q_values,
-                    action,
-                    confidence,
-                    predicted_runway,
-                )
-            else:
-                # Fallback: multi-factor MA/momentum/VPIN with dynamic confidence + vol-scaled runway
-                action, confidence, predicted_runway = self._fallback_decide(state, regime_threshold_adj)
-                if action == 0:
-                    return 0, 0.0, 0.0
-
-            # Store last state for experience creation (always, for both paths)
-            self.last_state = state.copy()
-            self.last_action = action
-
-            # In training, accept all signals. In live, require confidence floor
-            if not self.paper_mode and confidence < self.confidence_floor:
-                LOG.debug(
-                    "[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f",
-                    confidence,
-                    self.confidence_floor,
-                )
-                return 0, confidence, 0.0
-
-            self._decay_epsilon()
-            return action, confidence, predicted_runway
-
-        # Model-based decision
+        # Model-based (PyTorch) decision
         with self.torch.no_grad():
             t = self.torch.from_numpy(state).unsqueeze(0).float()
             q_values = self.model(t).squeeze(0).numpy()
-
-            # Action selection (greedy)
             action = int(q_values.argmax())
-
-            # Raw probability from softmax
             probs = self._softmax(q_values)
             raw_prob = float(probs[action])
-
-            # Phase 2: Platt calibration for better probability estimates
-            # Calibrated p = 1 / (1 + exp(A*raw + B))
             calibrated_prob = self._platt_calibrate(raw_prob)
 
-            # LIVE MODE: Confidence floor gate
-            # Only take trades where model is confident (e.g., >55%)
             if not self.paper_mode and calibrated_prob < self.confidence_floor:
-                LOG.debug(
-                    "[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f",
-                    calibrated_prob,
-                    self.confidence_floor,
-                )
+                LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self.confidence_floor)
                 return 0, calibrated_prob, 0.0  # NO_ENTRY
 
-            # Phase 2: Economics-derived probability threshold (secondary gate)
-            # From handbook: p > (L + K) / (G + L)
-            # Ensures expected value is positive after friction costs
             breakeven_prob = (expected_loss + friction_cost) / (expected_gain + expected_loss + 1e-9)
-
-            # Gate on economics threshold (only in live mode)
             if not self.paper_mode and action != 0 and calibrated_prob < breakeven_prob:
                 LOG.debug(
                     "[TRIGGER] BLOCKED by economics: p=%.3f < breakeven=%.3f (G=%.4f, L=%.4f, K=%.4f)",
-                    calibrated_prob,
-                    breakeven_prob,
-                    expected_gain,
-                    expected_loss,
-                    friction_cost,
+                    calibrated_prob, breakeven_prob, expected_gain, expected_loss, friction_cost,
                 )
                 return 0, 0.0, 0.0  # NO_ENTRY
 
-            # Predicted runway from Q-value magnitude (NET after friction)
             q_max = q_values[action]
             gross_runway = self._q_to_runway(q_max)
-            predicted_runway = max(0.0, gross_runway - friction_cost)  # Net runway after friction
+            predicted_runway = max(0.0, gross_runway - friction_cost)
 
             LOG.debug(
-                "[TRIGGER] Q-values: %s, Action: %d, Raw_p: %.3f, Calib_p: %.3f, Breakeven: %.3f, Gross_runway: %.4f, Friction: %.4f, Net_runway: %.4f",
-                q_values,
-                action,
-                raw_prob,
-                calibrated_prob,
-                breakeven_prob,
-                gross_runway,
-                friction_cost,
-                predicted_runway,
+                "[TRIGGER] Q=%s action=%d raw_p=%.3f calib_p=%.3f be=%.3f gross=%.4f K=%.4f net=%.4f",
+                q_values, action, raw_prob, calibrated_prob,
+                breakeven_prob, gross_runway, friction_cost, predicted_runway,
             )
 
             self._decay_epsilon()

@@ -198,6 +198,35 @@ def _iter_csv(path: Path) -> Iterator[Bar]:
                 yield bar
 
 
+def _detect_datetime_columns(headers: list[str], norm: dict[str, str]) -> dict[str, str]:
+    """
+    Detect which header(s) carry datetime information.
+
+    Handles three layouts:
+    * Combined column   → ``result["dt"]``
+    * Separate DATE+TIME → ``result["date"]`` + ``result["time"]``
+    * Falls back to an empty dict when no datetime column is found.
+    """
+    result: dict[str, str] = {}
+    for h in headers:
+        if re.search(r"(date.*time|gmt.*time|timestamp)", h.strip("<> \t"), re.IGNORECASE):
+            result["dt"] = h
+            break
+    if "dt" in result:
+        return result
+
+    date_h = next((norm[k] for k in norm if re.match(r"^date$", k, re.IGNORECASE)), None)
+    time_h = next((norm[k] for k in norm if re.match(r"^time$", k, re.IGNORECASE)), None)
+    if date_h and time_h:
+        result["date"] = date_h
+        result["time"] = time_h
+    elif date_h:
+        result["dt"] = date_h  # single "date" column with full datetime (yfinance)
+    elif time_h:
+        result["dt"] = time_h  # single "time" column with full datetime (cTrader CSV)
+    return result
+
+
 def _detect_columns(headers: list[str]) -> dict[str, str] | None:
     """Map logical field names to actual CSV column headers."""
     result: dict[str, str] = {}
@@ -210,25 +239,8 @@ def _detect_columns(headers: list[str]) -> dict[str, str] | None:
         """Return the original header for the first normalised key that matches."""
         return next((norm[k] for k in norm if pattern.match(k)), None)
 
-    # Datetime: Dukascopy  uses "Gmt time"; cTrader "Date & Time"; MT4 "DATE"
-    for h in headers:
-        if re.search(r"(date.*time|gmt.*time|timestamp)", h.strip("<> \t"), re.IGNORECASE):
-            result["dt"] = h
-            break
-    if "dt" not in result:
-        # Try separate date + time columns (MT4/MT5 style, with or without brackets)
-        date_h = next((norm[k] for k in norm if re.match(r"^date$", k, re.IGNORECASE)), None)
-        time_h = next((norm[k] for k in norm if re.match(r"^time$", k, re.IGNORECASE)), None)
-        if date_h and time_h:
-            result["date"] = date_h
-            result["time"] = time_h
-        elif date_h:
-            # Single "date" column containing a full datetime string (e.g. yfinance export)
-            result["dt"] = date_h
-        elif time_h:
-            # Single "time" column containing a full datetime string (e.g. cTrader CSV export)
-            result["dt"] = time_h
-
+    # Datetime: Dukascopy uses "Gmt time"; cTrader "Date & Time"; MT4 "DATE"
+    result.update(_detect_datetime_columns(headers, norm))
     if "dt" not in result and "date" not in result:
         return None
 

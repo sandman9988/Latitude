@@ -218,7 +218,18 @@ class TabbedHUD:
         if self.thread:
             self.thread.join(timeout=2)
 
-    def _check_input(self):  # noqa: PLR0912
+    def _handle_escape_sequence(self, seq1: str) -> None:
+        """Handle CSI / Alt-key escape sequences following the ESC byte."""
+        if seq1 == "[":  # CSI sequence (e.g. Shift+Tab = \x1b[Z)
+            if select.select([sys.stdin], [], [], 0.01)[0]:
+                seq2 = sys.stdin.read(1)
+                if seq2 == "Z":  # Shift+Tab
+                    idx = self.TAB_ORDER.index(self.current_tab)
+                    self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
+        elif seq1 == "k":  # Alt+K — emergency kill switch
+            self._handle_kill_switch()
+
+    def _check_input(self):
         """Check for keyboard input (non-blocking)"""
         try:
             if select.select([sys.stdin], [], [], 0)[0]:
@@ -231,14 +242,7 @@ class TabbedHUD:
                 elif key == "\x1b":  # Escape sequence: Shift+Tab or Alt+<key>
                     if select.select([sys.stdin], [], [], 0.05)[0]:
                         seq1 = sys.stdin.read(1)
-                        if seq1 == "[":  # CSI sequence (e.g. Shift+Tab = \x1b[Z)
-                            if select.select([sys.stdin], [], [], 0.01)[0]:
-                                seq2 = sys.stdin.read(1)
-                                if seq2 == "Z":  # Shift+Tab
-                                    idx = self.TAB_ORDER.index(self.current_tab)
-                                    self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
-                        elif seq1 == "k":  # Alt+K — emergency kill switch
-                            self._handle_kill_switch()
+                        self._handle_escape_sequence(seq1)
                 elif key.lower() == "q" or key == "\x18":
                     self.running = False
                 elif key.lower() == "s":
@@ -1169,24 +1173,20 @@ class TabbedHUD:
         print("".join(tabs))
         print("─" * 80)
 
-    def _render_overview(self):  # noqa: PLR0915
-        """Render overview tab - compact summary"""
-        # Position
+    def _render_position_block(self) -> None:
+        """Render the position header block."""
         print("\n\033[1m📊 POSITION\033[0m")
         direction = self.position.get("direction", "FLAT")
         entry = self.position.get("entry_price", 0)
         current = self.position.get("current_price", 0)
         pnl = self.position.get("unrealized_pnl", 0)
         bars = self.position.get("bars_held", 0)
-
         dir_color = "\033[92m" if direction == "LONG" else ("\033[91m" if direction == "SHORT" else "\033[93m")
         pnl_color = self._pnl_color(pnl)
-
         print(
             f"  {dir_color}{direction}\033[0m @ {entry:.2f} → {current:.2f}  |  "
             f"PnL: {pnl_color}{pnl:+.2f}\033[0m  |  Bars: {bars}"
         )
-
         if direction != "FLAT":
             mfe = self.position.get("mfe", 0.0)
             mae = self.position.get("mae", 0.0)
@@ -1195,6 +1195,10 @@ class TabbedHUD:
             # MFE is max favourable excursion (positive = profit)
             # MAE is max adverse excursion stored as magnitude — display negated
             print(f"  MFE: {mfe_color}+{mfe:.2f}\033[0m  |  MAE: {mae_color}-{mae:.2f}\033[0m  (USD, excl. spread)")
+
+    def _render_overview(self):
+        """Render overview tab - compact summary"""
+        self._render_position_block()
 
         # Account balance / equity
         print("\n\033[1m💰 ACCOUNT\033[0m")
@@ -1249,21 +1253,7 @@ class TabbedHUD:
             f"Feasibility: {feas_color}{feas:.2f}\033[0m"
         )
 
-        # Training snapshot
-        print("\n\033[1m🧠 AGENT STATUS\033[0m")
-        trig_buf = self.training_stats.get("trigger_buffer_size", 0)
-        harv_buf = self.training_stats.get("harvester_buffer_size", 0)
-        trig_steps = self.training_stats.get("trigger_training_steps", 0)
-        harv_steps = self.training_stats.get("harvester_training_steps", 0)
-        trig_eps = self.training_stats.get("trigger_epsilon", 0.0)
-        harv_beta = self.training_stats.get("harvester_beta", 0.4)
-        total_agents = self.training_stats.get("total_agents", 0)
-
-        if total_agents > 0:
-            print(f"  Arena: {total_agents} agents  |  Trigger: {trig_buf:,} exp  |  Harvester: {harv_buf:,} exp")
-        else:
-            print(f"  Trigger:   {trig_buf:,} exp  |  {trig_steps:,} steps  |  ε={trig_eps:.4f}")
-            print(f"  Harvester: {harv_buf:,} exp  |  {harv_steps:,} steps  |  β={harv_beta:.4f}")
+        self._render_agent_status_block()
 
         # Market snapshot
         print("\n\033[1m🔬 MARKET\033[0m")
@@ -1277,20 +1267,36 @@ class TabbedHUD:
         _imb_label = "Imb" if _has_real else "QFI"
         print(f"  Spread: {spread:.5f}  |  VPIN: {vpin:.3f} {vpin_status}  |  {_imb_label}: {imb:+.3f}")
 
-        # ── System health (expanded) ──────────────────────────────────────────
+        self._render_system_health_block()
+
+    def _render_agent_status_block(self) -> None:
+        """Render the agent status (training snapshot) block."""
+        print("\n\033[1m🧠 AGENT STATUS\033[0m")
+        trig_buf = self.training_stats.get("trigger_buffer_size", 0)
+        harv_buf = self.training_stats.get("harvester_buffer_size", 0)
+        trig_steps = self.training_stats.get("trigger_training_steps", 0)
+        harv_steps = self.training_stats.get("harvester_training_steps", 0)
+        trig_eps = self.training_stats.get("trigger_epsilon", 0.0)
+        harv_beta = self.training_stats.get("harvester_beta", 0.4)
+        total_agents = self.training_stats.get("total_agents", 0)
+        if total_agents > 0:
+            print(f"  Arena: {total_agents} agents  |  Trigger: {trig_buf:,} exp  |  Harvester: {harv_buf:,} exp")
+        else:
+            print(f"  Trigger:   {trig_buf:,} exp  |  {trig_steps:,} steps  |  ε={trig_eps:.4f}")
+            print(f"  Harvester: {harv_buf:,} exp  |  {harv_steps:,} steps  |  β={harv_beta:.4f}")
+
+    def _render_system_health_block(self) -> None:  # noqa: C901, PLR0912, PLR0915
+        """Render the expanded system health rows and startup self-test."""
         _G = "\033[92m"
         _Y = "\033[93m"
         _R = "\033[91m"
-        _B = "\033[94m"
-        _DIM = "\033[90m"
         _RST = "\033[0m"
 
         def _ok(s: str) -> str: return f"{_G}✓ {s}{_RST}"
         def _warn(s: str) -> str: return f"{_Y}⚡ {s}{_RST}"
         def _bad(s: str) -> str: return f"{_R}✗ {s}{_RST}"
-        def _lbl(s: str) -> str: return f"\033[1m{s}\033[0m"
 
-        print(f"\n{_lbl('🏥 SYSTEM HEALTH')}")
+        print(f"\n\033[1m🏥 SYSTEM HEALTH\033[0m")
 
         # ── Row 1: Connectivity ───────────────────────────────────────────────
         # Freshness of the bot's most recent data write — use order_book.json mtime

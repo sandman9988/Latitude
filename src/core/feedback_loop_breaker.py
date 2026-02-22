@@ -106,7 +106,23 @@ class FeedbackLoopBreaker:
         # Persistence
         self.state_file = state_file or Path("data/feedback_loop_breaker.json")
 
-    def update(  # noqa: PLR0912, PLR0913
+    # ── Rolling-window helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _bounded_append(lst: list, value: float, max_len: int) -> None:
+        """Append to a bounded list, dropping the oldest entry when at capacity."""
+        lst.append(value)
+        if len(lst) > max_len:
+            lst.pop(0)
+
+    def _append_optional(self, lst: list, value: float | None, max_len: int) -> None:
+        """Append to a bounded list only when *value* is not None."""
+        if value is not None:
+            self._bounded_append(lst, value, max_len)
+
+    # ── Main update ───────────────────────────────────────────────────────────
+
+    def update(  # noqa: PLR0913
         self,
         bars_since_last_trade: int,
         current_volatility: float,
@@ -125,57 +141,24 @@ class FeedbackLoopBreaker:
         self.circuit_breaker_tripped = circuit_breakers_tripped
         self.bars_since_intervention += 1
 
-        # Track volatility
-        self.recent_volatilities.append(current_volatility)
-        if len(self.recent_volatilities) > self.no_trade_window_bars:
-            self.recent_volatilities.pop(0)
-
-        # Track performance metrics
-        if recent_sharpe is not None:
-            self.recent_sharpes.append(recent_sharpe)
-            if len(self.recent_sharpes) > _PERF_SNAPSHOT_WINDOW:  # Keep last 10 snapshots
-                self.recent_sharpes.pop(0)
-
-        if recent_win_rate is not None:
-            self.recent_win_rates.append(recent_win_rate)
-            if len(self.recent_win_rates) > _PERF_SNAPSHOT_WINDOW:
-                self.recent_win_rates.pop(0)
-
-        if action_entropy is not None:
-            self.recent_action_entropies.append(action_entropy)
-            if len(self.recent_action_entropies) > _ENTROPY_WINDOW:
-                self.recent_action_entropies.pop(0)
+        # Track rolling windows
+        self._bounded_append(self.recent_volatilities, current_volatility, self.no_trade_window_bars)
+        self._append_optional(self.recent_sharpes, recent_sharpe, _PERF_SNAPSHOT_WINDOW)
+        self._append_optional(self.recent_win_rates, recent_win_rate, _PERF_SNAPSHOT_WINDOW)
+        self._append_optional(self.recent_action_entropies, action_entropy, _ENTROPY_WINDOW)
 
         # Track circuit breaker duration
-        if circuit_breakers_tripped:
-            self.bars_since_circuit_breaker_trip += 1
-        else:
-            self.bars_since_circuit_breaker_trip = 0
+        self.bars_since_circuit_breaker_trip = (
+            self.bars_since_circuit_breaker_trip + 1 if circuit_breakers_tripped else 0
+        )
 
         # Check for feedback loops (in priority order)
-        signal = None
-
-        # 1. Circuit breaker stuck (highest priority)
-        signal = self._detect_circuit_breaker_loop()
-        if signal:
-            return signal
-
-        # 2. No-trade loop
-        signal = self._detect_no_trade_loop()
-        if signal:
-            return signal
-
-        # 3. Performance decay
-        signal = self._detect_performance_decay_loop()
-        if signal:
-            return signal
-
-        # 4. Exploration collapse
-        signal = self._detect_exploration_collapse(exploration_rate)
-        if signal:
-            return signal
-
-        return None
+        return (
+            self._detect_circuit_breaker_loop()
+            or self._detect_no_trade_loop()
+            or self._detect_performance_decay_loop()
+            or self._detect_exploration_collapse(exploration_rate)
+        )
 
     def _detect_circuit_breaker_loop(self) -> FeedbackLoopSignal | None:
         """Detect stuck circuit breakers."""

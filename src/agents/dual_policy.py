@@ -831,6 +831,18 @@ class DualPolicy:
     # ------------------------------------------------------------------
     # Persistence: save / load training state across restarts
     # ------------------------------------------------------------------
+
+    def _save_agent_weights(self, agent, label: str, path: str) -> bool:
+        """Save DDQN weights for one agent. Returns False on failure."""
+        if agent.ddqn is None:
+            return True
+        try:
+            agent.ddqn.save_weights(path)
+            return True
+        except Exception as e:
+            LOG.error("[CHECKPOINT] Failed to save %s weights: %s", label, e)
+            return False
+
     def save_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:
         """Save full training state: DDQN weights, buffers, epsilon, training_steps.
 
@@ -849,19 +861,8 @@ class DualPolicy:
         success = True
 
         # 1. Save DDQN weights
-        if self.trigger.ddqn is not None:
-            try:
-                self.trigger.ddqn.save_weights(f"{checkpoint_dir}/trigger_ddqn_weights.npz")
-            except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to save trigger weights: %s", e)
-                success = False
-
-        if self.harvester.ddqn is not None:
-            try:
-                self.harvester.ddqn.save_weights(f"{checkpoint_dir}/harvester_ddqn_weights.npz")
-            except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to save harvester weights: %s", e)
-                success = False
+        success &= self._save_agent_weights(self.trigger, "trigger", f"{checkpoint_dir}/trigger_ddqn_weights.npz")
+        success &= self._save_agent_weights(self.harvester, "harvester", f"{checkpoint_dir}/harvester_ddqn_weights.npz")
 
         # 2. Save experience buffers
         if self.trigger.buffer is not None and not self.trigger.buffer.save(f"{checkpoint_dir}/trigger_buffer"):

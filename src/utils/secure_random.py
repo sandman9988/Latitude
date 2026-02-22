@@ -182,38 +182,25 @@ class SecureRandom:
         Example:
             >>> pwd = SecureRandom.password(20, use_punctuation=True)
         """
-        alphabet = ""
-        if use_lowercase:
-            alphabet += string.ascii_lowercase
-        if use_uppercase:
-            alphabet += string.ascii_uppercase
-        if use_digits:
-            alphabet += string.digits
-        if use_punctuation:
-            alphabet += string.punctuation
+        # Table-driven: map each flag to its character set
+        charsets = [
+            (use_lowercase, string.ascii_lowercase),
+            (use_uppercase, string.ascii_uppercase),
+            (use_digits, string.digits),
+            (use_punctuation, string.punctuation),
+        ]
+        enabled = [cs for flag, cs in charsets if flag]
 
-        if not alphabet:
+        if not enabled:
             raise ValueError("At least one character set must be enabled")
 
-        # Generate password with at least one character from each enabled set
-        password_chars = []
+        alphabet = "".join(enabled)
 
-        # Ensure at least one char from each enabled set
-        if use_lowercase:
-            password_chars.append(secrets.choice(string.ascii_lowercase))
-        if use_uppercase:
-            password_chars.append(secrets.choice(string.ascii_uppercase))
-        if use_digits:
-            password_chars.append(secrets.choice(string.digits))
-        if use_punctuation:
-            password_chars.append(secrets.choice(string.punctuation))
+        # Seed at least one character from each enabled set, then fill the rest
+        password_chars = [secrets.choice(cs) for cs in enabled]
+        password_chars += [secrets.choice(alphabet) for _ in range(length - len(password_chars))]
 
-        # Fill remaining length
-        for _ in range(length - len(password_chars)):
-            password_chars.append(secrets.choice(alphabet))
-
-        # Shuffle to avoid predictable pattern
-        # Using Fisher-Yates shuffle with secrets
+        # Fisher-Yates shuffle using secrets for cryptographic quality
         for i in range(len(password_chars) - 1, 0, -1):
             j = secrets.randbelow(i + 1)
             password_chars[i], password_chars[j] = password_chars[j], password_chars[i]

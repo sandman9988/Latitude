@@ -786,7 +786,33 @@ class FrictionCalculator:
         # Cap at reasonable limit
         return min(commission, 100_000.0)
 
-    def calculate_swap(  # noqa: PLR0912
+    def _validated_triple_swap_day(self) -> int:
+        """Return triple_swap_day clamped to a valid weekday [0..6]."""
+        try:
+            tsd = int(self.costs.triple_swap_day)
+        except (TypeError, ValueError):
+            return DEFAULT_TRIPLE_SWAP_DAY
+        if tsd < MIN_WEEKDAY or tsd > MAX_WEEKDAY:
+            return DEFAULT_TRIPLE_SWAP_DAY
+        return tsd
+
+    def _count_swap_rollovers(self, crosses_rollover: bool, holding_days: float) -> int:
+        """
+        Count the number of swap rollovers for this holding period.
+
+        Adds TRIPLE_SWAP_EXTRA_DAYS extra on the triple-swap weekday to
+        account for the weekend financing charge.
+        """
+        now = datetime.now(UTC)
+        tsd = self._validated_triple_swap_day()
+        is_triple = now.weekday() == tsd
+
+        n = max(1, int(holding_days)) if crosses_rollover else int(holding_days)
+        if is_triple and n > 0:
+            n += TRIPLE_SWAP_EXTRA_DAYS
+        return n
+
+    def calculate_swap(
         self, quantity: float, side: str, holding_days: float = 1.0, crosses_rollover: bool = False, price: float = 0.0
     ) -> float:
         """
@@ -806,78 +832,30 @@ class FrictionCalculator:
             Swap cost in USD (negative = you pay, positive = you earn)
             Returns 0 for intraday trades that don't cross rollover
         """
-        from datetime import UTC, datetime  # noqa: PLC0415
-
         # INTRADAY TRADES: No swap if not crossing rollover
         # Most M5 trades (~2.4hrs) close before rollover → swap = 0
         if not crosses_rollover and holding_days < 1.0:
             return 0.0
 
         swap_rate = self.costs.swap_long if side.upper() == "BUY" else self.costs.swap_short
+        num_rollovers = self._count_swap_rollovers(crosses_rollover, holding_days)
 
         if self.costs.swap_type == "PIPS":
-            # Swap charged at rollover, in full day increments
-            now = datetime.now(UTC)
-            # Validate and normalize triple_swap_day to [0..6]
-            try:
-                tsd = int(self.costs.triple_swap_day)
-            except (TypeError, ValueError):
-                tsd = DEFAULT_TRIPLE_SWAP_DAY
-            if tsd < MIN_WEEKDAY or tsd > MAX_WEEKDAY:
-                tsd = DEFAULT_TRIPLE_SWAP_DAY  # Default to Wednesday
-            is_triple_swap_day = now.weekday() == tsd
-
-            # Calculate number of rollovers
-            if crosses_rollover:
-                # At least 1 rollover if crossing rollover time
-                num_rollovers = max(1, int(holding_days))
-                # Triple swap on Wednesday (accounts for weekend)
-                if is_triple_swap_day and num_rollovers > 0:
-                    num_rollovers += TRIPLE_SWAP_EXTRA_DAYS  # +2 extra days for weekend
-            else:
-                # Multi-day position: count full days
-                num_rollovers = int(holding_days)
-                if is_triple_swap_day and num_rollovers > 0:
-                    num_rollovers += TRIPLE_SWAP_EXTRA_DAYS
-
             # For XAUUSD: swap_long=-7.2 pips, pip_value=1.0, qty=0.1
             # Intraday (crosses_rollover=False): swap = $0
             # Overnight (crosses_rollover=True): swap = -$0.72 (1 rollover)
             # Wednesday overnight: swap = -$2.16 (3 rollovers for weekend)
-            swap_cost = swap_rate * self.costs.pip_value_per_lot * quantity * num_rollovers
+            return swap_rate * self.costs.pip_value_per_lot * quantity * num_rollovers
         elif self.costs.swap_type == "PERCENTAGE":
             # Swap as annual percentage of notional value, charged per rollover day
             # swap_rate is expressed as annual % (e.g., -2.5 means -2.5% per year)
             # Formula: notional * (swap_rate / 100) / 365 * num_rollover_days
             if price <= 0:
-                swap_cost = 0.0
-            else:
-                notional = quantity * self.costs.contract_size * price
-                daily_rate = swap_rate / 100.0 / 365.0
-
-                now = datetime.now(UTC)
-                try:
-                    tsd = int(self.costs.triple_swap_day)
-                except (TypeError, ValueError):
-                    tsd = DEFAULT_TRIPLE_SWAP_DAY
-                if tsd < MIN_WEEKDAY or tsd > MAX_WEEKDAY:
-                    tsd = DEFAULT_TRIPLE_SWAP_DAY
-                is_triple_swap_day = now.weekday() == tsd
-
-                if crosses_rollover:
-                    num_rollovers = max(1, int(holding_days))
-                    if is_triple_swap_day and num_rollovers > 0:
-                        num_rollovers += TRIPLE_SWAP_EXTRA_DAYS
-                else:
-                    num_rollovers = int(holding_days)
-                    if is_triple_swap_day and num_rollovers > 0:
-                        num_rollovers += TRIPLE_SWAP_EXTRA_DAYS
-
-                swap_cost = notional * daily_rate * num_rollovers
-        else:
-            swap_cost = 0.0
-
-        return swap_cost
+                return 0.0
+            notional = quantity * self.costs.contract_size * price
+            daily_rate = swap_rate / 100.0 / 365.0
+            return notional * daily_rate * num_rollovers
+        return 0.0
 
     def calculate_slippage_cost(self, quantity: float, side: str, volatility_factor: float = 1.0) -> float:
         """

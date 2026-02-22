@@ -180,6 +180,14 @@ class ProductionMonitor:
         # Save to file
         self._save_metrics()
 
+    def _log_new_alerts(self, alerts: list) -> None:
+        """Emit log lines for newly raised alerts."""
+        for alert in alerts:
+            if alert.severity in ("critical", "error"):
+                logger.error("🚨 ALERT [%s] %s: %s", alert.severity.upper(), alert.category, alert.message)
+            elif alert.severity == "warning":
+                logger.warning("⚠️  ALERT [WARNING] %s: %s", alert.category, alert.message)
+
     def _check_alerts(self):
         """Check for alert conditions."""
         if not self.metrics:
@@ -265,15 +273,8 @@ class ProductionMonitor:
                 )
             )
 
-        # Update active alerts
         self.active_alerts = new_alerts
-
-        # Log critical/error alerts
-        for alert in new_alerts:
-            if alert.severity in ("critical", "error"):
-                logger.error(f"🚨 ALERT [{alert.severity.upper()}] {alert.category}: {alert.message}")
-            elif alert.severity == "warning":
-                logger.warning(f"⚠️  ALERT [WARNING] {alert.category}: {alert.message}")
+        self._log_new_alerts(new_alerts)
 
     def _save_metrics(self):
         """Save metrics to JSON file."""

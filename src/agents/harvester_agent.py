@@ -755,7 +755,43 @@ class HarvesterAgent:
         exp_x = np.exp((x - np.max(x)) / temperature)
         return exp_x / exp_x.sum()
 
-    def update_from_trade(self, capture_ratio: float, was_wtl: bool):  # noqa: PLR0912
+    # ── Parameter learning helpers ────────────────────────────────────────────
+
+    def _profit_target_gradient(self, capture_ratio: float, was_wtl: bool) -> float:
+        """Return the gradient for the profit-target parameter based on trade outcome."""
+        if was_wtl:
+            LOG.info("[HARVESTER] WTL trade - reducing profit target")
+            return -0.15  # Should have exited earlier → reduce by 15%
+        if capture_ratio > HIGH_CAPTURE_RATIO:
+            LOG.debug("[HARVESTER] High capture %.2f%% - tightening target", capture_ratio * 100)
+            return -0.06
+        if capture_ratio < LOW_CAPTURE_RATIO:
+            LOG.info("[HARVESTER] Low capture %.2f%% - widening profit target", capture_ratio * 100)
+            return 0.10
+        LOG.debug("[HARVESTER] Capture %.2f%% - minor adjustment", capture_ratio * 100)
+        return (0.5 - capture_ratio) * 0.15  # Moderate capture → small nudge
+
+    def _trail_stop_gradient(self, capture_ratio: float, was_wtl: bool) -> float:
+        """Return the gradient for the trailing-stop distance."""
+        if was_wtl:
+            return -0.10  # Trailing stop too loose → tighten
+        if capture_ratio > EXCELLENT_CAPTURE_RATIO:
+            return 0.03  # Possibly too tight → loosen slightly
+        return 0.0
+
+    def _sl_gradient(self, was_wtl: bool) -> float:
+        """Return the gradient for the stop-loss parameter (WTL trades only)."""
+        if not was_wtl:
+            return 0.0
+        mfe_to_sl = getattr(self, "_last_mfe_pct", 0.0) / (self.stop_loss_pct + FLOAT_EPSILON)
+        if mfe_to_sl > MFE_TO_SL_RATIO_HIGH:
+            LOG.info("[HARVESTER] WTL with large MFE (%.2fx SL) → tightening stop loss", mfe_to_sl)
+            return -0.08  # MFE > 2x stop loss → SL too wide
+        if mfe_to_sl < MFE_TO_SL_RATIO_LOW:
+            LOG.debug("[HARVESTER] WTL with small MFE (%.2fx SL) → SL unchanged", mfe_to_sl)
+        return 0.0
+
+    def update_from_trade(self, capture_ratio: float, was_wtl: bool):
         """
         Update harvester exit thresholds based on trade outcome.
 
@@ -772,100 +808,32 @@ class HarvesterAgent:
             return  # No parameter manager, skip updates
 
         try:
-            # === Profit target adjustment ===
-            if was_wtl:
-                # WTL: Should have exited earlier → reduce profit target
-                profit_gradient = -0.15  # Reduce by 15% (3x faster)
-                LOG.info("[HARVESTER] WTL trade - reducing profit target")
-            elif capture_ratio > HIGH_CAPTURE_RATIO:
-                # Great capture → can tighten profit target slightly
-                profit_gradient = -0.06  # 3x faster
-                LOG.debug("[HARVESTER] High capture %.2f%% - tightening target", capture_ratio * 100)
-            elif capture_ratio < LOW_CAPTURE_RATIO:
-                # Poor capture → widen profit target to let winners run
-                profit_gradient = 0.10  # Less aggressive widening to prevent oscillation
-                LOG.info("[HARVESTER] Low capture %.2f%% - widening profit target", capture_ratio * 100)
-            else:
-                # Moderate capture → small adjustment
-                profit_gradient = (0.5 - capture_ratio) * 0.15
-                LOG.debug("[HARVESTER] Capture %.2f%% - minor adjustment", capture_ratio * 100)
-
-            # Update profit target parameter
+            profit_gradient = self._profit_target_gradient(capture_ratio, was_wtl)
             new_tp = self.param_manager.update(
-                self.symbol,
-                "harvester_profit_target_pct",
-                profit_gradient,
-                timeframe=self.timeframe,
-                broker=self.broker,
+                self.symbol, "harvester_profit_target_pct", profit_gradient,
+                timeframe=self.timeframe, broker=self.broker,
             )
-
-            # Update local cached value
             self.profit_target_pct = new_tp * self._get_timeframe_scale()
 
-            # === Trailing stop distance adjustment ===
-            if was_wtl:
-                # WTL: trailing stop was too loose → tighten it
-                trail_gradient = -0.10
-            elif capture_ratio > EXCELLENT_CAPTURE_RATIO:
-                # Excellent capture → trail might be too tight, loosen slightly
-                trail_gradient = 0.03
-            else:
-                trail_gradient = 0.0  # No change
-
+            trail_gradient = self._trail_stop_gradient(capture_ratio, was_wtl)
             if abs(trail_gradient) > FLOAT_EPSILON:
-                # Update trailing distance (not a learned param yet, adjust locally)
                 current_trail = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
-                new_trail = max(0.05, min(0.40, current_trail + trail_gradient * current_trail))
-                self.trailing_stop_distance_pct = new_trail
-                LOG.debug("[HARVESTER] Updated trailing distance: %.2f%%", new_trail)
+                self.trailing_stop_distance_pct = max(0.05, min(0.40, current_trail + trail_gradient * current_trail))
+                LOG.debug("[HARVESTER] Updated trailing distance: %.2f%%", self.trailing_stop_distance_pct)
 
-            # === Stop loss adjustment (adaptive risk management) ===
-            # Only adjust SL if we have clear signal it was inappropriate
-            sl_gradient = 0.0
-
-            if was_wtl:
-                # Winner-to-loser: check if SL was too wide
-                # If trade had significant MFE before becoming loser, SL should be tighter
-                mfe_to_sl_ratio = getattr(self, "_last_mfe_pct", 0.0) / (self.stop_loss_pct + FLOAT_EPSILON)
-                if mfe_to_sl_ratio > MFE_TO_SL_RATIO_HIGH:
-                    # Had MFE > 2x stop loss before going negative → SL too wide
-                    sl_gradient = -0.08  # Tighten by ~8%
-                    LOG.info(
-                        "[HARVESTER] WTL with large MFE (%.2fx SL) → tightening stop loss",
-                        mfe_to_sl_ratio,
-                    )
-                elif mfe_to_sl_ratio < MFE_TO_SL_RATIO_LOW:
-                    # Had minimal MFE before hitting SL → SL was appropriate, entry was poor
-                    sl_gradient = 0.0
-                    LOG.debug(
-                        "[HARVESTER] WTL with small MFE (%.2fx SL) → SL unchanged",
-                        mfe_to_sl_ratio,
-                    )
-
-            # Apply SL gradient if non-zero
+            sl_gradient = self._sl_gradient(was_wtl)
             if abs(sl_gradient) > FLOAT_EPSILON:
                 new_sl = self.param_manager.update(
-                    self.symbol,
-                    "harvester_stop_loss_pct",
-                    sl_gradient,
-                    timeframe=self.timeframe,
-                    broker=self.broker,
+                    self.symbol, "harvester_stop_loss_pct", sl_gradient,
+                    timeframe=self.timeframe, broker=self.broker,
                 )
-                # Update local cached value (scaling applied on next load)
                 self.stop_loss_pct = new_sl * self._get_timeframe_scale()
-                LOG.info(
-                    "[HARVESTER] Updated stop loss: %.4f%% (gradient=%.3f)",
-                    self.stop_loss_pct,
-                    sl_gradient,
-                )
+                LOG.info("[HARVESTER] Updated stop loss: %.4f%% (gradient=%.3f)", self.stop_loss_pct, sl_gradient)
 
-            # Persist updated parameters to disk
             self.param_manager.save()
-
             LOG.info(
                 "[HARVESTER] Updated profit target: %.2f%% (gradient=%.3f, saved to disk)",
-                self.profit_target_pct,
-                profit_gradient,
+                self.profit_target_pct, profit_gradient,
             )
 
         except (AttributeError, ValueError, TypeError, OSError) as exc:

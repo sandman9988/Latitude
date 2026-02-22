@@ -265,6 +265,35 @@ class TradeAnalyzer:
         else:
             return obj
 
+    def _print_mfe_mae_section(self, stats: dict) -> None:
+        """Print MFE/MAE and duration sub-sections (only when data is available)."""
+        if stats["avg_mfe"] is not None:
+            print(f"\n{'MFE/MAE ANALYSIS':-^80}")
+            print(f"Average MFE:         ${stats['avg_mfe']:>10.2f}")
+            print(f"Average MAE:         ${stats['avg_mae']:>10.2f}")
+            print(f"Avg Capture Eff:     {stats['avg_capture_efficiency']*100:>9.2f}%")
+
+        if stats["avg_duration_seconds"] is not None:
+            print(f"\n{'DURATION ANALYSIS':-^80}")
+            print(f"Avg Duration:        {stats['avg_duration_seconds']/60:>10.1f} minutes")
+            print(f"Median Duration:     {stats['median_duration_seconds']/60:>10.1f} minutes")
+
+    def _print_dual_agent_section(self, dual: dict) -> None:
+        """Print dual-agent analysis sub-section."""
+        if "error" in dual:
+            return
+        print(f"\n{'DUAL-AGENT ANALYSIS':-^80}")
+        if dual.get("trigger_quality_distribution"):
+            print("\nTrigger Quality Distribution:")
+            for quality, count in sorted(dual["trigger_quality_distribution"].items()):
+                print(f"  {quality:<20} {count:>5} trades")
+        if dual.get("harvester_quality_distribution"):
+            print("\nHarvester Quality Distribution:")
+            for quality, count in sorted(dual["harvester_quality_distribution"].items()):
+                print(f"  {quality:<20} {count:>5} trades")
+        if dual.get("avg_runway_error_pct") is not None:
+            print(f"\nRunway Prediction Error: {dual['avg_runway_error_pct']:.2f}%")
+
     def print_report(self):  # noqa: PLR0915
         """Print comprehensive analysis report to console."""
         stats = self.get_summary_stats()
@@ -291,16 +320,7 @@ class TradeAnalyzer:
         print(f"Max Win Streak:      {stats['max_win_streak']:>10}")
         print(f"Max Loss Streak:     {stats['max_loss_streak']:>10}")
 
-        if stats["avg_mfe"] is not None:
-            print(f"\n{'MFE/MAE ANALYSIS':-^80}")
-            print(f"Average MFE:         ${stats['avg_mfe']:>10.2f}")
-            print(f"Average MAE:         ${stats['avg_mae']:>10.2f}")
-            print(f"Avg Capture Eff:     {stats['avg_capture_efficiency']*100:>9.2f}%")
-
-        if stats["avg_duration_seconds"] is not None:
-            print(f"\n{'DURATION ANALYSIS':-^80}")
-            print(f"Avg Duration:        {stats['avg_duration_seconds']/60:>10.1f} minutes")
-            print(f"Median Duration:     {stats['median_duration_seconds']/60:>10.1f} minutes")
+        self._print_mfe_mae_section(stats)
 
         # Hourly analysis
         print(f"\n{'BEST HOURS (Top 5)':-^80}")
@@ -320,22 +340,7 @@ class TradeAnalyzer:
                 f"{day:<15} ${row['total_pnl']:<13.2f} ${row['avg_pnl']:<13.2f} {int(row['num_trades']):<10} {row['win_rate']*100:.1f}%"
             )
 
-        # Dual-agent analysis
-        dual = self.analyze_dual_agents()
-        if "error" not in dual:
-            print(f"\n{'DUAL-AGENT ANALYSIS':-^80}")
-            if dual.get("trigger_quality_distribution"):
-                print("\nTrigger Quality Distribution:")
-                for quality, count in sorted(dual["trigger_quality_distribution"].items()):
-                    print(f"  {quality:<20} {count:>5} trades")
-
-            if dual.get("harvester_quality_distribution"):
-                print("\nHarvester Quality Distribution:")
-                for quality, count in sorted(dual["harvester_quality_distribution"].items()):
-                    print(f"  {quality:<20} {count:>5} trades")
-
-            if dual.get("avg_runway_error_pct") is not None:
-                print(f"\nRunway Prediction Error: {dual['avg_runway_error_pct']:.2f}%")
+        self._print_dual_agent_section(self.analyze_dual_agents())
 
         # Best and worst trades
         print(f"\n{'BEST TRADES (Top 5)':-^80}")
