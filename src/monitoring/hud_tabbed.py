@@ -1753,34 +1753,14 @@ class TabbedHUD:
         print(f"    Vol cap:           {vol_cap * 100:>9.2f}%  \033[90m(max position vol allowed)\033[0m")
         print(f"    Vol reference:     {vol_ref * 100:>9.3f}%  \033[90m(baseline for cap calc)\033[0m")
 
-    def _render_market(self):  # noqa: PLR0912, PLR0915
-        """Render market microstructure"""
-        print("\n\033[1m🔬 MARKET MICROSTRUCTURE\033[0m\n")
-
-        ms = self.market_stats
-
-        # Spread analysis
-        print("  \033[1m💹 SPREAD & LIQUIDITY\033[0m")
-        spread = ms.get("spread", 0)
-        depth_bid = ms.get("depth_bid", 0)
-        depth_ask = ms.get("depth_ask", 0)
-        bids = ms.get("order_book_bids", [])  # [[price, size], ...]
-        asks = ms.get("order_book_asks", [])  # [[price, size], ...]
-        dec = self._price_decimals(bids[0][0] if bids else asks[0][0] if asks else 0.0)
-
-        print(f"    Bid-Ask Spread:    {spread:>12.{dec}f}")
-        print()
-
-        # L2 order book ladder — always 5 rows so layout never shifts
+    def _render_order_book_ladder(self, bids: list, asks: list, depth_bid: float, depth_ask: float, dec: int) -> None:
+        """Render the L2 order-book price ladder (5 rows, aligned columns)."""
         N = 5
-        padded_asks = (asks + [[0.0, 0.0]] * N)[:N]  # cheapest first
-        padded_bids = (bids + [[0.0, 0.0]] * N)[:N]  # best first
-
-        # Size bar scale: max size across all visible levels
+        padded_asks = (asks + [[0.0, 0.0]] * N)[:N]
+        padded_bids = (bids + [[0.0, 0.0]] * N)[:N]
         all_sizes = [s for _, s in bids + asks if s > 0]
         max_sz = max(all_sizes) if all_sizes else 1.0
         BAR = 12
-
         print(f"    {'SIZE':>8}  {'BID':>{dec+6}}  {'ASK':<{dec+6}}  {'SIZE':<8}")
         print("    " + "─" * (BAR * 2 + dec * 2 + 18))
         for ask_row, bid_row in zip(reversed(padded_asks), padded_bids, strict=False):
@@ -1795,70 +1775,9 @@ class TabbedHUD:
             print(f"    {b_str}  {b_px_str}  {a_px_str}  {a_str}")
         print("    " + "─" * (BAR * 2 + dec * 2 + 18))
         print(f"    Total: \033[92m{depth_bid:>8.2f}\033[0m              \033[91m{depth_ask:>8.2f}\033[0m")
-        print()
 
-        # Order flow toxicity
-        print("  \033[1m☢️  ORDER FLOW TOXICITY (VPIN)\033[0m")
-        ms.get("vpin", 0)
-        vpin_z = ms.get("vpin_z", 0)
-
-        if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD:
-            vpin_status = "\033[91m⚠️  HIGH TOXICITY\033[0m"
-        elif abs(vpin_z) > VPIN_ELEVATED_TOXICITY_THRESHOLD:
-            vpin_status = "\033[93m⚡ ELEVATED\033[0m"
-        else:
-            vpin_status = "\033[92m✓ NORMAL\033[0m"
-
-        print(f"    VPIN Z-Score:      {vpin_z:>+12.2f}")
-        print(f"    Status:            {vpin_status}")
-        print("                       \033[90mHigh +z = informed sellers active → widen stops / reduce size\033[0m")
-
-        # VPIN gauge
-        bar_len = 40
-        # Normalize z-score to 0-1 range (-3 to +3 -> 0 to 1)
-        z_norm = (vpin_z + 3) / 6
-        z_norm = max(0, min(1, z_norm))
-        pos = int(bar_len * z_norm)
-        gauge = "░" * pos + "│" + "░" * (bar_len - pos - 1)
-        print(f"\n    Z: [{gauge}]")
-        print("       -3              0              +3")
-
-        print()
-
-        # Order imbalance — read QFI-based value from market_stats (set by bot)
-        print("  \033[1m⚖️  ORDER IMBALANCE (QFI)\033[0m")
-        has_real_sizes = ms.get("has_real_sizes", False)
-        qfi_updates = int(ms.get("qfi_update_count", 0))
-        imbalance = ms.get("imbalance", 0.0)
-        signal_source = "size-weighted" if has_real_sizes else "quote-flow (QFI)"
-
-        if imbalance > IMBALANCE_BUY_THRESHOLD:
-            imb_status = "\033[92m🔺 BUY PRESSURE\033[0m"
-        elif imbalance < IMBALANCE_SELL_THRESHOLD:
-            imb_status = "\033[91m🔻 SELL PRESSURE\033[0m"
-        else:
-            imb_status = "\033[93m⚖️  BALANCED\033[0m"
-
-        print(f"    Imbalance:         {imbalance:>+12.4f}")
-        print(f"    Signal source:     {signal_source}  (updates: {qfi_updates})")
-        print(f"    Status:            {imb_status}")
-
-        # Imbalance visualization
-        bar_len = 40
-        mid = bar_len // 2
-        imb_scaled = int(mid * imbalance)  # -1 to +1 -> -20 to +20
-
-        if imbalance >= 0:
-            bar = " " * mid + "\033[92m" + "█" * imb_scaled + "\033[0m" + " " * (mid - imb_scaled)
-        else:
-            bar = " " * (mid + imb_scaled) + "\033[91m" + "█" * (-imb_scaled) + "\033[0m" + " " * mid
-
-        print(f"\n    [{bar}]")
-        print("     SELL              ↕              BUY")
-
-        # ── Signal synthesis ──────────────────────────────────────────────
-        # Combine regime + VPIN + imbalance into a one-line advisory
-        # so the operator can immediately sanity-check agent decisions.
+    def _render_signal_synthesis(self, vpin_z: float, imbalance: float) -> None:
+        """Render the signal synthesis advisory block."""
         print()
         print("  \033[1m🧭 SIGNAL SYNTHESIS\033[0m")
         rs_regime = self.risk_stats.get("regime", "UNKNOWN")
@@ -1866,7 +1785,6 @@ class TabbedHUD:
         rs_runway = float(self.risk_stats.get("runway", 0.0))
         toxic     = abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD
         gate      = self.risk_stats.get("depth_gate_active", False)
-
         signals = []
         if rs_feas < FEASIBILITY_MEDIUM_THRESHOLD:
             signals.append("\033[91m✗ Low feasibility — no new entries\033[0m")
@@ -1885,6 +1803,80 @@ class TabbedHUD:
             signals.append("\033[90m— No strong signals; model discretion applies\033[0m")
         for s in signals:
             print(f"    {s}")
+
+    def _render_market(self):
+        """Render market microstructure"""
+        print("\n\033[1m🔬 MARKET MICROSTRUCTURE\033[0m\n")
+
+        ms = self.market_stats
+
+        # Spread analysis
+        print("  \033[1m💹 SPREAD & LIQUIDITY\033[0m")
+        spread = ms.get("spread", 0)
+        depth_bid = ms.get("depth_bid", 0)
+        depth_ask = ms.get("depth_ask", 0)
+        bids = ms.get("order_book_bids", [])  # [[price, size], ...]
+        asks = ms.get("order_book_asks", [])  # [[price, size], ...]
+        dec = self._price_decimals(bids[0][0] if bids else asks[0][0] if asks else 0.0)
+
+        print(f"    Bid-Ask Spread:    {spread:>12.{dec}f}")
+        print()
+        self._render_order_book_ladder(bids, asks, depth_bid, depth_ask, dec)
+        print()
+
+        # Order flow toxicity
+        print("  \033[1m☢️  ORDER FLOW TOXICITY (VPIN)\033[0m")
+        vpin_z = ms.get("vpin_z", 0)
+
+        if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD:
+            vpin_status = "\033[91m⚠️  HIGH TOXICITY\033[0m"
+        elif abs(vpin_z) > VPIN_ELEVATED_TOXICITY_THRESHOLD:
+            vpin_status = "\033[93m⚡ ELEVATED\033[0m"
+        else:
+            vpin_status = "\033[92m✓ NORMAL\033[0m"
+
+        print(f"    VPIN Z-Score:      {vpin_z:>+12.2f}")
+        print(f"    Status:            {vpin_status}")
+        print("                       \033[90mHigh +z = informed sellers active → widen stops / reduce size\033[0m")
+
+        # VPIN gauge
+        bar_len = 40
+        z_norm = max(0, min(1, (vpin_z + 3) / 6))
+        pos = int(bar_len * z_norm)
+        gauge = "░" * pos + "│" + "░" * (bar_len - pos - 1)
+        print(f"\n    Z: [{gauge}]")
+        print("       -3              0              +3")
+        print()
+
+        # Order imbalance
+        print("  \033[1m⚖️  ORDER IMBALANCE (QFI)\033[0m")
+        has_real_sizes = ms.get("has_real_sizes", False)
+        qfi_updates = int(ms.get("qfi_update_count", 0))
+        imbalance = ms.get("imbalance", 0.0)
+        signal_source = "size-weighted" if has_real_sizes else "quote-flow (QFI)"
+
+        if imbalance > IMBALANCE_BUY_THRESHOLD:
+            imb_status = "\033[92m🔺 BUY PRESSURE\033[0m"
+        elif imbalance < IMBALANCE_SELL_THRESHOLD:
+            imb_status = "\033[91m🔻 SELL PRESSURE\033[0m"
+        else:
+            imb_status = "\033[93m⚖️  BALANCED\033[0m"
+
+        print(f"    Imbalance:         {imbalance:>+12.4f}")
+        print(f"    Signal source:     {signal_source}  (updates: {qfi_updates})")
+        print(f"    Status:            {imb_status}")
+
+        # Imbalance visualization
+        mid = bar_len // 2
+        imb_scaled = int(mid * imbalance)
+        if imbalance >= 0:
+            bar = " " * mid + "\033[92m" + "█" * imb_scaled + "\033[0m" + " " * (mid - imb_scaled)
+        else:
+            bar = " " * (mid + imb_scaled) + "\033[91m" + "█" * (-imb_scaled) + "\033[0m" + " " * mid
+        print(f"\n    [{bar}]")
+        print("     SELL              ↕              BUY")
+
+        self._render_signal_synthesis(vpin_z, imbalance)
 
     def _render_footer(self):
         """Render footer with controls and data freshness"""

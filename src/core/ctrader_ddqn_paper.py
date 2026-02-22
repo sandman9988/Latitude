@@ -1855,7 +1855,43 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[TRADE] Error loading symbol_specs.json: %s", e)
 
-    def on_security_list(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
+    def _parse_security_group(self, msg: fix.Message, idx: int) -> tuple[str, int] | None:
+        """Parse NoRelatedSym group at 1-based index idx+1. Returns (symbol_name, sec_id) or None."""
+        try:
+            grp = fix44.SecurityList.NoRelatedSym()
+            msg.getGroup(idx + 1, grp)
+            symbol = fix.Symbol()
+            symbol_name = None
+            if grp.isSetField(symbol):
+                grp.getField(symbol)
+                symbol_name = symbol.getValue()
+            security_id = fix.SecurityID()
+            sec_id = None
+            if grp.isSetField(security_id):
+                grp.getField(security_id)
+                try:
+                    sec_id = int(security_id.getValue())
+                except ValueError:
+                    sec_id = None
+            return (symbol_name, sec_id) if (symbol_name and sec_id) else None
+        except Exception as e:
+            LOG.debug("[TRADE] Failed to parse symbol group %d: %s", idx, e)
+            return None
+
+    def _resolve_pending_symbol_id(self) -> None:
+        """If symbol_id_pending, resolve from cache and proceed with startup."""
+        if not self.symbol_id_pending:
+            return
+        resolved = self.lookup_symbol_id(self.symbol)
+        if resolved:
+            self.symbol_id = resolved
+            self.symbol_id_pending = False
+            LOG.info("[TRADE] ✓ Resolved %s -> ID %d from SecurityList", self.symbol, self.symbol_id)
+            self._complete_trade_session_startup()
+        else:
+            LOG.error("[TRADE] ✗ Failed to resolve symbol ID for %s - check symbol name", self.symbol)
+
+    def on_security_list(self, msg: fix.Message):
         """Parse SecurityList (35=y) response and populate symbol_id_cache.
 
         Maps symbol names to broker IDs for dynamic symbol resolution.
@@ -1865,76 +1901,31 @@ class CTraderFixApp(fix.Application):
             sec_req_result = fix.IntField(560)  # SecurityRequestResult
             if msg.isSetField(sec_req_result):
                 msg.getField(sec_req_result)
-                result = sec_req_result.getValue()
-                _VALID_SECURITY_REQUEST = 0
-                if result != _VALID_SECURITY_REQUEST:
-                    LOG.error("[TRADE] SecurityList request failed with result=%d", result)
+                if sec_req_result.getValue() != 0:
+                    LOG.error("[TRADE] SecurityList request failed with result=%d", sec_req_result.getValue())
                     return
 
             # Get total count
             tot_related_sym = fix.TotNoRelatedSym()
-            total = 0
             if msg.isSetField(tot_related_sym):
                 msg.getField(tot_related_sym)
-                total = tot_related_sym.getValue()
-                LOG.info("[TRADE] SecurityList received with %d symbols", total)
+                LOG.info("[TRADE] SecurityList received with %d symbols", tot_related_sym.getValue())
 
-            # Parse each symbol in the group
+            # Parse each symbol group
             no_related_sym = fix.NoRelatedSym()
             if msg.isSetField(no_related_sym):
                 msg.getField(no_related_sym)
-                count = int(no_related_sym.getValue())
-
-                for i in range(count):
-                    try:
-                        # Extract symbol group
-                        grp = fix44.SecurityList.NoRelatedSym()
-                        msg.getGroup(i + 1, grp)  # Groups are 1-indexed
-
-                        # Get Symbol name
-                        symbol = fix.Symbol()
-                        symbol_name = None
-                        if grp.isSetField(symbol):
-                            grp.getField(symbol)
-                            symbol_name = symbol.getValue()
-
-                        # Get SecurityID (broker's numeric ID)
-                        security_id = fix.SecurityID()
-                        sec_id = None
-                        if grp.isSetField(security_id):
-                            grp.getField(security_id)
-                            try:
-                                sec_id = int(security_id.getValue())
-                            except ValueError:
-                                sec_id = None
-
-                        # Store in cache
-                        if symbol_name and sec_id:
-                            self.symbol_id_cache[symbol_name.upper()] = sec_id
-
-                    except Exception as e:
-                        LOG.debug("[TRADE] Failed to parse symbol group %d: %s", i, e)
-                        continue
+                for i in range(int(no_related_sym.getValue())):
+                    pair = self._parse_security_group(msg, i)
+                    if pair:
+                        self.symbol_id_cache[pair[0].upper()] = pair[1]
 
             self.security_list_received = True
             LOG.info("[TRADE] ✓ Symbol cache populated with %d symbols", len(self.symbol_id_cache))
-
-            # Log a few examples
-            examples = list(self.symbol_id_cache.items())[:5]
-            for sym, sid in examples:
+            for sym, sid in list(self.symbol_id_cache.items())[:5]:
                 LOG.debug("[TRADE]   %s -> %d", sym, sid)
 
-            # If we were waiting for symbol ID, resolve it now
-            if self.symbol_id_pending:
-                resolved = self.lookup_symbol_id(self.symbol)
-                if resolved:
-                    self.symbol_id = resolved
-                    self.symbol_id_pending = False
-                    LOG.info("[TRADE] ✓ Resolved %s -> ID %d from SecurityList", self.symbol, self.symbol_id)
-                    # Now proceed with the rest of the startup sequence
-                    self._complete_trade_session_startup()
-                else:
-                    LOG.error("[TRADE] ✗ Failed to resolve symbol ID for %s - check symbol name", self.symbol)
+            self._resolve_pending_symbol_id()
 
         except Exception as e:
             LOG.error("[TRADE] Error parsing SecurityList: %s", e, exc_info=True)
