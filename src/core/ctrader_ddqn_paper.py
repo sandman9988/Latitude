@@ -2847,7 +2847,227 @@ class CTraderFixApp(fix.Application):
 
         return pnl
 
-    def _process_trade_completion(self, summary: dict, exit_price: float):  # noqa: PLR0912, PLR0915
+    def _add_trigger_experience(
+        self, summary: dict, pnl: float, pnl_pts: float, entry_price: float, realized_vol: float
+    ) -> float:
+        """Add TriggerAgent experience to replay buffer. Returns trigger_reward (0.0 if skipped)."""
+        if not (hasattr(self.policy, "add_trigger_experience") and self.entry_state is not None):
+            self.entry_state = None
+            self.predicted_runway = 0.0
+            return 0.0
+
+        _trigger_agent = getattr(self.policy, "trigger", None)
+        next_state = getattr(_trigger_agent, "last_state", None) if _trigger_agent else None
+        if next_state is None:
+            self.entry_state = None
+            self.predicted_runway = 0.0
+            return 0.0
+
+        was_explore = getattr(self, "was_exploration_entry", False)
+        if was_explore:
+            _ep_lot = max(self.qty * self.contract_size, 1.0)
+            _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
+            _ep_vol_pts = max(realized_vol * _ep_price, 1e-6)
+            trigger_reward = float(np.clip((pnl / _ep_lot) / _ep_vol_pts / 3.0, -0.5, 0.5))
+            LOG.info(
+                "[ONLINE_LEARNING] Exploration entry: using outcome reward=%.4f "
+                "(skipping prediction-accuracy reward)",
+                trigger_reward,
+            )
+        else:
+            trigger_reward = self._calculate_trigger_reward(
+                trade_summary=summary,
+                predicted_runway=self.predicted_runway,
+                realized_vol=realized_vol,
+            )
+
+        self.policy.add_trigger_experience(
+            state=self.entry_state, action=self.entry_action, reward=trigger_reward,
+            next_state=next_state, done=True,
+        )
+        if hasattr(_trigger_agent, "buffer") and _trigger_agent.buffer:
+            LOG.info("[BUFFER] TriggerAgent buffer size: %d", _trigger_agent.buffer.size)
+        LOG.info(
+            "[ONLINE_LEARNING] Added TriggerAgent experience: action=%d reward=%.4f "
+            "(predicted_mfe=%.4f actual_mfe=%.4f explore=%s)",
+            self.entry_action, trigger_reward, self.predicted_runway, summary.get("mfe", 0.0), was_explore,
+        )
+
+        # Prediction-vs-actual convergence tracking (always update, even for exploration)
+        _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
+        _pred_pts = self.predicted_runway * _ep_price
+        _actual_mfe = float(summary.get("mfe", 0.0))
+        _runway_delta = _pred_pts - _actual_mfe
+        _max_err = max(abs(_actual_mfe), abs(_pred_pts), 1.0)
+        _runway_acc = 1.0 - min(abs(_runway_delta) / _max_err, 1.0)
+        _actual_win = 1.0 if pnl > 0 else 0.0
+        _conf_err = abs(self.entry_confidence - _actual_win)
+        _alpha = 0.1
+        self._runway_delta_ema = (1 - _alpha) * self._runway_delta_ema + _alpha * _runway_delta
+        self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * _runway_acc
+        self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * _conf_err
+
+        self.entry_state = None
+        self.predicted_runway = 0.0
+        return trigger_reward
+
+    def _add_harvester_experience(
+        self, shaped_rewards: dict, summary: dict,
+        entry_price: float, exit_price: float, pnl_pts: float, trigger_reward: float,
+    ) -> None:
+        """Add HarvesterAgent CLOSE experience and persist raw-bar trade record."""
+        if not (hasattr(self.policy, "add_harvester_experience") and self.prev_harvester_state is not None):
+            return
+
+        raw_close_reward = shaped_rewards.get("total_reward", 0.0)
+        _entry_var = getattr(self, "entry_var", 0.0)
+        _entry_vpin = getattr(self, "entry_vpin_z", 0.0)
+        regime_adj = 0.0
+        if _entry_var > self.vol_cap:
+            regime_adj -= 0.3 * min(_entry_var / (self.vol_cap + 1e-8), 2.0)
+        if self.vpin_z_threshold > 0 and _entry_vpin > self.vpin_z_threshold:
+            regime_adj -= 0.2 * min(_entry_vpin / (self.vpin_z_threshold + 1e-8), 2.0)
+        LOG.debug(
+            "[CLOSE_REWARD] raw=%.4f regime_adj=%.4f (entry_var=%.4f entry_vpin=%.2f)",
+            raw_close_reward, regime_adj, _entry_var, _entry_vpin,
+        )
+        capture_reward = float(np.clip(raw_close_reward + regime_adj, -2.0, 2.0))
+
+        _harvester = getattr(self.policy, "harvester", None)
+        next_state = getattr(_harvester, "last_state", None) if _harvester else None
+        if next_state is not None:
+            self.policy.add_harvester_experience(
+                state=self.prev_harvester_state, action=1, reward=capture_reward,
+                next_state=next_state, done=True,
+            )
+            if getattr(_harvester, "buffer", None):
+                LOG.info("[BUFFER] HarvesterAgent buffer size: %d", _harvester.buffer.size)
+            LOG.info("[ONLINE_LEARNING] Added HarvesterAgent CLOSE: reward=%.4f", capture_reward)
+
+        self.prev_harvester_state = None
+        self.prev_exit_action = None
+        self.prev_mfe = 0.0
+        self.prev_mae = 0.0
+        self._bar_cache.record_trade(
+            bars=self.bars,
+            trigger_action=self.entry_action or 0,
+            trigger_reward=float(trigger_reward),
+            capture_reward=float(capture_reward),
+            entry_price=float(entry_price),
+            exit_price=float(exit_price),
+            pnl_pts=float(pnl_pts),
+            mfe=float(summary.get("mfe", 0.0)),
+            mae=float(summary.get("mae", 0.0)),
+            regime=str(getattr(self.policy, "current_regime", "UNKNOWN")),
+            was_explore=getattr(self, "was_exploration_entry", False),
+            imbalance=float(getattr(self, "entry_imbalance", 0.0)),
+            vpin_z=float(self.entry_vpin_z),
+            depth_ratio=1.0,
+        )
+
+    def _update_performance_after_trade(
+        self, pnl: float, exit_time, entry_price: float, exit_price: float, summary: dict
+    ) -> None:
+        """Update performance tracker, adapt reward weights, and log dashboard."""
+        if not self.trade_entry_time:
+            return
+        metrics = self.performance.get_metrics()
+        current_sharpe = metrics.get("sharpe_ratio", 0.0)
+        sharpe_delta = current_sharpe - self.previous_sharpe
+        if (
+            self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0
+            and self.performance.total_trades > MIN_TRADES_FOR_ADAPTATION
+        ):
+            self.reward_shaper.adapt_weights(sharpe_delta)
+            LOG.info("[REWARD] Adapted weights based on Sharpe delta: %+.4f", sharpe_delta)
+            LOG.info(self.reward_shaper.print_summary())
+        self.previous_sharpe = current_sharpe
+        if self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0:
+            LOG.info("\n" + self.performance.print_dashboard())
+        else:
+            LOG.info(
+                "[PERF] Trades: %d | Win Rate: %.1f%% | Total PnL: $%.2f | Sharpe: %.3f | Max DD: %.1f%%",
+                metrics["total_trades"],
+                metrics.get("win_rate", 0.0) * 100,
+                metrics.get("total_pnl", 0.0),
+                metrics.get("sharpe_ratio", 0.0),
+                metrics.get("max_drawdown", 0.0) * 100,
+            )
+
+    def _complete_trade_processing(
+        self, summary: dict, pnl: float, exit_time, entry_price: float, exit_price: float
+    ) -> None:
+        """Orchestrate RL experience, circuit breakers, trade save, and performance after a trade."""
+        if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
+            self.prev_harvester_state = (
+                self.policy.harvester.last_state.copy()
+                if self.policy.harvester.last_state is not None else None
+            )
+            self.prev_exit_action = 1
+        if self.entry_action is None:
+            self.entry_action = 1 if summary.get("direction") == "LONG" else 2
+
+        lot_value = max(self.qty * self.contract_size, 1.0)
+        pnl_pts = pnl / lot_value
+        reward_data = {
+            "exit_pnl": pnl_pts,
+            "mfe": summary.get("mfe", 0.0),
+            "mae": summary.get("mae", 0.0),
+            "winner_to_loser": summary.get("winner_to_loser", False),
+        }
+        shaped_rewards = self.reward_shaper.calculate_total_reward(reward_data)
+        if summary.get("mfe", 0.0) > 0 and hasattr(self.reward_shaper, "update_baseline_mfe"):
+            self.reward_shaper.update_baseline_mfe(summary["mfe"])
+        LOG.info(
+            "[REWARD] Capture: %+.4f | WTL Penalty: %+.4f | Opportunity: %+.4f | Total: %+.4f | Active: %d",
+            shaped_rewards["capture_efficiency"], shaped_rewards["wtl_penalty"],
+            shaped_rewards["opportunity_cost"], shaped_rewards["total_reward"],
+            shaped_rewards["components_active"],
+        )
+
+        realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.01
+        trigger_reward = self._add_trigger_experience(summary, pnl, pnl_pts, entry_price, realized_vol)
+        self._add_harvester_experience(shaped_rewards, summary, entry_price, exit_price, pnl_pts, trigger_reward)
+
+        current_equity = self.performance.total_pnl + 10000.0
+        self.circuit_breakers.update_trade(pnl, current_equity)
+        breaker_status = self.circuit_breakers.get_status()
+        if breaker_status["any_tripped"]:
+            LOG.warning("[CIRCUIT-BREAKER] Status after trade: %s", breaker_status)
+        self.circuit_breakers.reset_if_cooldown_elapsed()
+        try:
+            self.circuit_breakers.save_state()
+        except Exception as cb_save_err:
+            LOG.warning("[CIRCUIT-BREAKER] Failed to save state: %s", cb_save_err)
+
+        self.entry_action = None
+
+        trade_record = {
+            "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
+            "symbol": self.symbol,
+            "direction": summary.get("direction", "UNKNOWN"),
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "entry_time": self.trade_entry_time.isoformat() if self.trade_entry_time else None,
+            "exit_time": exit_time.isoformat(),
+            "pnl": pnl,
+            "mfe": summary.get("mfe", 0.0),
+            "mae": summary.get("mae", 0.0),
+            "winner_to_loser": summary.get("winner_to_loser", False),
+        }
+        try:
+            self._atomic_save_trade(trade_record)
+        except Exception as save_err:
+            LOG.error("[SAVE] Trade save failed: %s", save_err, exc_info=True)
+
+        self._update_performance_after_trade(pnl, exit_time, entry_price, exit_price, summary)
+        LOG.info(
+            "[TRADE_COMPLETION] ✓ Processed: %s entry=%.2f exit=%.2f pnl=%.4f mfe=%.4f",
+            summary.get("direction", "?"), entry_price, exit_price, pnl, summary.get("mfe", 0.0),
+        )
+        self._flush_production_metrics()
+
+    def _process_trade_completion(self, summary: dict, exit_price: float):
         """Process a completed trade round-trip for experience collection and performance tracking.
 
         Called from:
@@ -2858,7 +3078,6 @@ class CTraderFixApp(fix.Application):
             summary: MFE/MAE tracker summary dict with entry_price, direction, mfe, mae, etc.
             exit_price: The exit fill price
         """
-        # Function entry logging
         LOG.debug(
             "[TRADE_COMPLETION] Entry: direction=%s entry=%.2f exit=%.2f mfe=%.4f mae=%.4f",
             summary.get("direction", "?"),
@@ -2880,44 +3099,28 @@ class CTraderFixApp(fix.Application):
                 LOG.warning("[TRADE_COMPLETION] Skipped: entry_price=%.5f", entry_price)
                 return
 
-            # ── Trade timing tracking (single source of truth for HUD) ──────
-            # Update duration EMA and record close timestamp so the HUD can
-            # show "avg_trade_duration" and "last_trade_mins_ago" accurately.
             if self.trade_entry_time:
                 _dur_mins = (exit_time - self.trade_entry_time).total_seconds() / 60.0
-                self._avg_trade_duration_mins = (
-                    0.9 * self._avg_trade_duration_mins + 0.1 * _dur_mins
-                )
-                LOG.debug(
-                    "[TRADE_TIMING] dur=%.1f min → avg=%.1f min",
-                    _dur_mins,
-                    self._avg_trade_duration_mins,
-                )
+                self._avg_trade_duration_mins = 0.9 * self._avg_trade_duration_mins + 0.1 * _dur_mins
+                LOG.debug("[TRADE_TIMING] dur=%.1f min → avg=%.1f min", _dur_mins, self._avg_trade_duration_mins)
             self._last_trade_close_ts = time.time()
-            # ─────────────────────────────────────────────────────────────────
 
-            # Calculate P&L using dedicated method (single source of truth)
             pnl = self._calculate_position_pnl(entry_price, exit_price, direction)
-
-            # Checkpoint: Store initial P&L to detect corruption
             _pnl_checkpoint = pnl
             LOG.debug("[PNL_CHECKPOINT] Initial P&L calculated: %.4f", _pnl_checkpoint)
 
-            # Log position close
             self.transaction_log.log_position_close(
                 position_id=f"{self.symbol_id}_net",
                 pnl=pnl,
                 mfe=summary.get("mfe", 0.0),
                 mae=summary.get("mae", 0.0),
             )
-
-            # Add to performance tracker
             if self.trade_entry_time:
                 self.performance.add_trade(
                     pnl=pnl,
                     entry_time=self.trade_entry_time,
                     exit_time=exit_time,
-                    direction=summary.get("direction", "UNKNOWN"),
+                    direction=direction,
                     entry_price=entry_price,
                     exit_price=exit_price,
                     mfe=summary.get("mfe", 0.0),
@@ -2925,274 +3128,15 @@ class CTraderFixApp(fix.Application):
                     winner_to_loser=summary.get("winner_to_loser", False),
                 )
 
-            # --- Set prev_harvester_state for experience addition ---
-            if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
-                self.prev_harvester_state = (
-                    self.policy.harvester.last_state.copy() if self.policy.harvester.last_state is not None else None
-                )
-                self.prev_exit_action = 1  # CLOSE
-            if self.entry_action is None:
-                self.entry_action = 1 if summary.get("direction") == "LONG" else 2
+            self._complete_trade_processing(summary, pnl, exit_time, entry_price, exit_price)
 
-            # Normalise PnL to price-point units so dimensions match MFE/MAE.
-            # PnL is in $ (quantity × contract_size × price_move); MFE/MAE are in raw
-            # price points. Dividing by the lot-value factor makes them comparable:
-            #   pnl_pts = price_move  (e.g. -20.57 pts for a 20-pt adverse move)
-            lot_value = max(self.qty * self.contract_size, 1.0)
-            pnl_pts = pnl / lot_value
-
-            # Calculate shaped rewards for DDQN training
-            reward_data = {
-                "exit_pnl": pnl_pts,   # price-point units — same scale as mfe/mae
-                "mfe": summary.get("mfe", 0.0),
-                "mae": summary.get("mae", 0.0),
-                "winner_to_loser": summary.get("winner_to_loser", False),
-            }
-            shaped_rewards = self.reward_shaper.calculate_total_reward(reward_data)
-
-            if summary.get("mfe", 0.0) > 0 and hasattr(self.reward_shaper, "update_baseline_mfe"):
-                self.reward_shaper.update_baseline_mfe(summary["mfe"])
-
-            LOG.info(
-                "[REWARD] Capture: %+.4f | WTL Penalty: %+.4f | Opportunity: %+.4f | Total: %+.4f | Active: %d",
-                shaped_rewards["capture_efficiency"],
-                shaped_rewards["wtl_penalty"],
-                shaped_rewards["opportunity_cost"],
-                shaped_rewards["total_reward"],
-                shaped_rewards["components_active"],
-            )
-
-            # === EXPERIENCE ADDITION FOR ONLINE LEARNING ===
-            # TriggerAgent experience
-            if hasattr(self.policy, "add_trigger_experience") and self.entry_state is not None:
-                next_state = None
-                if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "last_state"):
-                    next_state = self.policy.trigger.last_state
-
-                if next_state is not None:
-                    realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.01
-                    # FIX 7: Use neutral reward for exploration entries to avoid
-                    # training on meaningless prediction-accuracy signals
-                    was_explore = getattr(self, "was_exploration_entry", False)
-                    if was_explore:
-                        # Still add the experience (state→outcome), but with a
-                        # simple outcome-based reward instead of prediction-accuracy.
-                        # Normalise pnl to σ-of-price-movement for instrument-agnostic scale:
-                        #   pnl_pts = pnl / lot_value            (USD → raw price-point move)
-                        #   vol_pts = realized_vol × entry_price (fractional σ → price-pt σ)
-                        #   reward  = pnl_pts / vol_pts / 3      (σ-normalised, clipped ±0.5)
-                        pnl_for_reward = pnl  # Use already-calculated PnL (don't overwrite it!)
-                        _ep_lot = max(self.qty * self.contract_size, 1.0)
-                        _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
-                        _ep_vol_pts = max(realized_vol * _ep_price, 1e-6)
-                        trigger_reward = float(np.clip(
-                            (pnl_for_reward / _ep_lot) / _ep_vol_pts / 3.0, -0.5, 0.5
-                        ))
-                        LOG.info(
-                            "[ONLINE_LEARNING] Exploration entry: using outcome reward=%.4f "
-                            "(skipping prediction-accuracy reward)",
-                            trigger_reward,
-                        )
-                    else:
-                        trigger_reward = self._calculate_trigger_reward(
-                            trade_summary=summary,
-                            predicted_runway=self.predicted_runway,
-                            realized_vol=realized_vol,
-                        )
-                    self.policy.add_trigger_experience(
-                        state=self.entry_state,
-                        action=self.entry_action,
-                        reward=trigger_reward,
-                        next_state=next_state,
-                        done=True,
-                    )
-                    if hasattr(self.policy.trigger, "buffer") and self.policy.trigger.buffer:
-                        LOG.info("[BUFFER] TriggerAgent buffer size: %d", self.policy.trigger.buffer.size)
-                    LOG.info(
-                        "[ONLINE_LEARNING] Added TriggerAgent experience: action=%d reward=%.4f "
-                        "(predicted_mfe=%.4f actual_mfe=%.4f explore=%s)",
-                        self.entry_action,
-                        trigger_reward,
-                        self.predicted_runway,
-                        summary.get("mfe", 0.0),
-                        was_explore,
-                    )
-
-                # ── Prediction-vs-actual convergence tracking ──────────────────
-                # Update EMAs regardless of exploration flag (outcomes are real).
-                _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
-                _pred_pts = self.predicted_runway * _ep_price  # fractional → price-pts
-                _actual_mfe = float(summary.get("mfe", 0.0))
-                _runway_delta = _pred_pts - _actual_mfe
-                # Accuracy: 1 - normalised abs error (same formula as _calculate_trigger_reward)
-                _max_err = max(abs(_actual_mfe), abs(_pred_pts), 1.0)
-                _runway_acc = 1.0 - min(abs(_runway_delta) / _max_err, 1.0)
-                _actual_win = 1.0 if pnl > 0 else 0.0
-                _conf_err = abs(self.entry_confidence - _actual_win)
-                _alpha = 0.1
-                self._runway_delta_ema = (1 - _alpha) * self._runway_delta_ema + _alpha * _runway_delta
-                self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * _runway_acc
-                self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * _conf_err
-                # ─────────────────────────────────────────────────────────────────
-
-                self.entry_state = None
-                self.predicted_runway = 0.0
-
-            # HarvesterAgent experience (CLOSE decision)
-            if hasattr(self.policy, "add_harvester_experience") and self.prev_harvester_state is not None:
-                # Use total shaped reward (already normalised by baseline_mfe in reward_shaper).
-                # Clamp to [-2, 2] for DDQN stability.
-                raw_close_reward = shaped_rewards.get("total_reward", 0.0)
-
-                # Regime conditioning: extra penalty when the entry was made in the
-                # face of elevated risk signals that the agent should learn to avoid.
-                _entry_var   = getattr(self, "entry_var", 0.0)
-                _entry_vpin  = getattr(self, "entry_vpin_z", 0.0)
-                regime_adj   = 0.0
-                if _entry_var > self.vol_cap:
-                    # Penalise entries in high-VaR regimes proportional to how far over the cap
-                    regime_adj -= 0.3 * min(_entry_var / (self.vol_cap + 1e-8), 2.0)
-                if self.vpin_z_threshold > 0 and _entry_vpin > self.vpin_z_threshold:
-                    # Penalise entries in turbulent order-flow regimes
-                    regime_adj -= 0.2 * min(_entry_vpin / (self.vpin_z_threshold + 1e-8), 2.0)
-                LOG.debug(
-                    "[CLOSE_REWARD] raw=%.4f regime_adj=%.4f (entry_var=%.4f entry_vpin=%.2f)",
-                    raw_close_reward, regime_adj, _entry_var, _entry_vpin,
-                )
-                capture_reward = float(np.clip(raw_close_reward + regime_adj, -2.0, 2.0))
-
-                next_state = (
-                    self.policy.harvester.last_state
-                    if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state")
-                    else None
-                )
-                if next_state is not None:
-                    self.policy.add_harvester_experience(
-                        state=self.prev_harvester_state,
-                        action=1,  # CLOSE
-                        reward=capture_reward,
-                        next_state=next_state,
-                        done=True,
-                    )
-                    if hasattr(self.policy.harvester, "buffer") and self.policy.harvester.buffer:
-                        LOG.info("[BUFFER] HarvesterAgent buffer size: %d", self.policy.harvester.buffer.size)
-                    LOG.info("[ONLINE_LEARNING] Added HarvesterAgent CLOSE: reward=%.4f", capture_reward)
-
-                self.prev_harvester_state = None
-                self.prev_exit_action = None
-                self.prev_mfe = 0.0
-                self.prev_mae = 0.0
-                # Persist raw-bar trade record for offline training replay
-                self._bar_cache.record_trade(
-                    bars=self.bars,
-                    trigger_action=self.entry_action or 0,
-                    trigger_reward=float(locals().get("trigger_reward", 0.0)),
-                    capture_reward=float(locals().get("capture_reward", 0.0)),
-                    entry_price=float(entry_price),
-                    exit_price=float(exit_price),
-                    pnl_pts=float(pnl_pts),
-                    mfe=float(summary.get("mfe", 0.0)),
-                    mae=float(summary.get("mae", 0.0)),
-                    regime=str(getattr(self.policy, "current_regime", "UNKNOWN")),
-                    was_explore=getattr(self, "was_exploration_entry", False),
-                    imbalance=float(getattr(self, "entry_imbalance", 0.0)),
-                    vpin_z=float(self.entry_vpin_z),
-                    depth_ratio=1.0,
-                )
-
-            # Update circuit breakers
-            current_equity = self.performance.total_pnl + 10000.0
-            self.circuit_breakers.update_trade(pnl, current_equity)
-            breaker_status = self.circuit_breakers.get_status()
-            if breaker_status["any_tripped"]:
-                LOG.warning("[CIRCUIT-BREAKER] Status after trade: %s", breaker_status)
-            self.circuit_breakers.reset_if_cooldown_elapsed()
-            try:
-                self.circuit_breakers.save_state()
-            except Exception as cb_save_err:
-                LOG.warning("[CIRCUIT-BREAKER] Failed to save state: %s", cb_save_err)
-
-            self.entry_action = None
-
-            # Verify P&L hasn't been corrupted during processing
             if abs(pnl - _pnl_checkpoint) > MIN_POSITION_THRESHOLD:
                 LOG.error(
                     "[BUG_DETECTION] P&L changed during processing! Initial=%.4f Current=%.4f (diff=%.4f)",
-                    _pnl_checkpoint,
-                    pnl,
-                    pnl - _pnl_checkpoint,
+                    _pnl_checkpoint, pnl, pnl - _pnl_checkpoint,
                 )
-                # Restore original value
                 pnl = _pnl_checkpoint
                 LOG.warning("[BUG_DETECTION] Restored P&L to checkpoint value: %.4f", pnl)
-
-            # Save trade record
-            trade_record = {
-                "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
-                "symbol": self.symbol,
-                "direction": summary.get("direction", "UNKNOWN"),
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "entry_time": self.trade_entry_time.isoformat() if self.trade_entry_time else None,
-                "exit_time": exit_time.isoformat(),
-                "pnl": pnl,
-                "mfe": summary.get("mfe", 0.0),
-                "mae": summary.get("mae", 0.0),
-                "winner_to_loser": summary.get("winner_to_loser", False),
-            }
-            LOG.debug("[TRADE_RECORD] Prepared for save: trade_id=%s pnl=%.4f", trade_record["trade_id"], pnl)
-            try:
-                self._atomic_save_trade(trade_record)
-            except Exception as save_err:
-                LOG.error("[SAVE] Trade save failed: %s", save_err, exc_info=True)
-
-            # Performance dashboard
-            if self.trade_entry_time:
-                metrics = self.performance.get_metrics()
-                current_sharpe = metrics.get("sharpe_ratio", 0.0)
-                sharpe_delta = current_sharpe - self.previous_sharpe
-
-                if (
-                    self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0
-                    and self.performance.total_trades > MIN_TRADES_FOR_ADAPTATION
-                ):
-                    self.reward_shaper.adapt_weights(sharpe_delta)
-                    LOG.info("[REWARD] Adapted weights based on Sharpe delta: %+.4f", sharpe_delta)
-                    LOG.info(self.reward_shaper.print_summary())
-
-                self.previous_sharpe = current_sharpe
-
-                if self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0:
-                    LOG.info("\n" + self.performance.print_dashboard())
-                else:
-                    LOG.info(
-                        "[PERF] Trades: %d | Win Rate: %.1f%% | Total PnL: $%.2f | Sharpe: %.3f | Max DD: %.1f%%",
-                        metrics["total_trades"],
-                        metrics.get("win_rate", 0.0) * 100,
-                        metrics.get("total_pnl", 0.0),
-                        metrics.get("sharpe_ratio", 0.0),
-                        metrics.get("max_drawdown", 0.0) * 100,
-                    )
-
-            LOG.info(
-                "[TRADE_COMPLETION] ✓ Processed: %s entry=%.2f exit=%.2f pnl=%.4f mfe=%.4f",
-                summary.get("direction", "?"),
-                entry_price,
-                exit_price,
-                pnl,
-                summary.get("mfe", 0.0),
-            )
-
-            # Flush live metrics after every trade
-            self._flush_production_metrics()
-
-            # Function exit logging
-            LOG.debug(
-                "[TRADE_COMPLETION] Exit: trade_id=%s pnl=%.4f recorded=%s",
-                trade_record.get("trade_id", "?"),
-                pnl,
-                "success",
-            )
 
         except Exception as e:
             LOG.error("[TRADE_COMPLETION] Error: %s", e, exc_info=True)

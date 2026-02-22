@@ -349,41 +349,25 @@ class TabbedHUD:
                 print(f"\033[0mHUD Error: {e}")
                 time.sleep(2)
 
-    def _refresh_data(self):  # noqa: PLR0912, PLR0915
-        """Refresh all data from bot exports"""
-        # Capture heartbeat timestamp in UTC so header labelling stays accurate
-        self.last_update = datetime.now(UTC)
-        self.heartbeat_idx = (self.heartbeat_idx + 1) % len(self.heartbeat_chars)
-
-        # Check if data directory exists
-        if not self.data_dir.exists():
-            self._set_notification(f"⚠️  Data directory not found: {self.data_dir}", ttl=30)
-            return
-
-        # Bot config
-        self._load_json("bot_config.json", "bot_config")
-
-        # Position
-        self._load_json("current_position.json", "position")
-
-        # Performance
+    def _load_perf_snapshot(self) -> None:
+        """Load performance_snapshot.json into daily/weekly/monthly/lifetime metrics."""
         perf_file = self.data_dir / "performance_snapshot.json"
-        if perf_file.exists():
-            try:
-                with open(perf_file) as f:
-                    data = json.load(f)
-                    self.daily_metrics = data.get("daily", {})
-                    self.weekly_metrics = data.get("weekly", {})
-                    self.monthly_metrics = data.get("monthly", {})
-                    self.lifetime_metrics = data.get("lifetime", {})
-            except Exception as e:
-                if not hasattr(self, "_perf_error_shown"):
-                    self._set_notification(f"⚠️  Error loading performance data: {e}", ttl=10)
-                    self._perf_error_shown = True
+        if not perf_file.exists():
+            return
+        try:
+            with open(perf_file) as f:
+                data = json.load(f)
+            self.daily_metrics = data.get("daily", {})
+            self.weekly_metrics = data.get("weekly", {})
+            self.monthly_metrics = data.get("monthly", {})
+            self.lifetime_metrics = data.get("lifetime", {})
+        except Exception as e:
+            if not hasattr(self, "_perf_error_shown"):
+                self._set_notification(f"⚠️  Error loading performance data: {e}", ttl=10)
+                self._perf_error_shown = True
 
-        # Training stats
-        self._load_json("training_stats.json", "training_stats")
-        # Accumulate loss / step history for trend display
+    def _accumulate_training_history(self) -> None:
+        """Append latest loss and step counts to rolling history deques."""
         _tl = self.training_stats.get("trigger_loss", 0.0)
         _hl = self.training_stats.get("harvester_loss", 0.0)
         _now = time.time()
@@ -398,75 +382,52 @@ class TabbedHUD:
         if _hs > 0:
             self._harv_step_hist.append((_now, _hs))
 
-        # Production metrics
-        self._load_json("production_metrics.json", "production_metrics")
-
-        # Offline training status (written by train_offline.py, optional)
-        self._load_json("offline_training_status.json", "offline_stats")
-
-        # Universe / paper trading state (written by train_offline.py --auto-promote)
+    def _load_universe_stats(self) -> None:
+        """Load universe.json, annotating each entry with a live PID check."""
+        import os as _os  # noqa: PLC0415
         _uni_path = self.data_dir / "universe.json"
-        if _uni_path.exists():
-            try:
-                import os as _os  # noqa: PLC0415
-                _uni_raw: dict = json.loads(_uni_path.read_text())
-                for _sym, _entry in _uni_raw.items():
-                    _pid = _entry.get("paper_pid")
-                    _alive = False
-                    if _pid:
-                        try:
-                            _os.kill(int(_pid), 0)
-                            _alive = True
-                        except (OSError, ProcessLookupError):
-                            pass
-                    _entry["_pid_alive"] = _alive
-                self.universe_stats = _uni_raw
-            except Exception:
-                pass
-        else:
+        if not _uni_path.exists():
             self.universe_stats = {}
+            return
+        try:
+            _uni_raw: dict = json.loads(_uni_path.read_text())
+            for _sym, _entry in _uni_raw.items():
+                _pid = _entry.get("paper_pid")
+                _alive = False
+                if _pid:
+                    try:
+                        _os.kill(int(_pid), 0)
+                        _alive = True
+                    except (OSError, ProcessLookupError):
+                        pass
+                _entry["_pid_alive"] = _alive
+            self.universe_stats = _uni_raw
+        except Exception:
+            pass
 
-        # Per-job live progress files (written by OfflineTrainer worker processes)
-        _prog: dict = {}
-        for _pf in self.data_dir.glob("offline_progress_*.json"):
-            try:
-                _d = json.loads(_pf.read_text())
-                _prog[(_d["symbol"], _d["timeframe_minutes"])] = _d
-            except Exception:
-                pass
-        self.offline_job_progress = _prog
-
-        # Always compute from trade_log.jsonl (complete persistent history).
-        # performance_snapshot resets on each bot restart so it only reflects
-        # the current session — trade log is always the authoritative source.
-        self._compute_metrics_from_trade_log()
-        self._metrics_from_trade_log = bool(self.lifetime_metrics.get("total_trades"))
-
-        # Risk metrics
+    def _load_risk_ob_stats(self) -> None:
+        """Load risk_metrics.json and supplement with fresh order_book.json data."""
         risk_file = self.data_dir / "risk_metrics.json"
         if risk_file.exists():
             try:
                 with open(risk_file) as f:
                     data = json.load(f)
-                    self.risk_stats = data
-                    self.market_stats = {
-                        "vpin": data.get("vpin", 0.0),
-                        "vpin_z": data.get("vpin_zscore", 0.0),
-                        "spread": data.get("spread", 0.0),
-                        "imbalance": data.get("imbalance", 0.0),
-                        "depth_bid": data.get("depth_bid", 0.0),
-                        "depth_ask": data.get("depth_ask", 0.0),
-                        "order_book_bids": data.get("order_book_bids", []),
-                        "order_book_asks": data.get("order_book_asks", []),
-                    }
+                self.risk_stats = data
+                self.market_stats = {
+                    "vpin": data.get("vpin", 0.0),
+                    "vpin_z": data.get("vpin_zscore", 0.0),
+                    "spread": data.get("spread", 0.0),
+                    "imbalance": data.get("imbalance", 0.0),
+                    "depth_bid": data.get("depth_bid", 0.0),
+                    "depth_ask": data.get("depth_ask", 0.0),
+                    "order_book_bids": data.get("order_book_bids", []),
+                    "order_book_asks": data.get("order_book_asks", []),
+                }
             except Exception as e:
                 if not hasattr(self, "_risk_error_shown"):
                     self._set_notification(f"⚠️  Error loading risk metrics: {e}", ttl=10)
                     self._risk_error_shown = True
 
-        # order_book.json is written every ~1s directly from the FIX handler
-        # (much fresher than risk_metrics.json which only updates on bar close).
-        # Overwrite book-specific fields in market_stats when available.
         ob_file = self.data_dir / "order_book.json"
         if ob_file.exists():
             try:
@@ -479,8 +440,6 @@ class TabbedHUD:
                 self.market_stats["order_book_asks"] = ob.get("order_book_asks", self.market_stats.get("order_book_asks", []))
                 self.market_stats["vpin"] = ob.get("vpin", self.market_stats.get("vpin", 0.0))
                 self.market_stats["vpin_z"] = ob.get("vpin_zscore", self.market_stats.get("vpin_z", 0.0))
-                # Read QFI-based imbalance directly — do NOT recompute from depth_bid/ask
-                # (those use uniform size=1.0 fallback when broker omits MDEntrySize)
                 _ob_imb = ob.get("imbalance")
                 if _ob_imb is not None:
                     self.market_stats["imbalance"] = float(_ob_imb)
@@ -489,7 +448,40 @@ class TabbedHUD:
             except Exception:
                 pass
 
-        # Self-test results (written at startup by run_self_test())
+    def _refresh_data(self):
+        """Refresh all data from bot exports"""
+        # Capture heartbeat timestamp in UTC so header labelling stays accurate
+        self.last_update = datetime.now(UTC)
+        self.heartbeat_idx = (self.heartbeat_idx + 1) % len(self.heartbeat_chars)
+
+        if not self.data_dir.exists():
+            self._set_notification(f"⚠️  Data directory not found: {self.data_dir}", ttl=30)
+            return
+
+        self._load_json("bot_config.json", "bot_config")
+        self._load_json("current_position.json", "position")
+        self._load_perf_snapshot()
+        self._load_json("training_stats.json", "training_stats")
+        self._accumulate_training_history()
+        self._load_json("production_metrics.json", "production_metrics")
+        self._load_json("offline_training_status.json", "offline_stats")
+        self._load_universe_stats()
+
+        # Per-job live progress files (written by OfflineTrainer worker processes)
+        _prog: dict = {}
+        for _pf in self.data_dir.glob("offline_progress_*.json"):
+            try:
+                _d = json.loads(_pf.read_text())
+                _prog[(_d["symbol"], _d["timeframe_minutes"])] = _d
+            except Exception:
+                pass
+        self.offline_job_progress = _prog
+
+        self._compute_metrics_from_trade_log()
+        self._metrics_from_trade_log = bool(self.lifetime_metrics.get("total_trades"))
+
+        self._load_risk_ob_stats()
+
         st_file = self.data_dir / "self_test.json"
         if st_file.exists():
             try:
