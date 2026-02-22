@@ -2696,7 +2696,76 @@ class CTraderFixApp(fix.Application):
                 clord_id,
             )
 
-    def on_position_report(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
+    def _handle_foreign_position(self, msg: fix.Message, foreign_id: str) -> None:
+        """Parse quantities from a foreign-symbol position report and auto-close if non-zero."""
+        f704 = fix.StringField(704)
+        f705 = fix.StringField(705)
+        f_long = 0.0
+        f_short = 0.0
+        f_ticket = None
+        try:
+            if msg.isSetField(f704):
+                msg.getField(f704)
+                f_long = float(f704.getValue())
+            if msg.isSetField(f705):
+                msg.getField(f705)
+                f_short = float(f705.getValue())
+            f721 = fix.StringField(721)
+            if msg.isSetField(f721):
+                msg.getField(f721)
+                f_ticket = f721.getValue()
+        except (ValueError, TypeError) as e:
+            LOG.warning("[CLEANUP] Error parsing foreign position quantities: %s", e)
+
+        if f_long < 0 or f_short < 0:
+            LOG.error("[CLEANUP] Invalid negative quantities - long=%.4f short=%.4f", f_long, f_short)
+            return
+        if f_long > MAX_POSITION_SANITY or f_short > MAX_POSITION_SANITY:
+            LOG.error("[CLEANUP] Suspicious large quantities - long=%.4f short=%.4f", f_long, f_short)
+            return
+        if f_long > MIN_POSITION_THRESHOLD or f_short > MIN_POSITION_THRESHOLD:
+            LOG.warning(
+                "[CLEANUP] Foreign position detected: symbol=%s long=%.4f short=%.4f — auto-closing",
+                foreign_id, f_long, f_short,
+            )
+            self._close_foreign_position(foreign_id, f_long, f_short, f_ticket)
+
+    def _get_active_tracker(self):
+        """Return the most recent active MFE/MAE tracker, with legacy fallback."""
+        with self._tracker_lock:
+            if self.mfe_mae_trackers:
+                tracker = next(reversed(self.mfe_mae_trackers.values()), None)
+                if tracker is not None:
+                    return tracker
+        return self.mfe_mae_tracker
+
+    def _handle_position_closed(self, active_tracker) -> None:
+        """Handle MFE/MAE logging and state reset when a position closes."""
+        if active_tracker and active_tracker.entry_price:
+            summary = active_tracker.get_summary()
+        else:
+            summary = self.mfe_mae_tracker.get_summary()
+        LOG.info(
+            "[MFE/MAE] Entry=%.5f %s | MFE=%.5f MAE=%.5f | Best=%.5f Worst=%.5f | WTL=%s",
+            summary["entry_price"], summary["direction"],
+            summary["mfe"], summary["mae"],
+            summary["best_profit"], summary["worst_loss"], summary["winner_to_loser"],
+        )
+        if self.best_bid and self.best_ask:
+            exit_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
+            self._process_trade_completion(summary, exit_price)
+        self.mfe_mae_tracker.reset()
+        self.trade_entry_time = None
+        self.entry_state = None
+        self.entry_action = None
+        self.prev_harvester_state = None
+        self.prev_exit_action = None
+        self.prev_mfe = 0.0
+        self.prev_mae = 0.0
+        self.current_trade_id = None
+        LOG.debug("[CLEANUP] All position state reset after close")
+
+    def on_position_report(self, msg: fix.Message):
         # Route to TradeManager first
         self.trade_integration.handle_position_report(msg)
 
@@ -2705,50 +2774,11 @@ class CTraderFixApp(fix.Application):
             if msg.isSetField(sym):
                 msg.getField(sym)
                 foreign_id = sym.getValue()
-
-                # Defensive: Validate symbol_id is set
                 if not hasattr(self, "symbol_id") or self.symbol_id is None:
                     LOG.warning("[CLEANUP] symbol_id not set, cannot check foreign positions")
                     return
-
                 if foreign_id != str(self.symbol_id):
-                    # --- AUTO-CLOSE foreign symbol positions at startup ---
-                    f704 = fix.StringField(704)
-                    f705 = fix.StringField(705)
-                    f_long = 0.0
-                    f_short = 0.0
-                    f_ticket = None
-                    try:
-                        if msg.isSetField(f704):
-                            msg.getField(f704)
-                            f_long = float(f704.getValue())
-                        if msg.isSetField(f705):
-                            msg.getField(f705)
-                            f_short = float(f705.getValue())
-                        f721 = fix.StringField(721)
-                        if msg.isSetField(f721):
-                            msg.getField(f721)
-                            f_ticket = f721.getValue()
-                    except (ValueError, TypeError) as e:
-                        LOG.warning("[CLEANUP] Error parsing foreign position quantities: %s", e)
-
-                    # Defensive: Validate quantities are non-negative and reasonable
-                    if f_long < 0 or f_short < 0:
-                        LOG.error("[CLEANUP] Invalid negative quantities - long=%.4f short=%.4f", f_long, f_short)
-                        return
-
-                    if f_long > MAX_POSITION_SANITY or f_short > MAX_POSITION_SANITY:  # Sanity check
-                        LOG.error("[CLEANUP] Suspicious large quantities - long=%.4f short=%.4f", f_long, f_short)
-                        return
-
-                    if f_long > MIN_POSITION_THRESHOLD or f_short > MIN_POSITION_THRESHOLD:
-                        LOG.warning(
-                            "[CLEANUP] Foreign position detected: symbol=%s long=%.4f short=%.4f — auto-closing",
-                            foreign_id,
-                            f_long,
-                            f_short,
-                        )
-                        self._close_foreign_position(foreign_id, f_long, f_short, f_ticket)
+                    self._handle_foreign_position(msg, foreign_id)
                     return
         except Exception as e:
             LOG.error("[TRADE] Error parsing position report symbol: %s", e, exc_info=True)
@@ -2756,9 +2786,8 @@ class CTraderFixApp(fix.Application):
 
         long_qty = 0.0
         short_qty = 0.0
-
-        f704 = fix.StringField(704)  # LongQty
-        f705 = fix.StringField(705)  # ShortQty
+        f704 = fix.StringField(704)
+        f705 = fix.StringField(705)
 
         try:
             if msg.isSetField(f704):
@@ -2769,66 +2798,20 @@ class CTraderFixApp(fix.Application):
                 short_qty = float(f705.getValue())
         except (ValueError, TypeError) as e:
             LOG.error("[TRADE] Invalid position quantity: %s. Using 0.", e)
-            # Keep default values (0.0) on error
 
         net = long_qty - short_qty
-
-        # FIX P0-2: Position is now tracked by TradeManager (single source of truth)
-        # This code path kept for backward compatibility logging
-        old_pos = self.cur_pos  # Gets from TradeManager via property
-
+        old_pos = self.cur_pos
         LOG.info("[TRADE] PositionReport net=%0.6f -> cur_pos=%s (via TradeManager)", net, self.cur_pos)
 
-        # GAP 10.1: Log position update
         avg_price = 0.0
-        # Look up the active tracker from the multi-position dict (fall back to legacy singleton)
-        _active_tracker = None
-        with self._tracker_lock:
-            if self.mfe_mae_trackers:
-                # Use the most recent tracker (last entry)
-                _active_tracker = next(reversed(self.mfe_mae_trackers.values()), None)
-        if _active_tracker is None:
-            _active_tracker = self.mfe_mae_tracker  # Legacy fallback
+        _active_tracker = self._get_active_tracker()
         if _active_tracker and _active_tracker.entry_price:
             avg_price = _active_tracker.entry_price
 
         self.transaction_log.log_position_update(position_id=f"{self.symbol_id}_net", net_qty=net, avg_price=avg_price)
 
-        # Log MFE/MAE summary and save path when position closes
         if old_pos != 0 and self.cur_pos == 0:
-            summary = (
-                _active_tracker.get_summary()
-                if _active_tracker and _active_tracker.entry_price
-                else self.mfe_mae_tracker.get_summary()
-            )
-            LOG.info(
-                "[MFE/MAE] Entry=%.5f %s | MFE=%.5f MAE=%.5f | Best=%.5f Worst=%.5f | WTL=%s",
-                summary["entry_price"],
-                summary["direction"],
-                summary["mfe"],
-                summary["mae"],
-                summary["best_profit"],
-                summary["worst_loss"],
-                summary["winner_to_loser"],
-            )
-
-            # Stop path recording and save trade
-            if self.best_bid and self.best_ask:
-                exit_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
-                self._process_trade_completion(summary, exit_price)
-
-            # GAP 7.1 FIX: Complete state reset on position close
-            self.mfe_mae_tracker.reset()
-            self.trade_entry_time = None
-            self.entry_state = None
-            self.entry_action = None
-            self.prev_harvester_state = None
-            self.prev_exit_action = None
-            self.prev_mfe = 0.0
-            self.prev_mae = 0.0
-            # Clear correlation ID — next trigger will allocate a fresh one
-            self.current_trade_id = None
-            LOG.debug("[CLEANUP] All position state reset after close")
+            self._handle_position_closed(_active_tracker)
 
     def _calculate_position_pnl(
         self,

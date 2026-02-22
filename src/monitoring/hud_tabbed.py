@@ -1291,7 +1291,7 @@ class TabbedHUD:
         def _warn(s: str) -> str: return f"{_Y}⚡ {s}{_RST}"
         def _bad(s: str) -> str: return f"{_R}✗ {s}{_RST}"
 
-        print(f"\n\033[1m🏥 SYSTEM HEALTH\033[0m")
+        print("\n\033[1m🏥 SYSTEM HEALTH\033[0m")
 
         # ── Row 1: Connectivity ───────────────────────────────────────────────
         # Freshness of the bot's most recent data write — use order_book.json mtime
@@ -1523,11 +1523,82 @@ class TabbedHUD:
                 f"\033[90m(grey=default, blue=adapted)\033[0m"
             )
 
-    def _render_decision_log(self):  # noqa: PLR0912, PLR0915
+    def _render_jsonl_decision_entries(self, entries: list) -> None:
+        """Render the rich JSONL decision log entries."""
+        header = (
+            f"  {'Time':<8} {'Agent':<10} {'Decision':<10} {'Conf':>6} {'Rnwy$':>6} {'VPIN-z':>7} {'Price':>10}"
+        )
+        _counts: dict[str, int] = {}
+        for _e in entries:
+            _d = _e.get("decision", "?").upper()
+            _counts[_d] = _counts.get(_d, 0) + 1
+        _dist = "  ".join(f"{k}:{v}" for k, v in sorted(_counts.items()))
+        print(f"  Distribution (last {len(entries)}): {_dist}\n")
+        print(header)
+        print("  " + "─" * 60)
+        for entry in entries:
+            ts_raw = entry.get("timestamp", "?")
+            try:
+                ts_str = ts_raw[11:19] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw
+            except Exception:
+                ts_str = str(ts_raw)[:8]
+            agent = entry.get("agent", "?")[:9]
+            decision = entry.get("decision", "?")[:9]
+            conf = entry.get("confidence", 0.0)
+            ctx = entry.get("context", {})
+            reasoning = entry.get("reasoning", {})
+            price = ctx.get("price", 0.0)
+            vpin_z = ctx.get("vpin_z", 0.0)
+            runway_pct = reasoning.get("predicted_runway", 0.0)
+            runway_usd = runway_pct * price if price > 0 else runway_pct
+            if decision.upper() in ("BUY", "LONG", "ENTER"):
+                color = "\033[92m"
+            elif decision.upper() in ("SELL", "SHORT", "EXIT", "CLOSE"):
+                color = "\033[91m"
+            elif decision.upper() == "HOLD":
+                color = "\033[93m"
+            else:
+                color = "\033[0m"
+            vpin_flag = "\033[91m⚠\033[0m" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
+            dec = self._price_decimals(price)
+            print(
+                f"  {ts_str:<8} {agent:<10} {color}{decision:<10}\033[0m "
+                f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} {price:>10.{dec}f}"
+            )
+        print("  " + "─" * 60)
+
+    def _render_legacy_decision_entries(self, entries: list) -> None:
+        """Render legacy JSON-format decision log entries."""
+        print(f"  Showing {len(entries[-20:])} most recent decisions (legacy format):\n")
+        print("  " + "─" * 76)
+        for entry in entries[-20:]:
+            ts = entry.get("timestamp", "?")
+            event = entry.get("event", "?")
+            details = entry.get("details", {})
+            if isinstance(details, dict):
+                pos = details.get("cur_pos", "?")
+                action = details.get("action", "?")
+                conf = details.get("confidence", "?")
+                pnl = details.get("pnl", "?")
+                details_str = f"Pos:{pos} Act:{action} Conf:{conf} PnL:{pnl}"
+            else:
+                details_str = str(details)
+            if "OPEN" in event.upper() or "entry" in event.lower():
+                color = "\033[92m"
+            elif "CLOSE" in event.upper() or "exit" in event.lower():
+                color = "\033[91m"
+            elif "HOLD" in event.upper():
+                color = "\033[93m"
+            else:
+                color = "\033[0m"
+            print(f"  [{ts}] {color}{event}\033[0m: {details_str}")
+        print("  " + "─" * 76)
+        print(f"\n  Total decisions logged: {len(entries)}")
+
+    def _render_decision_log(self):
         """Render the Decision Log tab (Tab 6)"""
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
 
-        # ── Try rich JSONL source first ────────────────────────────────────
         jsonl_file = Path("logs/audit/decisions.jsonl")
         entries_jsonl: list[dict] = []
         if jsonl_file.exists():
@@ -1542,57 +1613,9 @@ class TabbedHUD:
                 entries_jsonl = []
 
         if entries_jsonl:
-            # Rich JSONL format: timestamp | agent | decision | conf | runway($) | vpin_z | price
-            header = (
-                f"  {'Time':<8} {'Agent':<10} {'Decision':<10} {'Conf':>6} {'Rnwy$':>6} {'VPIN-z':>7} {'Price':>10}"
-            )
-            print(header)
-            # Decision distribution for last N entries
-            _counts: dict[str, int] = {}
-            for _e in entries_jsonl:
-                _d = _e.get("decision", "?").upper()
-                _counts[_d] = _counts.get(_d, 0) + 1
-            _dist = "  ".join(f"{k}:{v}" for k, v in sorted(_counts.items()))
-            print(f"  Distribution (last {len(entries_jsonl)}): {_dist}\n")
-            print(header)
-            print("  " + "─" * 60)
-            for entry in entries_jsonl:
-                ts_raw = entry.get("timestamp", "?")
-                try:
-                    ts_str = ts_raw[11:19] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw
-                except Exception:
-                    ts_str = str(ts_raw)[:8]
-
-                agent = entry.get("agent", "?")[:9]
-                decision = entry.get("decision", "?")[:9]
-                conf = entry.get("confidence", 0.0)
-                ctx = entry.get("context", {})
-                reasoning = entry.get("reasoning", {})
-                price = ctx.get("price", 0.0)
-                vpin_z = ctx.get("vpin_z", 0.0)
-                runway_pct = reasoning.get("predicted_runway", 0.0)
-                # Convert fractional runway to price delta (e.g. 0.002 * 2900 = $5.80)
-                runway_usd = runway_pct * price if price > 0 else runway_pct
-
-                if decision.upper() in ("BUY", "LONG", "ENTER"):
-                    color = "\033[92m"
-                elif decision.upper() in ("SELL", "SHORT", "EXIT", "CLOSE"):
-                    color = "\033[91m"
-                elif decision.upper() == "HOLD":
-                    color = "\033[93m"
-                else:
-                    color = "\033[0m"
-
-                vpin_flag = "\033[91m⚠\033[0m" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
-                dec = self._price_decimals(price)
-                print(
-                    f"  {ts_str:<8} {agent:<10} {color}{decision:<10}\033[0m "
-                    f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} {price:>10.{dec}f}"
-                )
-            print("  " + "─" * 60)
+            self._render_jsonl_decision_entries(entries_jsonl)
             return
 
-        # ── Fallback: legacy data/decision_log.json ────────────────────────
         log_file = self.data_dir / "decision_log.json"
         if not log_file.exists():
             print("  ⚠️  No decision log found.")
@@ -1612,36 +1635,7 @@ class TabbedHUD:
             print("  No entries yet. Waiting for bot decisions...")
             return
 
-        print(f"  Showing {len(entries[-20:])} most recent decisions (legacy format):\n")
-        print("  " + "─" * 76)
-
-        for entry in entries[-20:]:
-            ts = entry.get("timestamp", "?")
-            event = entry.get("event", "?")
-            details = entry.get("details", {})
-
-            if isinstance(details, dict):
-                pos = details.get("cur_pos", "?")
-                action = details.get("action", "?")
-                conf = details.get("confidence", "?")
-                pnl = details.get("pnl", "?")
-                details_str = f"Pos:{pos} Act:{action} Conf:{conf} PnL:{pnl}"
-            else:
-                details_str = str(details)
-
-            if "OPEN" in event.upper() or "entry" in event.lower():
-                color = "\033[92m"
-            elif "CLOSE" in event.upper() or "exit" in event.lower():
-                color = "\033[91m"
-            elif "HOLD" in event.upper():
-                color = "\033[93m"
-            else:
-                color = "\033[0m"
-
-            print(f"  [{ts}] {color}{event}\033[0m: {details_str}")
-
-        print("  " + "─" * 76)
-        print(f"\n  Total decisions logged: {len(entries)}")
+        self._render_legacy_decision_entries(entries)
 
     def _render_risk(self):  # noqa: PLR0915
         """Render risk management details"""
