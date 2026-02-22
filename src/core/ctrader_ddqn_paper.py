@@ -3467,14 +3467,678 @@ class CTraderFixApp(fix.Application):
         return max(0.0001, min(0.1, vol_per_bar))  # Clamp to reasonable range
 
     # ----------------------------
+    # on_bar_close helper methods
+    # ----------------------------
+
+    def _obc_bar_preamble(self) -> None:
+        """Rolling stats log, autosave, activity monitor, timeout checks."""
+        if self.bar_count % 10 == 0 and self.close_stats.is_ready():
+            LOG.info(
+                "[ROLLING] period=%d mean=%.2f std=%.4f min=%.2f max=%.2f",
+                self.close_stats.period,
+                self.close_stats.mean,
+                self.close_stats.std,
+                self.close_stats.min,
+                self.close_stats.max,
+            )
+        if (
+            self.bar_count - self.last_autosave_bar >= AUTOSAVE_INTERVAL_BARS
+            and self.performance.total_trades > 0
+        ):
+            try:
+                datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
+                files = self.trade_exporter.export_all(
+                    self.performance, prefix=f"autosave_b{self.bar_count}"
+                )
+                self.last_autosave_bar = self.bar_count
+                LOG.info(
+                    "[AUTOSAVE] ✓ Bar %d: Saved %d trades to: %s",
+                    self.bar_count,
+                    self.performance.total_trades,
+                    ", ".join(files.values()),
+                )
+            except Exception as e:
+                LOG.error("[AUTOSAVE] ✗ Failed at bar %d: %s", self.bar_count, e)
+        self.activity_monitor.on_bar_close()
+        if self.trade_integration and self.trade_integration.trade_manager:
+            self.trade_integration.trade_manager.check_all_position_request_timeouts()
+
+    def _obc_update_bar_metrics(self, c: float, bar: tuple) -> None:
+        """Update VaR estimator and path recorders."""
+        if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE:
+            prev_close = self.bars[-2][4] if len(self.bars) >= MIN_BARS_FOR_PREV_CLOSE else c
+            bar_return = SafeMath.safe_div(c - prev_close, prev_close, 0.0)
+            self.var_estimator.update_return(bar_return)
+        if self.trade_integration.trade_manager:
+            position = self.trade_integration.trade_manager.get_position()
+            if position and abs(position.net_qty) > MIN_POSITION_QTY:
+                position_id = (
+                    position.position_id
+                    if hasattr(position, "position_id")
+                    else self.default_position_id
+                )
+                if position_id in self.path_recorders:
+                    self.path_recorders[position_id].add_bar(bar)
+        elif self.cur_pos != 0:
+            if self.default_position_id in self.path_recorders:
+                self.path_recorders[self.default_position_id].add_bar(bar)
+        self.last_depth_gate = False
+
+    def _obc_compute_imbalance(self, c: float) -> tuple:
+        """Compute depth + QFI blended imbalance and update depth state.
+
+        Returns (imbalance, depth_bid, depth_ask, depth_ratio, depth_levels).
+        """
+        ob_depth = max(1, getattr(self.order_book, "depth", 1))
+        learned_levels = getattr(self.friction_calculator, "depth_levels", ob_depth)
+        depth_levels = max(1, min(ob_depth, learned_levels))
+        depth_bid, depth_ask = self.order_book.depth_sum(levels=depth_levels)
+        depth_total = depth_bid + depth_ask
+        depth_ratio = SafeMath.safe_div(depth_bid, depth_ask, 1.0) if depth_ask > 0 else 1.0
+        imbalance = 0.0
+        if depth_total > 0:
+            imbalance = SafeMath.safe_div(depth_bid - depth_ask, depth_total, 0.0)
+        elif self.best_bid and self.best_ask:
+            mid = (self.best_bid + self.best_ask) / 2.0
+            spread = self.best_ask - self.best_bid
+            if mid > 0:
+                imbalance = (self.best_bid - mid) / (spread + 1e-10)
+                imbalance = max(-1.0, min(1.0, imbalance))
+        _qfi_total = self._bid_refresh_count + self._ask_refresh_count
+        _qfi = (
+            (self._bid_refresh_count - self._ask_refresh_count) / _qfi_total
+            if _qfi_total > 0 else 0.0
+        )
+        if self._has_real_sizes and abs(imbalance) > _IMBALANCE_BLEND_FLOOR:
+            imbalance = 0.5 * imbalance + 0.5 * _qfi
+        else:
+            imbalance = _qfi
+        LOG.debug(
+            "[IMBALANCE] bid_refreshes=%d ask_refreshes=%d qfi=%.3f "
+            "depth_imb=%.3f final=%.3f real_sizes=%s",
+            self._bid_refresh_count, self._ask_refresh_count, _qfi,
+            SafeMath.safe_div(depth_bid - depth_ask, depth_total + 1e-9, 0.0),
+            imbalance, self._has_real_sizes,
+        )
+        self._bid_refresh_count = 0
+        self._ask_refresh_count = 0
+        self._last_bar_qfi: float = imbalance
+        self._last_bar_qfi_count: int = _qfi_total
+        self.last_depth_metrics = {
+            "bid": depth_bid, "ask": depth_ask,
+            "ratio": depth_ratio, "levels": depth_levels,
+        }
+        self.last_depth_floor = getattr(self.friction_calculator, "depth_buffer", 0.0)
+        return imbalance, depth_bid, depth_ask, depth_ratio, depth_levels
+
+    def _obc_get_market_context(self, c: float) -> tuple:
+        """Return (vpin_zscore, realized_vol, event_features, is_high_liq)."""
+        if hasattr(self.activity_monitor, "get_exploration_bonus"):
+            self.activity_monitor.get_exploration_bonus()
+        realized_vol = self._calculate_rs_volatility()
+        if len(self.bars) >= MIN_TRADE_HISTORY_EXPLORATION:
+            LOG.debug("[RS_VOL] bars=%d realized_vol=%.6f", len(self.bars), realized_vol)
+        event_features: dict = {}
+        is_high_liq = False
+        if hasattr(self, "event_time_engine") and self.event_time_engine:
+            event_features = self.event_time_engine.calculate_features()
+            is_high_liq = self.event_time_engine.is_high_liquidity_period()
+        vpin_zscore = (
+            self.last_vpin_stats.get("zscore", 0.0)
+            if hasattr(self, "last_vpin_stats") else 0.0
+        )
+        return vpin_zscore, realized_vol, event_features, is_high_liq
+
+    def _obc_get_buffer_sizes(self) -> tuple:
+        """Return (trigger_size, harvester_size) from policy replay buffers."""
+        trigger_size = 0
+        if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "buffer"):
+            trigger_buffer = self.policy.trigger.buffer
+            if hasattr(trigger_buffer, "tree") and trigger_buffer.tree:
+                trigger_size = trigger_buffer.tree.n_entries
+            elif hasattr(trigger_buffer, "size"):
+                trigger_size = trigger_buffer.size
+        harvester_size = 0
+        if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "buffer"):
+            harvester_buffer = self.policy.harvester.buffer
+            if hasattr(harvester_buffer, "tree") and harvester_buffer.tree:
+                harvester_size = harvester_buffer.tree.n_entries
+            elif hasattr(harvester_buffer, "size"):
+                harvester_size = harvester_buffer.size
+        return trigger_size, harvester_size
+
+    def _obc_post_train_step(self, train_metrics: dict) -> None:
+        """Process training metrics: update losses, adjust regularization, checkpoint."""
+        if train_metrics.get("trigger"):
+            self.last_trigger_loss = train_metrics["trigger"].get("loss", self.last_trigger_loss)
+        if train_metrics.get("harvester"):
+            self.last_harvester_loss = train_metrics["harvester"].get("loss", self.last_harvester_loss)
+        stats = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
+        LOG.info("[TRAINING] TriggerAgent stats: %s", stats.get("trigger", {}))
+        LOG.info("[TRAINING] HarvesterAgent stats: %s", stats.get("harvester", {}))
+        if train_metrics.get("trigger") or train_metrics.get("harvester"):
+            trigger_td = (
+                train_metrics.get("trigger", {}).get("mean_td_error", 0)
+                if train_metrics.get("trigger") else 0
+            )
+            harvester_td = (
+                train_metrics.get("harvester", {}).get("mean_td_error", 0)
+                if train_metrics.get("harvester") else 0
+            )
+            avg_td = (trigger_td + harvester_td) / 2 if (trigger_td + harvester_td) else 0
+            if avg_td > TRAINING_TD_HIGH_THRESHOLD:
+                self.adaptive_reg.increase_regularization()
+            elif avg_td < TRAINING_TD_LOW_THRESHOLD:
+                self.adaptive_reg.decrease_regularization()
+        total_steps = getattr(self.policy.trigger, "training_steps", 0) + getattr(
+            self.policy.harvester, "training_steps", 0
+        )
+        if total_steps > 0 and total_steps % 50 == 0:
+            try:
+                self.policy.save_checkpoint()
+            except Exception as e_save:
+                LOG.warning("[CHECKPOINT] Auto-save failed: %s", e_save)
+
+    def _obc_run_training_step(self) -> None:
+        """Run one training step if enough experience has been collected."""
+        MIN_EXPERIENCES_FOR_TRAINING = 32
+        trigger_size, harvester_size = self._obc_get_buffer_sizes()
+        if trigger_size >= MIN_EXPERIENCES_FOR_TRAINING or harvester_size >= MIN_EXPERIENCES_FOR_TRAINING:
+            try:
+                train_metrics = self.policy.train_step(self.adaptive_reg)
+                self._obc_post_train_step(train_metrics)
+                self.bars_since_training = 0
+                LOG.debug(
+                    "[TRAINING] Completed: T_buffer=%d H_buffer=%d",
+                    trigger_size, harvester_size,
+                )
+            except Exception as e:
+                LOG.error("[TRAINING] Training step failed: %s", e, exc_info=True)
+                self.bars_since_training = 0
+        else:
+            LOG.debug(
+                "[TRAINING] Skipping - insufficient experiences (T=%d H=%d, need %d)",
+                trigger_size, harvester_size, MIN_EXPERIENCES_FOR_TRAINING,
+            )
+
+    def _obc_periodic_training(self) -> None:
+        """Trigger a training step every training_interval bars if policy supports it."""
+        self.bars_since_training += 1
+        if self.bars_since_training >= self.training_interval and hasattr(self.policy, "train_step"):
+            self._obc_run_training_step()
+
+    def _obc_get_trigger_context(self, action: int) -> tuple:
+        """Return (decision_str, regime, geom_temp) for trigger decision logging."""
+        if action == 0:
+            decision_str = "NO_ENTRY"
+        elif action == 1:
+            decision_str = "LONG"
+        else:
+            decision_str = "SHORT"
+        regime = (
+            getattr(self.policy, "current_regime", "UNKNOWN")
+            if hasattr(self.policy, "policy") else "UNKNOWN"
+        )
+        geom_temp = (
+            self.policy.path_geometry.last
+            if hasattr(self.policy, "path_geometry") and self.policy.path_geometry
+            else {}
+        )
+        return decision_str, regime, geom_temp
+
+    def _obc_record_entry_state(
+        self, action: int, confidence: float, runway: float,
+        vpin_zscore: float, imbalance: float,
+    ) -> None:
+        """Snapshot trigger state and entry coordinates for online learning."""
+        if not (
+            action != 0
+            and hasattr(self.policy, "trigger")
+            and hasattr(self.policy.trigger, "last_state")
+        ):
+            return
+        self.entry_state = (
+            self.policy.trigger.last_state.copy()
+            if self.policy.trigger.last_state is not None else None
+        )
+        self.entry_action = action
+        self.entry_confidence = confidence
+        self._last_trigger_conf = 0.9 * self._last_trigger_conf + 0.1 * confidence
+        self.predicted_runway = runway
+        self.entry_vpin_z = vpin_zscore
+        self.entry_imbalance = imbalance
+        self.was_exploration_entry = (
+            hasattr(self.policy, "trigger")
+            and self.policy.trigger.epsilon > EPSILON_HIGH_THRESHOLD
+            and runway <= RUNWAY_FALLBACK_THRESHOLD
+        )
+        self._bar_cache.snapshot_entry(self.bars)
+
+    def _obc_add_no_entry_experience(self, action: int) -> None:
+        """Add a rate-limited NO_ENTRY experience to the trigger buffer."""
+        if not (
+            action == 0
+            and hasattr(self.policy, "add_trigger_experience")
+            and random.random() < EXPLORATION_SAMPLE_RATE  # nosonar
+        ):
+            return
+        trigger_state = (
+            self.policy.trigger.last_state.copy()
+            if (
+                hasattr(self.policy, "trigger")
+                and hasattr(self.policy.trigger, "last_state")
+                and self.policy.trigger.last_state is not None
+            )
+            else None
+        )
+        if trigger_state is not None:
+            self.policy.add_trigger_experience(
+                state=trigger_state, action=0, reward=0.0,
+                next_state=trigger_state, done=True,
+            )
+            LOG.debug("[ONLINE_LEARNING] Added NO_ENTRY trigger experience (sampled)")
+
+    def _obc_handle_flat_entry(
+        self, bar: tuple, imbalance: float,
+        depth_bid: float, depth_ask: float,
+        depth_ratio: float, depth_levels: int,
+        vpin_zscore: float, realized_vol: float,
+        event_features: dict, is_high_liq: bool,
+    ):
+        """Handle entry decision when flat. Returns None to abort, else decision tuple."""
+        t, o, h, low_price, c = bar
+        if self.circuit_breakers.is_any_tripped():
+            tripped = self.circuit_breakers.get_tripped_breakers()
+            LOG.warning("[CIRCUIT-BREAKER] Trading halted: %s", ", ".join([b.name for b in tripped]))
+            LOG.error("[FLOW-ABORT] Stopped at circuit breaker check")
+            self._export_hud_data()
+            return None
+        if len(self.bars) % 10 == 0:
+            active_sessions = self.event_time_engine.get_active_sessions()
+            LOG.debug(
+                "[EVENT-TIME] Sessions: %s | High liquidity: %s",
+                ",".join(active_sessions) if active_sessions else "None", is_high_liq,
+            )
+        depth_floor = max(self.last_depth_floor, 0.0)
+        LOG.info(
+            "[FLOW-TRACE] Step 3: Checking order book depth (bid=%.3f, ask=%.3f, floor=%.3f)",
+            depth_bid, depth_ask, depth_floor,
+        )
+        if self._depth_is_too_thin(depth_bid, depth_ask, depth_floor):
+            self.last_depth_gate = True
+            min_depth = min(depth_bid, depth_ask) if depth_bid > 0 and depth_ask > 0 else 0.0
+            LOG.warning(
+                "[DEPTH] Order book thin: bid=%.3f ask=%.3f min=%.3f < buffer=%.3f (levels=%d)",
+                depth_bid, depth_ask, min_depth, depth_floor, depth_levels,
+            )
+            LOG.error("[FLOW-ABORT] Stopped at depth check")
+            self._export_hud_data()
+            return None
+        self.last_depth_gate = False
+        action, confidence, runway = self.policy.decide_entry(
+            self.bars, imbalance=imbalance, vpin_z=vpin_zscore,
+            depth_ratio=depth_ratio, realized_vol=realized_vol,
+            event_features=event_features,
+        )
+        if action == ACTION_LONG:
+            desired = 1
+        elif action == ACTION_SHORT:
+            desired = -1
+        else:
+            desired = 0
+        LOG.info(
+            "[FLOW-TRACE] Step 4 COMPLETE: action=%d, desired=%d, confidence=%.3f",
+            action, desired, confidence,
+        )
+        if action != 0:
+            import uuid  # noqa: PLC0415
+            self.current_trade_id = str(uuid.uuid4())[:8]
+        _bar_trade_id = self.current_trade_id if action != 0 else None
+        decision_str, regime, geom_temp = self._obc_get_trigger_context(action)
+        self.decision_log.log_trigger_decision(
+            decision=decision_str, confidence=confidence, price=c,
+            volatility=realized_vol, imbalance=imbalance, vpin_z=vpin_zscore,
+            regime=regime, predicted_runway=runway,
+            feasibility=geom_temp.get("feasibility", 1.0),
+            circuit_breakers_ok=not self.circuit_breakers.is_any_tripped(),
+            trade_id=_bar_trade_id,
+        )
+        self._obc_record_entry_state(action, confidence, runway, vpin_zscore, imbalance)
+        self._obc_add_no_entry_experience(action)
+        geom = (
+            self.policy.path_geometry.last
+            if hasattr(self.policy, "path_geometry") and self.policy.path_geometry
+            else {}
+        )
+        feas = geom.get("feasibility", 0.0)
+        LOG.info(
+            "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f | TRIGGER: action=%d conf=%.2f "
+            "runway=%.4f feas=%.2f | RS_vol=%.5f bars=%d | desired=%s cur=%s",
+            self.timeframe_minutes, t.isoformat(), o, h, low_price, c,
+            action, confidence, runway, feas, realized_vol, len(self.bars),
+            desired, self.cur_pos,
+        )
+        return action, confidence, runway, desired, feas, _bar_trade_id
+
+    def _obc_add_harvester_experience(self, c: float) -> None:
+        """Add a dense HOLD experience to the harvester replay buffer."""
+        if not (
+            hasattr(self.policy, "add_harvester_experience")
+            and self.prev_harvester_state is not None
+        ):
+            return
+        pos_metrics = (
+            self.policy.get_position_metrics()
+            if hasattr(self.policy, "get_position_metrics") else {}
+        )
+        current_mfe = pos_metrics.get("mfe", 0.0)
+        current_mae = pos_metrics.get("mae", 0.0)
+        bars_held_count = pos_metrics.get("bars_held", 0)
+        entry_price_val = pos_metrics.get("entry_price", 0.0)
+        realized_vol = (
+            self._calculate_rs_volatility()
+            if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.01
+        )
+        unrealized_pnl_val = (
+            (c - entry_price_val) * self.cur_pos if entry_price_val > 0 else 0.0
+        )
+        reward = self._calculate_harvester_hold_reward(
+            excursions=MfeMaeSnapshot(
+                current_mfe=current_mfe, current_mae=current_mae,
+                prev_mfe=self.prev_mfe, prev_mae=self.prev_mae,
+            ),
+            position=HarvesterPositionState(
+                bars_held=bars_held_count, unrealized_pnl=unrealized_pnl_val,
+                entry_price=entry_price_val, current_price=c, realized_vol=realized_vol,
+            ),
+        )
+        next_state = (
+            self.policy.harvester.last_state
+            if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state")
+            else None
+        )
+        if next_state is not None:
+            self.policy.add_harvester_experience(
+                state=self.prev_harvester_state, action=self.prev_exit_action,
+                reward=reward, next_state=next_state, done=False,
+            )
+            LOG.debug("[HARVESTER_EXP] HOLD reward=%.4f", reward)
+
+    def _obc_update_harvester_state(self, exit_action: int) -> None:
+        """Persist current harvester state for the next bar's experience."""
+        if not (
+            hasattr(self.policy, "harvester")
+            and hasattr(self.policy.harvester, "last_state")
+        ):
+            return
+        self.prev_harvester_state = self.policy.harvester.last_state
+        self.prev_exit_action = exit_action
+        pos_metrics = (
+            self.policy.get_position_metrics()
+            if hasattr(self.policy, "get_position_metrics") else {}
+        )
+        self.prev_mfe = pos_metrics.get("mfe", 0.0)
+        self.prev_mae = pos_metrics.get("mae", 0.0)
+
+    def _obc_handle_in_position(
+        self, bar: tuple, imbalance: float, depth_ratio: float,
+        vpin_zscore: float, event_features: dict,
+    ) -> tuple:
+        """Handle exit decision when in a position. Returns decision tuple."""
+        t, o, h, low_price, c = bar
+        _already_closing = hasattr(self, "_pending_closes") and len(self._pending_closes) > 0
+        if _already_closing:
+            LOG.debug("[BAR] Tick harvester already issued close — skipping bar-level exit check")
+            exit_action, exit_conf = 0, 0.0
+        else:
+            exit_action, exit_conf = self.policy.decide_exit(
+                self.bars, current_price=c, imbalance=imbalance,
+                vpin_z=vpin_zscore, depth_ratio=depth_ratio, event_features=event_features,
+            )
+        desired = 0 if exit_action == 1 else self.cur_pos
+        self._last_harvester_conf = 0.9 * self._last_harvester_conf + 0.1 * exit_conf
+        _active_tracker = (
+            next(iter(self.mfe_mae_trackers.values()), self.mfe_mae_tracker)
+            if self.mfe_mae_trackers else self.mfe_mae_tracker
+        )
+        pos_metrics = _active_tracker.get_summary()
+        entry_price = _active_tracker.entry_price or 0.0
+        mfe = _active_tracker.mfe
+        mae = _active_tracker.mae
+        ticks_held = pos_metrics.get("ticks_held", 0)
+        unrealized_pnl = (c - entry_price) * self.cur_pos if entry_price > 0 else 0.0
+        capture_ratio = (unrealized_pnl / mfe) if mfe > 0 else 0.0
+        _bar_trade_id = self.current_trade_id
+        _close_pending = _already_closing
+        if _already_closing:
+            _harvester_decision_str = "CLOSE_PENDING"
+        elif exit_action == 1:
+            _harvester_decision_str = "CLOSE"
+        else:
+            _harvester_decision_str = "HOLD"
+        self.decision_log.log_harvester_decision(
+            decision=_harvester_decision_str, confidence=exit_conf, price=c,
+            entry_price=entry_price, mfe=mfe, mae=mae, ticks_held=ticks_held,
+            unrealized_pnl=unrealized_pnl, capture_ratio=capture_ratio,
+            trade_id=_bar_trade_id, in_position=(self.cur_pos != 0),
+        )
+        if exit_action == 1:
+            self.current_trade_id = None
+        if hasattr(self, "trade_integration") and self.trade_integration.trailing_stop_active:
+            mid_price = (
+                (float(self.best_bid) + float(self.best_ask)) / 2.0
+                if self.best_bid and self.best_ask else c
+            )
+            self.trade_integration.update_trailing_stop(mid_price)
+        LOG.info(
+            "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f "
+            "| HARVESTER: exit=%d conf=%.2f | desired=%s cur=%s",
+            self.timeframe_minutes, t.isoformat(), o, h, low_price, c,
+            exit_action, exit_conf, desired, self.cur_pos,
+        )
+        self._obc_add_harvester_experience(c)
+        self._obc_update_harvester_state(exit_action)
+        return exit_action, exit_conf, desired, _bar_trade_id, _close_pending
+
+    def _obc_simple_policy_decide(self, bar: tuple) -> tuple:
+        """Fallback for non-dual policy agents. Returns (action, desired)."""
+        t, o, h, low_price, c = bar
+        action = self.policy.decide(self.bars)
+        if action == 0:
+            desired = -1
+        elif action == 1:
+            desired = 0
+        else:
+            desired = 1
+        LOG.info(
+            "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f | desired=%s cur=%s",
+            self.timeframe_minutes, t.isoformat(), o, h, low_price, c,
+            desired, self.cur_pos,
+        )
+        return action, desired
+
+    def _obc_write_decision_log(
+        self, t, o: float, h: float, low_price: float, c: float,
+        desired=None, action=None, confidence=None, runway=None, feas=None,
+        exit_action=None, exit_conf=None,
+        imbalance=None, depth_bid=None, depth_ask=None, depth_ratio=None,
+        _bar_trade_id=None, _close_pending: bool = False,
+    ) -> None:
+        """Append a bar-close decision entry to data/decision_log.json."""
+        try:
+            log_path = Path("data/decision_log.json")
+            log_path.parent.mkdir(exist_ok=True)
+            if log_path.exists():
+                with open(log_path, encoding="utf-8") as f:
+                    log_entries = json.load(f)
+            else:
+                log_entries = []
+            pos_metrics: dict = {}
+            if hasattr(self.policy, "get_position_metrics"):
+                pos_metrics = self.policy.get_position_metrics()
+            log_entry = {
+                "timestamp": t.isoformat() if hasattr(t, "isoformat") else str(t),
+                "event": "bar_close",
+                "trade_id": _bar_trade_id,
+                "close_pending": _close_pending,
+                "details": {
+                    "open": o, "high": h, "low": low_price, "close": c,
+                    "cur_pos": self.cur_pos, "desired": desired,
+                    "depth_bid": depth_bid, "depth_ask": depth_ask,
+                    "depth_ratio": depth_ratio, "imbalance": imbalance,
+                    "runway": runway, "feasibility": feas,
+                    "action": action, "confidence": confidence,
+                    "exit_action": exit_action, "exit_conf": exit_conf,
+                    "mfe": pos_metrics.get("mfe"),
+                    "mae": pos_metrics.get("mae"),
+                    "bars_held": pos_metrics.get("bars_held"),
+                    "entry_price": pos_metrics.get("entry_price"),
+                    "circuit_breaker": (
+                        self.circuit_breakers.is_any_tripped()
+                        if hasattr(self, "circuit_breakers") else None
+                    ),
+                },
+            }
+            log_entries.append(log_entry)
+            if len(log_entries) > MAX_LOG_ENTRIES:
+                log_entries = log_entries[-MAX_LOG_ENTRIES:]
+            with open(log_path, "w", encoding="utf-8") as f:
+                json.dump(log_entries, f, indent=2)
+            LOG.info("[DECISION_LOG] Wrote entry for %s (total: %d)", t, len(log_entries))
+        except Exception as e:
+            LOG.error("[DECISION_LOG] Failed to write: %s", e, exc_info=True)
+
+    def _obc_should_abort_execution(self, desired) -> bool:
+        """Return True if execution should be skipped (no session or no state change)."""
+        if not self.trade_sid:
+            LOG.error("[FLOW-ABORT] No TRADE session - cannot execute")
+            self._export_hud_data()
+            return True
+        if desired == self.cur_pos:
+            LOG.debug(
+                "[FLOW-ABORT] No action needed (desired=%s equals cur_pos=%s)",
+                desired, self.cur_pos,
+            )
+            self._export_hud_data()
+            return True
+        return False
+
+    def _obc_check_var_vpin_spread_gates(
+        self, vpin_zscore: float, realized_vol: float
+    ) -> bool:
+        """Check VaR, VPIN, and spread gates. Returns True if execution should abort."""
+        current_var = self.var_estimator.estimate_var(
+            regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
+        )
+        self.last_estimated_var = current_var
+        self.entry_var = current_var
+        max_var_threshold = self.vol_cap
+        if current_var > max_var_threshold:
+            if not self.paper_mode:
+                LOG.warning(
+                    "[CIRCUIT_BREAKER] VaR=%.4f exceeds threshold=%.4f - skipping entry",
+                    current_var, max_var_threshold,
+                )
+                self._export_hud_data()
+                return True
+            else:
+                LOG.debug(
+                    "[PAPER-GATE] VaR=%.4f > cap=%.4f — allowing entry so RL learns via regime reward",
+                    current_var, max_var_threshold,
+                )
+        if self.vpin_z_threshold > 0 and vpin_zscore > self.vpin_z_threshold:
+            if not self.paper_mode:
+                LOG.warning(
+                    "[VPIN] z-score %.2f exceeds threshold %.2f - skipping entry",
+                    vpin_zscore, self.vpin_z_threshold,
+                )
+                self._export_hud_data()
+                return True
+            else:
+                LOG.debug(
+                    "[PAPER-GATE] VPIN z=%.2f > thresh=%.2f — allowing so RL learns via regime reward",
+                    vpin_zscore, self.vpin_z_threshold,
+                )
+        env_multiplier = None
+        spread_override = os.environ.get("SPREAD_RELAX_MULTIPLIER")
+        if spread_override:
+            try:
+                env_multiplier = float(spread_override)
+            except ValueError:
+                LOG.warning("[SPREAD_FILTER] Invalid SPREAD_RELAX_MULTIPLIER=%s - ignoring", spread_override)
+        is_acceptable, current_spread, max_spread = self.friction_calculator.is_spread_acceptable(
+            env_multiplier
+        )
+        effective_multiplier = (
+            env_multiplier if env_multiplier is not None else self.friction_calculator.spread_multiplier
+        )
+        if not is_acceptable:
+            if not self.paper_mode:
+                LOG.warning(
+                    "[SPREAD_FILTER] Current=%.2f pips > Learned max=%.2f pips (%.1fx min) - skipping",
+                    current_spread, max_spread, effective_multiplier,
+                )
+                self._export_hud_data()
+                return True
+            else:
+                LOG.debug(
+                    "[PAPER-GATE] Spread %.2f > max %.2f — allowing so RL learns friction cost",
+                    current_spread, max_spread,
+                )
+        return False
+
+    def _obc_new_entry_gate_blocked(
+        self, desired: int, vpin_zscore: float, realized_vol: float
+    ) -> bool:
+        """Check kurtosis, VaR, VPIN, and spread gates for a new position entry."""
+        if self.cur_pos != 0 or desired == 0:
+            return False
+        LOG.debug("[FLOW-TRACE] Step 6a: Checking kurtosis breaker")
+        if self.kurtosis_monitor.is_breaker_active:
+            LOG.warning(
+                "[CIRCUIT_BREAKER] Kurtosis breaker ACTIVE (kurtosis=%.2f) - skipping entry",
+                self.kurtosis_monitor.current_kurtosis,
+            )
+            LOG.error("[FLOW-ABORT] Stopped at kurtosis check")
+            self._export_hud_data()
+            return True
+        LOG.debug("[FLOW-TRACE] Step 6a PASSED: Kurtosis OK")
+        return self._obc_check_var_vpin_spread_gates(vpin_zscore, realized_vol)
+
+    def _obc_send_order(self, desired: int) -> None:
+        """Compute order quantity and dispatch a market order."""
+        delta = desired - self.cur_pos
+        side = "1" if delta > 0 else "2"
+        LOG.debug("[FLOW-TRACE] Step 7: Computing order (delta=%s, side=%s)", delta, side)
+        size_multiplier = self.circuit_breakers.get_position_size_multiplier()
+        order_qty = self._compute_order_qty(
+            abs(delta), size_multiplier, self.cur_pos == 0 and desired != 0
+        )
+        if size_multiplier < 1.0:
+            LOG.warning(
+                "[CIRCUIT-BREAKER] Position size reduced: %.2f%% (multiplier=%.2f)",
+                size_multiplier * 100, size_multiplier,
+            )
+        if order_qty <= 0:
+            LOG.warning("[RISK] Order blocked - zero qty after constraints")
+            LOG.error("[FLOW-ABORT] Stopped at order quantity check (qty=%.6f)", order_qty)
+            self._export_hud_data()
+            return
+        LOG.debug("[FLOW-TRACE] Step 8: EXECUTING ORDER side=%s qty=%.6f", side, order_qty)
+        self.send_market_order(side=side, qty=order_qty)
+
+    # ----------------------------
     # Strategy: run on bar close (M1/M15 configurable)
     # ----------------------------
-    def on_bar_close(self, bar):  # noqa: PLR0911, PLR0912, PLR0915
+    def on_bar_close(self, bar):
+        """Process a completed bar: update state, run policy decisions, execute orders."""
         t, o, h, low_price, c = bar
+        LOG.debug(
+            "[BAR] on_bar_close called: t=%s, o=%s, h=%s, l=%s, c=%s",
+            t, o, h, low_price, c,
+        )
 
-        LOG.debug(f"[BAR] on_bar_close called: t={t}, o={o}, h={h}, l={low_price}, c={c}")
-
-        # Initialize decision variables for logging (will be populated later)
+        # Initialize decision variables for logging
         action = None
         confidence = None
         runway = None
@@ -3486,754 +4150,77 @@ class CTraderFixApp(fix.Application):
         depth_bid = None
         depth_ask = None
         depth_ratio = None
-        # trade_id captured before any branch may clear it (used by inline HUD log)
         _bar_trade_id: str | None = None
         _close_pending: bool = False
 
-        # Increment bar counter for HUD
         self.bar_count += 1
+        self._obc_bar_preamble()
+        self._obc_update_bar_metrics(c, bar)
 
-        if self.bar_count % 10 == 0 and self.close_stats.is_ready():
-            LOG.info(
-                "[ROLLING] period=%d mean=%.2f std=%.4f min=%.2f max=%.2f",
-                self.close_stats.period,
-                self.close_stats.mean,
-                self.close_stats.std,
-                self.close_stats.min,
-                self.close_stats.max,
-            )
-
-        # PERIODIC AUTO-SAVE: Save every 50 bars to prevent data loss
-        if self.bar_count - self.last_autosave_bar >= AUTOSAVE_INTERVAL_BARS and self.performance.total_trades > 0:
-            try:
-                datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
-                files = self.trade_exporter.export_all(self.performance, prefix=f"autosave_b{self.bar_count}")
-                self.last_autosave_bar = self.bar_count
-                LOG.info(
-                    "[AUTOSAVE] ✓ Bar %d: Saved %d trades to: %s",
-                    self.bar_count,
-                    self.performance.total_trades,
-                    ", ".join(files.values()),
-                )
-            except Exception as e:
-                LOG.error("[AUTOSAVE] ✗ Failed at bar %d: %s", self.bar_count, e)
-
-        # Phase 3.5: Update activity monitor
-        self.activity_monitor.on_bar_close()
-
-        # P0 FIX: Check for position reconciliation timeouts every bar
-        if self.trade_integration and self.trade_integration.trade_manager:
-            self.trade_integration.trade_manager.check_all_position_request_timeouts()
-
-        # Phase 3.5: Update VaR with bar return
-        if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE:
-            prev_close = self.bars[-2][4] if len(self.bars) >= MIN_BARS_FOR_PREV_CLOSE else c
-            bar_return = SafeMath.safe_div(c - prev_close, prev_close, 0.0)
-            self.var_estimator.update_return(bar_return)
-
-        # Record bar if position is open
-        # Support multiple positions via TradeManager
-        if self.trade_integration.trade_manager:
-            position = self.trade_integration.trade_manager.get_position()
-            if position and abs(position.net_qty) > MIN_POSITION_QTY:  # Active position
-                position_id = position.position_id if hasattr(position, "position_id") else self.default_position_id
-                if position_id in self.path_recorders:
-                    self.path_recorders[position_id].add_bar(bar)
-        elif self.cur_pos != 0:  # Fallback for legacy single-position mode
-            if self.default_position_id in self.path_recorders:
-                self.path_recorders[self.default_position_id].add_bar(bar)
-
-        # Calculate depth-aware imbalance metrics
-        ob_depth = max(1, getattr(self.order_book, "depth", 1))
-        learned_levels = getattr(self.friction_calculator, "depth_levels", ob_depth)
-        depth_levels = max(1, min(ob_depth, learned_levels))
-        depth_bid, depth_ask = self.order_book.depth_sum(levels=depth_levels)
-        depth_total = depth_bid + depth_ask
-        depth_ratio = 1.0
-        if depth_ask > 0:
-            depth_ratio = SafeMath.safe_div(depth_bid, depth_ask, 1.0)
-        imbalance = 0.0
-        if depth_total > 0:
-            imbalance = SafeMath.safe_div(depth_bid - depth_ask, depth_total, 0.0)
-        elif self.best_bid and self.best_ask:
-            mid = (self.best_bid + self.best_ask) / 2.0
-            spread = self.best_ask - self.best_bid
-            if mid > 0:
-                imbalance = (self.best_bid - mid) / (spread + 1e-10)
-                imbalance = max(-1.0, min(1.0, imbalance))
-
-        # Quote-Flow Imbalance (QFI): bid vs ask quoting activity this bar.
-        # This is the live signal when Pepperstone omits MDEntrySize (uniform 1.0 fallback).
-        _qfi_total = self._bid_refresh_count + self._ask_refresh_count
-        _qfi = (
-            (self._bid_refresh_count - self._ask_refresh_count) / _qfi_total
-            if _qfi_total > 0 else 0.0
+        imbalance, depth_bid, depth_ask, depth_ratio, depth_levels = (
+            self._obc_compute_imbalance(c)
         )
-        # Blend real notional sizes with QFI if available, else use QFI solely
-        imbalance = 0.5 * imbalance + 0.5 * _qfi if self._has_real_sizes and abs(imbalance) > _IMBALANCE_BLEND_FLOOR else _qfi
+        vpin_zscore, realized_vol, event_features, is_high_liq = (
+            self._obc_get_market_context(c)
+        )
+
+        self._obc_periodic_training()
+
+        has_dual = hasattr(self.policy, "decide_entry")
         LOG.debug(
-            "[IMBALANCE] bid_refreshes=%d ask_refreshes=%d qfi=%.3f "
-            "depth_imb=%.3f final=%.3f real_sizes=%s",
-            self._bid_refresh_count, self._ask_refresh_count, _qfi,
-            SafeMath.safe_div(depth_bid - depth_ask, depth_total + 1e-9, 0.0),
-            imbalance, self._has_real_sizes,
+            "[POLICY-CHECK] policy type=%s, has_decide_entry=%s",
+            type(self.policy).__name__, has_dual,
         )
-        # Reset per-bar quote refresh counters
-        self._bid_refresh_count = 0
-        self._ask_refresh_count = 0
-        # Persist so _export_order_book() (tick-level) can read the latest value
-        self._last_bar_qfi: float = imbalance
-        self._last_bar_qfi_count: int = _qfi_total
-
-        self.last_depth_metrics = {
-            "bid": depth_bid,
-            "ask": depth_ask,
-            "ratio": depth_ratio,
-            "levels": depth_levels,
-        }
-        self.last_depth_floor = getattr(self.friction_calculator, "depth_buffer", 0.0)
-        self.last_depth_gate = False
-
-        # Phase 3.5: Get exploration bonus from activity monitor
-        exploration_bonus = (
-            self.activity_monitor.get_exploration_bonus()
-            if hasattr(self.activity_monitor, "get_exploration_bonus")
-            else 0.0
-        )
-
-        # Phase 3.5: Calculate Rogers-Satchell volatility for PathGeometry
-        realized_vol = self._calculate_rs_volatility()
-
-        # Debug: Log RS volatility every bar
-        if len(self.bars) >= MIN_TRADE_HISTORY_EXPLORATION:
-            LOG.debug("[RS_VOL] bars=%d realized_vol=%.6f", len(self.bars), realized_vol)
-
-        # Phase 3: Event-relative time features every bar for both agents
-        event_features = {}
-        is_high_liq = False
-        if hasattr(self, "event_time_engine") and self.event_time_engine:
-            event_features = self.event_time_engine.calculate_features()
-            is_high_liq = self.event_time_engine.is_high_liquidity_period()
-        vpin_zscore = self.last_vpin_stats.get("zscore", 0.0) if hasattr(self, "last_vpin_stats") else 0.0
-
-        # Phase 3.5: Periodic training step
-        self.bars_since_training += 1
-        if self.bars_since_training >= self.training_interval and hasattr(self.policy, "train_step"):
-            # FIX 4: Check minimum experience threshold before training
-            MIN_EXPERIENCES_FOR_TRAINING = 32  # At least one batch worth
-
-            # Check buffer sizes
-            trigger_size = 0
-            harvester_size = 0
-
-            if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "buffer"):
-                trigger_buffer = self.policy.trigger.buffer
-                if hasattr(trigger_buffer, "tree") and trigger_buffer.tree:
-                    trigger_size = trigger_buffer.tree.n_entries
-                elif hasattr(trigger_buffer, "size"):
-                    trigger_size = trigger_buffer.size
-
-            if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "buffer"):
-                harvester_buffer = self.policy.harvester.buffer
-                if hasattr(harvester_buffer, "tree") and harvester_buffer.tree:
-                    harvester_size = harvester_buffer.tree.n_entries
-                elif hasattr(harvester_buffer, "size"):
-                    harvester_size = harvester_buffer.size
-
-            # Only train if at least one agent has sufficient experiences
-            if trigger_size >= MIN_EXPERIENCES_FOR_TRAINING or harvester_size >= MIN_EXPERIENCES_FOR_TRAINING:
-                try:
-                    train_metrics = self.policy.train_step(self.adaptive_reg)
-                    # Store latest losses for HUD reporting
-                    if train_metrics.get("trigger"):
-                        self.last_trigger_loss = train_metrics["trigger"].get("loss", self.last_trigger_loss)
-                    if train_metrics.get("harvester"):
-                        self.last_harvester_loss = train_metrics["harvester"].get("loss", self.last_harvester_loss)
-                    # Log training stats after each training step
-                    stats = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
-                    LOG.info("[TRAINING] TriggerAgent stats: %s", stats.get("trigger", {}))
-                    LOG.info("[TRAINING] HarvesterAgent stats: %s", stats.get("harvester", {}))
-                    self.bars_since_training = 0
-
-                    LOG.debug(
-                        "[TRAINING] Completed: T_buffer=%d H_buffer=%d",
-                        trigger_size,
-                        harvester_size,
-                    )
-
-                    # Adjust regularization based on training metrics
-                    if train_metrics.get("trigger") or train_metrics.get("harvester"):
-                        trigger_td = (
-                            train_metrics.get("trigger", {}).get("mean_td_error", 0)
-                            if train_metrics.get("trigger")
-                            else 0
-                        )
-                        harvester_td = (
-                            train_metrics.get("harvester", {}).get("mean_td_error", 0)
-                            if train_metrics.get("harvester")
-                            else 0
-                        )
-                        avg_td = (trigger_td + harvester_td) / 2 if (trigger_td + harvester_td) else 0
-
-                        # Adaptive regularization: high TD error = overfitting signal
-                        if avg_td > TRAINING_TD_HIGH_THRESHOLD:  # High TD error threshold
-                            self.adaptive_reg.increase_regularization()
-                        elif avg_td < TRAINING_TD_LOW_THRESHOLD:  # Low TD error threshold
-                            self.adaptive_reg.decrease_regularization()
-
-                    # Periodic auto-save every 50 training steps
-                    total_steps = getattr(self.policy.trigger, "training_steps", 0) + getattr(
-                        self.policy.harvester, "training_steps", 0
-                    )
-                    if total_steps > 0 and total_steps % 50 == 0:
-                        try:
-                            self.policy.save_checkpoint()
-                        except Exception as e_save:
-                            LOG.warning("[CHECKPOINT] Auto-save failed: %s", e_save)
-                except Exception as e:
-                    LOG.error(f"[TRAINING] Training step failed: {e}", exc_info=True)
-                    self.bars_since_training = 0  # Reset to prevent repeated attempts
-            else:
-                LOG.debug(
-                    "[TRAINING] Skipping - insufficient experiences (T=%d H=%d, need %d)",
-                    trigger_size,
-                    harvester_size,
-                    MIN_EXPERIENCES_FOR_TRAINING,
-                )
-
-        # Phase 3: Use DualPolicy if available
-        has_decide_entry = hasattr(self.policy, "decide_entry")
-        LOG.debug("[POLICY-CHECK] policy type=%s, has_decide_entry=%s", type(self.policy).__name__, has_decide_entry)
-        if has_decide_entry:
-            # Dual-agent architecture
-            # HEDGING MODE: Check if ANY positions exist (not just net=0)
-            has_positions = self.trade_integration.has_any_open_positions()
-            LOG.debug("[FLAT: Check for entry] has_positions=%s, cur_pos=%d", has_positions, self.cur_pos)
-            LOG.debug("[FLOW-TRACE] Step 1: Position check complete, proceeding to entry decision")
-            if not has_positions:
-                # Handbook: Check circuit breakers BEFORE any entry decision
-                LOG.debug("[FLOW-TRACE] Step 2: Checking circuit breakers")
-                if self.circuit_breakers.is_any_tripped():
-                    tripped = self.circuit_breakers.get_tripped_breakers()
-                    LOG.warning("[CIRCUIT-BREAKER] Trading halted: %s", ", ".join([b.name for b in tripped]))
-                    LOG.error("[FLOW-ABORT] Stopped at circuit breaker check")
-                    self._export_hud_data()
-                    return
-                LOG.debug("[FLOW-TRACE] Step 2 PASSED: No circuit breakers tripped")
-
-                # Log key time features
-                if len(self.bars) % 10 == 0:  # Every 10 bars
-                    active_sessions = self.event_time_engine.get_active_sessions()
-                    LOG.debug(
-                        "[EVENT-TIME] Sessions: %s | High liquidity: %s",
-                        ",".join(active_sessions) if active_sessions else "None",
-                        is_high_liq,
-                    )
-                depth_floor = max(self.last_depth_floor, 0.0)
-                LOG.info(
-                    "[FLOW-TRACE] Step 3: Checking order book depth (bid=%.3f, ask=%.3f, floor=%.3f)",
-                    depth_bid,
-                    depth_ask,
-                    depth_floor,
-                )
-                if self._depth_is_too_thin(depth_bid, depth_ask, depth_floor):
-                    self.last_depth_gate = True
-                    min_depth = min(depth_bid, depth_ask) if depth_bid > 0 and depth_ask > 0 else 0.0
-                    LOG.warning(
-                        "[DEPTH] Order book thin: bid=%.3f ask=%.3f min=%.3f < buffer=%.3f (levels=%d)",
-                        depth_bid,
-                        depth_ask,
-                        min_depth,
-                        depth_floor,
-                        depth_levels,
-                    )
-                    LOG.error("[FLOW-ABORT] Stopped at depth check")
-                    self._export_hud_data()
-                    return
-                self.last_depth_gate = False
-                LOG.debug("[FLOW-TRACE] Step 3 PASSED: Depth check OK")
-
-                # FLAT: Check for entry (pass event features if policy accepts them)
-                LOG.debug("[FLOW-TRACE] Step 4: Calling policy.decide_entry()")
-                action, confidence, runway = self.policy.decide_entry(
-                    self.bars,
-                    imbalance=imbalance,
-                    vpin_z=vpin_zscore,
-                    depth_ratio=depth_ratio,
-                    realized_vol=realized_vol,
-                    event_features=event_features,
-                )
-                # action: 0=NO_ENTRY, 1=LONG, 2=SHORT
-                if action == ACTION_LONG:
-                    desired = 1
-                elif action == ACTION_SHORT:
-                    desired = -1
-                else:
-                    desired = 0
-                LOG.info(
-                    "[FLOW-TRACE] Step 4 COMPLETE: action=%d, desired=%d, confidence=%.3f", action, desired, confidence
-                )
-
-                # GAP 10.1: Log trigger decision
-                if action == 0:
-                    decision_str = "NO_ENTRY"
-                elif action == 1:
-                    decision_str = "LONG"
-                else:
-                    decision_str = "SHORT"
-                regime = (
-                    getattr(self.policy, "current_regime", "UNKNOWN") if hasattr(self.policy, "policy") else "UNKNOWN"
-                )
-                geom_temp = (
-                    self.policy.path_geometry.last
-                    if hasattr(self.policy, "path_geometry") and self.policy.path_geometry
-                    else {}
-                )
-                # Stamp a new trade_id for LONG/SHORT entries so all subsequent
-                # harvester HOLD/CLOSE entries can be correlated to this trigger.
-                if action != 0:  # LONG or SHORT
-                    import uuid  # noqa: PLC0415
-                    self.current_trade_id = str(uuid.uuid4())[:8]
-                # NO_ENTRY has no open trade — don't stamp a (possibly stale) trade_id
-                _bar_trade_id = self.current_trade_id if action != 0 else None
-                self.decision_log.log_trigger_decision(
-                    decision=decision_str,
-                    confidence=confidence,
-                    price=c,
-                    volatility=realized_vol,
-                    imbalance=imbalance,
-                    vpin_z=vpin_zscore,
-                    regime=regime,
-                    predicted_runway=runway,
-                    feasibility=geom_temp.get("feasibility", 1.0),
-                    circuit_breakers_ok=not self.circuit_breakers.is_any_tripped(),
-                    trade_id=_bar_trade_id,
-                )
-
-                # Store state for online learning (if entry is taken)
-                if action != 0 and hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "last_state"):
-                    self.entry_state = (
-                        self.policy.trigger.last_state.copy() if self.policy.trigger.last_state is not None else None
-                    )
-                    self.entry_action = action
-                    self.entry_confidence = confidence  # Store for Platt calibration at trade close
-                    self._last_trigger_conf = 0.9 * self._last_trigger_conf + 0.1 * confidence
-                    self.predicted_runway = runway  # FIX 1: Store predicted MFE for trigger reward
-                    # Store market-condition snapshot at entry for regime-conditioned reward shaping
-                    self.entry_vpin_z = vpin_zscore
-                    self.entry_imbalance = imbalance  # for offline cache record
-                    # entry_var is set in the execution block where current_var is computed
-                    # FIX 7: Track if entry was exploration (random) so we can use
-                    # a neutral reward instead of prediction-accuracy reward
-                    self.was_exploration_entry = (
-                        hasattr(self.policy, "trigger")
-                        and self.policy.trigger.epsilon > EPSILON_HIGH_THRESHOLD
-                        and runway <= RUNWAY_FALLBACK_THRESHOLD
-                    )
-                    # Snapshot bars at entry for offline training cache
-                    self._bar_cache.snapshot_entry(self.bars)
-
-                # FIX 5: Add NO_ENTRY experiences so trigger learns when NOT to trade
-                # This provides negative/neutral examples critical for balanced learning
-                # RATE-LIMITED: Only add 10% of NO_ENTRY bars to prevent buffer flooding
-                # (~288 bars/day would dominate vs ~5-10 actual trades/day)
-                if (
-                    action == 0
-                    and hasattr(self.policy, "add_trigger_experience")
-                    and random.random() < EXPLORATION_SAMPLE_RATE  # nosonar: non-crypto sampling, PRNG is intentional
-                ):
-                        trigger_state = (
-                            self.policy.trigger.last_state.copy()
-                            if hasattr(self.policy, "trigger")
-                            and hasattr(self.policy.trigger, "last_state")
-                            and self.policy.trigger.last_state is not None
-                            else None
-                        )
-                        if trigger_state is not None:
-                            # Reward of 0.0 for NO_ENTRY: neutral - neither penalize nor reward inaction
-                            self.policy.add_trigger_experience(
-                                state=trigger_state,
-                                action=0,  # NO_ENTRY
-                                reward=0.0,
-                                next_state=trigger_state,  # Same state (no position change)
-                                done=True,
-                            )
-                            LOG.debug("[ONLINE_LEARNING] Added NO_ENTRY trigger experience (sampled)")
-
-                # Get PathGeometry features for logging
-                geom = (
-                    self.policy.path_geometry.last
-                    if hasattr(self.policy, "path_geometry") and self.policy.path_geometry
-                    else {}
-                )
-                feas = geom.get("feasibility", 0.0)
-                geom.get("runway", 0.0)
-                geom.get("efficiency", 0.0)
-
-                LOG.info(
-                    "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f | TRIGGER: action=%d conf=%.2f runway=%.4f feas=%.2f | RS_vol=%.5f bars=%d | desired=%s cur=%s",
-                    self.timeframe_minutes,
-                    t.isoformat(),
-                    o,
-                    h,
-                    low_price,
-                    c,
-                    action,
-                    confidence,
-                    runway,
-                    feas,
-                    realized_vol,
-                    len(self.bars),
-                    desired,
-                    self.cur_pos,
-                )
-            else:
-                # IN POSITION: Check for exit
-                # Skip if tick-level harvester already issued a close for this position
-                _already_closing = hasattr(self, "_pending_closes") and len(self._pending_closes) > 0
-                if _already_closing:
-                    LOG.debug("[BAR] Tick harvester already issued close — skipping bar-level exit check")
-                    exit_action = 0
-                    exit_conf = 0.0
-                else:
-                    exit_action, exit_conf = self.policy.decide_exit(
-                        self.bars,
-                        current_price=c,
-                        imbalance=imbalance,
-                        vpin_z=vpin_zscore,
-                        depth_ratio=depth_ratio,
-                        event_features=event_features,
-                    )
-                # Set desired: 0 = close, or keep current position to hold
-                desired = 0 if exit_action == 1 else self.cur_pos
-                self._last_harvester_conf = 0.9 * self._last_harvester_conf + 0.1 * exit_conf
-                # Resolve position metrics from the active MFE/MAE tracker
-                _active_tracker = (
-                    next(iter(self.mfe_mae_trackers.values()), self.mfe_mae_tracker)
-                    if self.mfe_mae_trackers
-                    else self.mfe_mae_tracker
-                )
-                pos_metrics = _active_tracker.get_summary()
-                entry_price = _active_tracker.entry_price or 0.0
-                mfe = _active_tracker.mfe
-                mae = _active_tracker.mae
-                ticks_held = pos_metrics.get("ticks_held", 0)
-                unrealized_pnl = (c - entry_price) * self.cur_pos if entry_price > 0 else 0.0
-                capture_ratio = (unrealized_pnl / mfe) if mfe > 0 else 0.0
-
-                # Snapshot trade_id before CLOSE clears it — inline HUD log reads _bar_trade_id
-                _bar_trade_id = self.current_trade_id
-                _close_pending = _already_closing
-                # Label: tick harvester already issued a close — logging HOLD would be a lie
-                if _already_closing:
-                    _harvester_decision_str = "CLOSE_PENDING"
-                elif exit_action == 1:
-                    _harvester_decision_str = "CLOSE"
-                else:
-                    _harvester_decision_str = "HOLD"
-                self.decision_log.log_harvester_decision(
-                    decision=_harvester_decision_str,
-                    confidence=exit_conf,
-                    price=c,
-                    entry_price=entry_price,
-                    mfe=mfe,
-                    mae=mae,
-                    ticks_held=ticks_held,
-                    unrealized_pnl=unrealized_pnl,
-                    capture_ratio=capture_ratio,
-                    trade_id=_bar_trade_id,
-                    in_position=(self.cur_pos != 0),
-                )
-                if exit_action == 1:
-                    self.current_trade_id = None  # Trade closed — reset correlation ID
-
-                # Update trailing stop (HarvesterAgent controls, TradeManager communicates)
-                if hasattr(self, "trade_integration") and self.trade_integration.trailing_stop_active:
-                    mid_price = (
-                        (float(self.best_bid) + float(self.best_ask)) / 2.0 if self.best_bid and self.best_ask else c
-                    )
-                    self.trade_integration.update_trailing_stop(mid_price)
-
-                LOG.info(
-                    "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f | HARVESTER: exit=%d conf=%.2f | desired=%s cur=%s",
-                    self.timeframe_minutes,
-                    t.isoformat(),
-                    o,
-                    h,
-                    low_price,
-                    c,
-                    exit_action,
-                    exit_conf,
-                    desired,
-                    self.cur_pos,
-                )
-
-                # Add harvester experience (dense feedback every bar)
-                if hasattr(self.policy, "add_harvester_experience") and self.prev_harvester_state is not None:
-                    pos_metrics = (
-                        self.policy.get_position_metrics() if hasattr(self.policy, "get_position_metrics") else {}
-                    )
-                    current_mfe = pos_metrics.get("mfe", 0.0)
-                    current_mae = pos_metrics.get("mae", 0.0)
-                    bars_held_count = pos_metrics.get("bars_held", 0)
-                    entry_price_val = pos_metrics.get("entry_price", 0.0)
-                    current_price_val = c
-                    unrealized_pnl_val = (
-                        (current_price_val - entry_price_val) * self.cur_pos if entry_price_val > 0 else 0.0
-                    )
-
-                    # FIX 2: Calculate principled HOLD reward based on capture potential
-                    realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.01  # Default fallback
-
-                    reward = self._calculate_harvester_hold_reward(
-                        excursions=MfeMaeSnapshot(
-                            current_mfe=current_mfe,
-                            current_mae=current_mae,
-                            prev_mfe=self.prev_mfe,
-                            prev_mae=self.prev_mae,
-                        ),
-                        position=HarvesterPositionState(
-                            bars_held=bars_held_count,
-                            unrealized_pnl=unrealized_pnl_val,
-                            entry_price=entry_price_val,
-                            current_price=current_price_val,
-                            realized_vol=realized_vol,
-                        ),
-                    )
-
-                    next_state = (
-                        self.policy.harvester.last_state
-                        if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state")
-                        else None
-                    )
-                    if next_state is not None:
-                        self.policy.add_harvester_experience(
-                            state=self.prev_harvester_state,
-                            action=self.prev_exit_action,
-                            reward=reward,
-                            next_state=next_state,
-                            done=False,
-                        )
-                        LOG.debug("[HARVESTER_EXP] HOLD reward=%.4f", reward)
-
-                # Store current state for next bar
-                if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
-                    self.prev_harvester_state = self.policy.harvester.last_state
-                    self.prev_exit_action = exit_action
-                    pos_metrics = (
-                        self.policy.get_position_metrics() if hasattr(self.policy, "get_position_metrics") else {}
-                    )
-                    self.prev_mfe = pos_metrics.get("mfe", 0.0)
-                    self.prev_mae = pos_metrics.get("mae", 0.0)
-        else:
-            # Simple policy fallback
-            action = self.policy.decide(self.bars)
-            if action == 0:
-                desired = -1
-            elif action == 1:
-                desired = 0
-            else:
-                desired = 1
-
-            LOG.info(
-                "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f | desired=%s cur=%s",
-                self.timeframe_minutes,
-                t.isoformat(),
-                o,
-                h,
-                low_price,
-                c,
-                desired,
-                self.cur_pos,
+        if has_dual and not self.trade_integration.has_any_open_positions():
+            LOG.debug(
+                "[FLAT: Check for entry] has_positions=False, cur_pos=%d", self.cur_pos
             )
+            result = self._obc_handle_flat_entry(
+                bar, imbalance, depth_bid, depth_ask,
+                depth_ratio, depth_levels, vpin_zscore, realized_vol,
+                event_features, is_high_liq,
+            )
+            if result is None:
+                return
+            action, confidence, runway, desired, feas, _bar_trade_id = result
+        elif has_dual:
+            LOG.debug(
+                "[FLAT: Check for entry] has_positions=True, cur_pos=%d", self.cur_pos
+            )
+            exit_action, exit_conf, desired, _bar_trade_id, _close_pending = (
+                self._obc_handle_in_position(
+                    bar, imbalance, depth_ratio, vpin_zscore, event_features
+                )
+            )
+        else:
+            action, desired = self._obc_simple_policy_decide(bar)
 
-        # --- Decision Log Export (Tab 6 HUD) - AFTER ALL decision logic, BEFORE early returns ---
-        try:
-            log_path = Path("data/decision_log.json")
-            log_path.parent.mkdir(exist_ok=True)
-            # Read existing log (if any)
-            if log_path.exists():
-                with open(log_path, encoding="utf-8") as f:
-                    log_entries = json.load(f)
-            else:
-                log_entries = []
-
-            # Get position metrics from policy (if dual-agent)
-            pos_metrics = {}
-            if hasattr(self.policy, "get_position_metrics"):
-                pos_metrics = self.policy.get_position_metrics()
-
-            # Compose log entry with all decision variables
-            log_entry = {
-                "timestamp": t.isoformat() if hasattr(t, "isoformat") else str(t),
-                "event": "bar_close",
-                "trade_id": _bar_trade_id,
-                "close_pending": _close_pending,
-                "details": {
-                    "open": o,
-                    "high": h,
-                    "low": low_price,
-                    "close": c,
-                    "cur_pos": self.cur_pos,
-                    "desired": desired if "desired" in locals() else None,
-                    "depth_bid": depth_bid if "depth_bid" in locals() else None,
-                    "depth_ask": depth_ask if "depth_ask" in locals() else None,
-                    "depth_ratio": depth_ratio if "depth_ratio" in locals() else None,
-                    "imbalance": imbalance if "imbalance" in locals() else None,
-                    "runway": runway if "runway" in locals() else None,
-                    "feasibility": feas if "feas" in locals() else None,
-                    "action": action if "action" in locals() else None,
-                    "confidence": confidence if "confidence" in locals() else None,
-                    "exit_action": exit_action if "exit_action" in locals() else None,
-                    "exit_conf": exit_conf if "exit_conf" in locals() else None,
-                    # Harvester position metrics
-                    "mfe": pos_metrics.get("mfe", None),
-                    "mae": pos_metrics.get("mae", None),
-                    "bars_held": pos_metrics.get("bars_held", None),
-                    "entry_price": pos_metrics.get("entry_price", None),
-                    "circuit_breaker": (
-                        self.circuit_breakers.is_any_tripped() if hasattr(self, "circuit_breakers") else None
-                    ),
-                },
-            }
-            # Only keep last 1000 entries
-            log_entries.append(log_entry)
-            if len(log_entries) > MAX_LOG_ENTRIES:
-                log_entries = log_entries[-MAX_LOG_ENTRIES:]
-            with open(log_path, "w", encoding="utf-8") as f:
-                json.dump(log_entries, f, indent=2)
-            LOG.info(f"[DECISION_LOG] Wrote entry for {t} (total: {len(log_entries)})")
-        except Exception as e:
-            LOG.error(f"[DECISION_LOG] Failed to write: {e}", exc_info=True)
+        self._obc_write_decision_log(
+            t, o, h, low_price, c,
+            desired=desired, action=action, confidence=confidence,
+            runway=runway, feas=feas, exit_action=exit_action, exit_conf=exit_conf,
+            imbalance=imbalance, depth_bid=depth_bid, depth_ask=depth_ask,
+            depth_ratio=depth_ratio, _bar_trade_id=_bar_trade_id,
+            _close_pending=_close_pending,
+        )
 
         LOG.info(
-            "[FLOW-TRACE] Step 5: Checking execution preconditions (trade_sid=%s, desired=%s, cur_pos=%s)",
-            self.trade_sid,
-            desired,
-            self.cur_pos,
+            "[FLOW-TRACE] Step 5: Checking execution preconditions "
+            "(trade_sid=%s, desired=%s, cur_pos=%s)",
+            self.trade_sid, desired, self.cur_pos,
         )
-        if not self.trade_sid:
-            LOG.error("[FLOW-ABORT] No TRADE session - cannot execute")
-            self._export_hud_data()  # Still export HUD even without trade session
+        if self._obc_should_abort_execution(desired):
             return
-        if desired == self.cur_pos:
-            LOG.debug("[FLOW-ABORT] No action needed (desired=%s equals cur_pos=%s)", desired, self.cur_pos)
-            self._export_hud_data()  # Still export HUD even when no action
+
+        LOG.debug(
+            "[FLOW-TRACE] Step 6: Entry validation (cur_pos=%s, desired=%s)",
+            self.cur_pos, desired,
+        )
+        if self._obc_new_entry_gate_blocked(desired, vpin_zscore, realized_vol):
             return
-        LOG.debug("[FLOW-TRACE] Step 5 PASSED: Execution preconditions met")
 
-        # Phase 3.5: VaR circuit breaker check before new entries
-        LOG.debug("[FLOW-TRACE] Step 6: Entry validation (cur_pos=%s, desired=%s)", self.cur_pos, desired)
-        if self.cur_pos == 0 and desired != 0:
-            # Only check VaR for new position entries
-            LOG.debug("[FLOW-TRACE] Step 6a: Checking kurtosis breaker")
-            if self.kurtosis_monitor.is_breaker_active:
-                LOG.warning(
-                    "[CIRCUIT_BREAKER] Kurtosis breaker ACTIVE (kurtosis=%.2f) - skipping entry",
-                    self.kurtosis_monitor.current_kurtosis,
-                )
-                LOG.error("[FLOW-ABORT] Stopped at kurtosis check")
-                self._export_hud_data()  # Export even on circuit breaker
-                return
-            LOG.debug("[FLOW-TRACE] Step 6a PASSED: Kurtosis OK")
-
-            # Calculate current VaR with regime-aware multiplier
-            current_var = self.var_estimator.estimate_var(
-                regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
-            )
-            self.last_estimated_var = current_var
-            # Persist the VaR at entry so the close reward can apply regime conditioning.
-            # (Only stored when we're about to enter; overwritten each time.)
-            self.entry_var = current_var
-            max_var_threshold = self.vol_cap
-            if current_var > max_var_threshold:
-                if not self.paper_mode:
-                    LOG.warning(
-                        "[CIRCUIT_BREAKER] VaR=%.4f exceeds threshold=%.4f - skipping entry",
-                        current_var,
-                        max_var_threshold,
-                    )
-                    self._export_hud_data()  # Export even on VaR filter
-                    return
-                else:
-                    LOG.debug(
-                        "[PAPER-GATE] VaR=%.4f > cap=%.4f — allowing entry so RL learns via regime reward",
-                        current_var,
-                        max_var_threshold,
-                    )
-            if self.vpin_z_threshold > 0 and vpin_zscore > self.vpin_z_threshold:
-                if not self.paper_mode:
-                    LOG.warning(
-                        "[VPIN] z-score %.2f exceeds threshold %.2f - skipping entry",
-                        vpin_zscore,
-                        self.vpin_z_threshold,
-                    )
-                    self._export_hud_data()
-                    return
-                else:
-                    LOG.debug(
-                        "[PAPER-GATE] VPIN z=%.2f > thresh=%.2f — allowing entry so RL learns via regime reward",
-                        vpin_zscore,
-                        self.vpin_z_threshold,
-                    )
-
-            # Phase 3.5: Learned spread threshold check (2x minimum observed spread)
-            env_multiplier = None
-            spread_override = os.environ.get("SPREAD_RELAX_MULTIPLIER")
-            if spread_override:
-                try:
-                    env_multiplier = float(spread_override)
-                except ValueError:
-                    LOG.warning(
-                        "[SPREAD_FILTER] Invalid SPREAD_RELAX_MULTIPLIER=%s - ignoring",
-                        spread_override,
-                    )
-            is_acceptable, current_spread, max_spread = self.friction_calculator.is_spread_acceptable(env_multiplier)
-            effective_multiplier = (
-                env_multiplier if env_multiplier is not None else self.friction_calculator.spread_multiplier
-            )
-            if not is_acceptable:
-                if not self.paper_mode:
-                    LOG.warning(
-                        "[SPREAD_FILTER] Current=%.2f pips > Learned max=%.2f pips (%.1fx min) - skipping entry",
-                        current_spread,
-                        max_spread,
-                        effective_multiplier,
-                    )
-                    self._export_hud_data()  # Export even on filtered entries
-                    return
-                else:
-                    LOG.debug(
-                        "[PAPER-GATE] Spread %.2f > max %.2f — allowing entry so RL learns friction cost",
-                        current_spread,
-                        max_spread,
-                    )
-
-        # Export HUD data every bar (before potential order)
         self._export_hud_data()
-
-        delta = desired - self.cur_pos
-        side = "1" if delta > 0 else "2"
-
-        LOG.debug("[FLOW-TRACE] Step 7: Computing order (delta=%s, side=%s)", delta, side)
-        # Handbook: Apply circuit breaker position size multiplier (reduces size during high risk)
-        size_multiplier = self.circuit_breakers.get_position_size_multiplier()
-        order_qty = self._compute_order_qty(abs(delta), size_multiplier, self.cur_pos == 0 and desired != 0)
-
-        if size_multiplier < 1.0:
-            LOG.warning(
-                "[CIRCUIT-BREAKER] Position size reduced: %.2f%% (multiplier=%.2f)",
-                size_multiplier * 100,
-                size_multiplier,
-            )
-        if order_qty <= 0:
-            LOG.warning("[RISK] Order blocked - zero qty after constraints")
-            LOG.error("[FLOW-ABORT] Stopped at order quantity check (qty=%.6f)", order_qty)
-            self._export_hud_data()
-            return
-
-        LOG.debug("[FLOW-TRACE] Step 8: EXECUTING ORDER side=%s qty=%.6f", side, order_qty)
-        self.send_market_order(side=side, qty=order_qty)
+        self._obc_send_order(desired)
 
     def send_market_order(self, side: str, qty: float):
         """DEPRECATED: Use TradeManager API via trade_integration.enter_position() instead."""
