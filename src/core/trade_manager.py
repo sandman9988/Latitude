@@ -857,7 +857,69 @@ class TradeManager:
             except Exception as e:
                 LOG.error("[PAPER] Error in fill callback: %s", e, exc_info=True)
 
-    def on_execution_report(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
+    def _resolve_exec_report(self, msg: fix.Message) -> tuple | None:
+        """Extract and validate required ExecutionReport fields.
+
+        Returns (clord_id, exec_type_str, ord_status_str, order) or None if invalid.
+        """
+        clord_field = fix.ClOrdID()
+        if not msg.isSetField(clord_field):
+            LOG.warning("[TRADEMGR] ExecutionReport missing ClOrdID"); return None
+        msg.getField(clord_field)
+        clord_id = clord_field.getValue()
+
+        exec_type_field = fix.ExecType()
+        if not msg.isSetField(exec_type_field):
+            LOG.warning("[TRADEMGR] ExecutionReport missing ExecType for %s", clord_id); return None
+        msg.getField(exec_type_field)
+
+        ord_status_field = fix.OrdStatus()
+        if not msg.isSetField(ord_status_field):
+            LOG.warning("[TRADEMGR] ExecutionReport missing OrdStatus for %s", clord_id); return None
+        msg.getField(ord_status_field)
+
+        order = self.orders.get(clord_id)
+        if not order:
+            LOG.warning("[TRADEMGR] Received ExecutionReport for unknown order: %s", clord_id); return None
+
+        return clord_id, exec_type_field.getValue(), ord_status_field.getValue(), order
+
+    def _populate_order_from_execution(self, msg: fix.Message, order, clord_id: str) -> None:
+        """Update order with optional fields from an ExecutionReport message."""
+        order_id_field = fix.OrderID()
+        if msg.isSetField(order_id_field):
+            msg.getField(order_id_field)
+            order.order_id = order_id_field.getValue()
+            self.broker_orders[order.order_id] = clord_id
+
+        pos_ticket_field = fix.StringField(721)
+        if msg.isSetField(pos_ticket_field):
+            msg.getField(pos_ticket_field)
+            order.position_ticket = pos_ticket_field.getValue()
+            LOG.debug("[TRADEMGR] Position ticket: %s", order.position_ticket)
+            self.audit.log_ticket_assigned(ticket=order.position_ticket, position_id=None, order_id=clord_id)
+
+        cum_qty_field = fix.CumQty()
+        if msg.isSetField(cum_qty_field):
+            msg.getField(cum_qty_field)
+            order.filled_qty = SafeMath.to_decimal(cum_qty_field.getValue(), self.position.instrument_digits)
+
+        avg_px_field = fix.AvgPx()
+        if msg.isSetField(avg_px_field):
+            msg.getField(avg_px_field)
+            order.avg_price = SafeMath.to_decimal(avg_px_field.getValue(), self.position.instrument_digits)
+
+        last_qty_field = fix.LastQty()
+        if msg.isSetField(last_qty_field):
+            msg.getField(last_qty_field)
+            order.last_qty = SafeMath.to_decimal(last_qty_field.getValue(), self.position.instrument_digits)
+
+        last_px_field = fix.LastPx()
+        if msg.isSetField(last_px_field):
+            msg.getField(last_px_field)
+            order.last_px = SafeMath.to_decimal(last_px_field.getValue(), self.position.instrument_digits)
+
+    def on_execution_report(self, msg: fix.Message):
         """
         Process ExecutionReport (35=8) from FIX session.
 
@@ -870,81 +932,17 @@ class TradeManager:
         - ExecType=I (OrderStatus): Status update
         """
         try:
-            # Extract ClOrdID
-            clord_field = fix.ClOrdID()
-            if not msg.isSetField(clord_field):
-                LOG.warning("[TRADEMGR] ExecutionReport missing ClOrdID")
+            resolved = self._resolve_exec_report(msg)
+            if resolved is None:
                 return
-            msg.getField(clord_field)
-            clord_id = clord_field.getValue()
-
-            # Extract ExecType
-            exec_type_field = fix.ExecType()
-            if not msg.isSetField(exec_type_field):
-                LOG.warning("[TRADEMGR] ExecutionReport missing ExecType for %s", clord_id)
-                return
-            msg.getField(exec_type_field)
-            exec_type_str = exec_type_field.getValue()
-
-            # Extract OrdStatus
-            ord_status_field = fix.OrdStatus()
-            if not msg.isSetField(ord_status_field):
-                LOG.warning("[TRADEMGR] ExecutionReport missing OrdStatus for %s", clord_id)
-                return
-            msg.getField(ord_status_field)
-            ord_status_str = ord_status_field.getValue()
-
-            # Get or create order
-            order = self.orders.get(clord_id)
-            if not order:
-                # Handle unsolicited ExecutionReport (from order recovery)
-                LOG.warning("[TRADEMGR] Received ExecutionReport for unknown order: %s", clord_id)
-                # Could create order from ExecutionReport fields if needed
-                return
+            clord_id, exec_type_str, ord_status_str, order = resolved
 
             # Update order fields
             order.status = OrderStatus(ord_status_str)
             order.updated_at = utc_now()
 
-            # Extract OrderID (broker-assigned)
-            order_id_field = fix.OrderID()
-            if msg.isSetField(order_id_field):
-                msg.getField(order_id_field)
-                order.order_id = order_id_field.getValue()
-                self.broker_orders[order.order_id] = clord_id
-
-            # Extract Position Ticket (Tag 721 - critical for hedging mode)
-            pos_ticket_field = fix.StringField(721)  # PosMaintRptID
-            if msg.isSetField(pos_ticket_field):
-                msg.getField(pos_ticket_field)
-                order.position_ticket = pos_ticket_field.getValue()
-                LOG.debug("[TRADEMGR] Position ticket: %s for order %s", order.position_ticket, clord_id)
-
-                # Audit log: Ticket assignment
-                self.audit.log_ticket_assigned(
-                    ticket=order.position_ticket, position_id=None, order_id=clord_id  # Will be determined later
-                )
-
-            # Extract fill quantities
-            cum_qty_field = fix.CumQty()
-            if msg.isSetField(cum_qty_field):
-                msg.getField(cum_qty_field)
-                order.filled_qty = SafeMath.to_decimal(cum_qty_field.getValue(), self.position.instrument_digits)
-
-            avg_px_field = fix.AvgPx()
-            if msg.isSetField(avg_px_field):
-                msg.getField(avg_px_field)
-                order.avg_price = SafeMath.to_decimal(avg_px_field.getValue(), self.position.instrument_digits)
-
-            last_qty_field = fix.LastQty()
-            if msg.isSetField(last_qty_field):
-                msg.getField(last_qty_field)
-                order.last_qty = SafeMath.to_decimal(last_qty_field.getValue(), self.position.instrument_digits)
-
-            last_px_field = fix.LastPx()
-            if msg.isSetField(last_px_field):
-                msg.getField(last_px_field)
-                order.last_px = SafeMath.to_decimal(last_px_field.getValue(), self.position.instrument_digits)
+            # Update optional fields from the report
+            self._populate_order_from_execution(msg, order, clord_id)
 
             # Store execution report for debugging
             self.exec_reports.append(
@@ -974,9 +972,7 @@ class TradeManager:
             else:
                 LOG.info(
                     "[TRADEMGR] ExecutionReport: %s ExecType=%s OrdStatus=%s",
-                    clord_id,
-                    exec_type_str,
-                    ord_status_str,
+                    clord_id, exec_type_str, ord_status_str,
                 )
 
             # P0 FIX: Remove from pending orders once acknowledged

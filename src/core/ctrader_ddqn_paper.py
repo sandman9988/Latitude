@@ -4915,7 +4915,48 @@ def require_env(name: str) -> str:
     return v
 
 
-def main():  # noqa: PLR0912, PLR0915
+def _load_and_validate_config() -> tuple[int, str, float, int, str, str]:
+    """Parse env vars and validate bot configuration.
+
+    Returns (symbol_id, symbol, qty, timeframe_minutes, cfg_quote, cfg_trade).
+    Raises SystemExit(1) on invalid or missing config.
+    """
+    try:
+        symbol_id_raw = os.environ.get("CTRADER_SYMBOL_ID", "41").strip().upper()
+        if symbol_id_raw in ("AUTO", "0", ""):
+            symbol_id = 0
+            LOG.info("[CONFIG] SYMBOL_ID=AUTO - will resolve from SecurityList")
+        else:
+            symbol_id = int(symbol_id_raw)
+        symbol = os.environ.get("CTRADER_SYMBOL", "XAUUSD")
+        qty = float(os.environ.get("CTRADER_QTY", "0.01"))
+        timeframe_minutes = int(os.environ.get("CTRADER_TIMEFRAME_MIN", "1"))
+    except (ValueError, TypeError) as e:
+        LOG.error("Invalid configuration value: %s", e)
+        raise SystemExit(1) from e
+
+    cfg_quote = os.environ.get("CTRADER_CFG_QUOTE", "ctrader_quote.cfg")
+    cfg_trade = os.environ.get("CTRADER_CFG_TRADE", "ctrader_trade.cfg")
+
+    if qty <= 0:
+        LOG.error("CTRADER_QTY must be positive, got: %s", qty); raise SystemExit(1)
+    if qty > MAX_QTY_SANITY_CHECK:
+        LOG.error("CTRADER_QTY suspiciously large (>100), got: %s. Aborting for safety.", qty); raise SystemExit(1)
+    if timeframe_minutes <= 0:
+        LOG.error("CTRADER_TIMEFRAME_MIN must be positive, got: %s", timeframe_minutes); raise SystemExit(1)
+    if symbol_id < 0:
+        LOG.error("CTRADER_SYMBOL_ID must be non-negative (0=AUTO), got: %s", symbol_id); raise SystemExit(1)
+    if not symbol or not symbol.strip():
+        LOG.error("CTRADER_SYMBOL must be non-empty"); raise SystemExit(1)
+    if not os.path.exists(cfg_quote):
+        LOG.error("Quote config file not found: %s", cfg_quote); raise SystemExit(1)
+    if not os.path.exists(cfg_trade):
+        LOG.error("Trade config file not found: %s", cfg_trade); raise SystemExit(1)
+
+    return symbol_id, symbol, qty, timeframe_minutes, cfg_quote, cfg_trade
+
+
+def main():
     # Setup signal handlers for graceful shutdown
     app = None
 
@@ -4932,48 +4973,7 @@ def main():  # noqa: PLR0912, PLR0915
     _ = require_env("CTRADER_PASSWORD_QUOTE")
     _ = require_env("CTRADER_PASSWORD_TRADE")
 
-    # Parse configuration with type safety
-    try:
-        # SYMBOL_ID: Can be 0 or "AUTO" for automatic lookup via SecurityListRequest
-        symbol_id_raw = os.environ.get("CTRADER_SYMBOL_ID", "41").strip().upper()
-        if symbol_id_raw in ("AUTO", "0", ""):
-            symbol_id = 0  # Triggers automatic lookup via SecurityList
-            LOG.info("[CONFIG] SYMBOL_ID=AUTO - will resolve from SecurityList")
-        else:
-            symbol_id = int(symbol_id_raw)  # Default: XAUUSD=41
-        symbol = os.environ.get("CTRADER_SYMBOL", "XAUUSD")  # Instrument-agnostic
-        qty = float(os.environ.get("CTRADER_QTY", "0.01"))  # Default: 0.01 lot for Gold
-        timeframe_minutes = int(os.environ.get("CTRADER_TIMEFRAME_MIN", "1"))  # M1 for testing
-    except (ValueError, TypeError) as e:
-        LOG.error("Invalid configuration value: %s", e)
-        raise SystemExit(1) from e
-    # CRITICAL: Validate configuration to prevent financial losses
-    if qty <= 0:
-        LOG.error("CTRADER_QTY must be positive, got: %s", qty)
-        raise SystemExit(1)
-    if qty > MAX_QTY_SANITY_CHECK:  # Sanity check: prevent absurdly large orders
-        LOG.error("CTRADER_QTY suspiciously large (>100), got: %s. Aborting for safety.", qty)
-        raise SystemExit(1)
-    if timeframe_minutes <= 0:
-        LOG.error("CTRADER_TIMEFRAME_MIN must be positive, got: %s", timeframe_minutes)
-        raise SystemExit(1)
-    if symbol_id < 0:
-        LOG.error("CTRADER_SYMBOL_ID must be non-negative (0=AUTO), got: %s", symbol_id)
-        raise SystemExit(1)
-    if not symbol or not symbol.strip():
-        LOG.error("CTRADER_SYMBOL must be non-empty")
-        raise SystemExit(1)
-
-    cfg_quote = os.environ.get("CTRADER_CFG_QUOTE", "ctrader_quote.cfg")
-    cfg_trade = os.environ.get("CTRADER_CFG_TRADE", "ctrader_trade.cfg")
-
-    # Validate config files exist
-    if not os.path.exists(cfg_quote):
-        LOG.error("Quote config file not found: %s", cfg_quote)
-        raise SystemExit(1)
-    if not os.path.exists(cfg_trade):
-        LOG.error("Trade config file not found: %s", cfg_trade)
-        raise SystemExit(1)
+    symbol_id, symbol, qty, timeframe_minutes, cfg_quote, cfg_trade = _load_and_validate_config()
 
     LOG.info(
         "✓ Configuration validated: symbol=%s symbol_id=%s qty=%s timeframe=M%d",
