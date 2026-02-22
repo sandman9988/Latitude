@@ -34,6 +34,38 @@ _FEATURE_VARIANCE_FLOOR: float = 1e-6  # minimum std to treat a feature column a
 _MIN_SEED_BARS: int = 3                # minimum bars required to seed the regime detector
 
 
+def _dp_rolling_mean(x: np.ndarray, n: int) -> np.ndarray:
+    """Simple rolling mean; positions with fewer than *n* samples are NaN."""
+    out = np.full_like(x, np.nan, dtype=np.float64)
+    if len(x) >= n:
+        cs = np.cumsum(np.insert(x, 0, 0.0))
+        out[n - 1:] = (cs[n:] - cs[:-n]) / n
+    return out
+
+
+def _dp_rolling_std(x: np.ndarray, n: int) -> np.ndarray:
+    """Simple rolling standard deviation; positions with fewer than *n* samples are NaN."""
+    out = np.full_like(x, np.nan, dtype=np.float64)
+    if len(x) >= n:
+        for i in range(n - 1, len(x)):
+            out[i] = np.std(x[i - n + 1: i + 1])
+    return out
+
+
+def _build_event_feature_columns(event_features: dict | None, n_c: int) -> list:
+    """Return 6 broadcast arrays for session-time event features."""
+    ef = event_features or {}
+    vals = [
+        ef.get("london_active", 0.0),
+        ef.get("ny_active", 0.0),
+        ef.get("tokyo_active", 0.0),
+        ef.get("london_ny_overlap", 0.0),
+        ef.get("rollover_proximity_norm", 0.0),
+        ef.get("week_progress", 0.5),
+    ]
+    return [np.full(n_c, v, dtype=np.float64) for v in vals]
+
+
 class DualPolicy:
     """
     Orchestrates TriggerAgent and HarvesterAgent for specialized trading.
@@ -552,26 +584,10 @@ class DualPolicy:
         if len(c) >= RETURN_LAG_MEDIUM:
             ret5[5:] = np.divide(c[5:], c[:-5], out=np.ones_like(c[5:]), where=c[:-5] != 0) - 1.0
 
-        # Moving averages
-        def rolling_mean(x, n):
-            out = np.full_like(x, np.nan, dtype=np.float64)
-            if len(x) >= n:
-                cs = np.cumsum(np.insert(x, 0, 0.0))
-                out[n - 1 :] = (cs[n:] - cs[:-n]) / n
-            return out
-
-        def rolling_std(x, n):
-            out = np.full_like(x, np.nan, dtype=np.float64)
-            if len(x) >= n:
-                for i in range(n - 1, len(x)):
-                    w = x[i - n + 1 : i + 1]
-                    out[i] = np.std(w)
-            return out
-
-        ma_fast = rolling_mean(c, 10)
-        ma_slow = rolling_mean(c, 30)
+        ma_fast = _dp_rolling_mean(c, 10)
+        ma_slow = _dp_rolling_mean(c, 30)
         ma_diff = np.divide(ma_fast, ma_slow, out=np.ones_like(ma_fast), where=ma_slow != 0) - 1.0
-        vol = rolling_std(ret1, 20)
+        vol = _dp_rolling_std(ret1, 20)
 
         # Microstructure features (broadcast to window).
         # Clip to instrument-agnostic bounds before broadcasting so the DDQN
@@ -617,33 +633,7 @@ class DualPolicy:
         # when self.enable_event_features is True, defaulting to zeros so the
         # feature count stays consistent with the DDQN's fixed state_dim.
         if self.enable_event_features:
-            if event_features:
-                london_active = event_features.get("london_active", 0.0)
-                ny_active = event_features.get("ny_active", 0.0)
-                tokyo_active = event_features.get("tokyo_active", 0.0)
-                london_ny_overlap = event_features.get("london_ny_overlap", 0.0)
-                rollover_proximity = event_features.get("rollover_proximity_norm", 0.0)
-                week_progress = event_features.get("week_progress", 0.5)
-            else:
-                # No event data available — use neutral defaults
-                london_active = 0.0
-                ny_active = 0.0
-                tokyo_active = 0.0
-                london_ny_overlap = 0.0
-                rollover_proximity = 0.0
-                week_progress = 0.5
-
-            # Broadcast event features to window length
-            base_feats.extend(
-                [
-                    np.full(len(c), london_active, dtype=np.float64),
-                    np.full(len(c), ny_active, dtype=np.float64),
-                    np.full(len(c), tokyo_active, dtype=np.float64),
-                    np.full(len(c), london_ny_overlap, dtype=np.float64),
-                    np.full(len(c), rollover_proximity, dtype=np.float64),
-                    np.full(len(c), week_progress, dtype=np.float64),
-                ]
-            )
+            base_feats.extend(_build_event_feature_columns(event_features, len(c)))
 
         # Stack features (7, 12, 13, or 18-dim depending on modules enabled)
         feats = np.vstack(base_feats).T

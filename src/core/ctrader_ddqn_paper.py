@@ -423,34 +423,20 @@ class Policy:
                 LOG.warning("[POLICY] Failed to load model, running fallback. Error: %s", e)
                 self.use_torch = False
 
-    def decide(self, bars: deque, **_kwargs) -> int:
-        if len(bars) < MIN_BARS_FOR_FEATURES:
-            return 1  # FLAT
-
+    def _compute_normed_features(self, bars: deque) -> np.ndarray:
+        """Compute normalised feature matrix from bar deque. Returns (T, 4) float32 array."""
         closes = [b[4] for b in bars]
         c = np.array(closes, dtype=np.float64)
-
-        # Defensive: calculate returns with safe division
         ret1 = np.zeros_like(c)
         if len(c) >= RETURN_LAG_SHORT:
             ret1[1:] = np.divide(c[1:], c[:-1], out=np.ones_like(c[1:]), where=c[:-1] != 0) - 1.0
-
         ret5 = np.zeros_like(c)
         if len(c) >= RETURN_LAG_MEDIUM:
             ret5[5:] = np.divide(c[5:], c[:-5], out=np.ones_like(c[5:]), where=c[:-5] != 0) - 1.0
-
-        def rolling_mean(x, n):
-            return _rolling_mean(x, n)
-
-        def rolling_std(x, n):
-            return _rolling_std(x, n)
-
-        ma_fast = rolling_mean(c, 10)
-        ma_slow = rolling_mean(c, 30)
+        ma_fast = _rolling_mean(c, 10)
+        ma_slow = _rolling_mean(c, 30)
         ma_diff = np.divide(ma_fast, ma_slow, out=np.ones_like(ma_fast), where=ma_slow != 0) - 1.0
-        vol = rolling_std(ret1, 20)
-
-        # Defensive: clean all features for NaN/Inf
+        vol = _rolling_std(ret1, 20)
         feats = np.vstack(
             [
                 np.nan_to_num(ret1, nan=0.0, posinf=0.0, neginf=0.0),
@@ -460,10 +446,15 @@ class Policy:
             ]
         ).T
         feats = feats[-self.window :].astype(np.float32)
-
         mu = feats.mean(axis=0, keepdims=True)
         sd = feats.std(axis=0, keepdims=True) + 1e-8
-        x = (feats - mu) / sd
+        return (feats - mu) / sd
+
+    def decide(self, bars: deque, **_kwargs) -> int:
+        if len(bars) < MIN_BARS_FOR_FEATURES:
+            return 1  # FLAT
+
+        x = self._compute_normed_features(bars)
 
         if not self.use_torch:
             # Defensive: validate array shape before access
@@ -1483,6 +1474,57 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[LOGON] Error during session setup for %s: %s", qual, e, exc_info=True)
 
+    @staticmethod
+    def _load_recent_trades(trade_log_path, max_lines: int = 50) -> list[dict]:
+        """Read up to *max_lines* completed trade records from the JSONL log tail."""
+        import pathlib  # noqa: PLC0415
+
+        path = pathlib.Path(trade_log_path)
+        if not path.exists():
+            return []
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            if fh.tell() == 0:
+                return []
+            buf_size = min(fh.tell(), 64 * 1024)
+            fh.seek(-buf_size, 2)
+            raw = fh.read(buf_size).decode("utf-8", errors="replace")
+        lines = [ln for ln in raw.splitlines() if ln.strip()][-max_lines:]
+        trades = []
+        for line in lines:
+            try:
+                rec = json.loads(line)
+                if rec.get("exit_time") and rec.get("entry_time"):
+                    trades.append(rec)
+            except json.JSONDecodeError:
+                continue
+        return trades
+
+    @staticmethod
+    def _apply_trade_timing(obj, trades: list[dict]) -> None:
+        """Set *_last_trade_close_ts* and *_avg_trade_duration_mins* on *obj* from trades list."""
+        import datetime as dt_mod  # noqa: PLC0415
+
+        def _parse_ts(s: str) -> float:
+            try:
+                return dt_mod.datetime.fromisoformat(s).timestamp()
+            except Exception:
+                return 0.0
+
+        trades.sort(key=lambda t: _parse_ts(t["exit_time"]))
+        most_recent_exit = _parse_ts(trades[-1]["exit_time"])
+        if most_recent_exit > 0:
+            obj._last_trade_close_ts = most_recent_exit
+        avg = 0.0
+        for t in trades:
+            entry_ts = _parse_ts(t["entry_time"])
+            exit_ts = _parse_ts(t["exit_time"])
+            if entry_ts > 0 and exit_ts > entry_ts:
+                dur = (exit_ts - entry_ts) / 60.0
+                avg = 0.9 * avg + 0.1 * dur
+        if avg > 0:
+            obj._avg_trade_duration_mins = avg
+
     def _seed_trade_timing_from_log(self) -> None:
         """Seed _last_trade_close_ts and _avg_trade_duration_mins from trade_log.jsonl.
 
@@ -1492,62 +1534,12 @@ class CTraderFixApp(fix.Application):
         - _avg_trade_duration_mins: EMA (α=0.1) over trade durations
         """
         try:
-            import pathlib  # noqa: PLC0415
-            trade_log_path = pathlib.Path(self.hud_data_dir) / "trade_log.jsonl"
-            if not trade_log_path.exists():
-                return
-
-            # Efficiently read last 50 lines without loading the whole file
-            lines: list[str] = []
-            with open(trade_log_path, "rb") as fh:
-                # Seek backward to collect up to 50 newline-terminated records
-                fh.seek(0, 2)
-                file_size = fh.tell()
-                if file_size == 0:
-                    return
-                buf_size = min(file_size, 64 * 1024)
-                fh.seek(-buf_size, 2)
-                raw = fh.read(buf_size).decode("utf-8", errors="replace")
-                lines = [ln for ln in raw.splitlines() if ln.strip()][-50:]
-
-            trades: list[dict] = []
-            for line in lines:
-                try:
-                    rec = json.loads(line)
-                    if rec.get("exit_time") and rec.get("entry_time"):
-                        trades.append(rec)
-                except json.JSONDecodeError:
-                    continue
-
+            trades = self._load_recent_trades(
+                Path(self.hud_data_dir) / "trade_log.jsonl"
+            )
             if not trades:
                 return
-
-            # Sort by exit_time ascending
-            import datetime as dt_mod  # noqa: PLC0415
-            def _parse_ts(s: str) -> float:
-                try:
-                    return dt_mod.datetime.fromisoformat(s).timestamp()
-                except Exception:
-                    return 0.0
-
-            trades.sort(key=lambda t: _parse_ts(t["exit_time"]))
-
-            # Seed last_trade_close_ts from most recent exit
-            most_recent_exit = _parse_ts(trades[-1]["exit_time"])
-            if most_recent_exit > 0:
-                self._last_trade_close_ts = most_recent_exit
-
-            # Build duration EMA over all retrieved trades
-            avg = 0.0
-            for t in trades:
-                entry_ts = _parse_ts(t["entry_time"])
-                exit_ts = _parse_ts(t["exit_time"])
-                if entry_ts > 0 and exit_ts > entry_ts:
-                    dur = (exit_ts - entry_ts) / 60.0
-                    avg = 0.9 * avg + 0.1 * dur
-            if avg > 0:
-                self._avg_trade_duration_mins = avg
-
+            self._apply_trade_timing(self, trades)
             LOG.info(
                 "[STARTUP] Seeded trade timing from %d log entries: "
                 "last_trade=%.1f min ago, avg_dur=%.1f min",
@@ -1723,6 +1715,25 @@ class CTraderFixApp(fix.Application):
         # Keep this INFO until stable; you can reduce to DEBUG later.
         LOG.info("[APP][OUT] qual=%s %s", qual, _redact_fix(message.toString()))
 
+    def _dispatch_fix_message(self, message) -> None:
+        """Route incoming FIX app message to the appropriate handler by MsgType."""
+        msg_type = fix.MsgType()
+        message.getHeader().getField(msg_type)
+        t = msg_type.getValue()
+        _handlers = {
+            "W": self.on_md_snapshot,
+            "X": self.on_md_incremental,
+            "8": self.on_exec_report,
+            "AP": self.on_position_report,
+            "d": self.on_security_definition,
+            "y": self.on_security_list,
+            "j": self.on_biz_reject,
+            "Y": self.on_md_reject,
+        }
+        handler = _handlers.get(t)
+        if handler is not None:
+            handler(message)
+
     def fromApp(self, message, session_id):
         qual = self._qual(session_id)
 
@@ -1736,26 +1747,7 @@ class CTraderFixApp(fix.Application):
         LOG.info("[APP][IN] qual=%s %s", qual, _redact_fix(message.toString()))
 
         try:
-            msg_type = fix.MsgType()
-            message.getHeader().getField(msg_type)
-            t = msg_type.getValue()
-
-            if t == "W":
-                self.on_md_snapshot(message)
-            elif t == "X":
-                self.on_md_incremental(message)
-            elif t == "8":
-                self.on_exec_report(message)
-            elif t == "AP":
-                self.on_position_report(message)
-            elif t == "d":
-                self.on_security_definition(message)  # Symbol info response
-            elif t == "y":
-                self.on_security_list(message)  # Symbol list response (for ID lookup)
-            elif t == "j":
-                self.on_biz_reject(message)
-            elif t == "Y":
-                self.on_md_reject(message)
+            self._dispatch_fix_message(message)
         except Exception as e:
             # CRITICAL: Catch ALL exceptions to prevent session crash
             LOG.error(
@@ -2493,6 +2485,35 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.warning("[BARS] Could not save bars cache: %s", e)
 
+    def _parse_and_append_bar_rows(self, rows: list) -> int:
+        """Parse raw JSON rows into bars, appending to self.bars. Returns count loaded."""
+        loaded = 0
+        for row in rows:
+            try:
+                ts = dt.datetime.fromisoformat(row[0])
+                bar = (ts, float(row[1]), float(row[2]), float(row[3]), float(row[4]))
+            except (ValueError, IndexError, TypeError):
+                continue
+            self.bars.append(bar)
+            self.close_stats.update(bar[4])
+            loaded += 1
+        return loaded
+
+    def _seed_derived_signals_from_bars(self) -> float:
+        """Replay VaR, regime, and path geometry from current self.bars. Returns realized_vol."""
+        bar_list = list(self.bars)
+        for i in range(1, len(bar_list)):
+            prev_c = bar_list[i - 1][4]
+            curr_c = bar_list[i][4]
+            if prev_c > 0:
+                self.var_estimator.update_return(SafeMath.safe_div(curr_c - prev_c, prev_c, 0.0))
+        if hasattr(self.policy, "seed_regime_from_bars") and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED:
+            self.policy.seed_regime_from_bars(self.bars)
+        realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
+        if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
+            self.path_geometry.update(self.bars, realized_vol)
+        return realized_vol
+
     def _load_bars_cache(self) -> None:
         """Re-seed self.bars from data/bars_cache.json on startup.
 
@@ -2506,8 +2527,6 @@ class CTraderFixApp(fix.Application):
         try:
             with open(cache_path, encoding="utf-8") as fh:
                 payload = json.load(fh)
-
-            # Reject cache if it was written for a different timeframe
             cached_tf = payload.get("timeframe_minutes")
             if cached_tf is not None and int(cached_tf) != self.timeframe_minutes:
                 LOG.warning(
@@ -2515,38 +2534,11 @@ class CTraderFixApp(fix.Application):
                     cached_tf, self.timeframe_minutes,
                 )
                 return
-
             rows = payload.get("bars", [])
             if not rows:
                 return
-
-            loaded = 0
-            for row in rows:
-                try:
-                    ts = dt.datetime.fromisoformat(row[0])
-                    bar = (ts, float(row[1]), float(row[2]), float(row[3]), float(row[4]))
-                except (ValueError, IndexError, TypeError):
-                    continue
-                self.bars.append(bar)
-                self.close_stats.update(bar[4])
-                loaded += 1
-
-            # Replay returns into VaR estimator
-            bar_list = list(self.bars)
-            for i in range(1, len(bar_list)):
-                prev_c = bar_list[i - 1][4]
-                curr_c = bar_list[i][4]
-                if prev_c > 0:
-                    self.var_estimator.update_return(SafeMath.safe_div(curr_c - prev_c, prev_c, 0.0))
-
-            # Seed regime detector and path geometry
-            if hasattr(self.policy, "seed_regime_from_bars") and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED:
-                self.policy.seed_regime_from_bars(self.bars)
-
-            realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
-            if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
-                self.path_geometry.update(self.bars, realized_vol)
-
+            loaded = self._parse_and_append_bar_rows(rows)
+            realized_vol = self._seed_derived_signals_from_bars()
             LOG.info(
                 "[BARS] ✓ Seeded %d bars from cache (tf=%sm, vol=%.6f)",
                 loaded, self.timeframe_minutes, realized_vol,
