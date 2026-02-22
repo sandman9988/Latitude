@@ -215,6 +215,19 @@ def _classify_trades_by_period(trades: list) -> tuple[list, list, list]:
     return daily, weekly, monthly
 
 
+# ANSI colour codes shared across HUD render methods
+_ANSI_G = "\033[92m"    # green
+_ANSI_Y = "\033[93m"    # yellow
+_ANSI_R = "\033[91m"    # red
+_ANSI_DIM = "\033[90m"  # dim
+_ANSI_RST = "\033[0m"   # reset
+
+# Live training section layout constants
+_RT_BAR_LEN: int = 26        # fill-bar character width
+_RT_TRIG_CAP: int = 2_000    # trigger replay-buffer capacity
+_RT_HARV_CAP: int = 10_000   # harvester replay-buffer capacity
+
+
 class TabbedHUD:
     """Real-time tabbed HUD for trading bot monitoring"""
 
@@ -848,250 +861,288 @@ class TabbedHUD:
         # Always render footer (bottom menu)
         self._render_footer()
 
-    def _render_training(self):  # noqa: PLR0912, PLR0915
-        """Render agent training status"""
-        ts = self.training_stats
-        pm = self.production_metrics.get("metrics", {})
-        TRIG_CAP = 2_000
-        HARV_CAP = 10_000
-        BAR_LEN = 26
+    # ── _render_training helpers ──────────────────────────────────────────
 
-        _G = "\033[92m"
-        _Y = "\033[93m"
-        _R = "\033[91m"
-        _B = "\033[94m"
-        _DIM = "\033[90m"
-        _RST = "\033[0m"
+    def _rt_pct_bar(self, val: int, cap: int) -> str:
+        """Render a fill-percentage bar for buffer occupancy."""
+        pct = min(val / cap, 1.0) if cap > 0 else 0.0
+        filled = int(_RT_BAR_LEN * pct)
+        col = _ANSI_G if pct > _BUF_FILL_HIGH else (_ANSI_Y if pct > _BUF_FILL_WARN else _ANSI_R)
+        return f"{col}[{'█' * filled}{'░' * (_RT_BAR_LEN - filled)}]{_ANSI_RST} {pct * 100:5.1f}%"
 
-        # ── Offline Training (rendered FIRST so it's always visible) ──────────
-        ofs = self.offline_stats
-        if ofs:
-            ofs_status = ofs.get("status", "idle")
-            ofs_total  = ofs.get("total_jobs", 0)
-            ofs_done   = sum(1 for r in ofs.get("results", []) if r.get("status") in ("done", "error"))
-            ofs_elapsed = ofs.get("elapsed_s", 0.0)
-            ofs_start  = ofs.get("started_at", "")[:19].replace("T", " ") if ofs.get("started_at") else "—"
-            ofs_end    = ofs.get("completed_at", "")[:19].replace("T", " ") if ofs.get("completed_at") else None
+    def _rt_eps_bar(self, eps: float) -> str:
+        """Render an epsilon-exploration fill bar with hot/warm/cold label."""
+        pct = max(0.0, min(eps, 1.0))
+        filled = int(_RT_BAR_LEN * pct)
+        if eps > EPS_WARM_MAX:
+            bracket = f"{_ANSI_R}COLD{_ANSI_RST}"
+            col = _ANSI_R
+        elif eps > EPS_HOT_MAX:
+            bracket = f"{_ANSI_Y}WARM{_ANSI_RST}"
+            col = _ANSI_Y
+        else:
+            bracket = f"{_ANSI_G}HOT{_ANSI_RST}"
+            col = _ANSI_G
+        return f"{col}[{'█' * filled}{'░' * (_RT_BAR_LEN - filled)}] {eps:.4f}{_ANSI_RST} {bracket}"
 
-            if ofs_status == "running":
-                status_badge = f"\033[93m⚙  RUNNING ({ofs_done}/{ofs_total} done)\033[0m"
-            elif ofs_status == "complete":
-                status_badge = f"{_G}✓ COMPLETE  ({ofs_done}/{ofs_total} jobs)\033[0m"
-            else:
-                status_badge = f"{_DIM}{ofs_status}\033[0m"
+    def _rt_beta_bar(self, beta: float) -> str:
+        """Render an IS-beta fill bar (0.4 cold → 1.0 fully corrected)."""
+        pct = max(0.0, min((beta - 0.4) / 0.6, 1.0))
+        filled = int(_RT_BAR_LEN * pct)
+        col = _ANSI_G if beta > BETA_HOT_MIN else (_ANSI_Y if beta > BETA_WARM_MIN else _ANSI_DIM)
+        return (
+            f"{col}[{'█' * filled}{'░' * (_RT_BAR_LEN - filled)}] {beta:.4f}{_ANSI_RST}"
+            "  (0.4 cold→1.0 fully corrected)"
+        )
 
-            pct = ofs_done / ofs_total if ofs_total else 0.0
-            filled = int(BAR_LEN * pct)
-            prog_col = _G if pct >= 1.0 else (_Y if pct > 0 else _DIM)
-            prog_bar = f"{prog_col}[{'█' * filled}{'░' * (BAR_LEN - filled)}]\033[0m {pct*100:.0f}%"
+    def _rt_trend(self, hist: deque) -> str:
+        """Return a coloured ↓/↑/→ trend string from a loss-history deque."""
+        vals = [v for v in list(hist) if v > 0]
+        if len(vals) < TREND_MIN_SAMPLES:
+            return f"{_ANSI_DIM}→ — (need more samples){_ANSI_RST}"
+        half = len(vals) // 2
+        old_mean = sum(vals[:half]) / half
+        new_mean = sum(vals[half:]) / (len(vals) - half)
+        delta_pct = (new_mean - old_mean) / old_mean * 100 if old_mean > 0 else 0
+        if delta_pct < TREND_DELTA_NEG:
+            return f"{_ANSI_G}↓ {abs(delta_pct):.1f}% IMPROVING{_ANSI_RST}"
+        if delta_pct > TREND_DELTA_POS:
+            return f"{_ANSI_R}↑ +{delta_pct:.1f}% DEGRADING{_ANSI_RST}"
+        return f"{_ANSI_Y}→ {delta_pct:+.1f}% STABLE{_ANSI_RST}"
 
-            print(f"\n  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
-            print(f"    Progress:  {prog_bar}   Elapsed: {ofs_elapsed:.0f}s")
-            print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
+    def _rt_spark(self, hist: deque) -> str:
+        """Return a sparkline string from the tail of a loss-history deque."""
+        vals = [v for v in list(hist) if v > 0]
+        if len(vals) < TREND_STEP_PAIRS_MIN:
+            return ""
+        return self._create_sparkline(vals[-TREND_SPARK_TAIL:])
 
-            _results = ofs.get("results", [])
-            if _results:
-                sym_w = max(6, *(len(r.get("symbol", "")) for r in _results))
-                print()
-                print(f"    {'Symbol':<{sym_w}}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  ZOmega")
-                print(f"    {'─'*sym_w}  {'─'*5}  {'─'*9}  {'─'*38}  {'─'*8}")
-                for r in _results:
-                    sym      = r.get("symbol", "")
-                    tf_label = r.get("label", f"M{r.get('timeframe_minutes', '?')}")
-                    jstatus  = r.get("status", "queued")
-                    if jstatus == "done":
-                        jcol, jbadge = _G, "done     "
-                    elif jstatus == "error":
-                        jcol, jbadge = _R, "ERROR    "
-                    elif jstatus == "running":
-                        jcol, jbadge = _Y, "running  "
-                    else:
-                        jcol, jbadge = _DIM, "queued   "
-                    zo      = r.get("z_omega")
-                    ttrades = r.get("train_trades", 0)
-                    vtrades = r.get("val_trades", 0)
-                    steps   = r.get("total_train_steps", 0)
-                    if zo is not None and jstatus == "done":
-                        zo_col = _G if zo >= 1.0 else (_Y if zo >= Z_OMEGA_OFFLINE_WARM_MIN else _R)
-                        zo_str = f"{zo_col}{zo:8.4f}\033[0m"
-                    else:
-                        zo_str = f"{_DIM}{'—':>8}\033[0m"
+    def _rt_velocity(self, step_hist: deque) -> str:
+        """Return a coloured steps/min rate string from a step-history deque."""
+        pairs = list(step_hist)
+        if len(pairs) < TREND_STEP_PAIRS_MIN:
+            return f"{_ANSI_DIM}—{_ANSI_RST}"
+        dt = pairs[-1][0] - pairs[0][0]
+        ds = pairs[-1][1] - pairs[0][1]
+        if dt <= 0 or ds <= 0:
+            return f"{_ANSI_DIM}0 steps/min{_ANSI_RST}"
+        rate = ds / dt * 60
+        col = _ANSI_G if rate > TREND_RATE_HIGH else (_ANSI_Y if rate > TREND_RATE_WARN else _ANSI_DIM)
+        return f"{col}{rate:.1f} steps/min{_ANSI_RST}"
 
-                    if jstatus in ("done", "error"):
-                        detail = f"tr={ttrades:,}  val={vtrades:,}  steps={steps:,}"
-                        row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail:<38}  {zo_str}"
-                    elif jstatus == "running":
-                        prog = self.offline_job_progress.get(
-                            (r.get("symbol"), r.get("timeframe_minutes")), {}
-                        )
-                        if prog:
-                            pb = prog.get("pct", 0.0)
-                            pb_fill = int(14 * pb / 100)
-                            pb_bar = f"[{'█'*pb_fill}{'░'*(14-pb_fill)}] {pb:4.1f}%"
-                            detail = f"{_Y}{pb_bar}{_RST}  ε={prog.get('epsilon',0):.3f}  β={prog.get('beta',0.4):.3f}"
-                            row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail}  {zo_str}"
-                        else:
-                            row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
-                    else:
-                        row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
-                    if jstatus == "error" and r.get("error"):
-                        row += f"  {_R}{r['error'][:30]}\033[0m"
-                    print(row)
-            print()
-
-        # ── Paper Trading Pipeline ────────────────────────────────────────────
-        if self.universe_stats:
-            uni = self.universe_stats
-            _STAGE_COL = {
-                "PAPER":     _Y,
-                "LIVE":      _G,
-                "UNTRAINED": _DIM,
-                "DEMOTED":   _R,
-            }
-            running_count = sum(1 for e in uni.values() if e.get("_pid_alive"))
-            total_count   = len(uni)
-            hdr_badge = (
-                f"{_G}{running_count}/{total_count} running{_RST}"
-                if running_count else
-                f"{_DIM}0/{total_count} running{_RST}"
-            )
-            print(f"  \033[1m📈 PAPER TRADING PIPELINE\033[0m  {hdr_badge}")
-            print()
-            uni_sym_w = max(8, max((len(s) for s in uni), default=0))
-            print(f"    {'Symbol':<{uni_sym_w}}  {'TF':>5}  {'Stage':<10}  {'ZΩ':>8}  {'Bot':>6}  Started")
-            print(f"    {'─'*uni_sym_w}  {'─'*5}  {'─'*10}  {'─'*8}  {'─'*6}  {'─'*19}")
-            for sym, entry in sorted(uni.items()):
-                stage   = entry.get("stage", "?")[:10]
-                tf_min  = entry.get("timeframe_minutes", 0)
-                tf_lbl  = f"M{tf_min}" if tf_min else "?"
-                zo      = entry.get("z_omega")
-                zo_str  = f"{zo:8.4f}" if zo is not None else f"{'—':>8}"
-                if zo is not None:
-                    zo_col = _G if zo > Z_OMEGA_POSITIVE_MIN else (_Y if zo > 0 else _R)
-                    zo_str = f"{zo_col}{zo_str}{_RST}"
-                pid_alive = entry.get("_pid_alive", False)
-                pid       = entry.get("paper_pid")
-                if pid_alive:
-                    bot_str = f"{_G}  ▶ {pid}{_RST}"
-                elif pid:
-                    bot_str = f"{_R}dead {_DIM}({pid}){_RST}"
-                else:
-                    bot_str = f"{_DIM}  —{_RST}"
-                started = entry.get("paper_started_at", "")[:19].replace("T", " ") if entry.get("paper_started_at") else "—"
-                stage_col = _STAGE_COL.get(stage, _DIM)
-                print(f"    {sym:<{uni_sym_w}}  {tf_lbl:>5}  {stage_col}{stage:<10}{_RST}  {zo_str}  {bot_str}  {started}")
-            print()
-
-        # ── Live Bot Training ─────────────────────────────────────────────────
-        _ts_nonempty = any(v for v in self.training_stats.values() if v)
-        if not _ts_nonempty:
-            print(f"\033[1m🤖 LIVE BOT TRAINING\033[0m  {_DIM}(no live bot running){_RST}\n")
-            return   # offline + paper already printed above; nothing more to show
-        print("\033[1m🤖 LIVE BOT TRAINING\033[0m\n")
-
-        def _pct_bar(val: int, cap: int) -> str:
-            pct = min(val / cap, 1.0) if cap > 0 else 0.0
-            filled = int(BAR_LEN * pct)
-            col = _G if pct > _BUF_FILL_HIGH else (_Y if pct > _BUF_FILL_WARN else _R)
-            return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}]{_RST} {pct * 100:5.1f}%"
-
-        def _eps_bar(eps: float) -> str:
-            pct = max(0.0, min(eps, 1.0))
-            filled = int(BAR_LEN * pct)
-            bracket = f"{_R}COLD{_RST}" if eps > EPS_WARM_MAX else (f"{_Y}WARM{_RST}" if eps > EPS_HOT_MAX else f"{_G}HOT{_RST}")
-            col = _R if eps > EPS_WARM_MAX else (_Y if eps > EPS_HOT_MAX else _G)
-            return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}] {eps:.4f}{_RST} {bracket}"
-
-        def _beta_bar(beta: float) -> str:
-            pct = max(0.0, min((beta - 0.4) / 0.6, 1.0))
-            filled = int(BAR_LEN * pct)
-            col = _G if beta > BETA_HOT_MIN else (_Y if beta > BETA_WARM_MIN else _DIM)
-            return f"{col}[{'█' * filled}{'░' * (BAR_LEN - filled)}] {beta:.4f}{_RST}  (0.4 cold→1.0 fully corrected)"
-
-        def _trend(hist: deque) -> str:
-            vals = [v for v in list(hist) if v > 0]
-            if len(vals) < TREND_MIN_SAMPLES:
-                return f"{_DIM}→ — (need more samples){_RST}"
-            half = len(vals) // 2
-            old_mean = sum(vals[:half]) / half
-            new_mean = sum(vals[half:]) / (len(vals) - half)
-            delta_pct = (new_mean - old_mean) / old_mean * 100 if old_mean > 0 else 0
-            if delta_pct < TREND_DELTA_NEG:
-                return f"{_G}↓ {abs(delta_pct):.1f}% IMPROVING{_RST}"
-            elif delta_pct > TREND_DELTA_POS:
-                return f"{_R}↑ +{delta_pct:.1f}% DEGRADING{_RST}"
-            else:
-                return f"{_Y}→ {delta_pct:+.1f}% STABLE{_RST}"
-
-        def _spark(hist: deque) -> str:
-            vals = [v for v in list(hist) if v > 0]
-            if len(vals) < TREND_STEP_PAIRS_MIN:
-                return ""
-            return self._create_sparkline(vals[-TREND_SPARK_TAIL:])
-
-        def _velocity(step_hist: deque) -> str:
-            pairs = list(step_hist)
-            if len(pairs) < TREND_STEP_PAIRS_MIN:
-                return f"{_DIM}—{_RST}"
-            dt = pairs[-1][0] - pairs[0][0]
-            ds = pairs[-1][1] - pairs[0][1]
-            if dt <= 0 or ds <= 0:
-                return f"{_DIM}0 steps/min{_RST}"
-            rate = ds / dt * 60
-            col = _G if rate > TREND_RATE_HIGH else (_Y if rate > TREND_RATE_WARN else _DIM)
-            return f"{col}{rate:.1f} steps/min{_RST}"
-
-        # ── Trigger Agent ─────────────────────────────────────────────────────
-        trig_buf   = ts.get("trigger_buffer_size", 0)
-        trig_steps = ts.get("trigger_training_steps", 0)
-        trig_loss  = ts.get("trigger_loss", 0.0)
-        trig_eps   = ts.get("trigger_epsilon", 0.0)
-        trig_ready = ts.get("trigger_ready", False)
-        ts.get("trigger_td_error", 0.0)
-        trig_conf  = pm.get("trigger_confidence_avg", 0.5)
-
-        ready_t = f"{_G}✓ Ready{_RST}" if trig_ready else f"{_Y}⏳ Filling…{_RST}"
-        print(f"  \033[1m🎯 TRIGGER AGENT  (Entry)\033[0m  {ready_t}")
-        print(f"    Steps:  {trig_steps:>10,}   Velocity: {_velocity(self._trig_step_hist)}")
-        print(f"    Buffer: {_pct_bar(trig_buf, TRIG_CAP)}  {trig_buf:,}/{TRIG_CAP:,}")
-        print(f"    ε:      {_eps_bar(trig_eps)}")
-        _tl_str = f"{trig_loss:.6f}" if trig_loss > 0 else f"{_DIM}0.000000 (idle/no training event){_RST}"
-        print(f"    Loss:   {_tl_str}")
-        print(f"    Trend:  {_trend(self._trig_loss_hist)}")
-        _sp = _spark(self._trig_loss_hist)
-        if _sp:
-            print(f"    Hist:   {_sp}")
-        _cc = _G if CONF_HEALTHY_LOW < trig_conf < CONF_HEALTHY_HIGH else (_Y if CONF_WARM_LOW < trig_conf <= CONF_HEALTHY_LOW else _R)
-        print(f"    Conf:   {_cc}{trig_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
+    def _render_offline_training(self, ofs: dict) -> None:
+        """Render the offline training status block."""
+        ofs_status  = ofs.get("status", "idle")
+        ofs_total   = ofs.get("total_jobs", 0)
+        ofs_done    = sum(1 for r in ofs.get("results", []) if r.get("status") in ("done", "error"))
+        ofs_elapsed = ofs.get("elapsed_s", 0.0)
+        ofs_start   = ofs.get("started_at", "")[:19].replace("T", " ") if ofs.get("started_at") else "—"
+        ofs_end     = ofs.get("completed_at", "")[:19].replace("T", " ") if ofs.get("completed_at") else None
+        if ofs_status == "running":
+            status_badge = f"\033[93m⚙  RUNNING ({ofs_done}/{ofs_total} done)\033[0m"
+        elif ofs_status == "complete":
+            status_badge = f"{_ANSI_G}✓ COMPLETE  ({ofs_done}/{ofs_total} jobs)\033[0m"
+        else:
+            status_badge = f"{_ANSI_DIM}{ofs_status}\033[0m"
+        pct = ofs_done / ofs_total if ofs_total else 0.0
+        filled = int(26 * pct)
+        prog_col = _ANSI_G if pct >= 1.0 else (_ANSI_Y if pct > 0 else _ANSI_DIM)
+        prog_bar = f"{prog_col}[{'█' * filled}{'░' * (26 - filled)}]\033[0m {pct * 100:.0f}%"
+        print(f"\n  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
+        print(f"    Progress:  {prog_bar}   Elapsed: {ofs_elapsed:.0f}s")
+        print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
+        _results = ofs.get("results", [])
+        if _results:
+            self._render_offline_jobs_table(_results)
         print()
 
-        # ── Harvester Agent ───────────────────────────────────────────────────
-        harv_buf      = ts.get("harvester_buffer_size", 0)
-        harv_steps    = ts.get("harvester_training_steps", 0)
-        harv_loss     = ts.get("harvester_loss", 0.0)
-        harv_beta     = ts.get("harvester_beta", 0.4)
-        harv_ready    = ts.get("harvester_ready", False)
-        ts.get("harvester_td_error", 0.0)
-        harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
-        harv_conf     = pm.get("harvester_confidence_avg", 0.5)
+    def _render_offline_jobs_table(self, results: list) -> None:
+        """Render the symbol/TF results table for offline training."""
+        sym_w = max(6, *(len(r.get("symbol", "")) for r in results))
+        print()
+        print(f"    {'Symbol':<{sym_w}}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  ZOmega")
+        print(f"    {'─'*sym_w}  {'─'*5}  {'─'*9}  {'─'*38}  {'─'*8}")
+        for r in results:
+            self._render_offline_job_row(r, sym_w)
 
-        ready_h = f"{_G}✓ Ready{_RST}" if harv_ready else f"{_Y}⏳ Filling…{_RST}"
-        print(f"  \033[1m🌾 HARVESTER AGENT  (Exit)\033[0m  {ready_h}")
-        print(f"    Steps:  {harv_steps:>10,}   Velocity: {_velocity(self._harv_step_hist)}")
-        print(f"    Buffer: {_pct_bar(harv_buf, HARV_CAP)}  {harv_buf:,}/{HARV_CAP:,}")
-        print(f"    β IS:   {_beta_bar(harv_beta)}")
-        _hl_str = f"{harv_loss:.6f}" if harv_loss > 0 else f"{_DIM}0.000000 (idle/no training event){_RST}"
-        print(f"    Loss:   {_hl_str}")
-        print(f"    Trend:  {_trend(self._harv_loss_hist)}")
-        _sp = _spark(self._harv_loss_hist)
+    def _render_offline_job_row(self, r: dict, sym_w: int) -> None:
+        """Render a single job result row in the offline training table."""
+        sym      = r.get("symbol", "")
+        tf_label = r.get("label", f"M{r.get('timeframe_minutes', '?')}")
+        jstatus  = r.get("status", "queued")
+        if jstatus == "done":
+            jcol, jbadge = _ANSI_G, "done     "
+        elif jstatus == "error":
+            jcol, jbadge = _ANSI_R, "ERROR    "
+        elif jstatus == "running":
+            jcol, jbadge = _ANSI_Y, "running  "
+        else:
+            jcol, jbadge = _ANSI_DIM, "queued   "
+        zo      = r.get("z_omega")
+        ttrades = r.get("train_trades", 0)
+        vtrades = r.get("val_trades", 0)
+        steps   = r.get("total_train_steps", 0)
+        if zo is not None and jstatus == "done":
+            zo_col = _ANSI_G if zo >= 1.0 else (_ANSI_Y if zo >= Z_OMEGA_OFFLINE_WARM_MIN else _ANSI_R)
+            zo_str = f"{zo_col}{zo:8.4f}\033[0m"
+        else:
+            zo_str = f"{_ANSI_DIM}{'—':>8}\033[0m"
+        if jstatus in ("done", "error"):
+            detail = f"tr={ttrades:,}  val={vtrades:,}  steps={steps:,}"
+            row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail:<38}  {zo_str}"
+        elif jstatus == "running":
+            prog = self.offline_job_progress.get(
+                (r.get("symbol"), r.get("timeframe_minutes")), {}
+            )
+            if prog:
+                pb = prog.get("pct", 0.0)
+                pb_fill = int(14 * pb / 100)
+                pb_bar = f"[{'█'*pb_fill}{'░'*(14-pb_fill)}] {pb:4.1f}%"
+                detail = (
+                    f"{_ANSI_Y}{pb_bar}{_ANSI_RST}"
+                    f"  ε={prog.get('epsilon', 0):.3f}  β={prog.get('beta', 0.4):.3f}"
+                )
+                row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {detail}  {zo_str}"
+            else:
+                row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
+        else:
+            row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}\033[0m  {'—':<38}  {zo_str}"
+        if jstatus == "error" and r.get("error"):
+            row += f"  {_ANSI_R}{r['error'][:30]}\033[0m"
+        print(row)
+
+    def _render_paper_pipeline(self) -> None:
+        """Render the paper trading pipeline status block."""
+        uni = self.universe_stats
+        _STAGE_COL = {
+            "PAPER":     _ANSI_Y,
+            "LIVE":      _ANSI_G,
+            "UNTRAINED": _ANSI_DIM,
+            "DEMOTED":   _ANSI_R,
+        }
+        running_count = sum(1 for e in uni.values() if e.get("_pid_alive"))
+        total_count   = len(uni)
+        hdr_badge = (
+            f"{_ANSI_G}{running_count}/{total_count} running{_ANSI_RST}"
+            if running_count else
+            f"{_ANSI_DIM}0/{total_count} running{_ANSI_RST}"
+        )
+        print(f"  \033[1m📈 PAPER TRADING PIPELINE\033[0m  {hdr_badge}")
+        print()
+        uni_sym_w = max(8, max((len(s) for s in uni), default=0))
+        print(f"    {'Symbol':<{uni_sym_w}}  {'TF':>5}  {'Stage':<10}  {'ZΩ':>8}  {'Bot':>6}  Started")
+        print(f"    {'─'*uni_sym_w}  {'─'*5}  {'─'*10}  {'─'*8}  {'─'*6}  {'─'*19}")
+        for sym, entry in sorted(uni.items()):
+            stage   = entry.get("stage", "?")[:10]
+            tf_min  = entry.get("timeframe_minutes", 0)
+            tf_lbl  = f"M{tf_min}" if tf_min else "?"
+            zo      = entry.get("z_omega")
+            zo_str  = f"{zo:8.4f}" if zo is not None else f"{'—':>8}"
+            if zo is not None:
+                zo_col = _ANSI_G if zo > Z_OMEGA_POSITIVE_MIN else (_ANSI_Y if zo > 0 else _ANSI_R)
+                zo_str = f"{zo_col}{zo_str}{_ANSI_RST}"
+            pid_alive = entry.get("_pid_alive", False)
+            pid       = entry.get("paper_pid")
+            if pid_alive:
+                bot_str = f"{_ANSI_G}  ▶ {pid}{_ANSI_RST}"
+            elif pid:
+                bot_str = f"{_ANSI_R}dead {_ANSI_DIM}({pid}){_ANSI_RST}"
+            else:
+                bot_str = f"{_ANSI_DIM}  —{_ANSI_RST}"
+            started = (
+                entry.get("paper_started_at", "")[:19].replace("T", " ")
+                if entry.get("paper_started_at") else "—"
+            )
+            stage_col = _STAGE_COL.get(stage, _ANSI_DIM)
+            print(
+                f"    {sym:<{uni_sym_w}}  {tf_lbl:>5}  "
+                f"{stage_col}{stage:<10}{_ANSI_RST}  {zo_str}  {bot_str}  {started}"
+            )
+        print()
+
+    def _render_live_trigger_agent(
+        self, ts: dict, pm: dict, trig_ready: bool, trig_steps: int
+    ) -> None:
+        """Render the Trigger Agent training block."""
+        trig_buf  = ts.get("trigger_buffer_size", 0)
+        trig_loss = ts.get("trigger_loss", 0.0)
+        trig_eps  = ts.get("trigger_epsilon", 0.0)
+        trig_conf = pm.get("trigger_confidence_avg", 0.5)
+        ready_t = (
+            f"{_ANSI_G}✓ Ready{_ANSI_RST}" if trig_ready
+            else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
+        )
+        print(f"  \033[1m🎯 TRIGGER AGENT  (Entry)\033[0m  {ready_t}")
+        print(f"    Steps:  {trig_steps:>10,}   Velocity: {self._rt_velocity(self._trig_step_hist)}")
+        print(
+            f"    Buffer: {self._rt_pct_bar(trig_buf, _RT_TRIG_CAP)}"
+            f"  {trig_buf:,}/{_RT_TRIG_CAP:,}"
+        )
+        print(f"    ε:      {self._rt_eps_bar(trig_eps)}")
+        _tl_str = (
+            f"{trig_loss:.6f}" if trig_loss > 0
+            else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
+        )
+        print(f"    Loss:   {_tl_str}")
+        print(f"    Trend:  {self._rt_trend(self._trig_loss_hist)}")
+        _sp = self._rt_spark(self._trig_loss_hist)
         if _sp:
             print(f"    Hist:   {_sp}")
-        _cc = _G if CONF_HEALTHY_LOW < harv_conf < CONF_HEALTHY_HIGH else (_Y if CONF_WARM_LOW < harv_conf <= CONF_HEALTHY_LOW else _R)
-        print(f"    Conf:   {_cc}{harv_conf:.3f}{_RST}  {_DIM}(healthy 0.55–0.85){_RST}")
+        _cc = (
+            _ANSI_G if CONF_HEALTHY_LOW < trig_conf < CONF_HEALTHY_HIGH
+            else (_ANSI_Y if CONF_WARM_LOW < trig_conf <= CONF_HEALTHY_LOW else _ANSI_R)
+        )
+        print(f"    Conf:   {_cc}{trig_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
+        print()
+
+    def _render_live_harvester_agent(
+        self, ts: dict, pm: dict, harv_ready: bool, harv_steps: int
+    ) -> None:
+        """Render the Harvester Agent training block."""
+        harv_buf      = ts.get("harvester_buffer_size", 0)
+        harv_loss     = ts.get("harvester_loss", 0.0)
+        harv_beta     = ts.get("harvester_beta", 0.4)
+        harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
+        harv_conf     = pm.get("harvester_confidence_avg", 0.5)
+        ready_h = (
+            f"{_ANSI_G}✓ Ready{_ANSI_RST}" if harv_ready
+            else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
+        )
+        print(f"  \033[1m🌾 HARVESTER AGENT  (Exit)\033[0m  {ready_h}")
+        print(
+            f"    Steps:  {harv_steps:>10,}   Velocity: {self._rt_velocity(self._harv_step_hist)}"
+        )
+        print(
+            f"    Buffer: {self._rt_pct_bar(harv_buf, _RT_HARV_CAP)}"
+            f"  {harv_buf:,}/{_RT_HARV_CAP:,}"
+        )
+        print(f"    β IS:   {self._rt_beta_bar(harv_beta)}")
+        _hl_str = (
+            f"{harv_loss:.6f}" if harv_loss > 0
+            else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
+        )
+        print(f"    Loss:   {_hl_str}")
+        print(f"    Trend:  {self._rt_trend(self._harv_loss_hist)}")
+        _sp = self._rt_spark(self._harv_loss_hist)
+        if _sp:
+            print(f"    Hist:   {_sp}")
+        _cc = (
+            _ANSI_G if CONF_HEALTHY_LOW < harv_conf < CONF_HEALTHY_HIGH
+            else (_ANSI_Y if CONF_WARM_LOW < harv_conf <= CONF_HEALTHY_LOW else _ANSI_R)
+        )
+        print(f"    Conf:   {_cc}{harv_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
         print(f"    Min-hold: {harv_min_hold} ticks")
         print()
 
-        # ── Arena ─────────────────────────────────────────────────────────────
+    def _render_live_arena_and_health(
+        self,
+        ts: dict,
+        trig_ready: bool,
+        harv_ready: bool,
+        trig_steps: int,
+        harv_steps: int,
+    ) -> None:
+        """Render Arena + Learning Health blocks."""
         total_agents = ts.get("total_agents", 0)
         if total_agents > 0:
             diversity = ts.get("arena_diversity", {})
@@ -1103,17 +1154,40 @@ class TabbedHUD:
             print(f"    Agents: {total_agents}   Consensus: {consensus}   Agreement: {agreement:.3f}")
             print(f"    Diversity — Trig: {trig_div:.3f}   Harv: {harv_div:.3f}")
             print()
-
-        # ── Learning health summary ───────────────────────────────────────────
         last_train = ts.get("last_training_time", "Never")
         train_on   = self.bot_config.get("training_enabled", False)
-        train_str  = f"{_G}ON{_RST}" if train_on else f"{_R}OFF{_RST}"
-        trig_ok = f"{_G}✓{_RST}" if trig_ready else f"{_Y}⏳{_RST}"
-        harv_ok = f"{_G}✓{_RST}" if harv_ready else f"{_Y}⏳{_RST}"
+        train_str  = f"{_ANSI_G}ON{_ANSI_RST}" if train_on else f"{_ANSI_R}OFF{_ANSI_RST}"
+        trig_ok = f"{_ANSI_G}✓{_ANSI_RST}" if trig_ready else f"{_ANSI_Y}⏳{_ANSI_RST}"
+        harv_ok = f"{_ANSI_G}✓{_ANSI_RST}" if harv_ready else f"{_ANSI_Y}⏳{_ANSI_RST}"
         print("  \033[1m📊 LEARNING HEALTH\033[0m")
         print(f"    Training: {train_str}   Last event: {last_train}")
-        print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
+        print(
+            f"    Trigger {trig_ok}  Harvester {harv_ok}"
+            f"   Total steps: {trig_steps + harv_steps:,}"
+        )
         print()
+
+    def _render_training(self):
+        """Render agent training status."""
+        ts = self.training_stats
+        pm = self.production_metrics.get("metrics", {})
+        ofs = self.offline_stats
+        if ofs:
+            self._render_offline_training(ofs)
+        if self.universe_stats:
+            self._render_paper_pipeline()
+        _ts_nonempty = any(v for v in ts.values() if v)
+        if not _ts_nonempty:
+            print(f"\033[1m🤖 LIVE BOT TRAINING\033[0m  {_ANSI_DIM}(no live bot running){_ANSI_RST}\n")
+            return
+        print("\033[1m🤖 LIVE BOT TRAINING\033[0m\n")
+        trig_ready = ts.get("trigger_ready", False)
+        harv_ready = ts.get("harvester_ready", False)
+        trig_steps = ts.get("trigger_training_steps", 0)
+        harv_steps = ts.get("harvester_training_steps", 0)
+        self._render_live_trigger_agent(ts, pm, trig_ready, trig_steps)
+        self._render_live_harvester_agent(ts, pm, harv_ready, harv_steps)
+        self._render_live_arena_and_health(ts, trig_ready, harv_ready, trig_steps, harv_steps)
 
     def _render_header(self):
         """Render header"""
