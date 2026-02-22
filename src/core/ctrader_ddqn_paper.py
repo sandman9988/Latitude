@@ -1128,8 +1128,8 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.warning("[METRICS] Failed to flush production metrics: %s", e)
 
-    def _check_heartbeat_session(self, sid, last_hb, qual: str, now, issues: list) -> None:
-        """Check one FIX session's heartbeat freshness and trigger recovery if stale."""
+    def _check_session_heartbeat(self, sid, last_hb, qual: str, now, issues: list) -> None:
+        """Check one FIX session's heartbeat age and trigger restart if stale."""
         if sid and last_hb:
             age = (now - last_hb).total_seconds()
             if age > self.heartbeat_timeout:
@@ -1141,7 +1141,7 @@ class CTraderFixApp(fix.Application):
             issues.append(f"{qual} disconnected")
 
     def _check_market_data_freshness(self) -> None:
-        """Re-subscribe market data if QUOTE is alive but data is stale."""
+        """Re-subscribe market data if QUOTE is alive but no ticks arrived recently."""
         if not (self.quote_sid and self.last_market_data_time is not None and self.connection_healthy):
             return
         md_age = time.time() - self.last_market_data_time
@@ -1152,14 +1152,39 @@ class CTraderFixApp(fix.Application):
         ):
             LOG.warning(
                 "[HEALTH] Market data stale for %.0fs (threshold=%ds) — re-subscribing spot",
-                md_age,
-                self.market_data_stale_threshold,
+                md_age, self.market_data_stale_threshold,
             )
             try:
                 self.send_md_subscribe_spot()
                 self._last_md_resubscribe_time = time.time()
             except Exception as e:
                 LOG.error("[HEALTH] Failed to re-subscribe market data: %s", e)
+
+    def _emit_watchdog_notify(self) -> None:
+        """Send systemd WATCHDOG=1 datagram if watchdog is enabled and healthy."""
+        if not (self.watchdog_enabled and self.connection_healthy):
+            return
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            sock.sendto(b"WATCHDOG=1", os.environ.get("NOTIFY_SOCKET", ""))
+            sock.close()
+        except Exception as e:
+            LOG.debug("[WATCHDOG] Failed to notify systemd: %s", e)
+
+    def _log_periodic_health(self) -> None:
+        """Log a periodic health summary and flush production metrics."""
+        quote_status = "OK" if self.quote_sid else "DOWN"
+        trade_status = "OK" if self.trade_sid else "DOWN"
+        if self.connection_uptime_start:
+            uptime_str = f"{(time.time() - self.connection_uptime_start) / 60:.1f}min"
+        else:
+            uptime_str = "N/A"
+        LOG.info(
+            "[HEALTH] Status: QUOTE=%s TRADE=%s healthy=%s uptime=%s reconnects=%d/%d",
+            quote_status, trade_status, self.connection_healthy, uptime_str,
+            self.successful_reconnects, self.total_reconnects,
+        )
+        self._flush_production_metrics()
 
     def _monitor_connection_health(self):
         """
@@ -1171,23 +1196,18 @@ class CTraderFixApp(fix.Application):
         - Triggers reconnect attempts if sessions go stale
         """
         LOG.info("[HEALTH] Connection health monitor started")
-        check_interval = 10  # seconds
+        check_interval = 10
         health_log_counter = 0
 
         while self._health_monitor_running and not self._shutdown_requested:
             try:
                 time.sleep(check_interval)
-
                 if self._shutdown_requested:
                     break
-
                 now = utc_now()
-                issues: list = []
-
-                self._check_heartbeat_session(self.quote_sid, self.last_quote_heartbeat, "QUOTE", now, issues)
-                self._check_heartbeat_session(self.trade_sid, self.last_trade_heartbeat, "TRADE", now, issues)
-
-                # Update health status
+                issues: list[str] = []
+                self._check_session_heartbeat(self.quote_sid, self.last_quote_heartbeat, "QUOTE", now, issues)
+                self._check_session_heartbeat(self.trade_sid, self.last_trade_heartbeat, "TRADE", now, issues)
                 if issues:
                     self.connection_healthy = False
                     LOG.warning("[HEALTH] Connection issues: %s", ", ".join(issues))
@@ -1195,40 +1215,11 @@ class CTraderFixApp(fix.Application):
                     if not self.connection_healthy and self.quote_sid and self.trade_sid:
                         LOG.info("[HEALTH] Connection restored (QUOTE+TRADE active)")
                     self.connection_healthy = True
-
                 self._check_market_data_freshness()
-
-                # Systemd watchdog notification (if enabled)
-                if self.watchdog_enabled and self.connection_healthy:
-                    try:
-                        sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-                        sock.sendto(b"WATCHDOG=1", os.environ.get("NOTIFY_SOCKET", ""))
-                        sock.close()
-                    except Exception as e:
-                        LOG.debug("[WATCHDOG] Failed to notify systemd: %s", e)
-
-                # Periodic health log (every ~60s)
+                self._emit_watchdog_notify()
                 health_log_counter += 1
-                if health_log_counter % 6 == 0:  # Every ~60s
-                    quote_status = "OK" if self.quote_sid else "DOWN"
-                    trade_status = "OK" if self.trade_sid else "DOWN"
-                    if self.connection_uptime_start:
-                        current_uptime = time.time() - self.connection_uptime_start
-                        uptime_str = f"{current_uptime/60:.1f}min"
-                    else:
-                        uptime_str = "N/A"
-                    LOG.info(
-                        "[HEALTH] Status: QUOTE=%s TRADE=%s healthy=%s uptime=%s reconnects=%d/%d",
-                        quote_status,
-                        trade_status,
-                        self.connection_healthy,
-                        uptime_str,
-                        self.successful_reconnects,
-                        self.total_reconnects,
-                    )
-                    # Flush production metrics on every 60s health tick
-                    self._flush_production_metrics()
-
+                if health_log_counter % 6 == 0:
+                    self._log_periodic_health()
             except Exception as e:
                 LOG.error("[HEALTH] Monitor error: %s", e, exc_info=True)
 
@@ -2124,106 +2115,7 @@ class CTraderFixApp(fix.Application):
         self._export_order_book()
         self.try_bar_update()
 
-    def _process_md_id_delete(self, md_id) -> None:
-        """Remove an order-book level using its MDEntryID (price-type absent)."""
-        if md_id is None:
-            return
-        entry = self._md_entry_id_map.pop(md_id, None)
-        if entry is not None:
-            self.order_book.update_level(entry[0], entry[1], 0.0)
-
-    def _update_md_id_map(self, md_id, action: str, side: str, price_f: float) -> None:
-        """Track MDEntryID→(side, price) and remove old level if price moved."""
-        if md_id is None:
-            return
-        if action == "1":
-            old = self._md_entry_id_map.get(md_id)
-            if old is not None and old[1] != price_f:
-                self.order_book.update_level(old[0], old[1], 0.0)
-        self._md_entry_id_map[md_id] = (side, price_f)
-
-    def _process_md_new_or_change(self, g, entry_type: str, md_id, action: str) -> None:
-        """Apply MDUpdateAction 0 (new) or 1 (change) to the order book."""
-        px = fix.MDEntryPx()
-        qty = fix.MDEntrySize()
-        if not g.isSetField(px):
-            return
-        g.getField(px)
-        try:
-            price_f = float(px.getValue())
-            size = 0.0
-            if g.isSetField(qty):
-                g.getField(qty)
-                size = float(qty.getValue())
-            if size > 0:
-                self._has_real_sizes = True
-            else:
-                size = 1.0
-        except (ValueError, TypeError):
-            return
-
-        side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
-        if side is None:
-            return
-        self._update_md_id_map(md_id, action, side, price_f)
-        self.order_book.update_level(side, price_f, size)
-        if side == "BID":
-            self._bid_refresh_count += 1
-        else:
-            self._ask_refresh_count += 1
-
-    def _process_md_delete(self, g, entry_type: str, md_id) -> None:
-        """Apply MDUpdateAction 2 (delete) to the order book."""
-        px = fix.MDEntryPx()
-        if not g.isSetField(px):
-            self._process_md_id_delete(md_id)
-            return
-        g.getField(px)
-        try:
-            price_f = float(px.getValue())
-        except (ValueError, TypeError):
-            return
-        side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
-        if side is not None:
-            self.order_book.update_level(side, price_f, 0.0)
-        if md_id is not None:
-            self._md_entry_id_map.pop(md_id, None)
-
-    def _process_md_entry(self, g) -> None:
-        """Process one MDEntry group from a MarketDataIncrementalRefresh."""
-        act = fix.MDUpdateAction()
-        g.getField(act)
-        action = act.getValue()
-
-        et = fix.MDEntryType()
-        sym = fix.Symbol()
-        et_set = g.isSetField(et)
-        if et_set:
-            g.getField(et)
-        if g.isSetField(sym):
-            g.getField(sym)
-
-        if sym.getValue() and sym.getValue() != str(self.symbol_id):
-            return
-
-        md_id_field = fix.MDEntryID()
-        md_id = None
-        if g.isSetField(md_id_field):
-            g.getField(md_id_field)
-            md_id = md_id_field.getValue()
-
-        if not et_set:
-            if action == "2":
-                self._process_md_id_delete(md_id)
-            return
-
-        entry_type = et.getValue()
-        if action in ("0", "1"):
-            self._process_md_new_or_change(g, entry_type, md_id, action)
-        elif action == "2":
-            self._process_md_delete(g, entry_type, md_id)
-
-    def on_md_incremental(self, msg: fix.Message):
+    def on_md_incremental(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
         self.last_market_data_time = time.time()
         try:
             no = fix.NoMDEntries()
@@ -2239,7 +2131,93 @@ class CTraderFixApp(fix.Application):
         for i in range(1, n + 1):
             g = fix44.MarketDataIncrementalRefresh().NoMDEntries()
             msg.getGroup(i, g)
-            self._process_md_entry(g)
+
+            act = fix.MDUpdateAction()
+            g.getField(act)
+            action = act.getValue()
+
+            et = fix.MDEntryType()
+            sym = fix.Symbol()
+            px = fix.MDEntryPx()
+            qty = fix.MDEntrySize()
+
+            et_set = g.isSetField(et)
+            if et_set:
+                g.getField(et)
+            if g.isSetField(sym):
+                g.getField(sym)
+
+            if sym.getValue() and sym.getValue() != str(self.symbol_id):
+                continue
+
+            # Read MDEntryID (tag 278) — used for delete-by-ID resolution.
+            md_id_field = fix.MDEntryID()
+            md_id = None
+            if g.isSetField(md_id_field):
+                g.getField(md_id_field)
+                md_id = md_id_field.getValue()
+
+            if not et_set:
+                # Delete-by-ID: broker omits MDEntryType — look up price from map.
+                if action == "2" and md_id is not None:
+                    entry = self._md_entry_id_map.pop(md_id, None)
+                    if entry is not None:
+                        side, price_f = entry
+                        self.order_book.update_level(side, price_f, 0.0)
+                continue
+
+            entry_type = et.getValue()
+            if action in ("0", "1"):  # new or change
+                if not g.isSetField(px):
+                    continue
+                g.getField(px)
+                try:
+                    price_f = float(px.getValue())
+                    size = 0.0
+                    if g.isSetField(qty):
+                        g.getField(qty)
+                        size = float(qty.getValue())
+                    if size > 0:
+                        self._has_real_sizes = True
+                    else:
+                        size = 1.0
+                except (ValueError, TypeError):
+                    continue
+
+                side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
+                if side is None:
+                    continue
+                # If this ID was previously mapped to a different price, remove old level.
+                if md_id is not None and action == "1":
+                    old = self._md_entry_id_map.get(md_id)
+                    if old is not None and old[1] != price_f:
+                        self.order_book.update_level(old[0], old[1], 0.0)
+                self.order_book.update_level(side, price_f, size)
+                if md_id is not None:
+                    self._md_entry_id_map[md_id] = (side, price_f)
+                # Increment per-bar quote refresh counter
+                if side == "BID":
+                    self._bid_refresh_count += 1
+                else:
+                    self._ask_refresh_count += 1
+            elif action == "2":  # delete with MDEntryType — price-keyed delete
+                if not g.isSetField(px):
+                    # No price either — try ID map as fallback.
+                    if md_id is not None:
+                        entry = self._md_entry_id_map.pop(md_id, None)
+                        if entry is not None:
+                            self.order_book.update_level(entry[0], entry[1], 0.0)
+                    continue
+                g.getField(px)
+                try:
+                    price_f = float(px.getValue())
+                except (ValueError, TypeError):
+                    continue
+                side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
+                if side is not None:
+                    self.order_book.update_level(side, price_f, 0.0)
+                if md_id is not None:
+                    self._md_entry_id_map.pop(md_id, None)
 
         best_bid, best_ask = self.order_book.best_bid_ask()
         if best_bid is not None and best_ask is not None:
@@ -2860,79 +2838,90 @@ class CTraderFixApp(fix.Application):
 
         return pnl
 
-    def _add_trigger_experience(
-        self, summary: dict, pnl: float, pnl_pts: float, entry_price: float, realized_vol: float
+    def _update_after_trade_close(
+        self, pnl: float, exit_time, entry_price: float, exit_price: float, summary: dict
+    ) -> tuple:
+        """Update timing, performance, and prev-state; return (shaped_rewards, pnl_pts)."""
+        if self.trade_entry_time:
+            _dur_mins = (exit_time - self.trade_entry_time).total_seconds() / 60.0
+            self._avg_trade_duration_mins = 0.9 * self._avg_trade_duration_mins + 0.1 * _dur_mins
+            LOG.debug("[TRADE_TIMING] dur=%.1f min → avg=%.1f min", _dur_mins, self._avg_trade_duration_mins)
+            self.performance.add_trade(
+                pnl=pnl, entry_time=self.trade_entry_time, exit_time=exit_time,
+                direction=summary.get("direction", "UNKNOWN"),
+                entry_price=entry_price, exit_price=exit_price,
+                mfe=summary.get("mfe", 0.0), mae=summary.get("mae", 0.0),
+                winner_to_loser=summary.get("winner_to_loser", False),
+            )
+        self._last_trade_close_ts = time.time()
+        if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
+            self.prev_harvester_state = (
+                self.policy.harvester.last_state.copy() if self.policy.harvester.last_state is not None else None
+            )
+            self.prev_exit_action = 1
+        if self.entry_action is None:
+            self.entry_action = 1 if summary.get("direction") == "LONG" else 2
+        lot_value = max(self.qty * self.contract_size, 1.0)
+        pnl_pts = pnl / lot_value
+        reward_data = {
+            "exit_pnl": pnl_pts, "mfe": summary.get("mfe", 0.0),
+            "mae": summary.get("mae", 0.0), "winner_to_loser": summary.get("winner_to_loser", False),
+        }
+        shaped_rewards = self.reward_shaper.calculate_total_reward(reward_data)
+        return shaped_rewards, pnl_pts
+
+    def _add_trigger_experience_for_close(
+        self, summary: dict, pnl: float, entry_price: float, pnl_pts: float, shaped_rewards: dict
     ) -> float:
-        """Add TriggerAgent experience to replay buffer. Returns trigger_reward (0.0 if skipped)."""
-        if not (hasattr(self.policy, "add_trigger_experience") and self.entry_state is not None):
-            self.entry_state = None
-            self.predicted_runway = 0.0
+        """Add TriggerAgent online-learning experience; return trigger_reward (0.0 if skipped)."""
+        if not hasattr(self.policy, "add_trigger_experience") or self.entry_state is None:
             return 0.0
-
-        _trigger_agent = getattr(self.policy, "trigger", None)
-        next_state = getattr(_trigger_agent, "last_state", None) if _trigger_agent else None
+        next_state = getattr(getattr(self.policy, "trigger", None), "last_state", None)
         if next_state is None:
-            self.entry_state = None
-            self.predicted_runway = 0.0
             return 0.0
-
+        realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.01
         was_explore = getattr(self, "was_exploration_entry", False)
         if was_explore:
             _ep_lot = max(self.qty * self.contract_size, 1.0)
             _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
             _ep_vol_pts = max(realized_vol * _ep_price, 1e-6)
             trigger_reward = float(np.clip((pnl / _ep_lot) / _ep_vol_pts / 3.0, -0.5, 0.5))
-            LOG.info(
-                "[ONLINE_LEARNING] Exploration entry: using outcome reward=%.4f "
-                "(skipping prediction-accuracy reward)",
-                trigger_reward,
-            )
+            LOG.info("[ONLINE_LEARNING] Exploration entry: outcome reward=%.4f", trigger_reward)
         else:
             trigger_reward = self._calculate_trigger_reward(
-                trade_summary=summary,
-                predicted_runway=self.predicted_runway,
-                realized_vol=realized_vol,
+                trade_summary=summary, predicted_runway=self.predicted_runway, realized_vol=realized_vol,
             )
-
         self.policy.add_trigger_experience(
-            state=self.entry_state, action=self.entry_action, reward=trigger_reward,
-            next_state=next_state, done=True,
+            state=self.entry_state, action=self.entry_action,
+            reward=trigger_reward, next_state=next_state, done=True,
         )
-        if hasattr(_trigger_agent, "buffer") and _trigger_agent.buffer:
-            LOG.info("[BUFFER] TriggerAgent buffer size: %d", _trigger_agent.buffer.size)
+        if getattr(getattr(self.policy, "trigger", None), "buffer", None):
+            LOG.info("[BUFFER] TriggerAgent buffer size: %d", self.policy.trigger.buffer.size)
         LOG.info(
             "[ONLINE_LEARNING] Added TriggerAgent experience: action=%d reward=%.4f "
             "(predicted_mfe=%.4f actual_mfe=%.4f explore=%s)",
             self.entry_action, trigger_reward, self.predicted_runway, summary.get("mfe", 0.0), was_explore,
         )
-
-        # Prediction-vs-actual convergence tracking (always update, even for exploration)
         _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
         _pred_pts = self.predicted_runway * _ep_price
         _actual_mfe = float(summary.get("mfe", 0.0))
         _runway_delta = _pred_pts - _actual_mfe
         _max_err = max(abs(_actual_mfe), abs(_pred_pts), 1.0)
-        _runway_acc = 1.0 - min(abs(_runway_delta) / _max_err, 1.0)
-        _actual_win = 1.0 if pnl > 0 else 0.0
-        _conf_err = abs(self.entry_confidence - _actual_win)
         _alpha = 0.1
         self._runway_delta_ema = (1 - _alpha) * self._runway_delta_ema + _alpha * _runway_delta
-        self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * _runway_acc
-        self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * _conf_err
-
+        self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * (1.0 - min(abs(_runway_delta) / _max_err, 1.0))
+        self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * abs(self.entry_confidence - (1.0 if pnl > 0 else 0.0))
         self.entry_state = None
         self.predicted_runway = 0.0
         return trigger_reward
 
-    def _add_harvester_experience(
-        self, shaped_rewards: dict, summary: dict,
-        entry_price: float, exit_price: float, pnl_pts: float, trigger_reward: float,
+    def _add_harvester_experience_for_close(
+        self, summary: dict, pnl: float, entry_price: float, exit_price: float,
+        pnl_pts: float, shaped_rewards: dict, trigger_reward: float
     ) -> None:
-        """Add HarvesterAgent CLOSE experience and persist raw-bar trade record."""
-        if not (hasattr(self.policy, "add_harvester_experience") and self.prev_harvester_state is not None):
+        """Add HarvesterAgent online-learning experience for this closed trade."""
+        if not hasattr(self.policy, "add_harvester_experience") or self.prev_harvester_state is None:
             return
-
-        raw_close_reward = shaped_rewards.get("total_reward", 0.0)
         _entry_var = getattr(self, "entry_var", 0.0)
         _entry_vpin = getattr(self, "entry_vpin_z", 0.0)
         regime_adj = 0.0
@@ -2940,108 +2929,34 @@ class CTraderFixApp(fix.Application):
             regime_adj -= 0.3 * min(_entry_var / (self.vol_cap + 1e-8), 2.0)
         if self.vpin_z_threshold > 0 and _entry_vpin > self.vpin_z_threshold:
             regime_adj -= 0.2 * min(_entry_vpin / (self.vpin_z_threshold + 1e-8), 2.0)
-        LOG.debug(
-            "[CLOSE_REWARD] raw=%.4f regime_adj=%.4f (entry_var=%.4f entry_vpin=%.2f)",
-            raw_close_reward, regime_adj, _entry_var, _entry_vpin,
-        )
-        capture_reward = float(np.clip(raw_close_reward + regime_adj, -2.0, 2.0))
-
-        _harvester = getattr(self.policy, "harvester", None)
-        next_state = getattr(_harvester, "last_state", None) if _harvester else None
+        capture_reward = float(np.clip(shaped_rewards.get("total_reward", 0.0) + regime_adj, -2.0, 2.0))
+        LOG.debug("[CLOSE_REWARD] raw=%.4f regime_adj=%.4f", shaped_rewards.get("total_reward", 0.0), regime_adj)
+        next_state = getattr(getattr(self.policy, "harvester", None), "last_state", None)
         if next_state is not None:
             self.policy.add_harvester_experience(
                 state=self.prev_harvester_state, action=1, reward=capture_reward,
                 next_state=next_state, done=True,
             )
-            if getattr(_harvester, "buffer", None):
-                LOG.info("[BUFFER] HarvesterAgent buffer size: %d", _harvester.buffer.size)
+            if getattr(getattr(self.policy, "harvester", None), "buffer", None):
+                LOG.info("[BUFFER] HarvesterAgent buffer size: %d", self.policy.harvester.buffer.size)
             LOG.info("[ONLINE_LEARNING] Added HarvesterAgent CLOSE: reward=%.4f", capture_reward)
-
         self.prev_harvester_state = None
         self.prev_exit_action = None
         self.prev_mfe = 0.0
         self.prev_mae = 0.0
         self._bar_cache.record_trade(
-            bars=self.bars,
-            trigger_action=self.entry_action or 0,
-            trigger_reward=float(trigger_reward),
-            capture_reward=float(capture_reward),
-            entry_price=float(entry_price),
-            exit_price=float(exit_price),
-            pnl_pts=float(pnl_pts),
-            mfe=float(summary.get("mfe", 0.0)),
-            mae=float(summary.get("mae", 0.0)),
+            bars=self.bars, trigger_action=self.entry_action or 0,
+            trigger_reward=float(trigger_reward), capture_reward=float(capture_reward),
+            entry_price=float(entry_price), exit_price=float(exit_price), pnl_pts=float(pnl_pts),
+            mfe=float(summary.get("mfe", 0.0)), mae=float(summary.get("mae", 0.0)),
             regime=str(getattr(self.policy, "current_regime", "UNKNOWN")),
             was_explore=getattr(self, "was_exploration_entry", False),
             imbalance=float(getattr(self, "entry_imbalance", 0.0)),
-            vpin_z=float(self.entry_vpin_z),
-            depth_ratio=1.0,
+            vpin_z=float(self.entry_vpin_z), depth_ratio=1.0,
         )
 
-    def _update_performance_after_trade(
-        self, pnl: float, exit_time, entry_price: float, exit_price: float, summary: dict
-    ) -> None:
-        """Update performance tracker, adapt reward weights, and log dashboard."""
-        if not self.trade_entry_time:
-            return
-        metrics = self.performance.get_metrics()
-        current_sharpe = metrics.get("sharpe_ratio", 0.0)
-        sharpe_delta = current_sharpe - self.previous_sharpe
-        if (
-            self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0
-            and self.performance.total_trades > MIN_TRADES_FOR_ADAPTATION
-        ):
-            self.reward_shaper.adapt_weights(sharpe_delta)
-            LOG.info("[REWARD] Adapted weights based on Sharpe delta: %+.4f", sharpe_delta)
-            LOG.info(self.reward_shaper.print_summary())
-        self.previous_sharpe = current_sharpe
-        if self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0:
-            LOG.info("\n" + self.performance.print_dashboard())
-        else:
-            LOG.info(
-                "[PERF] Trades: %d | Win Rate: %.1f%% | Total PnL: $%.2f | Sharpe: %.3f | Max DD: %.1f%%",
-                metrics["total_trades"],
-                metrics.get("win_rate", 0.0) * 100,
-                metrics.get("total_pnl", 0.0),
-                metrics.get("sharpe_ratio", 0.0),
-                metrics.get("max_drawdown", 0.0) * 100,
-            )
-
-    def _complete_trade_processing(
-        self, summary: dict, pnl: float, exit_time, entry_price: float, exit_price: float
-    ) -> None:
-        """Orchestrate RL experience, circuit breakers, trade save, and performance after a trade."""
-        if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
-            self.prev_harvester_state = (
-                self.policy.harvester.last_state.copy()
-                if self.policy.harvester.last_state is not None else None
-            )
-            self.prev_exit_action = 1
-        if self.entry_action is None:
-            self.entry_action = 1 if summary.get("direction") == "LONG" else 2
-
-        lot_value = max(self.qty * self.contract_size, 1.0)
-        pnl_pts = pnl / lot_value
-        reward_data = {
-            "exit_pnl": pnl_pts,
-            "mfe": summary.get("mfe", 0.0),
-            "mae": summary.get("mae", 0.0),
-            "winner_to_loser": summary.get("winner_to_loser", False),
-        }
-        shaped_rewards = self.reward_shaper.calculate_total_reward(reward_data)
-        if summary.get("mfe", 0.0) > 0 and hasattr(self.reward_shaper, "update_baseline_mfe"):
-            self.reward_shaper.update_baseline_mfe(summary["mfe"])
-        LOG.info(
-            "[REWARD] Capture: %+.4f | WTL Penalty: %+.4f | Opportunity: %+.4f | Total: %+.4f | Active: %d",
-            shaped_rewards["capture_efficiency"], shaped_rewards["wtl_penalty"],
-            shaped_rewards["opportunity_cost"], shaped_rewards["total_reward"],
-            shaped_rewards["components_active"],
-        )
-
-        realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.01
-        trigger_reward = self._add_trigger_experience(summary, pnl, pnl_pts, entry_price, realized_vol)
-        self._add_harvester_experience(shaped_rewards, summary, entry_price, exit_price, pnl_pts, trigger_reward)
-
+    def _update_circuit_breakers_after_trade(self, pnl: float) -> None:
+        """Update circuit breakers post-trade and persist state."""
         current_equity = self.performance.total_pnl + 10000.0
         self.circuit_breakers.update_trade(pnl, current_equity)
         breaker_status = self.circuit_breakers.get_status()
@@ -3053,32 +2968,29 @@ class CTraderFixApp(fix.Application):
         except Exception as cb_save_err:
             LOG.warning("[CIRCUIT-BREAKER] Failed to save state: %s", cb_save_err)
 
-        self.entry_action = None
-
-        trade_record = {
-            "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
-            "symbol": self.symbol,
-            "direction": summary.get("direction", "UNKNOWN"),
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "entry_time": self.trade_entry_time.isoformat() if self.trade_entry_time else None,
-            "exit_time": exit_time.isoformat(),
-            "pnl": pnl,
-            "mfe": summary.get("mfe", 0.0),
-            "mae": summary.get("mae", 0.0),
-            "winner_to_loser": summary.get("winner_to_loser", False),
-        }
-        try:
-            self._atomic_save_trade(trade_record)
-        except Exception as save_err:
-            LOG.error("[SAVE] Trade save failed: %s", save_err, exc_info=True)
-
-        self._update_performance_after_trade(pnl, exit_time, entry_price, exit_price, summary)
-        LOG.info(
-            "[TRADE_COMPLETION] ✓ Processed: %s entry=%.2f exit=%.2f pnl=%.4f mfe=%.4f",
-            summary.get("direction", "?"), entry_price, exit_price, pnl, summary.get("mfe", 0.0),
-        )
-        self._flush_production_metrics()
+    def _update_perf_dashboard_after_trade(self) -> None:
+        """Adapt reward weights and log performance dashboard at trade intervals."""
+        if not self.trade_entry_time:
+            return
+        metrics = self.performance.get_metrics()
+        sharpe_delta = metrics.get("sharpe_ratio", 0.0) - self.previous_sharpe
+        if (
+            self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0
+            and self.performance.total_trades > MIN_TRADES_FOR_ADAPTATION
+        ):
+            self.reward_shaper.adapt_weights(sharpe_delta)
+            LOG.info("[REWARD] Adapted weights based on Sharpe delta: %+.4f", sharpe_delta)
+            LOG.info(self.reward_shaper.print_summary())
+        self.previous_sharpe = metrics.get("sharpe_ratio", 0.0)
+        if self.performance.total_trades % PERFORMANCE_INTERVAL_TRADES == 0:
+            LOG.info("\n" + self.performance.print_dashboard())
+        else:
+            LOG.info(
+                "[PERF] Trades: %d | Win Rate: %.1f%% | Total PnL: $%.2f | Sharpe: %.3f | Max DD: %.1f%%",
+                metrics["total_trades"], metrics.get("win_rate", 0.0) * 100,
+                metrics.get("total_pnl", 0.0), metrics.get("sharpe_ratio", 0.0),
+                metrics.get("max_drawdown", 0.0) * 100,
+            )
 
     def _process_trade_completion(self, summary: dict, exit_price: float):
         """Process a completed trade round-trip for experience collection and performance tracking.
@@ -3091,6 +3003,7 @@ class CTraderFixApp(fix.Application):
             summary: MFE/MAE tracker summary dict with entry_price, direction, mfe, mae, etc.
             exit_price: The exit fill price
         """
+        # Function entry logging
         LOG.debug(
             "[TRADE_COMPLETION] Entry: direction=%s entry=%.2f exit=%.2f mfe=%.4f mae=%.4f",
             summary.get("direction", "?"),
@@ -3112,44 +3025,109 @@ class CTraderFixApp(fix.Application):
                 LOG.warning("[TRADE_COMPLETION] Skipped: entry_price=%.5f", entry_price)
                 return
 
+            # ── Trade timing tracking (single source of truth for HUD) ──────
+            # Update duration EMA and record close timestamp so the HUD can
+            # show "avg_trade_duration" and "last_trade_mins_ago" accurately.
             if self.trade_entry_time:
                 _dur_mins = (exit_time - self.trade_entry_time).total_seconds() / 60.0
-                self._avg_trade_duration_mins = 0.9 * self._avg_trade_duration_mins + 0.1 * _dur_mins
-                LOG.debug("[TRADE_TIMING] dur=%.1f min → avg=%.1f min", _dur_mins, self._avg_trade_duration_mins)
+                self._avg_trade_duration_mins = (
+                    0.9 * self._avg_trade_duration_mins + 0.1 * _dur_mins
+                )
+                LOG.debug(
+                    "[TRADE_TIMING] dur=%.1f min → avg=%.1f min",
+                    _dur_mins,
+                    self._avg_trade_duration_mins,
+                )
             self._last_trade_close_ts = time.time()
+            # ─────────────────────────────────────────────────────────────────
 
+            # Calculate P&L using dedicated method (single source of truth)
             pnl = self._calculate_position_pnl(entry_price, exit_price, direction)
+
+            # Checkpoint: Store initial P&L to detect corruption
             _pnl_checkpoint = pnl
             LOG.debug("[PNL_CHECKPOINT] Initial P&L calculated: %.4f", _pnl_checkpoint)
 
+            # Log position close
             self.transaction_log.log_position_close(
                 position_id=f"{self.symbol_id}_net",
                 pnl=pnl,
                 mfe=summary.get("mfe", 0.0),
                 mae=summary.get("mae", 0.0),
             )
-            if self.trade_entry_time:
-                self.performance.add_trade(
-                    pnl=pnl,
-                    entry_time=self.trade_entry_time,
-                    exit_time=exit_time,
-                    direction=direction,
-                    entry_price=entry_price,
-                    exit_price=exit_price,
-                    mfe=summary.get("mfe", 0.0),
-                    mae=summary.get("mae", 0.0),
-                    winner_to_loser=summary.get("winner_to_loser", False),
-                )
 
-            self._complete_trade_processing(summary, pnl, exit_time, entry_price, exit_price)
+            shaped_rewards, pnl_pts = self._update_after_trade_close(pnl, exit_time, entry_price, exit_price, summary)
 
+            if summary.get("mfe", 0.0) > 0 and hasattr(self.reward_shaper, "update_baseline_mfe"):
+                self.reward_shaper.update_baseline_mfe(summary["mfe"])
+
+            LOG.info(
+                "[REWARD] Capture: %+.4f | WTL Penalty: %+.4f | Opportunity: %+.4f | Total: %+.4f | Active: %d",
+                shaped_rewards["capture_efficiency"],
+                shaped_rewards["wtl_penalty"],
+                shaped_rewards["opportunity_cost"],
+                shaped_rewards["total_reward"],
+                shaped_rewards["components_active"],
+            )
+
+            trigger_reward = self._add_trigger_experience_for_close(summary, pnl, entry_price, pnl_pts, shaped_rewards)
+            self._add_harvester_experience_for_close(summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward)
+            self._update_circuit_breakers_after_trade(pnl)
+            self.entry_action = None
+
+            # Verify P&L hasn't been corrupted during processing
             if abs(pnl - _pnl_checkpoint) > MIN_POSITION_THRESHOLD:
                 LOG.error(
                     "[BUG_DETECTION] P&L changed during processing! Initial=%.4f Current=%.4f (diff=%.4f)",
-                    _pnl_checkpoint, pnl, pnl - _pnl_checkpoint,
+                    _pnl_checkpoint,
+                    pnl,
+                    pnl - _pnl_checkpoint,
                 )
+                # Restore original value
                 pnl = _pnl_checkpoint
                 LOG.warning("[BUG_DETECTION] Restored P&L to checkpoint value: %.4f", pnl)
+
+            # Save trade record
+            trade_record = {
+                "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
+                "symbol": self.symbol,
+                "direction": summary.get("direction", "UNKNOWN"),
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "entry_time": self.trade_entry_time.isoformat() if self.trade_entry_time else None,
+                "exit_time": exit_time.isoformat(),
+                "pnl": pnl,
+                "mfe": summary.get("mfe", 0.0),
+                "mae": summary.get("mae", 0.0),
+                "winner_to_loser": summary.get("winner_to_loser", False),
+            }
+            LOG.debug("[TRADE_RECORD] Prepared for save: trade_id=%s pnl=%.4f", trade_record["trade_id"], pnl)
+            try:
+                self._atomic_save_trade(trade_record)
+            except Exception as save_err:
+                LOG.error("[SAVE] Trade save failed: %s", save_err, exc_info=True)
+
+            self._update_perf_dashboard_after_trade()
+
+            LOG.info(
+                "[TRADE_COMPLETION] ✓ Processed: %s entry=%.2f exit=%.2f pnl=%.4f mfe=%.4f",
+                summary.get("direction", "?"),
+                entry_price,
+                exit_price,
+                pnl,
+                summary.get("mfe", 0.0),
+            )
+
+            # Flush live metrics after every trade
+            self._flush_production_metrics()
+
+            # Function exit logging
+            LOG.debug(
+                "[TRADE_COMPLETION] Exit: trade_id=%s pnl=%.4f recorded=%s",
+                trade_record.get("trade_id", "?"),
+                pnl,
+                "success",
+            )
 
         except Exception as e:
             LOG.error("[TRADE_COMPLETION] Error: %s", e, exc_info=True)
@@ -4332,37 +4310,28 @@ class CTraderFixApp(fix.Application):
 
         return order
 
-    def _get_policy_buffer_size(self, agent_name: str) -> int:
-        """Return replay-buffer size for named policy sub-agent (trigger or harvester)."""
-        agent = getattr(self.policy, agent_name, None)
-        if agent is None or not hasattr(agent, "buffer"):
-            return 0
-        buf = agent.buffer
-        if hasattr(buf, "tree") and buf.tree:
-            return buf.tree.n_entries
-        return buf.size if hasattr(buf, "size") else 0
-
-    def _collect_position_hud_data(self, current_price: float) -> dict:
-        """Collect current-position fields for HUD export."""
+    def _build_hud_position_data(self, current_price: float) -> dict:
+        """Collect current-position data payload for HUD export."""
         if self.cur_pos > 0:
             direction = "LONG"
         elif self.cur_pos < 0:
             direction = "SHORT"
         else:
             direction = "FLAT"
-
-        tracker = self._get_active_tracker()
+        tracker = None
+        with self._tracker_lock:
+            if self.mfe_mae_trackers:
+                tracker = next(reversed(self.mfe_mae_trackers.values()), None)
+        if tracker is None:
+            tracker = self.mfe_mae_tracker
         entry_price = float(tracker.entry_price) if self.cur_pos != 0 and tracker.entry_price else 0.0
-
         if self.cur_pos != 0 and entry_price == 0:
             LOG.warning(
                 "[HUD_DEBUG] Tracker has entry_price=%s (cur_pos=%d, tracker=%s, trackers_count=%d)",
                 tracker.entry_price, self.cur_pos, type(tracker).__name__, len(self.mfe_mae_trackers),
             )
-
         mfe = float(tracker.mfe) if self.cur_pos != 0 and tracker.mfe else 0.0
         mae = float(tracker.mae) if self.cur_pos != 0 and tracker.mae else 0.0
-
         unrealized_pnl = 0.0
         bars_held = 0
         if self.cur_pos != 0 and entry_price > 0:
@@ -4382,7 +4351,6 @@ class CTraderFixApp(fix.Application):
                     if self.path_recorders else self.path_recorder
                 )
             bars_held = len(position_path_recorder.path) if hasattr(position_path_recorder, "path") else 0
-
         return {
             "direction": direction,
             "entry_price": entry_price,
@@ -4393,37 +4361,47 @@ class CTraderFixApp(fix.Application):
             "bars_held": bars_held,
         }
 
-    def _collect_training_hud_stats(self) -> dict:
-        """Collect training-stats fields for HUD export."""
-        trigger_buffer_size = harvester_buffer_size = 0
+    def _get_policy_buffer_size(self, agent_name: str) -> int:
+        """Read replay-buffer size from a named policy sub-agent."""
+        agent = getattr(self.policy, agent_name, None)
+        if agent is None or not hasattr(agent, "buffer"):
+            return 0
+        buf = agent.buffer
+        if hasattr(buf, "tree") and buf.tree:
+            return buf.tree.n_entries
+        if hasattr(buf, "size"):
+            return buf.size
+        return 0
+
+    def _build_hud_training_stats(self) -> dict:
+        """Collect training-stats payload for HUD export."""
         trigger_loss = getattr(self, "last_trigger_loss", 0.0)
         harvester_loss = getattr(self, "last_harvester_loss", 0.0)
-        trigger_training_steps = harvester_training_steps = 0
+        trigger_buffer_size = trigger_training_steps = 0
+        harvester_buffer_size = harvester_training_steps = 0
         trigger_epsilon = 0.0
         harvester_beta = 0.4
         trigger_ready = harvester_ready = False
         harvester_min_hold = 10
         total_agents = 0
-        arena_diversity = {"trigger_diversity": 0.0, "harvester_diversity": 0.0}
+        arena_diversity: dict = {"trigger_diversity": 0.0, "harvester_diversity": 0.0}
         last_agreement = 1.0
-
         if hasattr(self.policy, "get_training_stats"):
-            policy_stats = self.policy.get_training_stats()
-            t_stats = policy_stats.get("trigger", {})
-            h_stats = policy_stats.get("harvester", {})
-            trigger_buffer_size = t_stats.get("buffer_size", 0)
-            harvester_buffer_size = h_stats.get("buffer_size", 0)
-            trigger_training_steps = t_stats.get("training_steps", 0)
-            harvester_training_steps = h_stats.get("training_steps", 0)
-            trigger_epsilon = t_stats.get("epsilon", 0.0)
-            harvester_beta = h_stats.get("beta", 0.4)
-            trigger_ready = t_stats.get("ready_to_train", False)
-            harvester_ready = h_stats.get("ready_to_train", False)
-            harvester_min_hold = h_stats.get("min_hold_ticks", 10)
+            ps = self.policy.get_training_stats()
+            t = ps.get("trigger", {})
+            h = ps.get("harvester", {})
+            trigger_buffer_size = t.get("buffer_size", 0)
+            harvester_buffer_size = h.get("buffer_size", 0)
+            trigger_training_steps = t.get("training_steps", 0)
+            harvester_training_steps = h.get("training_steps", 0)
+            trigger_epsilon = t.get("epsilon", 0.0)
+            harvester_beta = h.get("beta", 0.4)
+            trigger_ready = t.get("ready_to_train", False)
+            harvester_ready = h.get("ready_to_train", False)
+            harvester_min_hold = h.get("min_hold_ticks", 10)
         else:
             trigger_buffer_size = self._get_policy_buffer_size("trigger")
             harvester_buffer_size = self._get_policy_buffer_size("harvester")
-
         if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "arena"):
             arena = self.policy.trigger.arena
             total_agents = len(arena.agents) if hasattr(arena, "agents") else 0
@@ -4431,7 +4409,6 @@ class CTraderFixApp(fix.Application):
                 arena_diversity["trigger_diversity"] = arena.last_diversity
             if hasattr(arena, "last_agreement"):
                 last_agreement = arena.last_agreement
-
         return {
             "trigger_buffer_size": trigger_buffer_size,
             "harvester_buffer_size": harvester_buffer_size,
@@ -4451,21 +4428,82 @@ class CTraderFixApp(fix.Application):
             "last_training_time": ("Active" if self.bars_since_training < self.training_interval else "Never"),
         }
 
-    def _export_hud_data(self):
-        """Export real-time data to JSON files for HUD display.
+    def _build_hud_risk_metrics(self) -> dict:
+        """Collect risk-metrics payload for HUD export."""
+        realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
+        vpin_stats = self.last_vpin_stats if hasattr(self, "last_vpin_stats") else {"vpin": 0.0, "zscore": 0.0}
+        vpin_value = vpin_stats.get("vpin", 0.0)
+        vpin_zscore = vpin_stats.get("zscore", 0.0)
+        current_var = (
+            self.var_estimator.estimate_var(
+                regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
+            )
+            if hasattr(self.var_estimator, "estimate_var")
+            else 0.0
+        )
+        self.last_estimated_var = current_var
+        current_kurtosis = (
+            self.kurtosis_monitor.current_kurtosis if hasattr(self.kurtosis_monitor, "current_kurtosis") else 0.0
+        )
+        circuit_breaker = "ACTIVE" if self.kurtosis_monitor.is_breaker_active else "INACTIVE"
+        if (
+            hasattr(self.policy, "seed_regime_from_bars")
+            and getattr(self.policy, "current_regime", "UNKNOWN") == "UNKNOWN"
+            and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED
+        ):
+            self.policy.seed_regime_from_bars(self.bars)
+        regime = getattr(self.policy, "current_regime", "UNKNOWN")
+        regime_zeta = getattr(self.policy, "current_zeta", 1.0)
+        if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
+            geom = self.path_geometry.update(self.bars, realized_vol)
+        else:
+            geom = self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
+        spread = float(self.best_ask) - float(self.best_bid) if self.best_bid and self.best_ask else 0.0
+        depth_metrics = getattr(self, "last_depth_metrics", {}) or {}
+        depth_bid = depth_metrics.get("bid", 0.0)
+        depth_ask = depth_metrics.get("ask", 0.0)
+        imbalance = (
+            SafeMath.safe_div(depth_bid - depth_ask, depth_bid + depth_ask, 0.0)
+            if (depth_bid + depth_ask) > 0 else 0.0
+        )
+        return {
+            "var": current_var,
+            "kurtosis": current_kurtosis,
+            "circuit_breaker": circuit_breaker,
+            "realized_vol": realized_vol,
+            "regime": regime,
+            "regime_zeta": regime_zeta,
+            "vpin": vpin_value,
+            "vpin_zscore": vpin_zscore,
+            "vpin_threshold": self.vpin_z_threshold,
+            "efficiency": geom.get("efficiency", 1.0),
+            "gamma": geom.get("gamma", 0.0),
+            "jerk": geom.get("jerk", 0.0),
+            "runway": geom.get("runway", 0.5),
+            "feasibility": geom.get("feasibility", 0.5),
+            "spread": spread,
+            "imbalance": imbalance,
+            "depth_bid": depth_bid,
+            "depth_ask": depth_ask,
+            "depth_ratio": depth_metrics.get("ratio", 1.0),
+            "depth_levels": depth_metrics.get("levels", 0),
+            "depth_buffer": getattr(getattr(self, "friction_calculator", None), "depth_buffer", 0.0),
+            "depth_gate_active": getattr(self, "last_depth_gate", False),
+            "order_book_bids": [[p, s] for p, s in list(self.order_book.bids.items())[:5]],
+            "order_book_asks": [[p, s] for p, s in list(self.order_book.asks.items())[:5]],
+            "risk_budget_usd": self.risk_budget_usd,
+            "risk_cap_qty": self.last_risk_cap_qty,
+            "risk_requested_qty": self.last_base_qty,
+            "risk_final_qty": self.last_final_qty,
+            "vol_cap": self.vol_cap,
+            "vol_reference": self.vol_ref,
+        }
 
-        Called every bar close to keep HUD updated with:
-        - Bot configuration (symbol, timeframe, uptime)
-        - Current position (direction, MFE/MAE, unrealized PnL)
-        - Performance metrics (daily/weekly/monthly/lifetime)
-        - Training stats (buffer sizes, losses)
-        - Risk metrics (VaR, kurtosis, regime, path geometry)
-        """
+    def _export_hud_data(self):
+        """Export real-time data to JSON files for HUD display."""
         try:
             now = dt.datetime.now(dt.UTC)
             uptime_seconds = int((now - self.start_time).total_seconds())
-
-            # 1. Bot Configuration
             bot_config = {
                 "symbol": self.symbol,
                 "symbol_id": self.symbol_id,
@@ -4478,125 +4516,30 @@ class CTraderFixApp(fix.Application):
             }
             with open(self.hud_data_dir / "bot_config.json", "w", encoding="utf-8") as f:
                 json.dump(bot_config, f, indent=2)
-
-            # 2. Current Position
             current_price = (
                 (float(self.best_bid) + float(self.best_ask)) / 2.0
                 if self.best_bid and self.best_ask
                 else (float(self.bars[-1][4]) if self.bars else 0.0)
             )
-            position_data = self._collect_position_hud_data(current_price)
+            position_data = self._build_hud_position_data(current_price)
             with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as f:
                 json.dump(position_data, f, indent=2)
-
-            # 3. Performance Metrics (from PerformanceTracker)
             metrics = self.performance.get_metrics() if hasattr(self.performance, "get_metrics") else {}
-            perf_slice = {
-                "total_trades": metrics.get("total_trades", 0),
-                "win_rate": metrics.get("win_rate", 0.0),
-                "total_pnl": metrics.get("total_pnl", 0.0),
-                "sharpe_ratio": metrics.get("sharpe", 0.0),
-                "max_drawdown": metrics.get("max_drawdown", 0.0),
-            }
+            _m = metrics
             performance_snapshot = {
-                "daily": perf_slice,
-                "weekly": perf_slice,
-                "monthly": perf_slice,
-                "lifetime": {**perf_slice, "sortino_ratio": metrics.get("sortino", 0.0), "omega_ratio": metrics.get("omega", 0.0)},
+                "daily":    {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
+                "weekly":   {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
+                "monthly":  {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
+                "lifetime": {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "sortino_ratio": _m.get("sortino", 0.0), "omega_ratio": _m.get("omega", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
             }
             with open(self.hud_data_dir / "performance_snapshot.json", "w", encoding="utf-8") as f:
                 json.dump(performance_snapshot, f, indent=2)
-
-            # 4. Training Stats
-            training_stats = self._collect_training_hud_stats()
+            training_stats = self._build_hud_training_stats()
             with open(self.hud_data_dir / "training_stats.json", "w", encoding="utf-8") as f:
                 json.dump(training_stats, f, indent=2)
-
-            # 5. Risk Metrics
-            realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
-            vpin_stats = self.last_vpin_stats if hasattr(self, "last_vpin_stats") else {"vpin": 0.0, "zscore": 0.0}
-            vpin_value = vpin_stats.get("vpin", 0.0)
-            vpin_zscore = vpin_stats.get("zscore", 0.0)
-            current_var = (
-                self.var_estimator.estimate_var(
-                    regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
-                )
-                if hasattr(self.var_estimator, "estimate_var")
-                else 0.0
-            )
-            self.last_estimated_var = current_var
-            current_kurtosis = (
-                self.kurtosis_monitor.current_kurtosis if hasattr(self.kurtosis_monitor, "current_kurtosis") else 0.0
-            )
-            circuit_breaker = "ACTIVE" if self.kurtosis_monitor.is_breaker_active else "INACTIVE"
-
-            if (
-                hasattr(self.policy, "seed_regime_from_bars")
-                and getattr(self.policy, "current_regime", "UNKNOWN") == "UNKNOWN"
-                and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED
-            ):
-                self.policy.seed_regime_from_bars(self.bars)
-
-            regime = "UNKNOWN"
-            regime_zeta = 1.0
-            if hasattr(self.policy, "current_regime"):
-                regime = self.policy.current_regime
-            if hasattr(self.policy, "current_zeta"):
-                regime_zeta = self.policy.current_zeta
-
-            if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
-                geom = self.path_geometry.update(self.bars, realized_vol)
-            else:
-                geom = self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
-
-            spread = float(self.best_ask) - float(self.best_bid) if self.best_bid and self.best_ask else 0.0
-            depth_metrics = getattr(self, "last_depth_metrics", {}) or {}
-            depth_bid = depth_metrics.get("bid", 0.0)
-            depth_ask = depth_metrics.get("ask", 0.0)
-            depth_ratio = depth_metrics.get("ratio", 1.0)
-            depth_levels = depth_metrics.get("levels", 0)
-            imbalance = (
-                SafeMath.safe_div(depth_bid - depth_ask, depth_bid + depth_ask, 0.0)
-                if (depth_bid + depth_ask) > 0 else 0.0
-            )
-            depth_buffer = getattr(getattr(self, "friction_calculator", None), "depth_buffer", 0.0)
-            depth_gate_active = getattr(self, "last_depth_gate", False)
-
-            risk_metrics = {
-                "var": current_var,
-                "kurtosis": current_kurtosis,
-                "circuit_breaker": circuit_breaker,
-                "realized_vol": realized_vol,
-                "regime": regime,
-                "regime_zeta": regime_zeta,
-                "vpin": vpin_value,
-                "vpin_zscore": vpin_zscore,
-                "vpin_threshold": self.vpin_z_threshold,
-                "efficiency": geom.get("efficiency", 1.0),
-                "gamma": geom.get("gamma", 0.0),
-                "jerk": geom.get("jerk", 0.0),
-                "runway": geom.get("runway", 0.5),
-                "feasibility": geom.get("feasibility", 0.5),
-                "spread": spread,
-                "imbalance": imbalance,
-                "depth_bid": depth_bid,
-                "depth_ask": depth_ask,
-                "depth_ratio": depth_ratio,
-                "depth_levels": depth_levels,
-                "depth_buffer": depth_buffer,
-                "depth_gate_active": depth_gate_active,
-                "order_book_bids": [[p, s] for p, s in list(self.order_book.bids.items())[:5]],
-                "order_book_asks": [[p, s] for p, s in list(self.order_book.asks.items())[:5]],
-                "risk_budget_usd": self.risk_budget_usd,
-                "risk_cap_qty": self.last_risk_cap_qty,
-                "risk_requested_qty": self.last_base_qty,
-                "risk_final_qty": self.last_final_qty,
-                "vol_cap": self.vol_cap,
-                "vol_reference": self.vol_ref,
-            }
+            risk_metrics = self._build_hud_risk_metrics()
             with open(self.hud_data_dir / "risk_metrics.json", "w", encoding="utf-8") as f:
                 json.dump(risk_metrics, f, indent=2)
-
         except Exception as e:
             LOG.error("[HUD] Failed to export data: %s", str(e))
 
