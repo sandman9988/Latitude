@@ -1954,7 +1954,48 @@ class CTraderFixApp(fix.Application):
         fix.Session.sendToTarget(req, self.trade_sid)
         LOG.info("[TRADE] Requested SecurityDefinition for symbolId=%s", self.symbol_id)
 
-    def on_security_definition(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
+    def _extract_security_definition_params(self, msg: fix.Message) -> dict:
+        """Extract symbol trading parameters from a SecurityDefinition message."""
+        params = {}
+        contract_mult = fix.ContractMultiplier()
+        if msg.isSetField(contract_mult):
+            msg.getField(contract_mult)
+            params["contract_size"] = float(contract_mult.getValue())
+            LOG.info("  ✓ ContractMultiplier: %.0f", params["contract_size"])
+        round_lot = fix.RoundLot()
+        if msg.isSetField(round_lot):
+            msg.getField(round_lot)
+            params["volume_step"] = float(round_lot.getValue())
+            LOG.info("  ✓ RoundLot (step): %.4f", params["volume_step"])
+        min_vol = fix.MinTradeVol()
+        if msg.isSetField(min_vol):
+            msg.getField(min_vol)
+            params["min_volume"] = float(min_vol.getValue())
+            LOG.info("  ✓ MinTradeVol: %.4f lots", params["min_volume"])
+        max_vol = fix.MaxTradeVol()
+        if msg.isSetField(max_vol):
+            msg.getField(max_vol)
+            params["max_volume"] = float(max_vol.getValue())
+            LOG.info("  ✓ MaxTradeVol: %.4f lots", params["max_volume"])
+        if "min_volume" not in params:
+            min_qty = fix.MinQty()
+            if msg.isSetField(min_qty):
+                msg.getField(min_qty)
+                params["min_volume"] = float(min_qty.getValue())
+                LOG.info("  ✓ MinQty: %.4f lots", params["min_volume"])
+        price_method = fix.PriceQuoteMethod()
+        if msg.isSetField(price_method):
+            msg.getField(price_method)
+            params["digits"] = int(price_method.getValue())
+            LOG.info("  ✓ PriceQuoteMethod (digits): %d", params["digits"])
+        currency = fix.Currency()
+        if msg.isSetField(currency):
+            msg.getField(currency)
+            params["currency"] = currency.getValue()
+            LOG.info("  ✓ Currency: %s", params["currency"])
+        return params
+
+    def on_security_definition(self, msg: fix.Message):
         """
         Parse SecurityDefinition response from cTrader.
 
@@ -1972,89 +2013,28 @@ class CTraderFixApp(fix.Application):
                 msg.getField(symbol)
                 LOG.info("[TRADE] ═══ SecurityDefinition for symbol=%s ═══", symbol.getValue())
 
-            # Extract all available symbol parameters
-            params = {}
-
-            # Security description
+            # Informational fields — log only
             sec_desc = fix.SecurityDesc()
             if msg.isSetField(sec_desc):
                 msg.getField(sec_desc)
                 LOG.info("  Description: %s", sec_desc.getValue())
-
-            # Security type (SPOT, CFD, etc.)
             sec_type = fix.SecurityType()
             if msg.isSetField(sec_type):
                 msg.getField(sec_type)
                 LOG.info("  SecurityType: %s", sec_type.getValue())
-
-            # Product type
             product = fix.Product()
             if msg.isSetField(product):
                 msg.getField(product)
                 LOG.info("  Product: %s", product.getValue())
-
-            # Contract size (e.g., 100,000 for standard lot)
-            contract_mult = fix.ContractMultiplier()
-            if msg.isSetField(contract_mult):
-                msg.getField(contract_mult)
-                params["contract_size"] = float(contract_mult.getValue())
-                LOG.info("  ✓ ContractMultiplier: %.0f", params["contract_size"])
-
-            # Round lot (standard lot size)
-            round_lot = fix.RoundLot()
-            if msg.isSetField(round_lot):
-                msg.getField(round_lot)
-                params["volume_step"] = float(round_lot.getValue())
-                LOG.info("  ✓ RoundLot (step): %.4f", params["volume_step"])
-
-            # Min trade volume
-            min_vol = fix.MinTradeVol()
-            if msg.isSetField(min_vol):
-                msg.getField(min_vol)
-                params["min_volume"] = float(min_vol.getValue())
-                LOG.info("  ✓ MinTradeVol: %.4f lots", params["min_volume"])
-
-            # Max trade volume
-            max_vol = fix.MaxTradeVol()
-            if msg.isSetField(max_vol):
-                msg.getField(max_vol)
-                params["max_volume"] = float(max_vol.getValue())
-                LOG.info("  ✓ MaxTradeVol: %.4f lots", params["max_volume"])
-
-            # Fallback: try MinQty if MinTradeVol not present
-            if "min_volume" not in params:
-                min_qty = fix.MinQty()
-                if msg.isSetField(min_qty):
-                    msg.getField(min_qty)
-                    params["min_volume"] = float(min_qty.getValue())
-                    LOG.info("  ✓ MinQty: %.4f lots", params["min_volume"])
-
-            # Price precision (number of decimals)
-            price_method = fix.PriceQuoteMethod()
-            if msg.isSetField(price_method):
-                msg.getField(price_method)
-                params["digits"] = int(price_method.getValue())
-                LOG.info("  ✓ PriceQuoteMethod (digits): %d", params["digits"])
-
-            # Currency (base currency)
-            currency = fix.Currency()
-            if msg.isSetField(currency):
-                msg.getField(currency)
-                params["currency"] = currency.getValue()
-                LOG.info("  ✓ Currency: %s", params["currency"])
-
-            # Trading session hours
             trading_session = fix.TradingSessionID()
             if msg.isSetField(trading_session):
                 msg.getField(trading_session)
                 LOG.info("  TradingSessionID: %s", trading_session.getValue())
 
-            # Update friction calculator with actual cTrader parameters
+            params = self._extract_security_definition_params(msg)
             if params:
                 self.friction_calculator.update_symbol_costs(**params)
                 LOG.info("[TRADE] ✓ FrictionCalculator updated with %d cTrader parameters", len(params))
-
-                # Log summary
                 self.friction_calculator.get_statistics()
                 LOG.info(
                     "[TRADE] Friction summary: min=%.4f max=%.4f step=%.4f",
@@ -2068,7 +2048,49 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[TRADE] Error parsing SecurityDefinition: %s", e, exc_info=True)
 
-    def on_md_snapshot(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
+    def _parse_md_snapshot_entry(self, msg: fix.Message, i: int) -> tuple[str, float, float] | None:
+        """Parse one NoMDEntries group from a snapshot. Returns (entry_type, price, size) or None."""
+        try:
+            g = fix44.MarketDataSnapshotFullRefresh().NoMDEntries()
+            msg.getGroup(i, g)
+            et = fix.MDEntryType()
+            px = fix.MDEntryPx()
+            qty = fix.MDEntrySize()
+            if not (g.isSetField(et) and g.isSetField(px)):
+                return None
+            g.getField(et)
+            g.getField(px)
+            price_f = float(px.getValue())
+            if price_f <= 0 or price_f > MAX_PRICE_SANITY:
+                LOG.warning("[QUOTE] Suspicious price %.2f in entry %d - skipping", price_f, i)
+                return None
+            size = 0.0
+            if g.isSetField(qty):
+                g.getField(qty)
+                size = float(qty.getValue())
+            if size > 0:
+                self._has_real_sizes = True
+            else:
+                size = 1.0
+            return (et.getValue(), price_f, size)
+        except (ValueError, TypeError) as e:
+            LOG.warning("[QUOTE] Invalid entry %d: %s", i, e)
+            return None
+        except Exception as e:
+            LOG.error("[QUOTE] Unexpected error parsing entry %d: %s", i, e)
+            return None
+
+    def _update_best_prices(self) -> None:
+        """Sync best_bid/best_ask from order book and update friction spread."""
+        best_bid, best_ask = self.order_book.best_bid_ask()
+        if best_bid is not None:
+            self.best_bid = float(best_bid)
+        if best_ask is not None:
+            self.best_ask = float(best_ask)
+        if best_bid is not None and best_ask is not None:
+            self.friction_calculator.update_spread(self.best_bid, self.best_ask)
+
+    def on_md_snapshot(self, msg: fix.Message):
         self.last_market_data_time = time.time()
         try:
             no = fix.NoMDEntries()
@@ -2082,64 +2104,21 @@ class CTraderFixApp(fix.Application):
             return
 
         self.order_book.reset()
-        self._md_entry_id_map.clear()  # ID map is stale after a full snapshot
+        self._md_entry_id_map.clear()
         for i in range(1, n + 1):
-            try:
-                g = fix44.MarketDataSnapshotFullRefresh().NoMDEntries()
-                msg.getGroup(i, g)
-
-                et = fix.MDEntryType()
-                px = fix.MDEntryPx()
-                qty = fix.MDEntrySize()
-                if not (g.isSetField(et) and g.isSetField(px)):
-                    continue
-
-                g.getField(et)
-                g.getField(px)
-
-                price_f = float(px.getValue())
-
-                # Defensive: Validate price is positive and reasonable
-                if price_f <= 0 or price_f > MAX_PRICE_SANITY:  # Sanity check
-                    LOG.warning("[QUOTE] Suspicious price %.2f in entry %d - skipping", price_f, i)
-                    continue
-
-                size = 0.0
-                if g.isSetField(qty):
-                    g.getField(qty)
-                    size = float(qty.getValue())
-                if size > 0:
-                    self._has_real_sizes = True
-                else:
-                    size = 1.0  # cTrader omits size at top-of-book — uniform fallback
-
-            except (ValueError, TypeError) as e:
-                LOG.warning("[QUOTE] Invalid entry %d: %s", i, e)
+            result = self._parse_md_snapshot_entry(msg, i)
+            if result is None:
                 continue
-            except Exception as e:
-                LOG.error("[QUOTE] Unexpected error parsing entry %d: %s", i, e)
-                continue
-
-            entry_type = et.getValue()
+            entry_type, price_f, size = result
             if entry_type == "0":
                 self.order_book.update_level("BID", price_f, size)
             elif entry_type == "1":
                 self.order_book.update_level("ASK", price_f, size)
 
-        # Refresh counters: count levels received (snapshot = full reset)
         self._bid_refresh_count += len(self.order_book.bids)
         self._ask_refresh_count += len(self.order_book.asks)
+        self._update_best_prices()
 
-        best_bid, best_ask = self.order_book.best_bid_ask()
-        if best_bid is not None:
-            self.best_bid = float(best_bid)
-        if best_ask is not None:
-            self.best_ask = float(best_ask)
-
-        if best_bid is not None and best_ask is not None:
-            self.friction_calculator.update_spread(self.best_bid, self.best_ask)
-
-        # One-time diagnostic: log raw sizes to confirm what broker sends
         if not self._ob_diag_logged and (self.order_book.bids or self.order_book.asks):
             bid_sizes = list(self.order_book.bids.values())[:5]
             ask_sizes = list(self.order_book.asks.values())[:5]
@@ -2153,9 +2132,7 @@ class CTraderFixApp(fix.Application):
             )
             self._ob_diag_logged = True
 
-        # Evaluate Harvester on tick for faster exit execution
         self._evaluate_harvester_on_tick()
-
         self._export_order_book()
         self.try_bar_update()
 
