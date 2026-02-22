@@ -1128,7 +1128,40 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.warning("[METRICS] Failed to flush production metrics: %s", e)
 
-    def _monitor_connection_health(self):  # noqa: PLR0912, PLR0915
+    def _check_heartbeat_session(self, sid, last_hb, qual: str, now, issues: list) -> None:
+        """Check one FIX session's heartbeat freshness and trigger recovery if stale."""
+        if sid and last_hb:
+            age = (now - last_hb).total_seconds()
+            if age > self.heartbeat_timeout:
+                issues.append(f"{qual} stale ({age:.0f}s)")
+                self._try_send_test_request(sid, qual)
+                if age > self.heartbeat_timeout * 2:
+                    self._force_session_restart(sid, qual, f"heartbeat stale {age:.0f}s")
+        elif sid is None and last_hb is not None:
+            issues.append(f"{qual} disconnected")
+
+    def _check_market_data_freshness(self) -> None:
+        """Re-subscribe market data if QUOTE is alive but data is stale."""
+        if not (self.quote_sid and self.last_market_data_time is not None and self.connection_healthy):
+            return
+        md_age = time.time() - self.last_market_data_time
+        resubscribe_cooldown = 120
+        if (
+            md_age > self.market_data_stale_threshold
+            and time.time() - self._last_md_resubscribe_time > resubscribe_cooldown
+        ):
+            LOG.warning(
+                "[HEALTH] Market data stale for %.0fs (threshold=%ds) — re-subscribing spot",
+                md_age,
+                self.market_data_stale_threshold,
+            )
+            try:
+                self.send_md_subscribe_spot()
+                self._last_md_resubscribe_time = time.time()
+            except Exception as e:
+                LOG.error("[HEALTH] Failed to re-subscribe market data: %s", e)
+
+    def _monitor_connection_health(self):
         """
         Background thread to monitor connection health via heartbeat timestamps.
 
@@ -1149,31 +1182,10 @@ class CTraderFixApp(fix.Application):
                     break
 
                 now = utc_now()
-                issues = []
+                issues: list = []
 
-                # Check QUOTE session
-                if self.quote_sid and self.last_quote_heartbeat:
-                    quote_age = (now - self.last_quote_heartbeat).total_seconds()
-                    if quote_age > self.heartbeat_timeout:
-                        issues.append(f"QUOTE stale ({quote_age:.0f}s)")
-                        self._try_send_test_request(self.quote_sid, "QUOTE")
-                        if quote_age > self.heartbeat_timeout * 2:
-                            self._force_session_restart(self.quote_sid, "QUOTE", f"heartbeat stale {quote_age:.0f}s")
-                elif self.quote_sid is None and self.last_quote_heartbeat is not None:
-                    # Session was lost
-                    issues.append("QUOTE disconnected")
-
-                # Check TRADE session
-                if self.trade_sid and self.last_trade_heartbeat:
-                    trade_age = (now - self.last_trade_heartbeat).total_seconds()
-                    if trade_age > self.heartbeat_timeout:
-                        issues.append(f"TRADE stale ({trade_age:.0f}s)")
-                        self._try_send_test_request(self.trade_sid, "TRADE")
-                        if trade_age > self.heartbeat_timeout * 2:
-                            self._force_session_restart(self.trade_sid, "TRADE", f"heartbeat stale {trade_age:.0f}s")
-                elif self.trade_sid is None and self.last_trade_heartbeat is not None:
-                    # Session was lost
-                    issues.append("TRADE disconnected")
+                self._check_heartbeat_session(self.quote_sid, self.last_quote_heartbeat, "QUOTE", now, issues)
+                self._check_heartbeat_session(self.trade_sid, self.last_trade_heartbeat, "TRADE", now, issues)
 
                 # Update health status
                 if issues:
@@ -1184,31 +1196,11 @@ class CTraderFixApp(fix.Application):
                         LOG.info("[HEALTH] Connection restored (QUOTE+TRADE active)")
                     self.connection_healthy = True
 
-                # ---- Stale market data watchdog ----
-                # If QUOTE session is alive but no market data for >threshold,
-                # re-subscribe (handles rollover subscription drops)
-                if self.quote_sid and self.last_market_data_time is not None and self.connection_healthy:
-                    md_age = time.time() - self.last_market_data_time
-                    resubscribe_cooldown = 120  # seconds between resubscribe attempts
-                    if (
-                        md_age > self.market_data_stale_threshold
-                        and time.time() - self._last_md_resubscribe_time > resubscribe_cooldown
-                    ):
-                        LOG.warning(
-                            "[HEALTH] Market data stale for %.0fs (threshold=%ds) — re-subscribing spot",
-                            md_age,
-                            self.market_data_stale_threshold,
-                        )
-                        try:
-                            self.send_md_subscribe_spot()
-                            self._last_md_resubscribe_time = time.time()
-                        except Exception as e:
-                            LOG.error("[HEALTH] Failed to re-subscribe market data: %s", e)
+                self._check_market_data_freshness()
 
                 # Systemd watchdog notification (if enabled)
                 if self.watchdog_enabled and self.connection_healthy:
                     try:
-                        # Notify systemd that we're alive
                         sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
                         sock.sendto(b"WATCHDOG=1", os.environ.get("NOTIFY_SOCKET", ""))
                         sock.close()
@@ -1220,14 +1212,11 @@ class CTraderFixApp(fix.Application):
                 if health_log_counter % 6 == 0:  # Every ~60s
                     quote_status = "OK" if self.quote_sid else "DOWN"
                     trade_status = "OK" if self.trade_sid else "DOWN"
-
-                    # Calculate current uptime
                     if self.connection_uptime_start:
                         current_uptime = time.time() - self.connection_uptime_start
                         uptime_str = f"{current_uptime/60:.1f}min"
                     else:
                         uptime_str = "N/A"
-
                     LOG.info(
                         "[HEALTH] Status: QUOTE=%s TRADE=%s healthy=%s uptime=%s reconnects=%d/%d",
                         quote_status,
@@ -1237,7 +1226,6 @@ class CTraderFixApp(fix.Application):
                         self.successful_reconnects,
                         self.total_reconnects,
                     )
-
                     # Flush production metrics on every 60s health tick
                     self._flush_production_metrics()
 
@@ -4387,7 +4375,126 @@ class CTraderFixApp(fix.Application):
 
         return order
 
-    def _export_hud_data(self):  # noqa: PLR0912, PLR0915
+    def _get_policy_buffer_size(self, agent_name: str) -> int:
+        """Return replay-buffer size for named policy sub-agent (trigger or harvester)."""
+        agent = getattr(self.policy, agent_name, None)
+        if agent is None or not hasattr(agent, "buffer"):
+            return 0
+        buf = agent.buffer
+        if hasattr(buf, "tree") and buf.tree:
+            return buf.tree.n_entries
+        return buf.size if hasattr(buf, "size") else 0
+
+    def _collect_position_hud_data(self, current_price: float) -> dict:
+        """Collect current-position fields for HUD export."""
+        if self.cur_pos > 0:
+            direction = "LONG"
+        elif self.cur_pos < 0:
+            direction = "SHORT"
+        else:
+            direction = "FLAT"
+
+        tracker = self._get_active_tracker()
+        entry_price = float(tracker.entry_price) if self.cur_pos != 0 and tracker.entry_price else 0.0
+
+        if self.cur_pos != 0 and entry_price == 0:
+            LOG.warning(
+                "[HUD_DEBUG] Tracker has entry_price=%s (cur_pos=%d, tracker=%s, trackers_count=%d)",
+                tracker.entry_price, self.cur_pos, type(tracker).__name__, len(self.mfe_mae_trackers),
+            )
+
+        mfe = float(tracker.mfe) if self.cur_pos != 0 and tracker.mfe else 0.0
+        mae = float(tracker.mae) if self.cur_pos != 0 and tracker.mae else 0.0
+
+        unrealized_pnl = 0.0
+        bars_held = 0
+        if self.cur_pos != 0 and entry_price > 0:
+            actual_qty = self.qty
+            if self.trade_integration and self.trade_integration.trade_manager:
+                pos = self.trade_integration.trade_manager.get_position()
+                actual_qty = float(abs(pos.net_qty)) if abs(pos.net_qty) > 0 else self.qty
+            mfe *= actual_qty
+            mae *= actual_qty
+            if self.cur_pos > 0:
+                unrealized_pnl = (current_price - entry_price) * actual_qty
+            else:
+                unrealized_pnl = (entry_price - current_price) * actual_qty
+            with self._tracker_lock:
+                position_path_recorder = (
+                    next(iter(self.path_recorders.values()), self.path_recorder)
+                    if self.path_recorders else self.path_recorder
+                )
+            bars_held = len(position_path_recorder.path) if hasattr(position_path_recorder, "path") else 0
+
+        return {
+            "direction": direction,
+            "entry_price": entry_price,
+            "current_price": current_price,
+            "mfe": mfe,
+            "mae": mae,
+            "unrealized_pnl": unrealized_pnl,
+            "bars_held": bars_held,
+        }
+
+    def _collect_training_hud_stats(self) -> dict:
+        """Collect training-stats fields for HUD export."""
+        trigger_buffer_size = harvester_buffer_size = 0
+        trigger_loss = getattr(self, "last_trigger_loss", 0.0)
+        harvester_loss = getattr(self, "last_harvester_loss", 0.0)
+        trigger_training_steps = harvester_training_steps = 0
+        trigger_epsilon = 0.0
+        harvester_beta = 0.4
+        trigger_ready = harvester_ready = False
+        harvester_min_hold = 10
+        total_agents = 0
+        arena_diversity = {"trigger_diversity": 0.0, "harvester_diversity": 0.0}
+        last_agreement = 1.0
+
+        if hasattr(self.policy, "get_training_stats"):
+            policy_stats = self.policy.get_training_stats()
+            t_stats = policy_stats.get("trigger", {})
+            h_stats = policy_stats.get("harvester", {})
+            trigger_buffer_size = t_stats.get("buffer_size", 0)
+            harvester_buffer_size = h_stats.get("buffer_size", 0)
+            trigger_training_steps = t_stats.get("training_steps", 0)
+            harvester_training_steps = h_stats.get("training_steps", 0)
+            trigger_epsilon = t_stats.get("epsilon", 0.0)
+            harvester_beta = h_stats.get("beta", 0.4)
+            trigger_ready = t_stats.get("ready_to_train", False)
+            harvester_ready = h_stats.get("ready_to_train", False)
+            harvester_min_hold = h_stats.get("min_hold_ticks", 10)
+        else:
+            trigger_buffer_size = self._get_policy_buffer_size("trigger")
+            harvester_buffer_size = self._get_policy_buffer_size("harvester")
+
+        if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "arena"):
+            arena = self.policy.trigger.arena
+            total_agents = len(arena.agents) if hasattr(arena, "agents") else 0
+            if hasattr(arena, "last_diversity"):
+                arena_diversity["trigger_diversity"] = arena.last_diversity
+            if hasattr(arena, "last_agreement"):
+                last_agreement = arena.last_agreement
+
+        return {
+            "trigger_buffer_size": trigger_buffer_size,
+            "harvester_buffer_size": harvester_buffer_size,
+            "trigger_training_steps": trigger_training_steps,
+            "harvester_training_steps": harvester_training_steps,
+            "trigger_epsilon": trigger_epsilon,
+            "harvester_beta": harvester_beta,
+            "trigger_ready": trigger_ready,
+            "harvester_ready": harvester_ready,
+            "harvester_min_hold_ticks": harvester_min_hold,
+            "total_agents": total_agents,
+            "arena_diversity": arena_diversity,
+            "last_agreement_score": last_agreement,
+            "consensus_mode": "weighted_average",
+            "trigger_loss": trigger_loss,
+            "harvester_loss": harvester_loss,
+            "last_training_time": ("Active" if self.bars_since_training < self.training_interval else "Never"),
+        }
+
+    def _export_hud_data(self):
         """Export real-time data to JSON files for HUD display.
 
         Called every bar close to keep HUD updated with:
@@ -4421,187 +4528,34 @@ class CTraderFixApp(fix.Application):
                 if self.best_bid and self.best_ask
                 else (float(self.bars[-1][4]) if self.bars else 0.0)
             )
-            if self.cur_pos > 0:
-                direction = "LONG"
-            elif self.cur_pos < 0:
-                direction = "SHORT"
-            else:
-                direction = "FLAT"
-
-            # Get MFE/MAE from multi-position tracker (look up any active tracker)
-            tracker = None
-            with self._tracker_lock:
-                if self.mfe_mae_trackers:
-                    # Use the most recent active tracker
-                    tracker = next(reversed(self.mfe_mae_trackers.values()), None)
-            if tracker is None:
-                tracker = self.mfe_mae_tracker  # Legacy fallback
-            entry_price = float(tracker.entry_price) if self.cur_pos != 0 and tracker.entry_price else 0.0
-
-            # Debug: Log tracker state
-            if self.cur_pos != 0 and entry_price == 0:
-                LOG.warning(
-                    "[HUD_DEBUG] Tracker has entry_price=%s (cur_pos=%d, tracker=%s, trackers_count=%d)",
-                    tracker.entry_price,
-                    self.cur_pos,
-                    type(tracker).__name__,
-                    len(self.mfe_mae_trackers),
-                )
-
-            mfe = float(tracker.mfe) if self.cur_pos != 0 and tracker.mfe else 0.0
-            mae = float(tracker.mae) if self.cur_pos != 0 and tracker.mae else 0.0
-
-            # Calculate unrealized PnL
-            unrealized_pnl = 0.0
-            bars_held = 0
-            if self.cur_pos != 0 and entry_price > 0:
-                # Get actual position qty from TradeManager if available
-                actual_qty = self.qty  # Default
-                if self.trade_integration and self.trade_integration.trade_manager:
-                    pos = self.trade_integration.trade_manager.get_position()
-                    actual_qty = float(abs(pos.net_qty)) if abs(pos.net_qty) > 0 else self.qty
-                # Convert MFE / MAE from raw price-points → USD (same unit as unrealized_pnl)
-                mfe *= actual_qty
-                mae *= actual_qty
-                if self.cur_pos > 0:  # LONG
-                    unrealized_pnl = (current_price - entry_price) * actual_qty
-                else:  # SHORT
-                    unrealized_pnl = (entry_price - current_price) * actual_qty
-                # Use any active path recorder (look up like tracker)
-                with self._tracker_lock:
-                    position_path_recorder = (
-                        next(iter(self.path_recorders.values()), self.path_recorder)
-                        if self.path_recorders
-                        else self.path_recorder
-                    )
-                bars_held = len(position_path_recorder.path) if hasattr(position_path_recorder, "path") else 0
-
-            position_data = {
-                "direction": direction,
-                "entry_price": entry_price,
-                "current_price": current_price,
-                "mfe": mfe,
-                "mae": mae,
-                "unrealized_pnl": unrealized_pnl,
-                "bars_held": bars_held,
-            }
+            position_data = self._collect_position_hud_data(current_price)
             with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as f:
                 json.dump(position_data, f, indent=2)
 
             # 3. Performance Metrics (from PerformanceTracker)
             metrics = self.performance.get_metrics() if hasattr(self.performance, "get_metrics") else {}
+            perf_slice = {
+                "total_trades": metrics.get("total_trades", 0),
+                "win_rate": metrics.get("win_rate", 0.0),
+                "total_pnl": metrics.get("total_pnl", 0.0),
+                "sharpe_ratio": metrics.get("sharpe", 0.0),
+                "max_drawdown": metrics.get("max_drawdown", 0.0),
+            }
             performance_snapshot = {
-                "daily": {
-                    "total_trades": metrics.get("total_trades", 0),
-                    "win_rate": metrics.get("win_rate", 0.0),
-                    "total_pnl": metrics.get("total_pnl", 0.0),
-                    "sharpe_ratio": metrics.get("sharpe", 0.0),
-                    "max_drawdown": metrics.get("max_drawdown", 0.0),
-                },
-                "weekly": {
-                    "total_trades": metrics.get("total_trades", 0),
-                    "win_rate": metrics.get("win_rate", 0.0),
-                    "total_pnl": metrics.get("total_pnl", 0.0),
-                    "sharpe_ratio": metrics.get("sharpe", 0.0),
-                    "max_drawdown": metrics.get("max_drawdown", 0.0),
-                },
-                "monthly": {
-                    "total_trades": metrics.get("total_trades", 0),
-                    "win_rate": metrics.get("win_rate", 0.0),
-                    "total_pnl": metrics.get("total_pnl", 0.0),
-                    "sharpe_ratio": metrics.get("sharpe", 0.0),
-                    "max_drawdown": metrics.get("max_drawdown", 0.0),
-                },
-                "lifetime": {
-                    "total_trades": metrics.get("total_trades", 0),
-                    "win_rate": metrics.get("win_rate", 0.0),
-                    "total_pnl": metrics.get("total_pnl", 0.0),
-                    "sharpe_ratio": metrics.get("sharpe", 0.0),
-                    "sortino_ratio": metrics.get("sortino", 0.0),
-                    "omega_ratio": metrics.get("omega", 0.0),
-                    "max_drawdown": metrics.get("max_drawdown", 0.0),
-                },
+                "daily": perf_slice,
+                "weekly": perf_slice,
+                "monthly": perf_slice,
+                "lifetime": {**perf_slice, "sortino_ratio": metrics.get("sortino", 0.0), "omega_ratio": metrics.get("omega", 0.0)},
             }
             with open(self.hud_data_dir / "performance_snapshot.json", "w", encoding="utf-8") as f:
                 json.dump(performance_snapshot, f, indent=2)
 
             # 4. Training Stats
-            trigger_buffer_size = 0
-            harvester_buffer_size = 0
-            trigger_loss = getattr(self, "last_trigger_loss", 0.0)
-            harvester_loss = getattr(self, "last_harvester_loss", 0.0)
-            trigger_training_steps = 0
-            harvester_training_steps = 0
-            trigger_epsilon = 0.0
-            harvester_beta = 0.4
-            trigger_ready = False
-            harvester_ready = False
-            harvester_min_hold = 10
-            total_agents = 0
-            arena_diversity = {"trigger_diversity": 0.0, "harvester_diversity": 0.0}
-            last_agreement = 1.0
-
-            # Use get_training_stats() which correctly reads from .buffer attribute
-            if hasattr(self.policy, "get_training_stats"):
-                policy_stats = self.policy.get_training_stats()
-                t_stats = policy_stats.get("trigger", {})
-                h_stats = policy_stats.get("harvester", {})
-                trigger_buffer_size = t_stats.get("buffer_size", 0)
-                harvester_buffer_size = h_stats.get("buffer_size", 0)
-                trigger_training_steps = t_stats.get("training_steps", 0)
-                harvester_training_steps = h_stats.get("training_steps", 0)
-                trigger_epsilon = t_stats.get("epsilon", 0.0)
-                harvester_beta = h_stats.get("beta", 0.4)
-                trigger_ready = t_stats.get("ready_to_train", False)
-                harvester_ready = h_stats.get("ready_to_train", False)
-                harvester_min_hold = h_stats.get("min_hold_ticks", 10)
-            else:
-                # Fallback: direct attribute access using correct name (.buffer not .replay_buffer)
-                if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "buffer"):
-                    buf = self.policy.trigger.buffer
-                    if hasattr(buf, "tree") and buf.tree:
-                        trigger_buffer_size = buf.tree.n_entries
-                    elif hasattr(buf, "size"):
-                        trigger_buffer_size = buf.size
-                if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "buffer"):
-                    buf = self.policy.harvester.buffer
-                    if hasattr(buf, "tree") and buf.tree:
-                        harvester_buffer_size = buf.tree.n_entries
-                    elif hasattr(buf, "size"):
-                        harvester_buffer_size = buf.size
-
-            # Check for arena (multi-agent)
-            if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "arena"):
-                arena = self.policy.trigger.arena
-                total_agents = len(arena.agents) if hasattr(arena, "agents") else 0
-                if hasattr(arena, "last_diversity"):
-                    arena_diversity["trigger_diversity"] = arena.last_diversity
-                if hasattr(arena, "last_agreement"):
-                    last_agreement = arena.last_agreement
-
-            training_stats = {
-                "trigger_buffer_size": trigger_buffer_size,
-                "harvester_buffer_size": harvester_buffer_size,
-                "trigger_training_steps": trigger_training_steps,
-                "harvester_training_steps": harvester_training_steps,
-                "trigger_epsilon": trigger_epsilon,
-                "harvester_beta": harvester_beta,
-                "trigger_ready": trigger_ready,
-                "harvester_ready": harvester_ready,
-                "harvester_min_hold_ticks": harvester_min_hold,
-                "total_agents": total_agents,
-                "arena_diversity": arena_diversity,
-                "last_agreement_score": last_agreement,
-                "consensus_mode": "weighted_average",
-                "trigger_loss": trigger_loss,
-                "harvester_loss": harvester_loss,
-                "last_training_time": ("Active" if self.bars_since_training < self.training_interval else "Never"),
-            }
+            training_stats = self._collect_training_hud_stats()
             with open(self.hud_data_dir / "training_stats.json", "w", encoding="utf-8") as f:
                 json.dump(training_stats, f, indent=2)
 
             # 5. Risk Metrics
-            # VaR and kurtosis
             realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
             vpin_stats = self.last_vpin_stats if hasattr(self, "last_vpin_stats") else {"vpin": 0.0, "zscore": 0.0}
             vpin_value = vpin_stats.get("vpin", 0.0)
@@ -4619,7 +4573,6 @@ class CTraderFixApp(fix.Application):
             )
             circuit_breaker = "ACTIVE" if self.kurtosis_monitor.is_breaker_active else "INACTIVE"
 
-            # Seed regime detector from historical bars if still UNKNOWN after restart
             if (
                 hasattr(self.policy, "seed_regime_from_bars")
                 and getattr(self.policy, "current_regime", "UNKNOWN") == "UNKNOWN"
@@ -4627,7 +4580,6 @@ class CTraderFixApp(fix.Application):
             ):
                 self.policy.seed_regime_from_bars(self.bars)
 
-            # Regime from dual policy
             regime = "UNKNOWN"
             regime_zeta = 1.0
             if hasattr(self.policy, "current_regime"):
@@ -4635,19 +4587,11 @@ class CTraderFixApp(fix.Application):
             if hasattr(self.policy, "current_zeta"):
                 regime_zeta = self.policy.current_zeta
 
-            # Path geometry features — recompute fresh from current bars so HUD
-            # always reflects live market state, not just the last entry/exit call.
             if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
                 geom = self.path_geometry.update(self.bars, realized_vol)
             else:
                 geom = self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
-            efficiency = geom.get("efficiency", 1.0)
-            gamma = geom.get("gamma", 0.0)
-            jerk = geom.get("jerk", 0.0)
-            runway = geom.get("runway", 0.5)
-            feasibility = geom.get("feasibility", 0.5)
 
-            # Market microstructure
             spread = float(self.best_ask) - float(self.best_bid) if self.best_bid and self.best_ask else 0.0
             depth_metrics = getattr(self, "last_depth_metrics", {}) or {}
             depth_bid = depth_metrics.get("bid", 0.0)
@@ -4656,8 +4600,7 @@ class CTraderFixApp(fix.Application):
             depth_levels = depth_metrics.get("levels", 0)
             imbalance = (
                 SafeMath.safe_div(depth_bid - depth_ask, depth_bid + depth_ask, 0.0)
-                if (depth_bid + depth_ask) > 0
-                else 0.0
+                if (depth_bid + depth_ask) > 0 else 0.0
             )
             depth_buffer = getattr(getattr(self, "friction_calculator", None), "depth_buffer", 0.0)
             depth_gate_active = getattr(self, "last_depth_gate", False)
@@ -4672,11 +4615,11 @@ class CTraderFixApp(fix.Application):
                 "vpin": vpin_value,
                 "vpin_zscore": vpin_zscore,
                 "vpin_threshold": self.vpin_z_threshold,
-                "efficiency": efficiency,
-                "gamma": gamma,
-                "jerk": jerk,
-                "runway": runway,
-                "feasibility": feasibility,
+                "efficiency": geom.get("efficiency", 1.0),
+                "gamma": geom.get("gamma", 0.0),
+                "jerk": geom.get("jerk", 0.0),
+                "runway": geom.get("runway", 0.5),
+                "feasibility": geom.get("feasibility", 0.5),
                 "spread": spread,
                 "imbalance": imbalance,
                 "depth_bid": depth_bid,
@@ -4685,13 +4628,8 @@ class CTraderFixApp(fix.Application):
                 "depth_levels": depth_levels,
                 "depth_buffer": depth_buffer,
                 "depth_gate_active": depth_gate_active,
-                # Per-level L2 book snapshots (list of [price, size] pairs)
-                "order_book_bids": [
-                    [p, s] for p, s in list(self.order_book.bids.items())[:5]
-                ],
-                "order_book_asks": [
-                    [p, s] for p, s in list(self.order_book.asks.items())[:5]
-                ],
+                "order_book_bids": [[p, s] for p, s in list(self.order_book.bids.items())[:5]],
+                "order_book_asks": [[p, s] for p, s in list(self.order_book.asks.items())[:5]],
                 "risk_budget_usd": self.risk_budget_usd,
                 "risk_cap_qty": self.last_risk_cap_qty,
                 "risk_requested_qty": self.last_base_qty,
