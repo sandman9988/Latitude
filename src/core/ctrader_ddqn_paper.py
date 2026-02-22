@@ -2115,7 +2115,114 @@ class CTraderFixApp(fix.Application):
         self._export_order_book()
         self.try_bar_update()
 
-    def on_md_incremental(self, msg: fix.Message):  # noqa: PLR0912, PLR0915
+    @staticmethod
+    def _get_md_side(entry_type: str):
+        """Map MDEntryType character to order-book side string, or None."""
+        if entry_type == "0":
+            return "BID"
+        if entry_type == "1":
+            return "ASK"
+        return None
+
+    def _handle_md_delete_no_type(self, action: str, md_id) -> None:
+        """Handle delete-by-ID when MDEntryType is absent from the group."""
+        if action == "2" and md_id is not None:
+            entry = self._md_entry_id_map.pop(md_id, None)
+            if entry is not None:
+                side, price_f = entry
+                self.order_book.update_level(side, price_f, 0.0)
+
+    def _apply_md_new_or_change(self, g, action: str, entry_type: str, md_id, px, qty) -> None:
+        """Apply a new (action=0) or change (action=1) MD entry to the order book."""
+        if not g.isSetField(px):
+            return
+        g.getField(px)
+        try:
+            price_f = float(px.getValue())
+            size = 0.0
+            if g.isSetField(qty):
+                g.getField(qty)
+                size = float(qty.getValue())
+            if size > 0:
+                self._has_real_sizes = True
+            else:
+                size = 1.0
+        except (ValueError, TypeError):
+            return
+        side = self._get_md_side(entry_type)
+        if side is None:
+            return
+        # If this ID was previously at a different price, remove the old level.
+        if md_id is not None and action == "1":
+            old = self._md_entry_id_map.get(md_id)
+            if old is not None and old[1] != price_f:
+                self.order_book.update_level(old[0], old[1], 0.0)
+        self.order_book.update_level(side, price_f, size)
+        if md_id is not None:
+            self._md_entry_id_map[md_id] = (side, price_f)
+        if side == "BID":
+            self._bid_refresh_count += 1
+        else:
+            self._ask_refresh_count += 1
+
+    def _apply_md_type_delete(self, g, entry_type: str, md_id, px) -> None:
+        """Apply a delete (action=2) MD entry that carries MDEntryType."""
+        if not g.isSetField(px):
+            # No price — fall back to ID-mapped delete.
+            if md_id is not None:
+                entry = self._md_entry_id_map.pop(md_id, None)
+                if entry is not None:
+                    self.order_book.update_level(entry[0], entry[1], 0.0)
+            return
+        g.getField(px)
+        try:
+            price_f = float(px.getValue())
+        except (ValueError, TypeError):
+            return
+        side = self._get_md_side(entry_type)
+        if side is not None:
+            self.order_book.update_level(side, price_f, 0.0)
+        if md_id is not None:
+            self._md_entry_id_map.pop(md_id, None)
+
+    def _apply_md_entry(self, msg, i: int) -> None:
+        """Process a single MDEntry group from an incremental refresh message."""
+        g = fix44.MarketDataIncrementalRefresh().NoMDEntries()
+        msg.getGroup(i, g)
+
+        act = fix.MDUpdateAction()
+        g.getField(act)
+        action = act.getValue()
+
+        et = fix.MDEntryType()
+        sym = fix.Symbol()
+        et_set = g.isSetField(et)
+        if et_set:
+            g.getField(et)
+        if g.isSetField(sym):
+            g.getField(sym)
+        if sym.getValue() and sym.getValue() != str(self.symbol_id):
+            return
+
+        md_id_field = fix.MDEntryID()
+        md_id = None
+        if g.isSetField(md_id_field):
+            g.getField(md_id_field)
+            md_id = md_id_field.getValue()
+
+        if not et_set:
+            self._handle_md_delete_no_type(action, md_id)
+            return
+
+        entry_type = et.getValue()
+        px = fix.MDEntryPx()
+        qty = fix.MDEntrySize()
+        if action in ("0", "1"):
+            self._apply_md_new_or_change(g, action, entry_type, md_id, px, qty)
+        elif action == "2":
+            self._apply_md_type_delete(g, entry_type, md_id, px)
+
+    def on_md_incremental(self, msg: fix.Message):
         self.last_market_data_time = time.time()
         try:
             no = fix.NoMDEntries()
@@ -2129,95 +2236,7 @@ class CTraderFixApp(fix.Application):
             return
 
         for i in range(1, n + 1):
-            g = fix44.MarketDataIncrementalRefresh().NoMDEntries()
-            msg.getGroup(i, g)
-
-            act = fix.MDUpdateAction()
-            g.getField(act)
-            action = act.getValue()
-
-            et = fix.MDEntryType()
-            sym = fix.Symbol()
-            px = fix.MDEntryPx()
-            qty = fix.MDEntrySize()
-
-            et_set = g.isSetField(et)
-            if et_set:
-                g.getField(et)
-            if g.isSetField(sym):
-                g.getField(sym)
-
-            if sym.getValue() and sym.getValue() != str(self.symbol_id):
-                continue
-
-            # Read MDEntryID (tag 278) — used for delete-by-ID resolution.
-            md_id_field = fix.MDEntryID()
-            md_id = None
-            if g.isSetField(md_id_field):
-                g.getField(md_id_field)
-                md_id = md_id_field.getValue()
-
-            if not et_set:
-                # Delete-by-ID: broker omits MDEntryType — look up price from map.
-                if action == "2" and md_id is not None:
-                    entry = self._md_entry_id_map.pop(md_id, None)
-                    if entry is not None:
-                        side, price_f = entry
-                        self.order_book.update_level(side, price_f, 0.0)
-                continue
-
-            entry_type = et.getValue()
-            if action in ("0", "1"):  # new or change
-                if not g.isSetField(px):
-                    continue
-                g.getField(px)
-                try:
-                    price_f = float(px.getValue())
-                    size = 0.0
-                    if g.isSetField(qty):
-                        g.getField(qty)
-                        size = float(qty.getValue())
-                    if size > 0:
-                        self._has_real_sizes = True
-                    else:
-                        size = 1.0
-                except (ValueError, TypeError):
-                    continue
-
-                side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
-                if side is None:
-                    continue
-                # If this ID was previously mapped to a different price, remove old level.
-                if md_id is not None and action == "1":
-                    old = self._md_entry_id_map.get(md_id)
-                    if old is not None and old[1] != price_f:
-                        self.order_book.update_level(old[0], old[1], 0.0)
-                self.order_book.update_level(side, price_f, size)
-                if md_id is not None:
-                    self._md_entry_id_map[md_id] = (side, price_f)
-                # Increment per-bar quote refresh counter
-                if side == "BID":
-                    self._bid_refresh_count += 1
-                else:
-                    self._ask_refresh_count += 1
-            elif action == "2":  # delete with MDEntryType — price-keyed delete
-                if not g.isSetField(px):
-                    # No price either — try ID map as fallback.
-                    if md_id is not None:
-                        entry = self._md_entry_id_map.pop(md_id, None)
-                        if entry is not None:
-                            self.order_book.update_level(entry[0], entry[1], 0.0)
-                    continue
-                g.getField(px)
-                try:
-                    price_f = float(px.getValue())
-                except (ValueError, TypeError):
-                    continue
-                side = "BID" if entry_type == "0" else "ASK" if entry_type == "1" else None
-                if side is not None:
-                    self.order_book.update_level(side, price_f, 0.0)
-                if md_id is not None:
-                    self._md_entry_id_map.pop(md_id, None)
+            self._apply_md_entry(msg, i)
 
         best_bid, best_ask = self.order_book.best_bid_ask()
         if best_bid is not None and best_ask is not None:
