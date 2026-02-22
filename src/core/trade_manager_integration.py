@@ -198,7 +198,235 @@ class TradeManagerIntegration:
             LOG.error("[INTEGRATION] Failed to initialize TradeManager: %s", e, exc_info=True)
             return False
 
-    def on_order_filled(self, order: Order):  # noqa: PLR0912, PLR0915
+    # ------------------------------------------------------------------
+    # on_order_filled helpers
+    # ------------------------------------------------------------------
+
+    def _calculate_exit_pnl(self, order: Order, entry_price: float, found_tracker) -> float:
+        """Calculate P&L for an exit fill, using the app helper when available."""
+        direction = "LONG" if found_tracker.direction > 0 else "SHORT"
+        if hasattr(self.app, "_calculate_position_pnl"):
+            return self.app._calculate_position_pnl(
+                entry_price=entry_price,
+                exit_price=order.avg_price,
+                direction=direction,
+                quantity=order.filled_qty,
+            )
+        # Fallback: simple price-diff calculation
+        direction_sign = 1 if found_tracker.direction > 0 else -1
+        return (order.avg_price - entry_price) * direction_sign * order.filled_qty * self.app.contract_size
+
+    def _notify_policy_on_exit(self, order: Order, tracker_summary: dict, mfe: float, mae: float, pnl: float, found_tracker) -> None:
+        """Notify DualPolicy of position exit; updates tracker_summary in-place with policy mfe/mae."""
+        if not (hasattr(self.app, "policy") and hasattr(self.app.policy, "on_exit")):
+            return
+        # FIX: DualPolicy.mfe/mae are updated tick-by-tick in decide() and hold the real excursion
+        # values. The MFEMAETracker was never receiving tick updates (key mismatch), so
+        # tracker_summary always had mfe=0. Capture policy.mfe/mae HERE, before on_exit() resets
+        # them to 0, and promote them into tracker_summary so _process_trade_completion sees real values.
+        policy_mfe = getattr(self.app.policy, "mfe", 0.0) or 0.0
+        policy_mae = getattr(self.app.policy, "mae", 0.0) or 0.0
+        if policy_mfe > mfe:
+            mfe = policy_mfe
+            tracker_summary["mfe"] = mfe
+            LOG.debug(
+                "[INTEGRATION] Using policy.mfe=%.4f (tracker had %.4f)",
+                policy_mfe,
+                tracker_summary.get("mfe", 0.0),
+            )
+        if policy_mae > mae:
+            mae = policy_mae
+            tracker_summary["mae"] = mae
+        # Recalculate winner_to_loser with accurate MFE
+        was_wtl = mfe > 0 and pnl < 0
+        tracker_summary["winner_to_loser"] = was_wtl
+        capture_ratio = (pnl / mfe) if mfe > 0 else 0.0
+        self.app.policy.on_exit(
+            exit_price=order.avg_price,
+            capture_ratio=capture_ratio,
+            was_wtl=was_wtl,
+            entry_confidence=getattr(self.app, "entry_confidence", 0.5),
+        )
+        LOG.info(
+            "[INTEGRATION] ✓ Notified DualPolicy of exit @ %.5f capture=%.2f%% wtl=%s mfe=%.4f mae=%.4f",
+            order.avg_price,
+            capture_ratio * 100,
+            was_wtl,
+            mfe,
+            mae,
+        )
+
+    def _handle_exit_tracker(self, order: Order, closed_ticket: str) -> tuple:
+        """Find/close MFE/MAE tracker for a filled exit order; returns (tracker_summary, position_id_to_remove)."""
+        tracker_summary = None
+        position_id_to_remove = None
+
+        if not hasattr(self.app, "mfe_mae_trackers"):
+            return tracker_summary, position_id_to_remove
+
+        # Scan for tracker with this ticket
+        found_tracker = None
+        with self.app._tracker_lock:
+            for pos_id, tracker in self.app.mfe_mae_trackers.items():
+                if getattr(tracker, "position_ticket", None) == closed_ticket:
+                    position_id_to_remove = pos_id
+                    found_tracker = tracker
+                    break
+
+        if position_id_to_remove is None:
+            return tracker_summary, position_id_to_remove
+
+        # Capture MFE/MAE and compute P&L before removing tracker
+        tracker_summary = self.app.mfe_mae_trackers[position_id_to_remove].get_summary()
+        mfe = tracker_summary.get("mfe", 0.0)
+        mae = tracker_summary.get("mae", 0.0)
+        entry_price = tracker_summary.get("entry_price", 0.0)
+        pnl = self._calculate_exit_pnl(order, entry_price, found_tracker)
+
+        self.audit.log_position_close(
+            position_id=position_id_to_remove,
+            exit_price=order.avg_price,
+            pnl=pnl,
+            mfe=mfe,
+            mae=mae,
+            ticket=closed_ticket,
+        )
+
+        with self.app._tracker_lock:
+            del self.app.mfe_mae_trackers[position_id_to_remove]
+        LOG.info("[HEDGING] ✓ Closed position ticket %s (tracker=%s)", closed_ticket, position_id_to_remove)
+
+        if hasattr(self.app, "_pending_closes"):
+            self.app._pending_closes.discard(position_id_to_remove)
+
+        if hasattr(self.app, "path_recorders") and position_id_to_remove in self.app.path_recorders:
+            with self.app._tracker_lock:
+                del self.app.path_recorders[position_id_to_remove]
+
+        self._notify_policy_on_exit(order, tracker_summary, mfe, mae, pnl, found_tracker)
+        return tracker_summary, position_id_to_remove
+
+    def _restore_policy_after_hedging_close(self, order: Order, position_id_to_remove) -> None:
+        """Re-notify DualPolicy of remaining active position after a hedging close."""
+        # FIX: If another position still exists after this close (hedging transition),
+        # re-notify DualPolicy so entry_price is restored.
+        # Without this, on_exit() resets entry_price=0 which blinds the Harvester.
+        if not self.app.cur_pos or not hasattr(self.app, "mfe_mae_trackers"):
+            return
+        with self.app._tracker_lock:
+            for pid, tracker in self.app.mfe_mae_trackers.items():
+                if pid != position_id_to_remove and tracker.entry_price is not None and tracker.entry_price > 0:
+                    if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
+                        self.app.policy.on_entry(
+                            direction=tracker.direction,
+                            entry_price=tracker.entry_price,
+                            entry_time=getattr(self.app, "trade_entry_time", None),
+                        )
+                        LOG.info(
+                            "[INTEGRATION] ✓ Restored DualPolicy entry after hedging close: "
+                            "price=%.5f dir=%d (tracker=%s)",
+                            tracker.entry_price,
+                            tracker.direction,
+                            pid,
+                        )
+                    break  # Only restore from one active tracker
+
+    def _start_mfe_mae_tracking(self, order: Order, position_id: str) -> None:
+        """Create and start MFE/MAE tracker for a new entry fill; audit-logs the open."""
+        if not (hasattr(self.app, "mfe_mae_trackers") and order.avg_price > 0):
+            return
+        direction = 1 if order.side == Side.BUY else -1
+        with self.app._tracker_lock:
+            if position_id not in self.app.mfe_mae_trackers:
+                from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
+
+                self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
+                # Store ticket on tracker for later reference
+                self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
+                LOG.info("[HEDGING] Created tracker for ticket %s (id=%s)", order.position_ticket, position_id)
+            self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
+        self.app.trade_entry_time = order.filled_at
+        LOG.info(
+            "[INTEGRATION] ✓ Tracking position ticket=%s @ %.5f dir=%d",
+            order.position_ticket,
+            order.avg_price,
+            direction,
+        )
+        self.audit.log_position_open(
+            position_id=position_id,
+            direction="LONG" if direction > 0 else "SHORT",
+            quantity=order.filled_qty,
+            entry_price=order.avg_price,
+            ticket=order.position_ticket or "UNKNOWN",
+        )
+        if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
+            self.app.policy.on_entry(direction=direction, entry_price=order.avg_price, entry_time=order.filled_at)
+            LOG.info("[INTEGRATION] ✓ Notified DualPolicy of entry @ %.5f dir=%d", order.avg_price, direction)
+
+    def _start_path_recording(self, order: Order, position_id: str) -> None:
+        """Create and start a PathRecorder for a new entry fill."""
+        # MULTI-POSITION: Create dedicated recorder for this position
+        if not (hasattr(self.app, "path_recorders") and order.filled_at):
+            return
+        direction = 1 if order.side == Side.BUY else -1
+        if position_id not in self.app.path_recorders:
+            from src.core.ctrader_ddqn_paper import PathRecorder  # noqa: PLC0415
+
+            self.app.path_recorders[position_id] = PathRecorder(position_id)
+            LOG.info("[MULTI-POS] Created path recorder for position: %s", position_id)
+        self.app.path_recorders[position_id].start_recording(order.filled_at, order.avg_price, direction)
+        LOG.debug("[INTEGRATION] Started path recording @ %.5f (position=%s)", order.avg_price, position_id)
+
+    def _store_entry_state(self, order: Order) -> None:
+        """Persist entry state for online-learning replay."""
+        if hasattr(self.app, "policy") and hasattr(self.app.policy, "trigger"):
+            self.app.entry_state = getattr(self.app.policy.trigger, "last_state", None)
+            self.app.entry_action = 1 if order.side == Side.BUY else 2
+            LOG.debug("[INTEGRATION] Stored entry state for learning (action=%d)", self.app.entry_action)
+
+    def _finalize_entry_fill(self, order: Order) -> None:
+        """Sync cur_pos, persist, validate position, request update, enable trailing stop."""
+        # FIX: Sync app.cur_pos from TradeManager's position (updated from fill)
+        # This is critical because cTrader doesn't respond to position requests
+        self.app.cur_pos = self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
+        self.position_direction = self.app.cur_pos
+        LOG.info(
+            "[INTEGRATION] Position synced from fill: cur_pos=%d net_qty=%.6f",
+            self.app.cur_pos,
+            self.trade_manager.position.net_qty,
+        )
+        self._persist_state()
+
+        # FIX P0-6: Position validation after fill
+        # In hedging mode, skip validation during transitions (pending close + new entry = mixed positions)
+        pending_closes = getattr(self.app, "_pending_closes", set())
+        if pending_closes:
+            LOG.debug(
+                "[VALIDATION] Skipped during hedging transition (pending_closes=%d)",
+                len(pending_closes),
+            )
+        else:
+            # Use the already-synced cur_pos as expected direction.
+            # Deriving from order.side (1 if BUY else -1) is wrong in hedging mode:
+            # a BUY that closes a SHORT leaves cur_pos=0, not 1.
+            expected_direction = self.app.cur_pos
+            self._validate_position_after_fill(expected_direction, order)
+
+        self.trade_manager.request_positions()
+
+        if hasattr(self.app, "param_manager"):
+            distance = self.app.param_manager.get(
+                self.app.symbol,
+                "trailing_stop_distance_pct",
+                timeframe=self.app.timeframe_label,
+                broker="default",
+                default=0.20,
+            )
+            self.enable_trailing_stop(distance_pct=float(distance))
+
+    # ------------------------------------------------------------------
+
+    def on_order_filled(self, order: Order):  # noqa: PLR0915
         """
         Callback when order fills.
 
@@ -218,136 +446,16 @@ class TradeManagerIntegration:
         # HEDGING MODE: Check if this is an exit order closing a position
         if order.clord_id in self.exit_order_to_ticket:
             closed_ticket = self.exit_order_to_ticket.pop(order.clord_id)
+            tracker_summary, position_id_to_remove = self._handle_exit_tracker(order, closed_ticket)
 
-            # Find and remove tracker by ticket
-            tracker_summary = None  # Will be set if tracker found
-            if hasattr(self.app, "mfe_mae_trackers"):
-                # Scan for tracker with this ticket
-                position_id_to_remove = None
-                with self.app._tracker_lock:
-                    for pos_id, tracker in self.app.mfe_mae_trackers.items():
-                        if getattr(tracker, "position_ticket", None) == closed_ticket:
-                            position_id_to_remove = pos_id
-                            break
-
-                if position_id_to_remove:
-                    # Get MFE/MAE before deletion
-                    tracker_summary = self.app.mfe_mae_trackers[position_id_to_remove].get_summary()
-                    mfe = tracker_summary.get("mfe", 0.0)
-                    mae = tracker_summary.get("mae", 0.0)
-                    entry_price = tracker_summary.get("entry_price", 0.0)
-
-                    # Calculate P&L: price_diff * quantity * contract_size
-                    # Note: Use bot's _calculate_position_pnl for consistency if available
-                    direction = "LONG" if tracker.direction > 0 else "SHORT"
-                    if hasattr(self.app, "_calculate_position_pnl"):
-                        pnl = self.app._calculate_position_pnl(
-                            entry_price=entry_price,
-                            exit_price=order.avg_price,
-                            direction=direction,
-                            quantity=order.filled_qty,
-                        )
-                    else:
-                        # Fallback: Simple calculation
-                        direction_sign = 1 if tracker.direction > 0 else -1
-                        pnl = (
-                            (order.avg_price - entry_price) * direction_sign * order.filled_qty * self.app.contract_size
-                        )
-
-                    # Audit log: Position closed
-                    self.audit.log_position_close(
-                        position_id=position_id_to_remove,
-                        exit_price=order.avg_price,
-                        pnl=pnl,  # Already includes quantity in calculation above
-                        mfe=mfe,
-                        mae=mae,
-                        ticket=closed_ticket,
-                    )
-
-                    with self.app._tracker_lock:
-                        del self.app.mfe_mae_trackers[position_id_to_remove]
-                    LOG.info("[HEDGING] ✓ Closed position ticket %s (tracker=%s)", closed_ticket, position_id_to_remove)
-
-                    # Remove from pending closes
-                    if hasattr(self.app, "_pending_closes"):
-                        self.app._pending_closes.discard(position_id_to_remove)
-
-                    # Remove path recorder
-                    if hasattr(self.app, "path_recorders") and position_id_to_remove in self.app.path_recorders:
-                        with self.app._tracker_lock:
-                            del self.app.path_recorders[position_id_to_remove]
-
-                    # CRITICAL: Notify DualPolicy that position was closed
-                    # Without this, DualPolicy.current_position stays stale and blocks epsilon exploration
-                    if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_exit"):
-                        # FIX: DualPolicy.mfe/mae are updated tick-by-tick in decide() and hold
-                        # the real excursion values.  The MFEMAETracker was never receiving tick
-                        # updates (key mismatch), so tracker_summary always had mfe=0.  Capture
-                        # policy.mfe/mae HERE, before on_exit() resets them to 0, and promote
-                        # them into tracker_summary so _process_trade_completion sees real values.
-                        policy_mfe = getattr(self.app.policy, "mfe", 0.0) or 0.0
-                        policy_mae = getattr(self.app.policy, "mae", 0.0) or 0.0
-                        if policy_mfe > mfe:
-                            mfe = policy_mfe
-                            tracker_summary["mfe"] = mfe
-                            LOG.debug(
-                                "[INTEGRATION] Using policy.mfe=%.4f (tracker had %.4f)",
-                                policy_mfe,
-                                tracker_summary.get("mfe", 0.0),
-                            )
-                        if policy_mae > mae:
-                            mae = policy_mae
-                            tracker_summary["mae"] = mae
-                        # Recalculate winner_to_loser with accurate MFE
-                        was_wtl = mfe > 0 and pnl < 0
-                        tracker_summary["winner_to_loser"] = was_wtl
-                        # Calculate capture ratio
-                        capture_ratio = (pnl / mfe) if mfe > 0 else 0.0
-                        self.app.policy.on_exit(
-                            exit_price=order.avg_price,
-                            capture_ratio=capture_ratio,
-                            was_wtl=was_wtl,
-                            entry_confidence=getattr(self.app, "entry_confidence", 0.5),
-                        )
-                        LOG.info(
-                            "[INTEGRATION] ✓ Notified DualPolicy of exit @ %.5f capture=%.2f%% wtl=%s mfe=%.4f mae=%.4f",
-                            order.avg_price,
-                            capture_ratio * 100,
-                            was_wtl,
-                            mfe,
-                            mae,
-                        )
-
-            # Remove ticket mapping
             if closed_ticket in self.position_tickets:
                 del self.position_tickets[closed_ticket]
 
-            # Sync cur_pos from TradeManager
             self.app.cur_pos = self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
             self.position_direction = self.app.cur_pos
             LOG.info("[INTEGRATION] Position synced after exit: cur_pos=%d", self.app.cur_pos)
 
-            # FIX: If another position still exists after this close (hedging transition),
-            # re-notify DualPolicy so entry_price is restored.
-            # Without this, on_exit() resets entry_price=0 which blinds the Harvester.
-            if self.app.cur_pos != 0 and hasattr(self.app, "mfe_mae_trackers"):
-                with self.app._tracker_lock:
-                    for pid, tracker in self.app.mfe_mae_trackers.items():
-                        if pid != position_id_to_remove and tracker.entry_price is not None and tracker.entry_price > 0:
-                            if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
-                                self.app.policy.on_entry(
-                                    direction=tracker.direction,
-                                    entry_price=tracker.entry_price,
-                                    entry_time=getattr(self.app, "trade_entry_time", None),
-                                )
-                                LOG.info(
-                                    "[INTEGRATION] ✓ Restored DualPolicy entry after hedging close: "
-                                    "price=%.5f dir=%d (tracker=%s)",
-                                    tracker.entry_price,
-                                    tracker.direction,
-                                    pid,
-                                )
-                            break  # Only restore from one active tracker
+            self._restore_policy_after_hedging_close(order, position_id_to_remove)
 
             # CRITICAL: Trigger trade completion processing (experience collection, rewards)
             # In paper mode, FIX PositionReport (35=AP) never arrives, so we must
@@ -355,7 +463,6 @@ class TradeManagerIntegration:
             if hasattr(self.app, "_process_trade_completion") and tracker_summary:
                 self.app._process_trade_completion(tracker_summary, order.avg_price)
 
-            # Persist updated state
             self._persist_state()
             return
 
@@ -371,114 +478,14 @@ class TradeManagerIntegration:
         if order.avg_price > 0:
             self.entry_price = order.avg_price
 
-        # Start MFE/MAE tracking
-        if hasattr(self.app, "mfe_mae_trackers") and order.avg_price > 0:
-            direction = 1 if order.side == Side.BUY else -1
+        self._start_mfe_mae_tracking(order, position_id)
+        self._start_path_recording(order, position_id)
 
-            # Create tracker
-            with self.app._tracker_lock:
-                if position_id not in self.app.mfe_mae_trackers:
-                    from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
-
-                    self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
-                    # Store ticket on tracker for later reference
-                    self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
-                    LOG.info("[HEDGING] Created tracker for ticket %s (id=%s)", order.position_ticket, position_id)
-
-                self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
-            self.app.trade_entry_time = order.filled_at
-            LOG.info(
-                "[INTEGRATION] ✓ Tracking position ticket=%s @ %.5f dir=%d",
-                order.position_ticket,
-                order.avg_price,
-                direction,
-            )
-
-            # Audit log: Position opened
-            self.audit.log_position_open(
-                position_id=position_id,
-                direction="LONG" if direction > 0 else "SHORT",
-                quantity=order.filled_qty,
-                entry_price=order.avg_price,
-                ticket=order.position_ticket or "UNKNOWN",
-            )
-
-            # Notify DualPolicy
-            if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
-                self.app.policy.on_entry(direction=direction, entry_price=order.avg_price, entry_time=order.filled_at)
-                LOG.info("[INTEGRATION] ✓ Notified DualPolicy of entry @ %.5f dir=%d", order.avg_price, direction)
-
-        # Start path recording with actual fill price
-        # MULTI-POSITION: Create dedicated recorder for this position
-        if hasattr(self.app, "path_recorders") and order.filled_at:
-            direction = 1 if order.side == Side.BUY else -1
-
-            # Create recorder if doesn't exist
-            if position_id not in self.app.path_recorders:
-                from src.core.ctrader_ddqn_paper import PathRecorder  # noqa: PLC0415
-
-                self.app.path_recorders[position_id] = PathRecorder(position_id)
-                LOG.info("[MULTI-POS] Created path recorder for position: %s", position_id)
-
-            self.app.path_recorders[position_id].start_recording(
-                order.filled_at,
-                order.avg_price,
-                direction,
-            )
-            LOG.debug("[INTEGRATION] Started path recording @ %.5f (position=%s)", order.avg_price, position_id)
-
-        # Notify activity monitor
         if hasattr(self.app, "activity_monitor"):
             self.app.activity_monitor.on_trade_executed(order.filled_at)
 
-        # Store entry state for online learning
-        if hasattr(self.app, "policy") and hasattr(self.app.policy, "trigger"):
-            self.app.entry_state = getattr(self.app.policy.trigger, "last_state", None)
-            self.app.entry_action = 1 if order.side == Side.BUY else 2
-            LOG.debug("[INTEGRATION] Stored entry state for learning (action=%d)", self.app.entry_action)
-
-        # FIX: Sync app.cur_pos from TradeManager's position (updated from fill)
-        # This is critical because cTrader doesn't respond to position requests
-        self.app.cur_pos = self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
-        self.position_direction = self.app.cur_pos
-        LOG.info(
-            "[INTEGRATION] Position synced from fill: cur_pos=%d net_qty=%.6f",
-            self.app.cur_pos,
-            self.trade_manager.position.net_qty,
-        )
-
-        # CRITICAL: Persist position after every fill for crash recovery
-        self._persist_state()
-
-        # FIX P0-6: Position validation after fill
-        # In hedging mode, skip validation during transitions (pending close + new entry = mixed positions)
-        pending_closes = getattr(self.app, "_pending_closes", set())
-        if pending_closes:
-            LOG.debug(
-                "[VALIDATION] Skipped during hedging transition (pending_closes=%d)",
-                len(pending_closes),
-            )
-        else:
-            # Use the already-synced cur_pos as expected direction.
-            # Deriving from order.side (1 if BUY else -1) is wrong in hedging mode:
-            # a BUY that closes a SHORT leaves cur_pos=0, not 1.
-            # cur_pos was just synced from TradeManager above — that IS the ground truth.
-            expected_direction = self.app.cur_pos
-            self._validate_position_after_fill(expected_direction, order)
-
-        # Request position update for reconciliation (may timeout on cTrader)
-        self.trade_manager.request_positions()
-
-        # Enable trailing stop after entry
-        if hasattr(self.app, "param_manager"):
-            distance = self.app.param_manager.get(
-                self.app.symbol,
-                "trailing_stop_distance_pct",
-                timeframe=self.app.timeframe_label,
-                broker="default",
-                default=0.20,
-            )
-            self.enable_trailing_stop(distance_pct=float(distance))
+        self._store_entry_state(order)
+        self._finalize_entry_fill(order)
 
     def on_order_rejected(self, order: Order):
         """
