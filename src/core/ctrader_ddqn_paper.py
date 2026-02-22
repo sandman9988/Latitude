@@ -2516,7 +2516,48 @@ class CTraderFixApp(fix.Application):
 
     # ── Harvester tick evaluation ─────────────────────────────────────────
 
-    def _evaluate_harvester_on_tick(self):  # noqa: PLR0912
+    def _log_harvester_debug_tick(self, now: float) -> None:
+        """Emit once-per-interval debug log for harvester tick evaluations."""
+        if not hasattr(self, "_last_harvester_debug_log"):
+            self._last_harvester_debug_log = 0.0
+        if now - self._last_harvester_debug_log <= HARVESTER_DEBUG_INTERVAL:
+            return
+        tracker_count = len(self.mfe_mae_trackers) if hasattr(self, "mfe_mae_trackers") else 0
+        LOG.debug(
+            "[HARVESTER_DEBUG] Eval tick: bid=%s ask=%s bars=%d trackers=%d",
+            self.best_bid, self.best_ask,
+            len(self.bars) if hasattr(self, "bars") else 0,
+            tracker_count,
+        )
+        if tracker_count > 0:
+            for pos_id, tracker in self.mfe_mae_trackers.items():
+                LOG.debug(
+                    "[HARVESTER_DEBUG] Tracker %s: entry=%.2f dir=%d mfe=%.4f mae=%.4f",
+                    pos_id, getattr(tracker, "entry_price", 0), getattr(tracker, "direction", 0),
+                    getattr(tracker, "mfe", 0), getattr(tracker, "mae", 0),
+                )
+        self._last_harvester_debug_log = now
+
+    def _try_close_tracker_position(
+        self, position_id: str, mid_price: float, tracker, exit_conf: float
+    ) -> None:
+        """Attempt to close a specific tracked position via trade_integration."""
+        self._pending_closes.add(position_id)
+        LOG.info(
+            "[TICK_EXIT] Harvester CLOSE %s @ %.2f conf=%.2f | entry=%.2f MFE=%.4f MAE=%.4f dir=%d",
+            position_id, mid_price, exit_conf,
+            tracker.entry_price, tracker.mfe, tracker.mae, tracker.direction,
+        )
+        if not (hasattr(self, "trade_integration") and hasattr(self.trade_integration, "close_position")):
+            return
+        ticket = getattr(tracker, "position_ticket", None)
+        if not ticket:
+            LOG.warning("[TICK_EXIT] No broker ticket for position %s, using legacy close", position_id)
+        success = self.trade_integration.close_position(position_id=position_id, reason="TICK_HARVESTER")
+        if not success:
+            self._pending_closes.discard(position_id)
+
+    def _evaluate_harvester_on_tick(self):
         """
         Full Harvester evaluation on every tick for responsive exit decisions.
         Evaluates EACH individual position independently (not net position).
@@ -2524,35 +2565,11 @@ class CTraderFixApp(fix.Application):
 
         Hedging mode compatible: tracks which positions have pending close orders.
         """
-        # DEBUG: Log entry to this function once per minute
-        if not hasattr(self, "_last_harvester_debug_log"):
-            self._last_harvester_debug_log = 0
         now = time.time()
-        if now - self._last_harvester_debug_log > HARVESTER_DEBUG_INTERVAL:
-            tracker_count = len(self.mfe_mae_trackers) if hasattr(self, "mfe_mae_trackers") else 0
-            LOG.debug(
-                "[HARVESTER_DEBUG] Eval tick: bid=%s ask=%s bars=%d trackers=%d",
-                self.best_bid,
-                self.best_ask,
-                len(self.bars) if hasattr(self, "bars") else 0,
-                tracker_count,
-            )
-            if tracker_count > 0:
-                for pos_id, tracker in self.mfe_mae_trackers.items():
-                    LOG.debug(
-                        "[HARVESTER_DEBUG] Tracker %s: entry=%.2f dir=%d mfe=%.4f mae=%.4f",
-                        pos_id,
-                        getattr(tracker, "entry_price", 0),
-                        getattr(tracker, "direction", 0),
-                        getattr(tracker, "mfe", 0),
-                        getattr(tracker, "mae", 0),
-                    )
-            self._last_harvester_debug_log = now
+        self._log_harvester_debug_tick(now)
 
         # Need valid prices and bars
-        if self.best_bid is None or self.best_ask is None:
-            return
-        if len(self.bars) == 0:
+        if self.best_bid is None or self.best_ask is None or not self.bars:
             return
 
         mid_price = (self.best_bid + self.best_ask) / 2.0
@@ -2613,39 +2630,7 @@ class CTraderFixApp(fix.Application):
                 # exit_action: 0=HOLD, 1=CLOSE
 
                 if exit_action == 1:
-                    # Mark as pending to prevent duplicate close orders
-                    self._pending_closes.add(position_id)
-
-                    LOG.info(
-                        "[TICK_EXIT] Harvester CLOSE %s @ %.2f conf=%.2f | entry=%.2f MFE=%.4f MAE=%.4f dir=%d",
-                        position_id,
-                        mid_price,
-                        exit_conf,
-                        tracker.entry_price,
-                        tracker.mfe,
-                        tracker.mae,
-                        tracker.direction,
-                    )
-                    # Close this specific position (not net)
-                    if hasattr(self, "trade_integration") and hasattr(self.trade_integration, "close_position"):
-                        # HEDGING MODE: Get broker ticket from tracker
-                        ticket = getattr(tracker, "position_ticket", None)
-                        if not ticket:
-                            LOG.warning("[TICK_EXIT] No broker ticket for position %s, using legacy close", position_id)
-                            # Legacy fallback: close by position_id
-                            success = self.trade_integration.close_position(
-                                position_id=position_id, reason="TICK_HARVESTER"
-                            )
-                        else:
-                            # HEDGING MODE: Close by broker ticket (not position_id)
-                            # This ensures correct position is closed even after crashes
-                            success = self.trade_integration.close_position(
-                                position_id=position_id, reason="TICK_HARVESTER"
-                            )
-
-                        if not success:
-                            # Failed to submit, allow retry next tick
-                            self._pending_closes.discard(position_id)
+                    self._try_close_tracker_position(position_id, mid_price, tracker, exit_conf)
 
             except Exception as e:
                 LOG.error("[TICK_EXIT] Error evaluating position %s: %s", position_id, e, exc_info=True)

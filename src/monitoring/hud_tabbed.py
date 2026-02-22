@@ -132,6 +132,89 @@ _QTY_FLOOR: float = 1e-9               # guard division in qty-usage ratio
 _IMBALANCE_DIRECTION_HINT: float = 0.1  # |imbalance| > 0.1 used for directional hint
 
 
+def _hud_period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
+    """Compute period performance metrics from a list of trade dicts."""
+    if not pts:
+        return {}
+    pnls = [t.get("pnl", 0.0) for t in pts]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    n = len(pnls)
+    total_pnl = sum(pnls)
+    win_rate = len(wins) / n
+    avg_win = sum(wins) / len(wins) if wins else 0.0
+    avg_loss = sum(losses) / len(losses) if losses else 0.0
+    profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
+    expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+    mean_p = total_pnl / n
+    variance = sum((p - mean_p) ** 2 for p in pnls) / n
+    std_p = math.sqrt(variance) if variance > 0 else 0.0
+    sharpe = mean_p / std_p if std_p > 0 else 0.0
+    down_var = sum(p ** 2 for p in pnls if p < 0) / n
+    sortino = mean_p / math.sqrt(down_var) if down_var > 0 else 0.0
+    cum = 0.0
+    peak_equity = starting_equity
+    max_dd_pct = 0.0
+    for p in pnls:
+        cum += p
+        equity = starting_equity + cum
+        peak_equity = max(peak_equity, equity)
+        if peak_equity > 0:
+            dd_pct = (peak_equity - equity) / peak_equity * 100.0
+            max_dd_pct = max(max_dd_pct, dd_pct)
+    max_cw = max_cl = cw = cl = 0
+    for p in pnls:
+        if p > 0:
+            cw += 1
+            cl = 0
+        else:
+            cl += 1
+            cw = 0
+        max_cw = max(max_cw, cw)
+        max_cl = max(max_cl, cl)
+    return {
+        "total_trades": n, "win_rate": win_rate, "total_pnl": total_pnl,
+        "sharpe_ratio": sharpe, "sortino_ratio": sortino,
+        "omega_ratio": min(profit_factor, 99.0), "max_drawdown": max_dd_pct,
+        "best_trade": max(pnls), "worst_trade": min(pnls), "avg_trade": mean_p,
+        "profit_factor": min(profit_factor, 99.0), "expectancy": expectancy,
+        "avg_win": avg_win, "avg_loss": avg_loss,
+        "max_consec_wins": max_cw, "max_consec_losses": max_cl,
+        "recent_pnl_sequence": pnls,
+    }
+
+
+def _hud_parse_dt(s: str):
+    """Parse an ISO-format datetime string, returning None on failure."""
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _classify_trades_by_period(trades: list) -> tuple[list, list, list]:
+    """Partition trade records into (daily, weekly, monthly) buckets by entry_time."""
+    now = datetime.now(UTC)
+    today = now.date()
+    week_start = today - timedelta(days=today.weekday())
+    month_start = today.replace(day=1)
+    daily: list = []
+    weekly: list = []
+    monthly: list = []
+    for t in trades:
+        dt = _hud_parse_dt(t.get("entry_time", ""))
+        if dt is None:
+            continue
+        d = dt.date()
+        if d == today:
+            daily.append(t)
+        if d >= week_start:
+            weekly.append(t)
+        if d >= month_start:
+            monthly.append(t)
+    return daily, weekly, monthly
+
+
 class TabbedHUD:
     """Real-time tabbed HUD for trading bot monitoring"""
 
@@ -447,7 +530,7 @@ class TabbedHUD:
                 )
         return profiles
 
-    def _compute_metrics_from_trade_log(self):  # noqa: PLR0915
+    def _compute_metrics_from_trade_log(self):
         """Compute performance metrics directly from trade_log.jsonl when snapshot is empty"""
         trade_file = Path("data/trade_log.jsonl")
         if not trade_file.exists():
@@ -465,99 +548,11 @@ class TabbedHUD:
         if not trades:
             return
 
-        def _period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
-            if not pts:
-                return {}
-            pnls = [t.get("pnl", 0.0) for t in pts]
-            wins = [p for p in pnls if p > 0]
-            losses = [p for p in pnls if p < 0]
-            n = len(pnls)
-            total_pnl = sum(pnls)
-            win_rate = len(wins) / n
-            avg_win = sum(wins) / len(wins) if wins else 0.0
-            avg_loss = sum(losses) / len(losses) if losses else 0.0
-            profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
-            expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
-            mean_p = total_pnl / n
-            variance = sum((p - mean_p) ** 2 for p in pnls) / n
-            std_p = math.sqrt(variance) if variance > 0 else 0.0
-            sharpe = mean_p / std_p if std_p > 0 else 0.0
-            down_var = sum(p ** 2 for p in pnls if p < 0) / n
-            sortino = mean_p / math.sqrt(down_var) if down_var > 0 else 0.0
-            # Max drawdown as % of peak equity.
-            # peak_equity starts at starting_equity (the account baseline) so a
-            # run of losses from the very first trade still gives a sensible %.
-            # e.g. $1 000 drop on a $100 000 BTC account = 1.0%; same drop on a
-            # $10 000 forex account = 10.0%.
-            cum = 0.0
-            peak_equity = starting_equity
-            max_dd_pct = 0.0
-            for p in pnls:
-                cum += p
-                equity = starting_equity + cum
-                peak_equity = max(peak_equity, equity)
-                if peak_equity > 0:
-                    dd_pct = (peak_equity - equity) / peak_equity * 100.0
-                    max_dd_pct = max(max_dd_pct, dd_pct)
-            # Consecutive streaks
-            max_cw = max_cl = cw = cl = 0
-            for p in pnls:
-                if p > 0:
-                    cw += 1
-                    cl = 0
-                else:
-                    cl += 1
-                    cw = 0
-                max_cw = max(max_cw, cw)
-                max_cl = max(max_cl, cl)
-            return {
-                "total_trades": n,
-                "win_rate": win_rate,
-                "total_pnl": total_pnl,
-                "sharpe_ratio": sharpe,
-                "sortino_ratio": sortino,
-                "omega_ratio": min(profit_factor, 99.0),
-                "max_drawdown": max_dd_pct,
-                "best_trade": max(pnls),
-                "worst_trade": min(pnls),
-                "avg_trade": mean_p,
-                "profit_factor": min(profit_factor, 99.0),
-                "expectancy": expectancy,
-                "avg_win": avg_win,
-                "avg_loss": avg_loss,
-                "max_consec_wins": max_cw,
-                "max_consec_losses": max_cl,
-                "recent_pnl_sequence": pnls,
-            }
-
-        def _parse_dt(s: str):
-            try:
-                return datetime.fromisoformat(s.replace("Z", "+00:00"))
-            except Exception:
-                return None
-
-        now = datetime.now(UTC)
-        today = now.date()
-        week_start = today - timedelta(days=today.weekday())
-        month_start = today.replace(day=1)
-
-        daily, weekly, monthly = [], [], []
-        for t in trades:
-            dt = _parse_dt(t.get("entry_time", ""))
-            if dt is None:
-                continue
-            d = dt.date()
-            if d == today:
-                daily.append(t)
-            if d >= week_start:
-                weekly.append(t)
-            if d >= month_start:
-                monthly.append(t)
-
-        self.daily_metrics = _period_metrics(daily, starting_equity)
-        self.weekly_metrics = _period_metrics(weekly, starting_equity)
-        self.monthly_metrics = _period_metrics(monthly, starting_equity)
-        self.lifetime_metrics = _period_metrics(trades, starting_equity)
+        daily, weekly, monthly = _classify_trades_by_period(trades)
+        self.daily_metrics = _hud_period_metrics(daily, starting_equity)
+        self.weekly_metrics = _hud_period_metrics(weekly, starting_equity)
+        self.monthly_metrics = _hud_period_metrics(monthly, starting_equity)
+        self.lifetime_metrics = _hud_period_metrics(trades, starting_equity)
 
     def _price_decimals(self, ref_price: float = 0.0) -> int:
         """Return the correct number of decimal places for the active symbol.
