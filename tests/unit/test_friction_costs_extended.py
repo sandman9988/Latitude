@@ -12,6 +12,9 @@ from unittest.mock import patch
 
 import pytest
 
+# Weekday that is guaranteed NOT to be today — avoids triple-swap inflation
+_NON_TODAY_WEEKDAY = (datetime.now(UTC).weekday() + 3) % 7
+
 from src.risk.friction_costs import (
     FrictionCalculator,
     SlippageModel,
@@ -89,7 +92,7 @@ class TestSwapPips:
         c.costs.swap_long = -7.2
         c.costs.swap_short = -4.5
         c.costs.pip_value_per_lot = 10.0
-        c.costs.triple_swap_day = 2  # Wednesday
+        c.costs.triple_swap_day = _NON_TODAY_WEEKDAY  # Avoid triple-swap Day inflation
         return c
 
     def test_intraday_no_rollover_is_zero(self, calc):
@@ -141,7 +144,7 @@ class TestSwapPercentage:
         c.costs.swap_long = -2.5  # -2.5% annual
         c.costs.swap_short = -1.0
         c.costs.contract_size = 1.0  # For BTC: 1 contract = 1 BTC
-        c.costs.triple_swap_day = 2
+        c.costs.triple_swap_day = _NON_TODAY_WEEKDAY  # Avoid triple-swap inflation
         return c
 
     def test_percentage_buy_crosses_rollover(self, calc):

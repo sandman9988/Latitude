@@ -12,29 +12,41 @@ Implements multiple circuit breakers to halt trading when risk escalates:
 
 # pylint: disable=line-too-long
 
+import json
 import logging
+import time as _time
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 
+from src.constants import (
+    CONSEC_LOSSES_MAX,
+    DEFAULT_COOLDOWN_MINUTES,
+    KURTOSIS_BREAKER_THRESHOLD,
+    KURTOSIS_MIN_SAMPLES,
+    SORTINO_THRESHOLD,
+)
 from src.persistence.learned_parameters import LearnedParametersManager
 from src.utils.safe_math import SAFE_EPSILON, SafeMath
+from src.utils.safe_utils import save_json_atomic
 
 LOG = logging.getLogger(__name__)
 
-DEFAULT_BREAKER_COOLDOWN_MINUTES: int = 60
-SORTINO_THRESHOLD_DEFAULT: float = 0.5
+DEFAULT_BREAKER_COOLDOWN_MINUTES: int = DEFAULT_COOLDOWN_MINUTES
+SORTINO_THRESHOLD_DEFAULT: float = SORTINO_THRESHOLD
 SORTINO_MIN_TRADES: int = 20
 SORTINO_HISTORY_LIMIT: int = 100
-KURTOSIS_THRESHOLD_DEFAULT: float = 5.0
-KURTOSIS_MIN_SAMPLES: int = 30
+KURTOSIS_THRESHOLD_DEFAULT: float = KURTOSIS_BREAKER_THRESHOLD
+KURTOSIS_MIN_SAMPLES_DEFAULT: int = KURTOSIS_MIN_SAMPLES
 KURTOSIS_HISTORY_LIMIT: int = 100
 KURTOSIS_MIN_SAMPLE_SIZE: int = 4
 DRAWDOWN_DEFAULT_THRESHOLDS: dict[float, float] = {0.05: 0.9, 0.10: 0.75, 0.15: 0.5, 0.20: 0.0}
 DRAWDOWN_COOLDOWN_MINUTES: int = 240
-CONSEC_LOSSES_DEFAULT_MAX: int = 5
+CONSEC_LOSSES_DEFAULT_MAX: int = CONSEC_LOSSES_MAX
 CONSEC_LOSSES_COOLDOWN_MINUTES: int = 180
 MANAGER_DEFAULT_SORTINO: float = SORTINO_THRESHOLD_DEFAULT
 MANAGER_DEFAULT_KURTOSIS: float = KURTOSIS_THRESHOLD_DEFAULT
@@ -61,14 +73,14 @@ class BreakerState:
         self.trip_reason = reason
         self.trip_value = value
         self.threshold = threshold
-        LOG.warning("🚨 CIRCUIT BREAKER TRIPPED: %s", self.name)
-        LOG.warning("   Reason: %s", reason)
-        LOG.warning("   Value: %.4f | Threshold: %.4f", value, threshold)
+        LOG.warning("[CIRCUIT_BREAKER] 🚨 TRIPPED: %s", self.name)
+        LOG.warning("[CIRCUIT_BREAKER]    Reason: %s", reason)
+        LOG.warning("[CIRCUIT_BREAKER]    Value: %.4f | Threshold: %.4f", value, threshold)
 
     def reset(self):
         """Reset the breaker"""
         if self.is_tripped:
-            LOG.info("✓ Circuit breaker reset: %s", self.name)
+            LOG.info("[CIRCUIT_BREAKER] ✓ Reset: %s", self.name)
         self.is_tripped = False
         self.trip_time = None
         self.trip_reason = ""
@@ -108,16 +120,13 @@ class SortinoBreaker:
         """
         self.threshold = threshold
         self.min_trades = min_trades
-        self.returns: list[float] = []
+        self.returns: deque[float] = deque(maxlen=SORTINO_HISTORY_LIMIT)
         self.state = BreakerState(name="Sortino", threshold=threshold, cooldown_minutes=120)  # 2 hour cooldown
 
     def update(self, trade_return: float):
         """Add a trade return"""
         self.returns.append(trade_return)
-
-        # Limit history
-        if len(self.returns) > SORTINO_HISTORY_LIMIT:
-            self.returns = self.returns[-SORTINO_HISTORY_LIMIT:]
+        # deque(maxlen=...) handles eviction automatically
 
     def check(self) -> bool:
         """
@@ -173,7 +182,7 @@ class KurtosisBreaker:
     High kurtosis = extreme moves more likely = danger
     """
 
-    def __init__(self, threshold: float = KURTOSIS_THRESHOLD_DEFAULT, min_samples: int = KURTOSIS_MIN_SAMPLES):
+    def __init__(self, threshold: float = KURTOSIS_THRESHOLD_DEFAULT, min_samples: int = KURTOSIS_MIN_SAMPLES_DEFAULT):
         """
         Args:
             threshold: Maximum acceptable kurtosis (normal distribution = 3)
@@ -181,7 +190,7 @@ class KurtosisBreaker:
         """
         self.threshold = threshold
         self.min_samples = min_samples
-        self.returns: list[float] = []
+        self.returns: deque[float] = deque(maxlen=KURTOSIS_HISTORY_LIMIT)
         self.state = BreakerState(
             name="Kurtosis", threshold=threshold, cooldown_minutes=DEFAULT_BREAKER_COOLDOWN_MINUTES
         )
@@ -189,10 +198,7 @@ class KurtosisBreaker:
     def update(self, trade_return: float):
         """Add a trade return"""
         self.returns.append(trade_return)
-
-        # Limit history
-        if len(self.returns) > KURTOSIS_HISTORY_LIMIT:
-            self.returns = self.returns[-KURTOSIS_HISTORY_LIMIT:]
+        # deque(maxlen=...) handles eviction automatically
 
     def check(self) -> bool:
         """Check if breaker should trip"""
@@ -548,7 +554,7 @@ class CircuitBreakerManager:
         for breaker in self.breakers:
             breaker.state.reset()
         self.positions_closed_on_trip = False  # Reset flag
-        LOG.info("All circuit breakers reset")
+        LOG.info("[CIRCUIT_BREAKER] All breakers reset")
 
     def reset_if_cooldown_elapsed(self):
         """Auto-reset breakers after cooldown"""
@@ -605,38 +611,38 @@ class CircuitBreakerManager:
         Args:
             filepath: Path to save state file
         """
-        import json  # noqa: PLC0415
-        import time as _time  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
+
+        def _breaker_dict(breaker_state: BreakerState, extra: dict | None = None) -> dict:
+            d = {
+                "is_tripped": breaker_state.is_tripped,
+                "trip_time": breaker_state.trip_time.isoformat() if breaker_state.trip_time else None,
+                "trip_reason": breaker_state.trip_reason,
+                "trip_value": breaker_state.trip_value,
+                "threshold": breaker_state.threshold,
+                "cooldown_minutes": breaker_state.cooldown_minutes,
+            }
+            if extra:
+                d.update(extra)
+            return d
 
         state = {
             "timestamp": _time.time(),
-            "sortino": {
-                "is_tripped": self.sortino_breaker.state.is_tripped,
-                "trip_time": self.sortino_breaker.state.trip_time,
+            "sortino": _breaker_dict(self.sortino_breaker.state, {
                 "returns": list(self.sortino_breaker.returns),
-            },
-            "kurtosis": {
-                "is_tripped": self.kurtosis_breaker.state.is_tripped,
-                "trip_time": self.kurtosis_breaker.state.trip_time,
+            }),
+            "kurtosis": _breaker_dict(self.kurtosis_breaker.state, {
                 "returns": list(self.kurtosis_breaker.returns),
-            },
-            "drawdown": {
-                "is_tripped": self.drawdown_breaker.state.is_tripped,
-                "trip_time": self.drawdown_breaker.state.trip_time,
+            }),
+            "drawdown": _breaker_dict(self.drawdown_breaker.state, {
                 "current_drawdown": self.drawdown_breaker.current_drawdown,
                 "peak_equity": self.drawdown_breaker.peak_equity,
-            },
-            "consecutive_losses": {
-                "is_tripped": self.consecutive_losses_breaker.state.is_tripped,
-                "trip_time": self.consecutive_losses_breaker.state.trip_time,
+            }),
+            "consecutive_losses": _breaker_dict(self.consecutive_losses_breaker.state, {
                 "consecutive_losses": self.consecutive_losses_breaker.consecutive_losses,
-            },
+            }),
         }
 
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        with open(filepath, "w") as f:
-            json.dump(state, f, indent=2)
+        save_json_atomic(filepath, state)
 
     def restore_state(self, filepath: str = "data/circuit_breakers.json"):
         """
@@ -648,9 +654,6 @@ class CircuitBreakerManager:
         Returns:
             True if state restored, False if file not found
         """
-        import json  # noqa: PLC0415
-        from collections import deque  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
 
         if not Path(filepath).exists():
             return False
@@ -659,30 +662,40 @@ class CircuitBreakerManager:
             with open(filepath) as f:
                 state = json.load(f)
 
+            def _restore_breaker(breaker_state: BreakerState, saved: dict) -> None:
+                breaker_state.is_tripped = saved.get("is_tripped", False)
+                _tt = saved.get("trip_time")
+                if isinstance(_tt, str):
+                    try:
+                        breaker_state.trip_time = datetime.fromisoformat(_tt)
+                    except (ValueError, TypeError):
+                        breaker_state.trip_time = None
+                else:
+                    breaker_state.trip_time = None
+                breaker_state.trip_reason = saved.get("trip_reason", "")
+                breaker_state.trip_value = saved.get("trip_value", 0.0)
+                breaker_state.threshold = saved.get("threshold", breaker_state.threshold)
+
             # Restore sortino breaker
             if "sortino" in state:
-                self.sortino_breaker.state.is_tripped = state["sortino"]["is_tripped"]
-                self.sortino_breaker.state.trip_time = state["sortino"].get("trip_time")
-                self.sortino_breaker.returns = deque(state["sortino"]["returns"], maxlen=100)
+                _restore_breaker(self.sortino_breaker.state, state["sortino"])
+                self.sortino_breaker.returns = deque(state["sortino"].get("returns", []), maxlen=100)
 
             # Restore kurtosis breaker
             if "kurtosis" in state:
-                self.kurtosis_breaker.state.is_tripped = state["kurtosis"]["is_tripped"]
-                self.kurtosis_breaker.state.trip_time = state["kurtosis"].get("trip_time")
-                self.kurtosis_breaker.returns = deque(state["kurtosis"]["returns"], maxlen=100)
+                _restore_breaker(self.kurtosis_breaker.state, state["kurtosis"])
+                self.kurtosis_breaker.returns = deque(state["kurtosis"].get("returns", []), maxlen=100)
 
             # Restore drawdown breaker
             if "drawdown" in state:
-                self.drawdown_breaker.state.is_tripped = state["drawdown"]["is_tripped"]
-                self.drawdown_breaker.state.trip_time = state["drawdown"].get("trip_time")
-                self.drawdown_breaker.current_drawdown = state["drawdown"]["current_drawdown"]
-                self.drawdown_breaker.peak_equity = state["drawdown"]["peak_equity"]
+                _restore_breaker(self.drawdown_breaker.state, state["drawdown"])
+                self.drawdown_breaker.current_drawdown = state["drawdown"].get("current_drawdown", 0.0)
+                self.drawdown_breaker.peak_equity = state["drawdown"].get("peak_equity", 0.0)
 
             # Restore consecutive losses breaker
             if "consecutive_losses" in state:
-                self.consecutive_losses_breaker.state.is_tripped = state["consecutive_losses"]["is_tripped"]
-                self.consecutive_losses_breaker.state.trip_time = state["consecutive_losses"].get("trip_time")
-                self.consecutive_losses_breaker.consecutive_losses = state["consecutive_losses"]["consecutive_losses"]
+                _restore_breaker(self.consecutive_losses_breaker.state, state["consecutive_losses"])
+                self.consecutive_losses_breaker.consecutive_losses = state["consecutive_losses"].get("consecutive_losses", 0)
 
             LOG.info("[CIRCUIT-BREAKER] State restored from %s", filepath)
             return True

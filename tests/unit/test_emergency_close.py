@@ -52,8 +52,7 @@ class TestEmergencyPositionCloserInit:
         ti = _make_trade_integration()
         closer = EmergencyPositionCloser(ti)
         assert closer.trade_integration is ti
-        assert closer.close_attempts == 0
-        assert closer.max_retries == 3
+        assert closer.app is ti.app
 
 
 # ---------------------------------------------------------------------------

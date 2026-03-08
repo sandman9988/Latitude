@@ -75,6 +75,7 @@ class EarlyStopping:
 
         if improved:
             # New best found
+            old_best = self.best_value
             self.best_value = current_value
             self.best_epoch = self.wait_count
             self.wait_count = 0
@@ -86,7 +87,7 @@ class EarlyStopping:
             LOG.info(
                 "[EARLY-STOP] New best: %.4f (improved by %.4f)",
                 current_value,
-                abs(current_value - self.best_value),
+                abs(current_value - old_best),
             )
 
         else:

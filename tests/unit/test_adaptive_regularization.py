@@ -18,7 +18,7 @@ class TestInit:
         assert ar.dropout_min == pytest.approx(0.0)
         assert ar.dropout_max == pytest.approx(0.5)
         assert ar.adjustment_rate == pytest.approx(1.2)
-        assert ar.adjustment_history == []
+        assert list(ar.adjustment_history) == []
 
     def test_custom_values(self):
         ar = AdaptiveRegularization(
@@ -61,7 +61,7 @@ class TestIncrease:
     def test_history_recorded(self):
         ar = AdaptiveRegularization()
         ar.increase_regularization()
-        assert ar.adjustment_history == ["increase"]
+        assert list(ar.adjustment_history) == ["increase"]
 
     def test_multiple_increases(self):
         ar = AdaptiveRegularization(initial_l2=0.0001, adjustment_rate=1.5)
@@ -95,7 +95,7 @@ class TestDecrease:
     def test_history_recorded(self):
         ar = AdaptiveRegularization()
         ar.decrease_regularization()
-        assert ar.adjustment_history == ["decrease"]
+        assert list(ar.adjustment_history) == ["decrease"]
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ class TestUpdateFromSignal:
         ar = AdaptiveRegularization(initial_l2=0.001)
         ar.update_from_signal("CONTINUE_TRAINING")
         assert ar.l2_weight == pytest.approx(0.001)
-        assert ar.adjustment_history == []
+        assert list(ar.adjustment_history) == []
 
     def test_collect_more_data_no_change(self):
         ar = AdaptiveRegularization(initial_l2=0.001)
@@ -127,7 +127,7 @@ class TestUpdateFromSignal:
         ar = AdaptiveRegularization(initial_l2=0.001)
         ar.update_from_signal("UNKNOWN_SIGNAL")
         assert ar.l2_weight == pytest.approx(0.001)
-        assert ar.adjustment_history == []
+        assert list(ar.adjustment_history) == []
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ class TestReset:
         ar.reset(l2=0.005, dropout=0.3)
         assert ar.l2_weight == pytest.approx(0.005)
         assert ar.dropout_rate == pytest.approx(0.3)
-        assert ar.adjustment_history == []
+        assert list(ar.adjustment_history) == []
 
     def test_reset_clamps_to_range(self):
         ar = AdaptiveRegularization(l2_range=(1e-5, 0.01), dropout_range=(0.0, 0.5))
@@ -181,7 +181,7 @@ class TestReset:
         ar.reset(l2=None, dropout=None)
         # None means keep current value (no assignment in source)
         # But adjustment_history is still cleared
-        assert ar.adjustment_history == []
+        assert list(ar.adjustment_history) == []
 
     def test_reset_clears_history(self):
         ar = AdaptiveRegularization()
@@ -189,7 +189,7 @@ class TestReset:
         ar.decrease_regularization()
         assert len(ar.adjustment_history) == 2
         ar.reset(l2=0.001, dropout=0.1)
-        assert ar.adjustment_history == []
+        assert list(ar.adjustment_history) == []
 
 
 # ---------------------------------------------------------------------------

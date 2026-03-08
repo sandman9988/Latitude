@@ -29,7 +29,7 @@ WORKERS="${WORKERS:-$(nproc)}"  # default: all logical CPU cores
 THRESHOLD="${THRESHOLD:-1.0}"
 RETRAIN_ROUNDS="${RETRAIN_ROUNDS:-3}"    # warm-start re-runs for jobs below threshold
 EPOCHS="${EPOCHS:-3}"                    # training passes per dataset per job
-HISTORY_DIR="${HISTORY_DIR:-/home/renierdejager/Kinetra/data/master_standardized}"
+HISTORY_DIR="${HISTORY_DIR:-/home/renierdejager/Projects/Kinetra/data/master_standardized}"
 WATCH=1
 
 # Parse flags

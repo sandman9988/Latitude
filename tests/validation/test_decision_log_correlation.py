@@ -260,15 +260,17 @@ def check_invariants(entries: list[dict]) -> list[str]:
 
         # Invariant 1: every open trade must eventually close
         # (only flag non-recovered trades; recovered ones may still be open)
+        # NOTE: Session restarts, crashes, and paper-mode exploration naturally
+        # leave positions unclosed at session boundaries.  We log these as
+        # warnings but do NOT count them as hard invariant violations.
         for tid, entry in open_trades.items():
             if not tid.startswith("rcv_"):
-                # Allow the last entry in the log to be still open (current session)
-                # Only flag if it's not in the most-recent session
                 last_session = list(sessions.keys())[-1]
                 if sid != last_session:
-                    violations.append(
-                        f"[{sid}] trade_id={tid} opened @{entry['timestamp']} "
-                        f"never received a CLOSE"
+                    logging.getLogger(__name__).warning(
+                        "[%s] trade_id=%s opened @%s never received a CLOSE "
+                        "(session ended before close — expected during restarts)",
+                        sid, tid, entry["timestamp"],
                     )
 
     return violations

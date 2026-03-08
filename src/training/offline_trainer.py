@@ -45,6 +45,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from src.utils.mfe_mae import MFEMAECalculator
+
 LOG = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -66,7 +68,7 @@ _BAR_SPREAD_COL_IDX: int = 5       # Index of spread column in bar tuple
 class TradeRecord(NamedTuple):
     entry_bar_idx: int
     exit_bar_idx: int
-    direction: int      # 1 = LONG, -1 = SHORT
+    direction: int      # 1 LONG, -1 SHORT
     entry_price: float
     exit_price: float
     pnl_pts: float      # raw price-point P&L (instrument-agnostic)
@@ -147,12 +149,11 @@ class _Simulator:
         self._pt: float = 10 ** (-symbol_digits)  # broker points → price-unit multiplier
 
         # Position state
-        self.cur_pos: int = 0           # 0=flat, 1=long, -1=short
+        self.cur_pos: int = 0           # 0 flat, 1 long, -1 short
         self.entry_price: float = 0.0
         self.entry_bar_idx: int = 0
         self.entry_action: int = 0
-        self.mfe: float = 0.0
-        self.mae: float = 0.0
+        self._mfe_calc = MFEMAECalculator()  # single source of truth
         self.ticks_held: int = 0
         self.entry_spread_pts: float = 0.0  # spread at entry bar (broker points)
         self._cur_spread_pts: float = 0.0   # spread at current bar (broker points)
@@ -181,7 +182,7 @@ class _Simulator:
 
     def _try_entry(self, bar_idx: int, current_price: float) -> None:
         try:
-            action, conf, runway = self.policy.decide_entry(
+            action, _, _ = self.policy.decide_entry(
                 self.bars, imbalance=0.0, vpin_z=0.0, depth_ratio=1.0
             )
         except Exception as exc:
@@ -197,8 +198,7 @@ class _Simulator:
         self.entry_spread_pts = self._cur_spread_pts
         self.entry_bar_idx = bar_idx
         self.entry_action = action
-        self.mfe = 0.0
-        self.mae = 0.0
+        self._mfe_calc.start(current_price, direction)
         self.ticks_held = 0
 
         # Snapshot entry state for trigger experience
@@ -229,7 +229,7 @@ class _Simulator:
         action = 0
         if not hard_stop:
             try:
-                action, _conf = self.policy.decide_exit(
+                action, _ = self.policy.decide_exit(
                     self.bars,
                     current_price=current_price,
                     imbalance=0.0,
@@ -241,18 +241,20 @@ class _Simulator:
                 action = 0
 
         if action == 1 or hard_stop:
-            self._close_position(bar_idx, current_price, forced=hard_stop)
+            self._close_position(bar_idx, current_price)
 
     def _update_mfe_mae(self, current_price: float) -> None:
-        if self.entry_price <= 0:
-            return
-        excursion = (current_price - self.entry_price) * self.cur_pos
-        if excursion > 0:
-            self.mfe = max(self.mfe, excursion)
-        else:
-            self.mae = max(self.mae, -excursion)
+        self._mfe_calc.update(current_price)
 
-    def _close_position(self, bar_idx: int, exit_price: float, forced: bool = False) -> None:
+    @property
+    def mfe(self) -> float:
+        return self._mfe_calc.mfe
+
+    @property
+    def mae(self) -> float:
+        return self._mfe_calc.mae
+
+    def _close_position(self, bar_idx: int, exit_price: float) -> None:
         # Deduct round-trip spread cost (entry half-spread + exit half-spread = 1 full spread)
         spread_cost = (self.entry_spread_pts + self._cur_spread_pts) * self._pt
         pnl_pts = (exit_price - self.entry_price) * self.cur_pos - spread_cost
@@ -269,11 +271,7 @@ class _Simulator:
         capture_reward = float(np.clip(capture_ratio - 0.5, -REWARD_CLIP, REWARD_CLIP))
 
         if self.update_policy and self.entry_state is not None:
-            self._add_experiences(
-                trigger_reward=trigger_reward,
-                capture_reward=capture_reward,
-                exit_price=exit_price,
-            )
+            self._add_experiences(trigger_reward=trigger_reward, capture_reward=capture_reward)
 
         self.trades.append(TradeRecord(
             entry_bar_idx=self.entry_bar_idx,
@@ -300,12 +298,9 @@ class _Simulator:
         self.entry_price = 0.0
         self.entry_state = None
         self.ticks_held = 0
-        self.mfe = 0.0
-        self.mae = 0.0
+        self._mfe_calc.reset()
 
-    def _add_experiences(
-        self, trigger_reward: float, capture_reward: float, exit_price: float
-    ) -> None:
+    def _add_experiences(self, trigger_reward: float, capture_reward: float) -> None:
         try:
             trig = self.policy.trigger
             next_state = (
@@ -472,12 +467,7 @@ class OfflineTrainer:
         # every entry the untrained network attempts → 0 val trades → ZΩ=0.
         # Restore originals after policy construction so child processes don't
         # bleed into each other (each is a spawned process, so this is safe).
-        _orig_eps_start    = os.environ.get("EPSILON_START")
-        _orig_eps_end      = os.environ.get("EPSILON_END")
-        _orig_disable_gates = os.environ.get("DISABLE_GATES")
-        os.environ["EPSILON_START"]  = str(self.epsilon_start)
-        os.environ["EPSILON_END"]    = str(self.epsilon_end)
-        os.environ["DISABLE_GATES"]  = "1"   # bypass feasibility/conf gates
+        _orig_eps_start, _orig_eps_end, _orig_disable_gates = self._set_offline_env_vars(os)
 
         # Build policy — training enabled
         policy = DualPolicy(
@@ -502,71 +492,14 @@ class OfflineTrainer:
         _total_bars_all_epochs = len(train_bars) * self.n_epochs
         _progress_every = max(50, len(train_bars) // 100)   # ~100 HUD updates per epoch
 
-        total_train_steps = 0
-        total_train_trades = 0
-
-        for epoch in range(self.n_epochs):
-            # Reset epsilon at the start of each epoch so the policy re-explores.
-            # Warm weights mean less randomness is needed; reduce ε slightly each epoch.
-            epoch_eps_start = self.epsilon_start * (0.7 ** epoch)
-            epoch_eps_start = max(epoch_eps_start, self.epsilon_end * 2)  # keep some exploration
-            policy.trigger.epsilon = epoch_eps_start
-            if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
-                policy.harvester.epsilon = epoch_eps_start
-
-            LOG.info(
-                "[OFFLINE] %s epoch %d/%d  ε_start=%.3f",
-                label, epoch + 1, self.n_epochs, epoch_eps_start,
-            )
-
-            # Reset any stale position state from the previous epoch.
-            # If the prior epoch ended mid-trade (on_exit never called),
-            # trigger.decide_entry would block every bar with 'current_position != 0'.
-            policy.current_position = 0
-
-            sim = _Simulator(policy, update_policy=True, symbol_digits=self.symbol_digits)
-            epoch_bar_offset = epoch * len(train_bars)
-
-            for i, bar in enumerate(train_bars):
-                sim.step(bar, i)
-                if i % self.train_every == 0 and i > 0:
-                    try:
-                        policy.train_step()
-                        total_train_steps += 1
-                    except Exception as exc:
-                        LOG.debug("[OFFLINE] train_step failed at bar %d: %s", i, exc)
-
-                # Emit live progress for HUD every _progress_every bars
-                if i % _progress_every == 0:
-                    _trig = policy.trigger
-                    _harv = policy.harvester
-                    _global_bar = epoch_bar_offset + i
-                    try:
-                        _tmp = _progress_path.with_suffix(".tmp")
-                        _tmp.write_text(json.dumps({
-                            "symbol":            self.symbol,
-                            "timeframe_minutes": self.timeframe_minutes,
-                            "bar":               _global_bar,
-                            "total_bars":        _total_bars_all_epochs,
-                            "pct":               round(_global_bar / _total_bars_all_epochs * 100, 1),
-                            "epoch":             epoch + 1,
-                            "n_epochs":          self.n_epochs,
-                            "train_steps":       total_train_steps,
-                            "trades":            total_train_trades + len(sim.trades),
-                            "epsilon":           round(float(_trig.epsilon), 4),
-                            "beta":              round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
-                            "trigger_buf":       int(_trig.buffer.size) if _trig.buffer else 0,
-                            "harvester_buf":     int(_harv.buffer.size) if _harv.buffer else 0,
-                        }))
-                        _tmp.replace(_progress_path)
-                    except Exception:
-                        pass
-
-            total_train_trades += len(sim.trades)
-            LOG.info(
-                "[OFFLINE] %s epoch %d/%d done: %d trades, %d gradient steps",
-                label, epoch + 1, self.n_epochs, len(sim.trades), total_train_steps,
-            )
+        total_train_steps, total_train_trades = self._run_training_epochs(
+            policy,
+            train_bars,
+            label,
+            _progress_path,
+            _total_bars_all_epochs,
+            _progress_every,
+        )
 
         _progress_path.unlink(missing_ok=True)   # clean up when done
 
@@ -580,22 +513,7 @@ class OfflineTrainer:
         # CRITICAL: reset stale position state from training. If the last epoch
         # ended with an open trade, policy.current_position stays non-zero,
         # causing trigger.decide_entry to return 0 for every val bar → val=0.
-        policy.current_position = 0
-        policy.trigger.epsilon = self.epsilon_end
-        if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
-            policy.harvester.epsilon = self.epsilon_end
-
-        val_sim = _Simulator(policy, update_policy=False, symbol_digits=self.symbol_digits)
-        for i, bar in enumerate(val_bars):
-            val_sim.step(bar, i)
-
-        val_pnl = [t.pnl_pts for t in val_sim.trades]
-        score = z_omega(val_pnl)
-
-        LOG.info(
-            "[OFFLINE] %s val: %d trades, ZOmega=%.4f",
-            label, len(val_sim.trades), score,
-        )
+        score, val_trades = self._run_validation(policy, val_bars, label)
 
         # ── Save weights ───────────────────────────────────────────────────────
         weights_path = self._save_weights(policy, label)
@@ -608,11 +526,142 @@ class OfflineTrainer:
             timeframe_minutes=self.timeframe_minutes,
             z_omega=score,
             train_trades=total_train_trades,
-            val_trades=len(val_sim.trades),
+            val_trades=val_trades,
             total_train_steps=total_train_steps,
             elapsed_s=elapsed,
             weights_path=weights_path,
         )
+
+    def _set_offline_env_vars(self, os_module) -> tuple[str | None, str | None, str | None]:
+        """Set offline training env vars and return original values."""
+        orig_eps_start = os_module.environ.get("EPSILON_START")
+        orig_eps_end = os_module.environ.get("EPSILON_END")
+        orig_disable_gates = os_module.environ.get("DISABLE_GATES")
+        os_module.environ["EPSILON_START"] = str(self.epsilon_start)
+        os_module.environ["EPSILON_END"] = str(self.epsilon_end)
+        os_module.environ["DISABLE_GATES"] = "1"  # bypass feasibility/conf gates
+        return orig_eps_start, orig_eps_end, orig_disable_gates
+
+    def _run_training_epochs(
+        self,
+        policy,
+        train_bars: list,
+        label: str,
+        progress_path: Path,
+        total_bars_all_epochs: int,
+        progress_every: int,
+    ) -> tuple[int, int]:
+        """Run training epochs and return (total_train_steps, total_train_trades)."""
+        total_train_steps = 0
+        total_train_trades = 0
+        for epoch in range(self.n_epochs):
+            epoch_eps_start = self.epsilon_start * (0.7 ** epoch)
+            epoch_eps_start = max(epoch_eps_start, self.epsilon_end * 2)
+            policy.trigger.epsilon = epoch_eps_start
+            if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
+                policy.harvester.epsilon = epoch_eps_start
+
+            LOG.info(
+                "[OFFLINE] %s epoch %d/%d  ε_start=%.3f",
+                label, epoch + 1, self.n_epochs, epoch_eps_start,
+            )
+
+            policy.current_position = 0
+            sim = _Simulator(policy, update_policy=True, symbol_digits=self.symbol_digits)
+            epoch_bar_offset = epoch * len(train_bars)
+
+            for i, bar in enumerate(train_bars):
+                sim.step(bar, i)
+                total_train_steps = self._maybe_train_step(policy, i, total_train_steps)
+                self._maybe_emit_progress(
+                    policy,
+                    sim,
+                    i,
+                    epoch,
+                    epoch_bar_offset,
+                    total_train_trades,
+                    total_train_steps,
+                    progress_path,
+                    total_bars_all_epochs,
+                    progress_every,
+                )
+
+            total_train_trades += len(sim.trades)
+            LOG.info(
+                "[OFFLINE] %s epoch %d/%d done: %d trades, %d gradient steps",
+                label, epoch + 1, self.n_epochs, len(sim.trades), total_train_steps,
+            )
+        return total_train_steps, total_train_trades
+
+    def _maybe_train_step(self, policy, bar_idx: int, total_train_steps: int) -> int:
+        if bar_idx % self.train_every != 0 or bar_idx == 0:
+            return total_train_steps
+        try:
+            policy.train_step()
+            return total_train_steps + 1
+        except Exception as exc:
+            LOG.debug("[OFFLINE] train_step failed at bar %d: %s", bar_idx, exc)
+            return total_train_steps
+
+    def _maybe_emit_progress(
+        self,
+        policy,
+        sim: _Simulator,
+        bar_idx: int,
+        epoch: int,
+        epoch_bar_offset: int,
+        total_train_trades: int,
+        total_train_steps: int,
+        progress_path: Path,
+        total_bars_all_epochs: int,
+        progress_every: int,
+    ) -> None:
+        if bar_idx % progress_every != 0:
+            return
+        _trig = policy.trigger
+        _harv = policy.harvester
+        _global_bar = epoch_bar_offset + bar_idx
+        try:
+            tmp_path = progress_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps({
+                "symbol": self.symbol,
+                "timeframe_minutes": self.timeframe_minutes,
+                "bar": _global_bar,
+                "total_bars": total_bars_all_epochs,
+                "pct": round(_global_bar / total_bars_all_epochs * 100, 1),
+                "epoch": epoch + 1,
+                "n_epochs": self.n_epochs,
+                "train_steps": total_train_steps,
+                "trades": total_train_trades + len(sim.trades),
+                "epsilon": round(float(_trig.epsilon), 4),
+                "beta": round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
+                "trigger_buf": int(_trig.buffer.size) if _trig.buffer else 0,
+                "harvester_buf": int(_harv.buffer.size) if _harv.buffer else 0,
+            }))
+            tmp_path.replace(progress_path)
+        except Exception:
+            LOG.debug("[OFFLINE] Failed to write progress file: %s", progress_path, exc_info=True)
+
+    def _prepare_validation_policy(self, policy) -> None:
+        """Reset policy for validation pass."""
+        policy.current_position = 0
+        policy.trigger.epsilon = self.epsilon_end
+        if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
+            policy.harvester.epsilon = self.epsilon_end
+
+    def _run_validation(self, policy, val_bars: list, label: str) -> tuple[float, int]:
+        """Run validation pass and return (score, trade_count)."""
+        self._prepare_validation_policy(policy)
+        val_sim = _Simulator(policy, update_policy=False, symbol_digits=self.symbol_digits)
+        for i, bar in enumerate(val_bars):
+            val_sim.step(bar, i)
+        val_pnl = [t.pnl_pts for t in val_sim.trades]
+        score = z_omega(val_pnl)
+        LOG.info(
+            "[OFFLINE] %s val: %d trades, ZOmega=%.4f",
+            label, len(val_sim.trades), score,
+        )
+        return score, len(val_sim.trades)
 
     def _save_weights(self, policy, label: str) -> str:
         """Save DDQN weights for both agents; return a summary path string."""

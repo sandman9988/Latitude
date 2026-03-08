@@ -17,6 +17,7 @@ Design Philosophy:
 """
 
 import logging
+import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -57,6 +58,11 @@ CONF_BUCKET_65: float = 0.65
 CONF_BUCKET_75: float = 0.75
 CONF_BUCKET_85: float = 0.85
 CONF_BUCKET_95: float = 0.95
+
+# ── Capital allocation constants ──────────────────────────────────────────────
+CIRCUIT_BREAKER_BUDGET_FACTOR: float = 0.75  # 25% risk budget cut when breakers active
+UNCORRELATED_RESERVE_FRACTION: float = 0.10  # Reserve 10% capital for uncorrelated assets
+CONFIDENCE_EPSILON: float = 1e-6              # Division-safety epsilon for confidence calcs
 
 # ── Calibration quality thresholds ────────────────────────────────────────────
 CALIBRATION_GOOD_ERROR: float = 0.1   # Error below this → well-calibrated
@@ -271,31 +277,16 @@ class RiskManager:
 
         # === PROBABILITY CALIBRATION (PER-AGENT) ===
         # Separate tracking for TriggerAgent, HarvesterAgent, and Composite
-        self.calibration_buckets_trigger: dict[float, list[tuple[float, bool]]] = {
-            0.5: [],
-            0.6: [],
-            0.7: [],
-            0.8: [],
-            0.9: [],
-            1.0: [],
-        }
-        self.calibration_buckets_harvester: dict[float, list[tuple[float, bool]]] = {
-            0.5: [],
-            0.6: [],
-            0.7: [],
-            0.8: [],
-            0.9: [],
-            1.0: [],
-        }
-        self.calibration_buckets_composite: dict[float, list[tuple[float, bool]]] = {
-            0.5: [],
-            0.6: [],
-            0.7: [],
-            0.8: [],
-            0.9: [],
-            1.0: [],
-        }
         self.calibration_window: int = 100  # trades per agent
+        self.calibration_buckets_trigger: dict[float, deque[tuple[float, bool]]] = {
+            b: deque(maxlen=self.calibration_window) for b in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+        }
+        self.calibration_buckets_harvester: dict[float, deque[tuple[float, bool]]] = {
+            b: deque(maxlen=self.calibration_window) for b in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+        }
+        self.calibration_buckets_composite: dict[float, deque[tuple[float, bool]]] = {
+            b: deque(maxlen=self.calibration_window) for b in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+        }
 
         # === CORRELATION MONITORING ===
         # Multi-symbol returns for correlation calculation
@@ -762,7 +753,7 @@ class RiskManager:
         """
         if self.circuit_breakers.is_any_tripped():
             # Emergency: reduce risk budget
-            new_budget = self.risk_budget_usd * 0.75
+            new_budget = self.risk_budget_usd * CIRCUIT_BREAKER_BUDGET_FACTOR
             LOG.warning(
                 "[RISK] Circuit breakers active → REDUCING risk budget: $%.2f → $%.2f",
                 self.risk_budget_usd,
@@ -848,7 +839,7 @@ class RiskManager:
             probability_calibration=self.get_probability_calibration("composite") or None,
             composite_predictor=composite_predictor,
             correlation_status=self.check_correlation_breakdown(
-                current_time=__import__("time").time(),
+                current_time=time.time(),
             ),
             rl_recommended_thresholds=self.get_rl_recommended_thresholds(),
         )
@@ -939,7 +930,7 @@ class RiskManager:
         composite_predictor = self._add_calibration_warnings(recommendations)
 
         correlation_status = self.check_correlation_breakdown(
-            current_time=__import__("time").time(),
+            current_time=time.time(),
         )
         if correlation_status and correlation_status.breakdown_detected:
             recommendations.insert(
@@ -1054,10 +1045,7 @@ class RiskManager:
                 target_buckets = self.calibration_buckets_composite
 
             target_buckets[bucket].append((confidence, actual_outcome))
-
-            # Keep only recent history
-            if len(target_buckets[bucket]) > self.calibration_window:
-                target_buckets[bucket].pop(0)
+            # deque(maxlen=...) handles eviction automatically
 
             LOG.debug(
                 "[RL FEEDBACK] agent=%s %s confidence=%.2f approved=%s outcome=%s bucket=%.1f",
@@ -1228,9 +1216,10 @@ class RiskManager:
         Action: (threshold_adjustment: -0.1, 0.0, +0.1)
         Reward: +1 for correct decision, -1 for incorrect
         """
-        # Current state
-        drawdown_pct = ((self.peak_equity - (self.peak_equity + self.total_pnl)) / self.peak_equity) * 100
-        drawdown_level = int(drawdown_pct / 5)  # 0-5% = 0, 5-10% = 1, etc.
+        # Current state — use the drawdown tracker which correctly maintains
+        # peak equity and current equity from broker-reported values.
+        drawdown_pct = self.circuit_breakers.drawdown_breaker.get_drawdown() * 100
+        drawdown_level = max(0, int(drawdown_pct / 5))  # 0-5% = 0, 5-10% = 1, etc.
         win_rate = self.winning_trades / max(self.total_trades, 1)
         win_bucket = int(win_rate * 10)  # 0-10% = 0, 10-20% = 1, etc.
         conf_bucket = self._get_confidence_bucket(confidence)
@@ -1323,7 +1312,7 @@ class RiskManager:
         # Best action
         best_action = max(avg_q, key=lambda k: float(avg_q[k]))
         numerator = float(abs(float(avg_q[best_action])))
-        denominator = sum(float(abs(float(v))) for v in avg_q.values()) + 1e-6
+        denominator = sum(float(abs(float(v))) for v in avg_q.values()) + CONFIDENCE_EPSILON
         confidence = numerator / denominator
 
         # Apply recommendation
@@ -1459,6 +1448,10 @@ class RiskManager:
         Returns:
             {symbol: allocated_capital_usd}
         """
+        if not symbols:
+            LOG.warning("[RISK] allocate_capital called with empty symbols list")
+            return {}
+
         if len(symbols) < MIN_SYMBOLS_FOR_ALLOCATION or self.correlation_matrix is None:
             # Equal allocation fallback
             equal_alloc = total_capital / len(symbols)
@@ -1480,6 +1473,10 @@ class RiskManager:
 
         # Normalize scores to sum to 1.0
         total_score = sum(div_scores.values())
+        if total_score <= 0:
+            LOG.warning("[RISK] Diversification scores sum to %.6f — falling back to equal allocation", total_score)
+            equal_alloc = total_capital / len(symbols)
+            return dict.fromkeys(symbols, equal_alloc)
         normalized_weights = {sym: score / total_score for sym, score in div_scores.items()}
 
         # Allocate capital
@@ -1488,7 +1485,7 @@ class RiskManager:
         # Add remaining symbols with equal allocation (if any)
         remaining_symbols = set(symbols) - set(symbols_with_data)
         if remaining_symbols:
-            remaining_capital = total_capital * 0.1  # Reserve 10% for uncorrelated
+            remaining_capital = total_capital * UNCORRELATED_RESERVE_FRACTION
             equal_remaining = remaining_capital / len(remaining_symbols)
             for sym in remaining_symbols:
                 allocation[sym] = equal_remaining

@@ -33,8 +33,6 @@ class EmergencyPositionCloser:
         """
         self.trade_integration = trade_integration
         self.app = trade_integration.app
-        self.close_attempts = 0
-        self.max_retries = 3
 
     def close_all_positions(self, reason: str = "CIRCUIT_BREAKER") -> bool:
         """

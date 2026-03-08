@@ -45,6 +45,7 @@ Performance:
 
 import logging
 import math
+import os
 import time
 from dataclasses import dataclass
 from enum import IntEnum
@@ -483,7 +484,8 @@ class ExperienceBuffer:
         """Save buffer state to disk for persistence across restarts.
 
         Serializes all experiences, priorities, and metadata so the buffer
-        can be restored exactly as it was.
+        can be restored exactly as it was.  Uses atomic write (temp file +
+        rename) to prevent corruption from SIGKILL during save.
 
         Args:
             filepath: Path to save the buffer (without extension, .npz added)
@@ -491,6 +493,7 @@ class ExperienceBuffer:
         Returns:
             True if save succeeded
         """
+        import tempfile  # noqa: PLC0415
         from pathlib import Path  # noqa: PLC0415
 
         try:
@@ -518,25 +521,51 @@ class ExperienceBuffer:
                 leaf_idx = i + self.tree.capacity - 1
                 priorities_list.append(self.tree.tree[leaf_idx])
 
-            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(
-                filepath,
-                states=np.array(states),
-                actions=np.array(actions),
-                rewards=np.array(rewards),
-                next_states=np.array(next_states),
-                dones=np.array(dones),
-                timestamps=np.array(timestamps),
-                regimes=np.array(regimes),
-                priorities=np.array(priorities_list),
-                # Metadata
-                write_idx=self.write_idx,
-                total_added=self.total_added,
-                total_sampled=self.total_sampled,
-                beta=self.beta,
-                current_regime=int(self.current_regime),
+            dest = Path(filepath)
+            if not dest.suffix:
+                dest = dest.with_suffix(".npz")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            # Atomic write: save to temp file in same directory, then rename.
+            # os.rename is atomic on POSIX when src and dst are on the same
+            # filesystem, so a SIGKILL during save can only leave behind a
+            # stale temp file — the previous checkpoint stays intact.
+            #
+            # IMPORTANT: suffix must be ".npz" so numpy does NOT append another
+            # ".npz" — otherwise the data lands in tmp_xxx.npz.tmp.npz while
+            # os.replace renames the empty original, producing a 0-byte file.
+            fd, tmp_path = tempfile.mkstemp(
+                suffix=".npz", dir=str(dest.parent),
             )
-            LOG.info("[BUFFER] Saved %d experiences to %s", n, filepath)
+            os.close(fd)
+            try:
+                np.savez_compressed(
+                    tmp_path,
+                    states=np.array(states),
+                    actions=np.array(actions),
+                    rewards=np.array(rewards),
+                    next_states=np.array(next_states),
+                    dones=np.array(dones),
+                    timestamps=np.array(timestamps),
+                    regimes=np.array(regimes),
+                    priorities=np.array(priorities_list),
+                    # Metadata
+                    write_idx=self.write_idx,
+                    total_added=self.total_added,
+                    total_sampled=self.total_sampled,
+                    beta=self.beta,
+                    current_regime=int(self.current_regime),
+                )
+                os.replace(tmp_path, str(dest))
+            except Exception:
+                # Clean up temp file on failure
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+            LOG.info("[BUFFER] Saved %d experiences to %s", n, dest)
             return True
         except Exception as e:
             LOG.error("[BUFFER] Failed to save: %s", e, exc_info=True)

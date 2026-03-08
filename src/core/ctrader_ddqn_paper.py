@@ -113,6 +113,22 @@ except ImportError:
     TORCH_AVAILABLE = False
 
 from src.agents.dual_policy import DualPolicy
+
+# Central constants (single source of truth)
+from src.constants import (
+    ACTION_LONG,
+    ACTION_SHORT,
+    DEFAULT_VOLATILITY,
+    HARVESTER_BUFFER_CAPACITY,
+    HUD_EXPORT_INTERVAL_CYCLES,
+    HUD_EXPORT_MIN_INTERVAL_S,
+    MIN_BARS_FOR_FEATURES,
+    RETURN_LAG_MEDIUM,
+    RETURN_LAG_SHORT,
+    STATE_WINDOW_SIZE,
+    TICK_DRAWDOWN_CHECK_INTERVAL_S,
+    TRIGGER_BUFFER_CAPACITY,
+)
 from src.core.adaptive_regularization import AdaptiveRegularization
 from src.core.broker_execution_model import BrokerExecutionModel, OrderSide
 from src.core.order_book import OrderBook, VPINCalculator
@@ -138,11 +154,9 @@ from src.utils.ring_buffer import RollingStats
 
 # Handbook components - Phase 1
 from src.utils.safe_math import SafeMath
+from src.utils.safe_math import rolling_mean as _rolling_mean
+from src.utils.safe_math import rolling_std as _rolling_std
 
-# Feature calculation constants
-MIN_BARS_FOR_FEATURES: int = 70
-RETURN_LAG_SHORT: int = 2
-RETURN_LAG_MEDIUM: int = 6
 FEATURE_VALIDATION_MIN_COLS: int = 3
 MOMENTUM_BULLISH_THRESHOLD: float = 0.2
 MOMENTUM_BEARISH_THRESHOLD: float = -0.2
@@ -157,7 +171,7 @@ TRAINING_TD_LOW_THRESHOLD: float = 0.1
 
 # Volatility calculation constants
 MIN_VALID_BARS_FOR_VOL: int = 5
-DEFAULT_VOLATILITY: float = 0.005
+# DEFAULT_VOLATILITY imported from src.constants
 
 # Safety validation constants
 MAX_QTY_SANITY_CHECK: float = 100.0
@@ -171,8 +185,11 @@ HARVESTER_DEBUG_INTERVAL: float = 60.0  # Seconds between harvester debug log li
 MIN_BARS_FOR_VOL_CALC: int = 20          # Minimum bars before RS-volatility is reliable
 EPSILON_HIGH_THRESHOLD: float = 0.5      # epsilon above this ⇒ still in random-exploration phase
 RUNWAY_FALLBACK_THRESHOLD: float = 0.002 # Predicted-runway below this ⇒ treat as exploration entry
-EXPLORATION_SAMPLE_RATE: float = 0.10    # Fraction of NO_ENTRY bars logged to experience buffer
+EXPLORATION_SAMPLE_RATE: float = 0.30    # Fraction of NO_ENTRY bars logged to experience buffer
 MAX_LOG_ENTRIES: int = 1000              # Maximum decision-log entries kept in the JSON file
+
+# HUD file names
+_CURRENT_POSITION_FILE: str = "current_position.json"
 
 # Position and trading constants
 MIN_BARS_FOR_VAR_UPDATE: int = 2
@@ -182,10 +199,7 @@ MIN_BARS_FOR_PATH_GEOMETRY: int = 3     # minimum bars before path-geometry upda
 _IMBALANCE_BLEND_FLOOR: float = 1e-6   # zero-guard for real-vs-QFI imbalance blend
 MIN_TRADE_HISTORY_EXPLORATION: int = 20
 
-# Action constants for policy decisions
-ACTION_NO_ENTRY: int = 0
-ACTION_LONG: int = 1
-ACTION_SHORT: int = 2
+# Action constants imported from src.constants (ACTION_NO_ENTRY, ACTION_LONG, ACTION_SHORT)
 
 
 # ----------------------------
@@ -266,15 +280,9 @@ LOG = setup_logging()
 
 
 # ----------------------------
-# Time helpers (UTC required)
+# Time helpers (UTC required) — canonical versions in safe_utils
 # ----------------------------
-def utc_ts_ms() -> str:
-    # FIX UTCTimestamp: YYYYMMDD-HH:MM:SS.sss (UTC)
-    return dt.datetime.now(dt.UTC).strftime("%Y%m%d-%H:%M:%S.%f")[:-3]
-
-
-def utc_now() -> dt.datetime:
-    return dt.datetime.now(dt.UTC)
+from src.utils.safe_utils import utc_now  # noqa: E402
 
 
 # ----------------------------
@@ -307,7 +315,7 @@ class BarBuilder:
 
         b = self.bucket_start(t)
         if self.bucket is None:
-            LOG.debug("[BARBUILDER] Initializing new bucket: %s mid=%.5f", b, mid)
+            LOG.info("[BARBUILDER] Initializing new bucket: %s mid=%.5f", b, mid)
             self.bucket = b
             self.o = self.h = self.l = self.c = mid
             return None
@@ -328,7 +336,7 @@ class BarBuilder:
                 return None
 
             closed = (self.bucket, self.o, self.h, self.l, self.c)
-            LOG.debug("[BARBUILDER] Closing bar: %s starting new bucket: %s mid=%.5f", closed, b, mid)
+            LOG.info("[BARBUILDER] Closing bar: %s starting new bucket: %s mid=%.5f", closed, b, mid)
             self.bucket = b
             self.o = self.h = self.l = self.c = mid
             return closed
@@ -344,24 +352,19 @@ class BarBuilder:
         if self.l is None or mid < self.l:
             self.l = mid
 
+    def next_bar_close_utc(self) -> str | None:
+        """Return ISO-8601 UTC timestamp of when the current bar closes.
 
-def _rolling_mean(x: np.ndarray, n: int) -> np.ndarray:
-    """Compute a simple rolling mean of window *n*, returning NaN for early entries."""
-    out = np.full_like(x, np.nan, dtype=np.float64)
-    if len(x) >= n:
-        cs = np.cumsum(np.insert(x, 0, 0.0))
-        out[n - 1 :] = (cs[n:] - cs[:-n]) / n
-    return out
+        Returns None if no bar is being built yet.
+        """
+        if self.bucket is None:
+            return None
+        close_time = self.bucket + dt.timedelta(minutes=self.timeframe_minutes)
+        return close_time.isoformat()
 
 
-def _rolling_std(x: np.ndarray, n: int) -> np.ndarray:
-    """Compute a simple rolling std of window *n*, returning NaN for early entries."""
-    out = np.full_like(x, np.nan, dtype=np.float64)
-    if len(x) >= n:
-        for i in range(n - 1, len(x)):
-            w = x[i - n + 1 : i + 1]
-            out[i] = np.std(w)
-    return out
+# _rolling_mean and _rolling_std are imported from src.utils.safe_math
+# (single source of truth, aliased at module level above).
 
 
 # ----------------------------
@@ -376,9 +379,9 @@ class Policy:
     def __init__(self):
         self.use_torch = False
         self.model = None
-        self.window = 64
+        self.window = STATE_WINDOW_SIZE
         self.ensemble_enabled = os.environ.get("DDQN_MODEL_ENSEMBLE", "0") == "1"
-        self.ensemble_weights = []
+        self.ensemble_weights = deque(maxlen=ENSEMBLE_WEIGHT_CAPACITY)
         self._ensemble_stats = {
             "updates": 0,
             "last_weight": 0.0,
@@ -394,27 +397,10 @@ class Policy:
                 if torch is None:
                     raise RuntimeError("torch module unavailable despite TORCH_AVAILABLE=True")
 
-                class QNet(nn.Module):
-                    def __init__(self, _window: int, n_features: int, n_actions: int = 3):
-                        super().__init__()
-                        self.net = nn.Sequential(
-                            nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
-                            nn.ReLU(),
-                            nn.Conv1d(64, 64, kernel_size=5, padding=2),
-                            nn.ReLU(),
-                            nn.AdaptiveAvgPool1d(1),
-                            nn.Flatten(),
-                            nn.Linear(64, 128),
-                            nn.ReLU(),
-                            nn.Linear(128, n_actions),
-                        )
-
-                    def forward(self, x):
-                        # x: (B,T,F) -> (B,F,T)
-                        return self.net(x.transpose(1, 2))
+                from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
 
                 self.torch = torch
-                self.model = QNet(_window=self.window, n_features=4, n_actions=3)
+                self.model = Conv1dQNet(n_features=4, n_actions=3, temporal_pool_size=1)
                 self.model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
                 self.model.eval()
                 self.use_torch = True
@@ -485,8 +471,7 @@ class Policy:
         if reward < 0:
             weight *= 0.9  # penalty for losses when disagreement was high
         self.ensemble_weights.append(weight)
-        if len(self.ensemble_weights) > ENSEMBLE_WEIGHT_CAPACITY:
-            self.ensemble_weights.pop(0)
+        # deque(maxlen=...) auto-evicts oldest
         self._ensemble_stats["updates"] += 1
         self._ensemble_stats["last_weight"] = weight
         self._ensemble_stats["max_disagreement"] = max(self._ensemble_stats["max_disagreement"], disagreement)
@@ -618,102 +603,87 @@ class PathRecorder:
 # MFE/MAE Tracker
 # ----------------------------
 class MFEMAETracker:
-    """Track Maximum Favorable Excursion (MFE) and Maximum Adverse Excursion (MAE) per position."""
+    """Track Maximum Favorable Excursion (MFE) and Maximum Adverse Excursion (MAE) per position.
+
+    Delegates all computation to :class:`src.utils.mfe_mae.MFEMAECalculator`
+    (single source of truth).  This wrapper adds ``position_id`` logging.
+    """
 
     def __init__(self, position_id: str | None = None):
-        self.position_id = position_id  # NEW: Track which position this is for
-        self.entry_price = None
-        self.direction = None
-        self.mfe = 0.0  # max favorable move in $ (profit)
-        self.mae = 0.0  # max adverse move in $ (loss, stored as positive)
-        self.best_profit = 0.0
-        self.worst_loss = 0.0
-        self.winner_to_loser = False
+        from src.utils.mfe_mae import MFEMAECalculator  # noqa: PLC0415
+
+        self.position_id = position_id
+        self._calc = MFEMAECalculator()
+
+    # ── proxied attributes ─────────────────────────────────────────────────
+
+    @property
+    def entry_price(self):
+        return self._calc.entry_price
+
+    @property
+    def direction(self):
+        return self._calc.direction
+
+    @property
+    def mfe(self):
+        return self._calc.mfe
+
+    @mfe.setter
+    def mfe(self, value):
+        self._calc.mfe = value
+
+    @property
+    def mae(self):
+        return self._calc.mae
+
+    @mae.setter
+    def mae(self, value):
+        self._calc.mae = value
+
+    @property
+    def best_profit(self):
+        return self._calc.best_profit
+
+    @best_profit.setter
+    def best_profit(self, value):
+        self._calc.best_profit = value
+
+    @property
+    def worst_loss(self):
+        return self._calc.worst_loss
+
+    @worst_loss.setter
+    def worst_loss(self, value):
+        self._calc.worst_loss = value
+
+    @property
+    def winner_to_loser(self):
+        return self._calc.winner_to_loser
+
+    @winner_to_loser.setter
+    def winner_to_loser(self, value):
+        self._calc.winner_to_loser = value
 
     def start_tracking(self, entry_price: float, direction: int):
         """direction: 1=long, -1=short"""
-        # Defensive: Validate entry_price
-        if entry_price is None or entry_price <= 0:
-            LOG.error(
-                "[MFE_MAE] Invalid entry_price=%.5f for position %s - cannot track", entry_price or 0, self.position_id
-            )
-            return
-
-        # Defensive: Validate direction
-        if direction not in (1, -1):
-            LOG.warning(
-                "[MFE_MAE] Invalid direction=%d for position %s - defaulting to LONG", direction, self.position_id
-            )
-            direction = 1
-
-        self.entry_price = float(entry_price)
-        self.direction = int(direction)
-        self.mfe = 0.0
-        self.mae = 0.0
-        self.best_profit = 0.0
-        self.worst_loss = 0.0
-        self.winner_to_loser = False
+        self._calc.start(entry_price, direction)
 
     def update(self, current_price: float):
         """Update with current market price during open position."""
-        # Defensive: Check entry_price validity
-        if self.entry_price is None or self.entry_price <= 0:
-            LOG.debug("[MFE_MAE] Cannot update position %s - invalid entry_price", self.position_id)
-            return
-
-        # Defensive: Validate current_price
-        if current_price is None or current_price <= 0:
-            LOG.debug(
-                "[MFE_MAE] Cannot update position %s - invalid current_price=%.5f", self.position_id, current_price or 0
-            )
-            return
-
-        # Ensure both prices are float for safe arithmetic
-        try:
-            cp = float(current_price)
-            ep = float(self.entry_price)
-        except (ValueError, TypeError) as e:
-            LOG.warning("[MFE_MAE] Price conversion error for position %s: %s", self.position_id, e)
-            return
-
-        # Calculate P&L
-        pnl = (cp - ep) if self.direction == 1 else (ep - cp)  # long: cp-ep, short: ep-cp
-
-        # Track best profit (MFE)
-        if pnl > self.best_profit:
-            self.best_profit = pnl
-            self.mfe = pnl
-
-        # Track worst loss (MAE)
-        if pnl < self.worst_loss:
-            self.worst_loss = pnl
-            self.mae = abs(pnl)
-
-        # Detect winner-to-loser (was profitable, now losing)
-        if self.best_profit > 0 and pnl < 0:
-            self.winner_to_loser = True
+        self._calc.update(current_price)
 
     def get_summary(self) -> dict:
-        """Return summary of MFE/MAE metrics."""
-        return {
-            "entry_price": self.entry_price,
-            "direction": "LONG" if self.direction == 1 else "SHORT",
-            "mfe": self.mfe,
-            "mae": self.mae,
-            "best_profit": self.best_profit,
-            "worst_loss": self.worst_loss,
-            "winner_to_loser": self.winner_to_loser,
-        }
+        """Return summary of MFE/MAE metrics, including position ticket for traceability."""
+        summary = self._calc.get_summary()
+        # Inject position identifiers for end-to-end trade tracking
+        summary["position_id"] = self.position_id or ""
+        summary["ticket"] = getattr(self, "position_ticket", "") or ""
+        return summary
 
     def reset(self):
         """Reset tracker for next position."""
-        self.entry_price = None
-        self.direction = None
-        self.mfe = 0.0
-        self.mae = 0.0
-        self.best_profit = 0.0
-        self.worst_loss = 0.0
-        self.winner_to_loser = False
+        self._calc.reset()
 
 
 # ----------------------------
@@ -742,6 +712,13 @@ class CTraderFixApp(fix.Application):
         self.timeframe_label = f"M{timeframe_minutes}"
         self.broker = "default"
 
+        # Paper/training mode flag.
+        # PAPER_MODE=1 → disable risk gates so the RL agent can explore freely.
+        # The FIX sessions still connect to the broker demo account; actual order
+        # placement is not suppressed (demo account acts as the paper simulation).
+        self.paper_mode: bool = os.environ.get("PAPER_MODE", "0") == "1"
+        LOG.info("[INIT] paper_mode=%s (PAPER_MODE=%s)", self.paper_mode, os.environ.get("PAPER_MODE", "0"))
+
         # Timeframe-aware scaling constants.
         # All "bar count" thresholds are derived from wall-clock durations so
         # H4/D1 bots behave correctly without manual env-var tuning.
@@ -753,6 +730,11 @@ class CTraderFixApp(fix.Application):
 
         # Risk scaffolding defaults + env overrides
         self.starting_equity = float(os.environ.get("CTRADER_STARTING_EQUITY", "10000"))
+        # Real account balance/equity populated from CollateralReport (BA) after logon.
+        # None until broker responds; HUD shows these in preference to the estimate.
+        self.real_account_balance: float | None = None   # EndCash tag 922 (cash balance)
+        self.real_account_equity: float | None = None    # TotalNetValue tag 900 (equity incl. open P&L)
+        self.real_margin_free: float | None = None       # MarginExcess tag 899 (free margin)
         self.max_leverage = float(os.environ.get("CTRADER_MAX_LEVERAGE", "10"))
         self.contract_size = float(os.environ.get("CTRADER_CONTRACT_SIZE", "100000"))
         self.last_estimated_var = 0.0
@@ -824,6 +806,40 @@ class CTraderFixApp(fix.Application):
 
         self.bars: deque = deque(maxlen=2000)
         self.builder = BarBuilder(timeframe_minutes)
+
+        # ── H4 parallel shadow-training ────────────────────────────────────
+        # Shares the same FIX tick stream — builds H4 bars internally,
+        # runs a separate DualPolicy for XAUUSD_M240, no real orders placed.
+        _h4_enabled = use_dual_agent and enable_online_learning
+        self._h4_enabled = _h4_enabled
+        self.bars_h4: deque = deque(maxlen=500)
+        self.builder_h4 = BarBuilder(240)
+        if _h4_enabled:
+            self.policy_h4 = DualPolicy(
+                window=64,
+                enable_regime_detection=True,
+                path_geometry=None,  # no path geometry for shadow H4
+                enable_training=True,
+                param_manager=self.param_manager,
+                symbol=symbol,
+                timeframe="M240",
+                broker="default",
+                friction_calculator=self.friction_calculator,
+                timeframe_minutes=240,
+                min_bars_for_features=self._min_bars_for_features,
+            )
+            if hasattr(self.policy_h4, "load_checkpoint"):
+                self.policy_h4.load_checkpoint()
+            LOG.info("[H4] DualPolicy M240 initialised; checkpoint loaded")
+        else:
+            self.policy_h4 = None
+        # Shadow position state for H4 (no real orders)
+        self._h4_shadow_pos: int = 0        # 0=flat, +1=long, -1=short
+        self._h4_entry_price: float = 0.0
+        self._h4_entry_conf: float = 0.5
+        self._h4_entry_time = None
+        self._h4_bars_since_training: int = 0
+        # ──────────────────────────────────────────────────────────────────
 
         # Phase 2: Non-repaint discipline + O(1) rolling stats
         self.close_series = NonRepaintBarAccess("close", max_lookback=2000)
@@ -910,7 +926,7 @@ class CTraderFixApp(fix.Application):
         self.event_time_engine = EventTimeFeatureEngine()
 
         # Training frequency: train every N bars
-        self.training_interval = 5  # bars
+        self.training_interval = 2  # bars
         self.bars_since_training = 0
         self.last_trigger_loss = 0.0  # Track last reported training loss for HUD
         self.last_harvester_loss = 0.0
@@ -927,6 +943,11 @@ class CTraderFixApp(fix.Application):
         # Maps MDEntryID (tag 278) → (side, price) so delete-by-ID can resolve price.
         self._md_entry_id_map: dict[str, tuple[str, float]] = {}
         self._last_ob_export_time: float = 0.0  # Rate-limit for order_book.json writes
+        self._last_hud_export_time: float = 0.0   # Rate-limit for _export_hud_data() calls
+        self._last_tick_dd_check_time: float = 0.0  # Rate-limit for tick-level drawdown checks
+        # Open API balance file (written by scripts/fetch_balance.py)
+        self._balance_file_path = Path("data") / "account_balance.json"
+        self._last_balance_file_mtime: float = 0.0  # Skip re-reads when file unchanged
         self.vpin_calculator = VPINCalculator(bucket_volume=max(self.vpin_bucket_volume, 1e-6), window=50)
         self.last_vpin_stats = {"vpin": 0.0, "mean": 0.0, "std": 0.0, "zscore": 0.0}
         self.last_vpin_mid: float | None = None
@@ -1000,6 +1021,8 @@ class CTraderFixApp(fix.Application):
         self.last_market_data_time = None  # Updated on every md_snapshot / md_incremental
         self.market_data_stale_threshold = 300  # seconds (5 min) with no data triggers resubscribe
         self._last_md_resubscribe_time = 0.0  # cooldown to avoid spamming
+        self._md_resubscribe_attempts = 0  # consecutive resubscribe attempts without fresh data
+        self._MD_RESUB_MAX_WARN = 3  # log WARNING for the first N attempts, then demote to DEBUG
 
         # Connection statistics for monitoring
         self.total_reconnects = 0
@@ -1035,6 +1058,8 @@ class CTraderFixApp(fix.Application):
         # Kill switch monitor — polls data/kill_switch.json every 5 s, independent of bar frequency.
         # Allows the HUD (Alt+K) to trigger emergency close on H12/D1 without waiting for bar close.
         self._kill_switch_path = Path("data/kill_switch.json")
+        self._cb_reset_path = Path("data/circuit_breaker_reset.json")
+        self._kurtosis_gate_reset_path = Path("data/kurtosis_gate_reset.json")
         self._kill_switch_thread = threading.Thread(target=self._monitor_kill_switch, daemon=True)
         self._kill_switch_thread.start()
 
@@ -1061,7 +1086,10 @@ class CTraderFixApp(fix.Application):
 
         # Audit logging for transaction trail and decision debugging
         self.transaction_log = TransactionLogger(log_dir="logs/audit", filename="transactions.jsonl")
-        self.decision_log = DecisionLogger(log_dir="logs/audit", filename="decisions.jsonl")
+        self.decision_log = DecisionLogger(
+            log_dir="logs/audit", filename="decisions.jsonl",
+            trading_mode="paper" if self.paper_mode else "live",
+        )
 
         LOG.info("[INIT] ✓ Bot initialized: %s (ID:%d) M%d | Contract=%.0f | Online learning=%s",
             symbol, symbol_id, timeframe_minutes, self.contract_size, enable_online_learning)
@@ -1141,7 +1169,13 @@ class CTraderFixApp(fix.Application):
             issues.append(f"{qual} disconnected")
 
     def _check_market_data_freshness(self) -> None:
-        """Re-subscribe market data if QUOTE is alive but no ticks arrived recently."""
+        """Re-subscribe market data if QUOTE is alive but no ticks arrived recently.
+
+        After ``_MD_RESUB_MAX_WARN`` consecutive re-subscribe attempts the log
+        severity is demoted from WARNING to DEBUG to avoid spamming during
+        expected daily session breaks (e.g. gold 22:00-23:00 UTC).
+        The counter resets when fresh market data arrives.
+        """
         if not (self.quote_sid and self.last_market_data_time is not None and self.connection_healthy):
             return
         md_age = time.time() - self.last_market_data_time
@@ -1150,10 +1184,19 @@ class CTraderFixApp(fix.Application):
             md_age > self.market_data_stale_threshold
             and time.time() - self._last_md_resubscribe_time > resubscribe_cooldown
         ):
-            LOG.warning(
-                "[HEALTH] Market data stale for %.0fs (threshold=%ds) — re-subscribing spot",
-                md_age, self.market_data_stale_threshold,
-            )
+            self._md_resubscribe_attempts += 1
+            if self._md_resubscribe_attempts <= self._MD_RESUB_MAX_WARN:
+                LOG.warning(
+                    "[HEALTH] Market data stale for %.0fs (threshold=%ds) — re-subscribing spot (%d/%d)",
+                    md_age, self.market_data_stale_threshold,
+                    self._md_resubscribe_attempts, self._MD_RESUB_MAX_WARN,
+                )
+            else:
+                # Likely a daily session break — demote to DEBUG
+                LOG.debug(
+                    "[HEALTH] Market data stale for %.0fs — probable session break (attempt %d)",
+                    md_age, self._md_resubscribe_attempts,
+                )
             try:
                 self.send_md_subscribe_spot()
                 self._last_md_resubscribe_time = time.time()
@@ -1204,26 +1247,49 @@ class CTraderFixApp(fix.Application):
                 time.sleep(check_interval)
                 if self._shutdown_requested:
                     break
-                now = utc_now()
-                issues: list[str] = []
-                self._check_session_heartbeat(self.quote_sid, self.last_quote_heartbeat, "QUOTE", now, issues)
-                self._check_session_heartbeat(self.trade_sid, self.last_trade_heartbeat, "TRADE", now, issues)
-                if issues:
-                    self.connection_healthy = False
-                    LOG.warning("[HEALTH] Connection issues: %s", ", ".join(issues))
-                else:
-                    if not self.connection_healthy and self.quote_sid and self.trade_sid:
-                        LOG.info("[HEALTH] Connection restored (QUOTE+TRADE active)")
-                    self.connection_healthy = True
-                self._check_market_data_freshness()
-                self._emit_watchdog_notify()
-                health_log_counter += 1
-                if health_log_counter % 6 == 0:
-                    self._log_periodic_health()
+                health_log_counter = self._run_health_cycle(health_log_counter)
             except Exception as e:
                 LOG.error("[HEALTH] Monitor error: %s", e, exc_info=True)
 
         LOG.info("[HEALTH] Connection health monitor stopped")
+
+    def _run_health_cycle(self, health_log_counter: int) -> int:
+        """Run a single connection-health cycle and return the updated counter."""
+        now = utc_now()
+        issues = self._collect_connection_issues(now)
+        self._update_connection_health(issues)
+        self._check_market_data_freshness()
+        self._emit_watchdog_notify()
+        health_log_counter += 1
+        if health_log_counter % 6 == 0:
+            self._log_periodic_health()
+        # ── Change A: Timer-based HUD export ──────────────────────────────
+        # Keep all HUD JSON files fresh regardless of bar length (H12/D1).
+        if health_log_counter % HUD_EXPORT_INTERVAL_CYCLES == 0:
+            try:
+                if hasattr(self, 'builder') and hasattr(self, 'policy') and self.bars:
+                    self._export_hud_data()
+                    LOG.debug("[HEALTH] Periodic HUD export")
+            except Exception as exc:
+                LOG.debug("[HEALTH] Periodic HUD export skipped: %s", exc)
+        return health_log_counter
+
+    def _collect_connection_issues(self, now: dt.datetime) -> list[str]:
+        """Collect heartbeat issues for QUOTE and TRADE sessions."""
+        issues: list[str] = []
+        self._check_session_heartbeat(self.quote_sid, self.last_quote_heartbeat, "QUOTE", now, issues)
+        self._check_session_heartbeat(self.trade_sid, self.last_trade_heartbeat, "TRADE", now, issues)
+        return issues
+
+    def _update_connection_health(self, issues: list[str]) -> None:
+        """Update connection state and emit recovery logs."""
+        if issues:
+            self.connection_healthy = False
+            LOG.warning("[HEALTH] Connection issues: %s", ", ".join(issues))
+            return
+        if not self.connection_healthy and self.quote_sid and self.trade_sid:
+            LOG.info("[HEALTH] Connection restored (QUOTE+TRADE active)")
+        self.connection_healthy = True
 
     def _try_send_test_request(self, session_id, qual: str):
         """
@@ -1287,40 +1353,91 @@ class CTraderFixApp(fix.Application):
         LOG.info("[KILL-SWITCH] Monitor started (polling every 5 s)")
         while not self._shutdown_requested:
             try:
-                if self._kill_switch_path.exists():
-                    with open(self._kill_switch_path) as _ksf:
-                        _ks = json.load(_ksf)
-                    if _ks.get("active"):
-                        _reason = _ks.get("reason", "MANUAL_KILL_SWITCH")
-                        LOG.critical("[KILL-SWITCH] 🚨 Activated: %s", _reason)
-                        # Consume immediately so we never double-trip on restart
-                        self._kill_switch_path.unlink(missing_ok=True)
-                        # Trip each breaker state directly so is_any_tripped() returns True
-                        for _b in self.circuit_breakers.breakers:
-                            if not _b.state.is_tripped:
-                                _b.state.trip(reason=_reason, value=999.0, threshold=0.0)
-                        LOG.critical("[KILL-SWITCH] Circuit breakers tripped — no new entries allowed")
-                        # Emergency close via the same closer the circuit breaker uses
-                        _closer = self.circuit_breakers.emergency_closer
-                        if _closer is not None:
-                            _ok = _closer.close_all_positions(reason=_reason)
-                            if _ok:
-                                LOG.critical("[KILL-SWITCH] ✓ All positions closed")
-                            else:
-                                LOG.critical("[KILL-SWITCH] ✗ Emergency close FAILED — manual intervention required!")
-                        else:
-                            LOG.critical("[KILL-SWITCH] ✗ No emergency_closer configured — cannot auto-close!")
-                        # Persist tripped state so breakers survive a bot restart
-                        self.circuit_breakers.save_state()
+                payload = self._read_kill_switch_payload()
+                if payload and payload.get("active"):
+                    self._execute_kill_switch(payload)
+                # Also check for circuit breaker reset request
+                self._check_cb_reset_request()
+                # Also check for kurtosis gate reset request
+                self._check_kurtosis_gate_reset_request()
             except Exception as _e:
                 LOG.error("[KILL-SWITCH] Poll error: %s", _e)
             time.sleep(5)
         LOG.info("[KILL-SWITCH] Monitor stopped")
 
+    def _read_kill_switch_payload(self) -> dict | None:
+        """Read kill switch payload if the file exists."""
+        if not self._kill_switch_path.exists():
+            return None
+        with open(self._kill_switch_path) as _ksf:
+            return json.load(_ksf)
+
+    def _execute_kill_switch(self, payload: dict) -> None:
+        """Trip breakers, close positions, and persist kill state."""
+        _reason = payload.get("reason", "MANUAL_KILL_SWITCH")
+        LOG.critical("[KILL-SWITCH] 🚨 Activated: %s", _reason)
+        self._kill_switch_path.unlink(missing_ok=True)
+        for _b in self.circuit_breakers.breakers:
+            if not _b.state.is_tripped:
+                _b.state.trip(reason=_reason, value=999.0, threshold=0.0)
+        LOG.critical("[KILL-SWITCH] Circuit breakers tripped — no new entries allowed")
+        self._close_all_positions_for_kill(_reason)
+        self.circuit_breakers.save_state()
+
+    def _close_all_positions_for_kill(self, reason: str) -> None:
+        """Close all positions via emergency closer if configured."""
+        _closer = self.circuit_breakers.emergency_closer
+        if _closer is None:
+            LOG.critical("[KILL-SWITCH] ✗ No emergency_closer configured — cannot auto-close!")
+            return
+        _ok = _closer.close_all_positions(reason=reason)
+        if _ok:
+            LOG.critical("[KILL-SWITCH] ✓ All positions closed")
+        else:
+            LOG.critical("[KILL-SWITCH] ✗ Emergency close FAILED — manual intervention required!")
+
+    def _check_cb_reset_request(self) -> None:
+        """Poll for circuit_breaker_reset.json written by HUD and reset breakers if found."""
+        if not self._cb_reset_path.exists():
+            return
+        try:
+            with open(self._cb_reset_path) as _f:
+                _payload = json.load(_f)
+            self._cb_reset_path.unlink(missing_ok=True)
+            if not _payload.get("reset"):
+                return
+            LOG.info("[CB-RESET] 🔄 Manual circuit breaker reset requested from HUD")
+            self.circuit_breakers.reset_all()
+            self.circuit_breakers.save_state()
+            LOG.info("[CB-RESET] ✓ All circuit breakers reset and state persisted")
+        except Exception as _e:
+            LOG.error("[CB-RESET] Error processing reset request: %s", _e)
+
+    def _check_kurtosis_gate_reset_request(self) -> None:
+        """Poll for kurtosis_gate_reset.json written by HUD and reset gate if found."""
+        if not self._kurtosis_gate_reset_path.exists():
+            return
+        try:
+            with open(self._kurtosis_gate_reset_path) as _f:
+                _payload = json.load(_f)
+            self._kurtosis_gate_reset_path.unlink(missing_ok=True)
+            if not _payload.get("reset"):
+                return
+            LOG.info("[KURTOSIS-GATE] 🔄 Manual kurtosis gate reset requested from HUD")
+            self.kurtosis_monitor.reset()
+            LOG.info("[KURTOSIS-GATE] ✓ Kurtosis gate reset and entries re-enabled")
+        except Exception as _e:
+            LOG.error("[KURTOSIS-GATE] Error processing reset request: %s", _e)
+
     def stop_health_monitor(self):
         """Gracefully stop the health monitor thread."""
         self._health_monitor_running = False
         self._shutdown_requested = True
+
+    def reset_kurtosis_gate(self) -> None:
+        """Publicly accessible method to reset the kurtosis gate and re-enable entries."""
+        self.kurtosis_monitor.reset()
+        LOG.info("[KURTOSIS-GATE] ✓ Kurtosis gate reset via public API")
 
     def graceful_shutdown(self, signum=None, frame=None):  # noqa: ARG002
         """Perform graceful shutdown with position cleanup and session closure."""
@@ -1332,37 +1449,10 @@ class CTraderFixApp(fix.Application):
         self._shutdown_requested = True
 
         try:
-            # Check for open positions
-            if hasattr(self, "cur_pos") and self.cur_pos != 0:
-                LOG.warning("[SHUTDOWN] ⚠ Open %s position (qty:%s) - manual closure required",
-                    "LONG" if self.cur_pos > 0 else "SHORT", abs(self.cur_pos))
-
-            # Export trades
-            if hasattr(self, "trade_exporter") and hasattr(self, "performance"):
-                try:
-                    trades = self.performance.get_trade_history()
-                    if trades:
-                        timestamp = datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
-                        self.trade_exporter.export_all(self.performance, prefix=f"shutdown_{timestamp}")
-                        LOG.info("[SHUTDOWN] ✓ Exported %d trades", len(trades))
-                except Exception as e:
-                    LOG.error("[SHUTDOWN] Export failed: %s", e)
-
-            # Save training checkpoint
-            if hasattr(self, "policy") and self.policy and hasattr(self.policy, "save_checkpoint"):
-                try:
-                    self.policy.save_checkpoint()
-                    LOG.info("[SHUTDOWN] ✓ Training checkpoint saved")
-                except Exception as e:
-                    LOG.error("[SHUTDOWN] Checkpoint failed: %s", e)
-
-            # Final stats
-            bars = len(self.bars) if hasattr(self, "bars") else 0
-            pos = self.cur_pos if hasattr(self, "cur_pos") else 0
-            metrics = self.performance.get_metrics() if hasattr(self, "performance") else {}
-            LOG.info("[SHUTDOWN] Stats: bars=%d pos=%s pnl=%.2f trades=%d reconnects=%d",
-                bars, pos, metrics.get("total_pnl", 0.0), metrics.get("total_trades", 0), self.reconnect_attempts)
-
+            self._shutdown_log_open_position()
+            self._shutdown_export_trades()
+            self._shutdown_save_checkpoint()
+            self._shutdown_log_stats()
             self.stop_health_monitor()
 
         except Exception as e:
@@ -1370,6 +1460,62 @@ class CTraderFixApp(fix.Application):
         finally:
             self._shutdown_complete = True
             LOG.info("[SHUTDOWN] Complete")
+
+    def _shutdown_log_open_position(self) -> None:
+        """Log open position warning if any remains at shutdown."""
+        if not (hasattr(self, "cur_pos") and self.cur_pos != 0):
+            return
+        pos_side = "LONG" if self.cur_pos > 0 else "SHORT"
+        LOG.warning(
+            "[SHUTDOWN] ⚠ Open %s position (qty:%s) - manual closure required",
+            pos_side,
+            abs(self.cur_pos),
+        )
+
+    def _shutdown_export_trades(self) -> None:
+        """Export trade history on shutdown when available."""
+        if not (hasattr(self, "trade_exporter") and hasattr(self, "performance")):
+            return
+        try:
+            trades = self.performance.get_trade_history()
+            if not trades:
+                return
+            timestamp = datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
+            self.trade_exporter.export_all(self.performance, prefix=f"shutdown_{timestamp}")
+            LOG.info("[SHUTDOWN] ✓ Exported %d trades", len(trades))
+        except Exception as e:
+            LOG.error("[SHUTDOWN] Export failed: %s", e)
+
+    def _shutdown_save_checkpoint(self) -> None:
+        """Save training checkpoint on shutdown when supported."""
+        if not (hasattr(self, "policy") and self.policy and hasattr(self.policy, "save_checkpoint")):
+            return
+        try:
+            self.policy.save_checkpoint()
+            LOG.info("[SHUTDOWN] ✓ Training checkpoint saved")
+        except Exception as e:
+            LOG.error("[SHUTDOWN] Checkpoint failed: %s", e)
+        # H4 shadow policy checkpoint
+        if getattr(self, "_h4_enabled", False) and getattr(self, "policy_h4", None):
+            try:
+                self.policy_h4.save_checkpoint()
+                LOG.info("[SHUTDOWN] ✓ H4 checkpoint saved")
+            except Exception as e_h4:
+                LOG.error("[SHUTDOWN] H4 checkpoint failed: %s", e_h4)
+
+    def _shutdown_log_stats(self) -> None:
+        """Emit a final shutdown metrics log line."""
+        bars = len(self.bars) if hasattr(self, "bars") else 0
+        pos = self.cur_pos if hasattr(self, "cur_pos") else 0
+        metrics = self.performance.get_metrics() if hasattr(self, "performance") else {}
+        LOG.info(
+            "[SHUTDOWN] Stats: bars=%d pos=%s pnl=%.2f trades=%d reconnects=%d",
+            bars,
+            pos,
+            metrics.get("total_pnl", 0.0),
+            metrics.get("total_trades", 0),
+            self.reconnect_attempts,
+        )
 
     def is_fully_connected(self) -> bool:
         """Check if both QUOTE and TRADE sessions are active."""
@@ -1531,6 +1677,41 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.warning("[STARTUP] Could not seed trade timing from log: %s", e)
 
+    def _seed_convergence_from_production_metrics(self) -> None:
+        """Restore prediction-convergence EMAs from production_metrics.json.
+
+        Called once at startup so convergence tracking survives restarts.
+        Without this, ``_runway_delta_ema``, ``_runway_accuracy_ema``, and
+        ``_conf_calib_err_ema`` reset to their uninformative defaults (0.0,
+        0.5, 0.5) every session.
+        """
+        try:
+            path = Path(self.hud_data_dir) / "production_metrics.json"
+            if not path.exists():
+                return
+            with open(path) as fh:
+                data = json.load(fh)
+            m = data.get("metrics", {})
+            restored = []
+            for attr, key, default in (
+                ("_runway_delta_ema", "runway_delta_ema", 0.0),
+                ("_runway_accuracy_ema", "runway_accuracy_ema", 0.5),
+                ("_conf_calib_err_ema", "conf_calib_err_ema", 0.5),
+            ):
+                val = m.get(key)
+                if val is not None and val != default:
+                    setattr(self, attr, float(val))
+                    restored.append(f"{key}={val:.4f}")
+            if restored:
+                LOG.info(
+                    "[STARTUP] Restored convergence EMAs from production_metrics: %s",
+                    ", ".join(restored),
+                )
+            else:
+                LOG.debug("[STARTUP] No non-default convergence EMAs to restore")
+        except Exception as e:
+            LOG.warning("[STARTUP] Could not seed convergence EMAs: %s", e)
+
     def _complete_trade_session_startup(self):
         """Complete TRADE session startup after symbol ID is resolved.
 
@@ -1540,6 +1721,7 @@ class CTraderFixApp(fix.Application):
         """
         LOG.info("[TRADE] Completing trade session startup for symbol_id=%d", self.symbol_id)
         self._seed_trade_timing_from_log()  # Restore last_trade / avg duration from log
+        self._seed_convergence_from_production_metrics()  # Restore convergence EMAs
 
         # If we deferred quote subscription, do it now that symbol ID is resolved
         if self.quote_subscription_deferred and self.quote_sid:
@@ -1589,6 +1771,10 @@ class CTraderFixApp(fix.Application):
             self._export_hud_data()
         except Exception as e_hud:
             LOG.debug("[STARTUP] Initial HUD export deferred: %s", e_hud)
+
+        # Request real account balance — updates self.starting_equity and
+        # self.real_account_balance when CollateralReport (BA) arrives.
+        self.request_collateral_inquiry()
 
     def onLogout(self, session_id):
         qual = self._qual(session_id)
@@ -1708,6 +1894,7 @@ class CTraderFixApp(fix.Application):
             "y": self.on_security_list,
             "j": self.on_biz_reject,
             "Y": self.on_md_reject,
+            "BA": self.on_collateral_report,
         }
         handler = _handlers.get(t)
         if handler is not None:
@@ -2071,6 +2258,7 @@ class CTraderFixApp(fix.Application):
 
     def on_md_snapshot(self, msg: fix.Message):
         self.last_market_data_time = time.time()
+        self._md_resubscribe_attempts = 0
         try:
             no = fix.NoMDEntries()
             msg.getField(no)
@@ -2224,6 +2412,7 @@ class CTraderFixApp(fix.Application):
 
     def on_md_incremental(self, msg: fix.Message):
         self.last_market_data_time = time.time()
+        self._md_resubscribe_attempts = 0
         try:
             no = fix.NoMDEntries()
             msg.getField(no)
@@ -2323,17 +2512,24 @@ class CTraderFixApp(fix.Application):
 
         closed = self.builder.update(utc_now(), mid)
         if closed:
-            LOG.debug(f"[BAR] Closed bar: {closed}")
+            LOG.info(f"[BAR] Closed bar: {closed}")
             tick_count = self.current_bar_tick_count
             self.current_bar_tick_count = 0
             self._update_non_repaint_series(closed, tick_count)
             self._mark_non_repaint_closed()
             self.close_stats.update(closed[4])
             self.bars.append(closed)
-            LOG.debug(f"[BAR] Appended to self.bars (len now {len(self.bars)})")
+            LOG.info(f"[BAR] Appended to self.bars (len now {len(self.bars)})")
             self._save_bars_cache()
             self.on_bar_close(closed)
             self._mark_non_repaint_opened()
+
+        # ── H4 shadow bar (no real orders) ────────────────────────────────
+        if self._h4_enabled:
+            closed_h4 = self.builder_h4.update(utc_now(), mid)
+            if closed_h4:
+                self.bars_h4.append(closed_h4)
+                self._on_h4_bar_close(closed_h4)
 
     # ── Order book live export ─────────────────────────────────────────────
 
@@ -2366,71 +2562,143 @@ class CTraderFixApp(fix.Application):
                 "imbalance": getattr(self, "_last_bar_qfi", 0.0),
                 "qfi_update_count": getattr(self, "_last_bar_qfi_count", 0),
                 "has_real_sizes": self._has_real_sizes,
+                "next_bar_close_utc": self.builder.next_bar_close_utc(),
+                "timeframe_minutes": self.timeframe_minutes,
             }
             with open(self.hud_data_dir / "order_book.json", "w", encoding="utf-8") as fh:
                 json.dump(ob, fh)
 
-            # Also write a fresh current_position.json so the HUD overview always
-            # shows the correct current_price, unrealized PnL, MFE and MAE
-            # without waiting for the next bar close (which can be hours on H4).
-            if self.cur_pos != 0 and self.best_bid and self.best_ask:
-                live_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
-                with self._tracker_lock:
-                    live_tracker = (
-                        next(reversed(self.mfe_mae_trackers.values()), None)
-                        if self.mfe_mae_trackers
-                        else self.mfe_mae_tracker
-                    )
-                if live_tracker and live_tracker.entry_price:
-                    ep = float(live_tracker.entry_price)
-                    live_qty = self.qty
-                    try:
-                        if self.trade_integration and self.trade_integration.trade_manager:
-                            _lp = self.trade_integration.trade_manager.get_position()
-                            if _lp and abs(_lp.net_qty) > 0:
-                                live_qty = float(abs(_lp.net_qty))
-                    except Exception:
-                        pass
-                    live_pnl = (
-                        (live_price - ep) * live_qty if self.cur_pos > 0
-                        else (ep - live_price) * live_qty
-                    )
-                    with self._tracker_lock:
-                        _prec = (
-                            next(iter(self.path_recorders.values()), self.path_recorder)
-                            if self.path_recorders
-                            else self.path_recorder
+            self._write_current_position_snapshot()
+
+            # ── Change B: Tick-level drawdown circuit breaker ─────────────
+            # Evaluate drawdown on every tick (rate-limited) so the breaker
+            # can trip immediately on adverse moves, not only at bar close.
+            if now - self._last_tick_dd_check_time >= TICK_DRAWDOWN_CHECK_INTERVAL_S:
+                self._last_tick_dd_check_time = now
+                try:
+                    equity = self._estimate_account_equity()
+                    self.circuit_breakers.drawdown_breaker.update(equity)
+                    if self.circuit_breakers.drawdown_breaker.check():
+                        LOG.warning(
+                            "[TICK-CB] Drawdown breaker tripped on tick  "
+                            "equity=%.2f  dd=%.4f",
+                            equity,
+                            self.circuit_breakers.drawdown_breaker.current_drawdown,
                         )
-                    live_bars_held = len(_prec.path) if hasattr(_prec, "path") else 0
-                    pos_data = {
-                        "direction": "LONG" if self.cur_pos > 0 else "SHORT",
-                        "entry_price": ep,
-                        "current_price": live_price,
-                        "mfe": float(live_tracker.mfe) * live_qty,
-                        "mae": float(live_tracker.mae) * live_qty,
-                        "unrealized_pnl": live_pnl,
-                        "bars_held": live_bars_held,
-                    }
-                    with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as fh:
-                        json.dump(pos_data, fh)
-            elif self.cur_pos == 0:
-                # No open position — write a FLAT snapshot so the HUD clears
-                # immediately after a close without waiting for bar-close flush.
-                flat_data = {
-                    "direction": "FLAT",
-                    "entry_price": 0.0,
-                    "current_price": 0.0,
-                    "mfe": 0.0,
-                    "mae": 0.0,
-                    "unrealized_pnl": 0.0,
-                    "bars_held": 0,
-                }
-                with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as fh:
-                    json.dump(flat_data, fh)
+                        self.circuit_breakers.save_state()
+                        self._export_hud_data()
+                except Exception as dd_exc:
+                    LOG.debug("[TICK-CB] Drawdown check error: %s", dd_exc)
 
             self._last_ob_export_time = now
         except Exception as e:
             LOG.debug("[OB] order_book.json export failed: %s", e)
+
+    def _write_current_position_snapshot(self) -> None:
+        """Write a live current_position snapshot for the HUD."""
+        if self.cur_pos == 0:
+            self._write_flat_position_snapshot()
+            return
+        if not (self.best_bid and self.best_ask):
+            return
+        live_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
+        live_tracker = self._get_live_tracker()
+        if not (live_tracker and live_tracker.entry_price):
+            return
+        ep = float(live_tracker.entry_price)
+        live_qty = self._get_live_qty()
+        live_pnl = (live_price - ep) * live_qty if self.cur_pos > 0 else (ep - live_price) * live_qty
+        live_bars_held = self._get_live_bars_held()
+        # Resolve broker position ticket and tracker key for the HUD PID display
+        _pos_ticket = getattr(live_tracker, "position_ticket", "") or ""
+        if not _pos_ticket:
+            _pids = self._broker_pids()
+            _pos_ticket = _pids[0] if _pids else ""
+        with self._tracker_lock:
+            _tracker_key = next(reversed(self.mfe_mae_trackers), "") if self.mfe_mae_trackers else ""
+        pos_data = {
+            "direction": "LONG" if self.cur_pos > 0 else "SHORT",
+            "symbol": self.symbol,
+            "timeframe_minutes": self.timeframe_minutes,
+            "entry_price": ep,
+            "current_price": live_price,
+            "mfe": float(live_tracker.mfe) * live_qty,
+            "mae": float(live_tracker.mae) * live_qty,
+            "unrealized_pnl": live_pnl,
+            "bars_held": live_bars_held,
+            "position_id": _pos_ticket,
+            "tracker_key": _tracker_key,
+        }
+        _pos_file = f"current_position_{self.symbol}_M{self.timeframe_minutes}.json"
+        with open(self.hud_data_dir / _pos_file, "w", encoding="utf-8") as fh:
+            json.dump(pos_data, fh)
+
+    def _write_flat_position_snapshot(self) -> None:
+        """Write a FLAT snapshot so the HUD clears immediately after a close."""
+        flat_data = {
+            "direction": "FLAT",
+            "symbol": self.symbol,
+            "timeframe_minutes": self.timeframe_minutes,
+            "entry_price": 0.0,
+            "current_price": 0.0,
+            "mfe": 0.0,
+            "mae": 0.0,
+            "unrealized_pnl": 0.0,
+            "bars_held": 0,
+        }
+        _pos_file = f"current_position_{self.symbol}_M{self.timeframe_minutes}.json"
+        with open(self.hud_data_dir / _pos_file, "w", encoding="utf-8") as fh:
+            json.dump(flat_data, fh)
+
+    def _get_live_tracker(self):
+        """Fetch the latest MFE/MAE tracker for the active position."""
+        with self._tracker_lock:
+            if self.mfe_mae_trackers:
+                return next(reversed(self.mfe_mae_trackers.values()), None)
+            return self.mfe_mae_tracker
+
+    def _get_live_qty(self) -> float:
+        """Resolve live quantity from TradeManager when available."""
+        live_qty = self.qty
+        try:
+            if self.trade_integration and self.trade_integration.trade_manager:
+                _lp = self.trade_integration.trade_manager.get_position()
+                if _lp and abs(_lp.net_qty) > 0:
+                    live_qty = float(abs(_lp.net_qty))
+        except Exception:
+            LOG.warning("[POSITION] Failed to read live qty from TradeManager — falling back to self.qty=%.2f", self.qty, exc_info=True)
+        return live_qty
+
+    def _get_live_bars_held(self) -> int:
+        """Get bar count for the active position path recorder.
+
+        Falls back to ``dual_policy.ticks_held`` when the path recorder has
+        no recorded path (e.g. position restored from state after restart).
+        Final fallback: compute from ``trade_entry_time`` and timeframe.
+        """
+        with self._tracker_lock:
+            _prec = (
+                next(iter(self.path_recorders.values()), self.path_recorder)
+                if self.path_recorders
+                else self.path_recorder
+            )
+        path_len = len(_prec.path) if hasattr(_prec, "path") else 0
+        if path_len > 0:
+            return path_len
+        # Fallback: dual_policy tracks ticks_held per bar-close call
+        policy = getattr(self, "policy", None)
+        if policy is not None and hasattr(policy, "ticks_held") and policy.ticks_held > 0:
+            return policy.ticks_held
+        # Final fallback: compute from persisted entry_time
+        entry_t = getattr(self, "trade_entry_time", None)
+        if entry_t is not None and self.timeframe_minutes > 0:
+            import datetime as _dt  # noqa: PLC0415
+            now = _dt.datetime.now(_dt.UTC)
+            if entry_t.tzinfo is None:
+                entry_t = entry_t.replace(tzinfo=_dt.UTC)
+            elapsed_secs = max(0.0, (now - entry_t).total_seconds())
+            return max(0, int(elapsed_secs / (self.timeframe_minutes * 60)))
+        return 0
 
     # ── Bar cache persistence ──────────────────────────────────────────────
 
@@ -2512,6 +2780,293 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.warning("[BARS] Failed to load bars cache: %s", e)
 
+        # Pre-seed both replay buffers from cached bars so training can
+        # start immediately instead of waiting for dozens of live bars.
+        self._preseed_trigger_buffer()
+        self._preseed_harvester_buffer()
+
+    @staticmethod
+    def _compute_preseed_vol(bar_list: list, bar_idx: int, window: int = 20) -> float:
+        """Compute realized vol from close prices for preseed normalization.
+
+        Uses the rolling std of absolute returns over the last `window` bars so
+        that synthetic preseed rewards are scaled to the same unit as live
+        training rewards instead of being locked to a hardcoded 0.005.
+        """
+        start = max(0, bar_idx - window)
+        closes = [b[4] for b in bar_list[start:bar_idx + 1]]
+        if len(closes) < 2:
+            return 0.005  # fallback before enough history
+        returns = [abs(closes[i] / max(closes[i - 1], 1e-8) - 1.0) for i in range(1, len(closes))]
+        vol = float(np.std(returns)) if len(returns) > 1 else 0.005
+        return max(vol, 0.0005)  # floor: prevents /0 explosions on flat markets
+
+    def _preseed_trigger_buffer(self) -> None:
+        """Replay cached bars through the policy to fill the trigger experience buffer.
+
+        Generates experiences from ALL cached bars (not just up to min_experiences)
+        to maximise training data on restart.  Each bar produces one experience:
+        - ~70 % NO_ENTRY (action=0, reward=0) — the dominant class
+        - ~30 % simulated ENTRY (action=1) with a forward-looking reward
+          derived from the next-bar return, so the agent learns which
+          market states are worth entering.
+
+        Skips pre-seeding when the buffer is already ≥ 50 % full (the agent
+        has enough live data that synthetic experiences would only dilute it).
+        """
+        trig = getattr(self.policy, "trigger", None)
+        if trig is None or not hasattr(self.policy, "add_trigger_experience"):
+            return
+        trig_buf = getattr(trig, "buffer", None)
+        trig_buf_size = trig_buf.size if trig_buf is not None else 0
+        trig_capacity = trig_buf.capacity if trig_buf is not None else TRIGGER_BUFFER_CAPACITY
+        # Skip if buffer already has meaningful data (≥ 50 % full)
+        if trig_buf_size >= trig_capacity * 0.5:
+            LOG.info(
+                "[PRESEED] Trigger buffer already has %d/%d experiences (≥50%%) — skipping",
+                trig_buf_size, trig_capacity,
+            )
+            return
+        bar_list = list(self.bars)
+        if len(bar_list) < MIN_BARS_FOR_VOL_CALC:
+            LOG.info(
+                "[PRESEED] Only %d cached bars (need %d) — skipping",
+                len(bar_list), MIN_BARS_FOR_VOL_CALC,
+            )
+            return
+
+        seeded = 0
+        cap = trig_capacity - trig_buf_size  # fill remaining capacity
+        window = deque(maxlen=self.bars.maxlen)
+        states: list = []  # collect (state, bar_idx) for forward-reward ENTRY experiences
+
+        # Pass 1: build state vectors for every viable bar
+        for idx, bar in enumerate(bar_list):
+            window.append(bar)
+            if len(window) < MIN_BARS_FOR_VOL_CALC:
+                continue
+            try:
+                vol = self._compute_preseed_vol(bar_list, idx)
+                state = self.policy._build_state(
+                    window, imbalance=0.0, vpin_z=0.0,
+                    depth_ratio=1.0, realized_vol=vol,
+                    event_features=None,
+                )
+                if state is not None and state.size > 0:
+                    states.append((state.copy(), idx, vol))
+            except Exception:
+                LOG.debug("[PRESEED] Failed to process bar %d", idx, exc_info=True)
+
+        if not states:
+            LOG.info("[PRESEED] No valid states from %d bars — skipping", len(bar_list))
+            return
+
+        # Pass 2: emit experiences (respect remaining capacity)
+        for i, (state, bar_idx, vol) in enumerate(states):
+            if seeded >= cap:
+                break
+            # Decide action: ~30 % ENTRY if we have a next bar for reward
+            is_entry = (i % 3 == 0) and (bar_idx + 1 < len(bar_list))
+            if is_entry:
+                # Forward-looking reward: next-bar return normalised by actual vol
+                cur_close = bar_list[bar_idx][4]
+                nxt_close = bar_list[bar_idx + 1][4]
+                ret = (nxt_close - cur_close) / max(cur_close, 1.0)
+                reward = float(np.clip(ret / vol, -1.0, 1.0))
+                action = 1
+                # Use the next bar's state as next_state when possible
+                if i + 1 < len(states):
+                    next_state = states[i + 1][0]
+                else:
+                    next_state = state
+            else:
+                action = 0
+                reward = 0.0
+                next_state = states[i + 1][0] if i + 1 < len(states) else state
+
+            self.policy.add_trigger_experience(
+                state=state, action=action, reward=reward,
+                next_state=next_state.copy(), done=True,
+            )
+            seeded += 1
+
+        new_size = trig_buf.size if trig_buf is not None else seeded
+        LOG.info(
+            "[PRESEED] ✓ Trigger: seeded %d experiences from %d cached bars "
+            "(buffer now %d/%d)",
+            seeded, len(bar_list), new_size, trig_capacity,
+        )
+
+    def _preseed_harvester_buffer(self) -> None:
+        """Simulate positions from cached bars to pre-fill the harvester experience buffer.
+
+        For each viable entry point in the cached bars, we simulate a LONG
+        position and walk forward to compute running MFE / MAE / ticks_held.
+        At each hold step we emit a HOLD experience; at the last step (or when
+        a simple stop/target triggers) we emit a CLOSE experience.
+
+        This gives the harvester agent a rich set of position-management
+        experiences so it can start training immediately on restart instead of
+        waiting for actual trades to accumulate.
+
+        Skips if the buffer is already ≥ 30 % full or if there are too few bars.
+        """
+        harv = getattr(self.policy, "harvester", None)
+        if harv is None or not hasattr(self.policy, "add_harvester_experience"):
+            return
+        harv_buf = getattr(harv, "buffer", None)
+        harv_buf_size = harv_buf.size if harv_buf is not None else 0
+        harv_capacity = harv_buf.capacity if harv_buf is not None else HARVESTER_BUFFER_CAPACITY
+        if harv_buf_size >= harv_capacity * 0.3:
+            LOG.info(
+                "[PRESEED] Harvester buffer already has %d/%d experiences (≥30%%) — skipping",
+                harv_buf_size, harv_capacity,
+            )
+            return
+
+        bar_list = list(self.bars)
+        if len(bar_list) < MIN_BARS_FOR_VOL_CALC + 5:
+            LOG.info(
+                "[PRESEED] Only %d cached bars (need %d) — skipping harvester",
+                len(bar_list), MIN_BARS_FOR_VOL_CALC + 5,
+            )
+            return
+
+        # Pre-compute market states for every bar position
+        window = deque(maxlen=self.bars.maxlen)
+        market_states: list = []  # (bar_idx, market_state)
+        for idx, bar in enumerate(bar_list):
+            window.append(bar)
+            if len(window) < MIN_BARS_FOR_VOL_CALC:
+                continue
+            try:
+                vol = self._compute_preseed_vol(bar_list, idx)
+                ms = self.policy._build_state(
+                    window, imbalance=0.0, vpin_z=0.0,
+                    depth_ratio=1.0, realized_vol=vol,
+                    event_features=None,
+                )
+                if ms is not None and ms.size > 0:
+                    market_states.append((idx, ms.copy()))
+            except Exception:
+                continue
+
+        if len(market_states) < 5:
+            LOG.info("[PRESEED] Not enough market states (%d) for harvester", len(market_states))
+            return
+
+        seeded = 0
+        cap = harv_capacity - harv_buf_size
+        max_hold = 20  # max bars to simulate holding
+
+        # Simulate positions starting every 3rd bar (avoid overlapping too much)
+        for ms_pos in range(0, len(market_states) - 2, 3):
+            if seeded >= cap:
+                break
+            entry_bar_idx, entry_market_state = market_states[ms_pos]
+            entry_price = bar_list[entry_bar_idx][4]  # close price as entry
+            if entry_price <= 0:
+                continue
+
+            # Walk forward simulating a LONG position
+            mfe = 0.0
+            mae = 0.0
+            prev_mfe = 0.0
+            prev_mae = 0.0
+            hold_bars = min(max_hold, len(market_states) - ms_pos - 1)
+            if hold_bars < 1:
+                continue
+
+            for hold_step in range(1, hold_bars + 1):
+                if seeded >= cap:
+                    break
+                future_ms_pos = ms_pos + hold_step
+                if future_ms_pos >= len(market_states):
+                    break
+                future_bar_idx, future_market_state = market_states[future_ms_pos]
+                future_close = bar_list[future_bar_idx][4]
+
+                # Update running MFE / MAE for this simulated LONG
+                pnl = future_close - entry_price
+                mfe = max(mfe, pnl) if pnl > 0 else mfe
+                mae = max(mae, -pnl) if pnl < 0 else mae
+
+                # Build harvester state: market_state + position features
+                mfe_norm = (mfe / entry_price) * 100.0
+                mae_norm = (mae / entry_price) * 100.0
+                ticks_held_norm = min(hold_step / 100.0, 1.0)
+                pos_features = np.full(
+                    (entry_market_state.shape[0], 3),
+                    [mfe_norm, mae_norm, ticks_held_norm],
+                    dtype=np.float32,
+                )
+                state = np.hstack([entry_market_state, pos_features])
+
+                # Next state: use next bar's market state + updated position
+                if hold_step < hold_bars and (future_ms_pos + 1) < len(market_states):
+                    next_bar_idx, next_market_state = market_states[future_ms_pos + 1]
+                    next_close = bar_list[next_bar_idx][4]
+                    next_pnl = next_close - entry_price
+                    next_mfe = max(mfe, next_pnl) if next_pnl > 0 else mfe
+                    next_mae = max(mae, -next_pnl) if next_pnl < 0 else mae
+                    next_mfe_norm = (next_mfe / entry_price) * 100.0
+                    next_mae_norm = (next_mae / entry_price) * 100.0
+                    next_ticks_norm = min((hold_step + 1) / 100.0, 1.0)
+                    next_pos_features = np.full(
+                        (next_market_state.shape[0], 3),
+                        [next_mfe_norm, next_mae_norm, next_ticks_norm],
+                        dtype=np.float32,
+                    )
+                    next_state = np.hstack([next_market_state, next_pos_features])
+                else:
+                    next_state = state  # terminal
+
+                is_last = (hold_step == hold_bars) or (future_ms_pos + 1 >= len(market_states))
+
+                # Simple stop / target to create realistic close signals
+                mae_pct = (mae / entry_price) * 100.0
+                mfe_pct = (mfe / entry_price) * 100.0
+                stop_hit = mae_pct > 0.3   # 0.3% stop loss
+                target_hit = mfe_pct > 0.2  # 0.2% profit target
+                force_close = stop_hit or target_hit
+
+                if is_last or force_close:
+                    # CLOSE experience
+                    # Reward based on capture ratio: positive if profitable
+                    capture = pnl / entry_price * 100.0
+                    reward = float(np.clip(capture / 0.3, -1.0, 1.0))
+                    self.policy.add_harvester_experience(
+                        state=state, action=1, reward=reward,
+                        next_state=next_state.copy(), done=True,
+                    )
+                    seeded += 1
+                    break  # end this simulated position
+                else:
+                    # HOLD experience
+                    # Small reward for MFE growth, penalty for MAE growth
+                    mfe_delta = (mfe - prev_mfe) / max(entry_price, 1.0) * 100.0
+                    mae_delta = (mae - prev_mae) / max(entry_price, 1.0) * 100.0
+                    time_decay = -0.01 * (hold_step / 10.0)
+                    reward = float(np.clip(
+                        mfe_delta * 0.3 - mae_delta * 0.4 + time_decay,
+                        -0.5, 0.5,
+                    ))
+                    self.policy.add_harvester_experience(
+                        state=state, action=0, reward=reward,
+                        next_state=next_state.copy(), done=False,
+                    )
+                    seeded += 1
+
+                prev_mfe = mfe
+                prev_mae = mae
+
+        new_size = harv_buf.size if harv_buf is not None else seeded
+        LOG.info(
+            "[PRESEED] ✓ Harvester: seeded %d experiences from %d cached bars "
+            "(buffer now %d/%d)",
+            seeded, len(bar_list), new_size, harv_capacity,
+        )
+
     # ── Harvester tick evaluation ─────────────────────────────────────────
 
     def _log_harvester_debug_tick(self, now: float) -> None:
@@ -2546,6 +3101,26 @@ class CTraderFixApp(fix.Application):
             position_id, mid_price, exit_conf,
             tracker.entry_price, tracker.mfe, tracker.mae, tracker.direction,
         )
+        # Audit log — tick-exit closes bypass the bar-close log path, so we record them here.
+        if hasattr(self, "decision_log"):
+            unrealized = (
+                (mid_price - tracker.entry_price) * tracker.direction
+                if tracker.entry_price and tracker.direction else 0.0
+            )
+            self.decision_log.log_harvester_decision(
+                decision="CLOSE",
+                confidence=exit_conf,
+                price=mid_price,
+                entry_price=getattr(tracker, "entry_price", 0.0) or 0.0,
+                mfe=getattr(tracker, "mfe", 0.0) or 0.0,
+                mae=getattr(tracker, "mae", 0.0) or 0.0,
+                ticks_held=getattr(tracker, "ticks_held", 0) or 0,
+                unrealized_pnl=unrealized,
+                capture_ratio=getattr(tracker, "capture_ratio", 0.0) or 0.0,
+                trade_id=self.current_trade_id,
+                in_position=True,
+                position_id=[position_id],
+            )
         if not (hasattr(self, "trade_integration") and hasattr(self.trade_integration, "close_position")):
             return
         ticket = getattr(tracker, "position_ticket", None)
@@ -2584,20 +3159,11 @@ class CTraderFixApp(fix.Application):
         with self._tracker_lock:
             tracker_snapshot = list(self.mfe_mae_trackers.items())
 
+        tick_ctx = self._build_harvester_tick_context()
+
         # Check each position independently
         for position_id, tracker in tracker_snapshot:
-            # Skip if already closing this position
-            if position_id in self._pending_closes:
-                continue
-
-            # Skip if tracker not initialized
-            entry_price = getattr(tracker, "entry_price", None)
-            if entry_price is None or entry_price <= 0:
-                continue
-
-            # Skip if no position direction set
-            direction = getattr(tracker, "direction", None)
-            if direction is None or direction == 0:
+            if self._skip_harvester_tracker(position_id, tracker):
                 continue
 
             # Update tracker with current price
@@ -2605,25 +3171,13 @@ class CTraderFixApp(fix.Application):
 
             # Full Harvester decision with ML for this position
             try:
-                # Get current market features
-                imbalance = self.order_book.imbalance() if hasattr(self.order_book, "imbalance") else 0.0
-                vpin_zscore = self.last_vpin_stats.get("zscore", 0.0) if hasattr(self, "last_vpin_stats") else 0.0
-                b_depth, a_depth = self.order_book.depth_sum() if hasattr(self.order_book, "depth_sum") else (0.0, 0.0)
-                depth_ratio = b_depth / a_depth if a_depth > 0 else 1.0
-                event_features = (
-                    self.event_time_engine.calculate_features()
-                    if hasattr(self, "event_time_engine") and self.event_time_engine
-                    else {}
-                )
-
-                # Harvester decision (ML-based) for this specific position
                 exit_action, exit_conf = self.policy.decide_exit(
                     self.bars,
                     current_price=mid_price,
-                    imbalance=imbalance,
-                    vpin_z=vpin_zscore,
-                    depth_ratio=depth_ratio,
-                    event_features=event_features,
+                    imbalance=tick_ctx["imbalance"],
+                    vpin_z=tick_ctx["vpin_zscore"],
+                    depth_ratio=tick_ctx["depth_ratio"],
+                    event_features=tick_ctx["event_features"],
                 )
                 # exit_action: 0=HOLD, 1=CLOSE
 
@@ -2632,6 +3186,34 @@ class CTraderFixApp(fix.Application):
 
             except Exception as e:
                 LOG.error("[TICK_EXIT] Error evaluating position %s: %s", position_id, e, exc_info=True)
+
+    def _build_harvester_tick_context(self) -> dict:
+        """Build the shared market context for tick-level harvester decisions."""
+        imbalance = self.order_book.imbalance() if hasattr(self.order_book, "imbalance") else 0.0
+        vpin_zscore = self.last_vpin_stats.get("zscore", 0.0) if hasattr(self, "last_vpin_stats") else 0.0
+        b_depth, a_depth = self.order_book.depth_sum() if hasattr(self.order_book, "depth_sum") else (0.0, 0.0)
+        depth_ratio = b_depth / a_depth if a_depth > 0 else 1.0
+        event_features = (
+            self.event_time_engine.calculate_features()
+            if hasattr(self, "event_time_engine") and self.event_time_engine
+            else {}
+        )
+        return {
+            "imbalance": imbalance,
+            "vpin_zscore": vpin_zscore,
+            "depth_ratio": depth_ratio,
+            "event_features": event_features,
+        }
+
+    def _skip_harvester_tracker(self, position_id: str, tracker) -> bool:
+        """Return True if this tracker should be skipped for tick evaluation."""
+        if position_id in self._pending_closes:
+            return True
+        entry_price = getattr(tracker, "entry_price", None)
+        if entry_price is None or entry_price <= 0:
+            return True
+        direction = getattr(tracker, "direction", None)
+        return direction is None or direction == 0
 
     # ----------------------------
     # TRADE: positions + orders
@@ -2645,6 +3227,46 @@ class CTraderFixApp(fix.Application):
         req.setField(fix.PosReqID(self.pos_req_id))
         fix.Session.sendToTarget(req, self.trade_sid)
         LOG.info("[TRADE] Requested positions")
+
+    def request_collateral_inquiry(self):
+        """Send CollateralInquiry (BB) to get real account balance/equity from broker.
+
+        Broker responds with CollateralReport (BA) containing:
+          - EndCash (tag 922): cash balance (realized PnL included)
+          - TotalNetValue (tag 900): equity including open position MTM
+          - MarginExcess (tag 899): free margin available
+
+        NOTE: Not all cTrader/FIX brokers support this.  If no response arrives
+        within 15 s, a warning is logged and the bot continues using the
+        CTRADER_STARTING_EQUITY value (default 10 000).  Set the correct balance
+        via the ``starting_equity`` field in data/universe.json (picked up by
+        run_universe) or via the CTRADER_STARTING_EQUITY environment variable.
+        """
+        if not self.trade_sid:
+            return
+        req = fix44.CollateralInquiry()
+        req.setField(fix.CollInquiryID(f"coll_{uuid.uuid4().hex[:8]}"))
+        # SubscriptionRequestType 0 = snapshot only
+        req.setField(fix.SubscriptionRequestType("0"))
+        fix.Session.sendToTarget(req, self.trade_sid)
+        LOG.info("[ACCOUNT] Sent CollateralInquiry — awaiting real balance from broker")
+
+        # Background watchdog: warn if broker doesn't reply within 15 s
+        _sent_equity = self.starting_equity  # capture current value
+
+        def _warn_if_no_reply():
+            time.sleep(15)
+            if self.real_account_balance is None:
+                LOG.warning(
+                    "[ACCOUNT] ⚠ No CollateralReport received after 15s — "
+                    "cTrader FIX may not support balance queries.  "
+                    "Using estimated balance (starting_equity=%.2f).  "
+                    "To fix: set 'starting_equity' in data/universe.json for this "
+                    "instrument, or set the CTRADER_STARTING_EQUITY env var.",
+                    _sent_equity,
+                )
+
+        threading.Thread(target=_warn_if_no_reply, daemon=True).start()
 
     def _close_foreign_position(self, foreign_symbol_id: str, long_qty: float, short_qty: float, ticket: str | None):
         """Close a position that belongs to a non-target symbol at startup."""
@@ -2752,6 +3374,31 @@ class CTraderFixApp(fix.Application):
         if self.best_bid and self.best_ask:
             exit_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
             self._process_trade_completion(summary, exit_price)
+
+        # Notify DualPolicy so current_position resets to 0.  The hedging path
+        # already calls policy.on_exit via _notify_policy_on_exit; the guard
+        # (current_position != 0) prevents double-update when both paths fire.
+        if hasattr(self, "policy") and getattr(self.policy, "current_position", 0) != 0:
+            mfe = summary.get("mfe", 0.0)
+            was_wtl = summary.get("winner_to_loser", False)
+            _exit_px = (
+                (float(self.best_bid) + float(self.best_ask)) / 2.0
+                if self.best_bid and self.best_ask
+                else 0.0
+            )
+            capture_ratio = 0.0
+            if mfe > 0 and self.policy.entry_price > 0:
+                _dir_sign = 1 if self.policy.current_position > 0 else -1
+                _pnl_pct = (_exit_px - self.policy.entry_price) / self.policy.entry_price * _dir_sign
+                capture_ratio = _pnl_pct / (mfe / self.policy.entry_price) if mfe > 0 else 0.0
+            self.policy.on_exit(
+                exit_price=_exit_px,
+                capture_ratio=capture_ratio,
+                was_wtl=was_wtl,
+                entry_confidence=getattr(self, "entry_confidence", 0.5),
+            )
+            LOG.info("[POSITION_CLOSED] Notified DualPolicy of position close (synced to FLAT)")
+
         self.mfe_mae_tracker.reset()
         self.trade_entry_time = None
         self.entry_state = None
@@ -2810,6 +3457,105 @@ class CTraderFixApp(fix.Application):
 
         if old_pos != 0 and self.cur_pos == 0:
             self._handle_position_closed(_active_tracker)
+
+    def on_collateral_report(self, msg: fix.Message):
+        """Handle CollateralReport (BA) — real account balance received from broker.
+
+        Updates self.real_account_balance, real_account_equity, real_margin_free.
+        Also resets starting_equity so _estimate_account_equity() stays calibrated.
+        """
+        try:
+            # EndCash (922): cash balance including closed-trade realized PnL
+            f_end_cash = fix.DoubleField(922)
+            if msg.isSetField(f_end_cash):
+                msg.getField(f_end_cash)
+                self.real_account_balance = f_end_cash.getValue()
+                # Recalibrate starting_equity so that starting_equity + total_pnl
+                # continues to give the correct running balance from this point.
+                try:
+                    session_pnl = self.performance.total_pnl
+                except AttributeError:
+                    session_pnl = 0.0
+                self.starting_equity = self.real_account_balance - session_pnl
+                LOG.info(
+                    "[ACCOUNT] ✓ Real cash balance: %.2f  (recalibrated starting_equity=%.2f)",
+                    self.real_account_balance,
+                    self.starting_equity,
+                )
+
+            # TotalNetValue (900): equity including open-position mark-to-market
+            f_net = fix.DoubleField(900)
+            if msg.isSetField(f_net):
+                msg.getField(f_net)
+                self.real_account_equity = f_net.getValue()
+                LOG.info("[ACCOUNT] ✓ Real equity: %.2f", self.real_account_equity)
+
+            # MarginExcess (899): free margin
+            f_margin = fix.DoubleField(899)
+            if msg.isSetField(f_margin):
+                msg.getField(f_margin)
+                self.real_margin_free = f_margin.getValue()
+                LOG.info("[ACCOUNT] ✓ Free margin: %.2f", self.real_margin_free)
+
+            if self.real_account_balance is None and self.real_account_equity is None:
+                LOG.warning(
+                    "[ACCOUNT] CollateralReport received but no EndCash/TotalNetValue — "
+                    "broker may not support account balance queries via FIX"
+                )
+        except Exception as e:
+            LOG.error("[ACCOUNT] Failed to parse CollateralReport: %s", e, exc_info=True)
+
+    # ------------------------------------------------------------------ #
+    #  Open API balance file reader                                       #
+    # ------------------------------------------------------------------ #
+
+    def _read_openapi_balance(self):
+        """Read account balance from data/account_balance.json (written by fetch_balance.py).
+
+        If the file exists and is newer than the last read, update
+        real_account_balance and recalibrate starting_equity—exactly
+        the same logic as on_collateral_report().
+        """
+        try:
+            if not self._balance_file_path.exists():
+                return
+            mtime = self._balance_file_path.stat().st_mtime
+            if mtime <= self._last_balance_file_mtime:
+                return  # file unchanged
+            self._last_balance_file_mtime = mtime
+
+            with open(self._balance_file_path, encoding="utf-8") as f:
+                data = json.load(f)
+
+            balance = float(data.get("balance", 0))
+            if balance <= 0:
+                return
+
+            # Staleness guard: ignore if fetched_at_unix > 30 min ago
+            fetched_at = data.get("fetched_at_unix", 0)
+            age_s = time.time() - fetched_at
+            if age_s > 1800:  # 30 min
+                LOG.debug("[ACCOUNT] Open API balance file stale (%.0fs old) — ignored", age_s)
+                return
+
+            old_balance = self.real_account_balance
+            self.real_account_balance = balance
+
+            # Recalibrate starting_equity (same as on_collateral_report)
+            try:
+                session_pnl = self.performance.total_pnl
+            except AttributeError:
+                session_pnl = 0.0
+            self.starting_equity = balance - session_pnl
+
+            if old_balance is None or abs(balance - (old_balance or 0)) > 0.01:
+                LOG.info(
+                    "[ACCOUNT] ✓ Open API balance: %.2f  (recalibrated starting_equity=%.2f)",
+                    balance,
+                    self.starting_equity,
+                )
+        except Exception as exc:
+            LOG.debug("[ACCOUNT] Could not read balance file: %s", exc)
 
     def _calculate_position_pnl(
         self,
@@ -2893,7 +3639,17 @@ class CTraderFixApp(fix.Application):
         self, summary: dict, pnl: float, entry_price: float, pnl_pts: float, shaped_rewards: dict
     ) -> float:
         """Add TriggerAgent online-learning experience; return trigger_reward (0.0 if skipped)."""
-        if not hasattr(self.policy, "add_trigger_experience") or self.entry_state is None:
+        has_method = hasattr(self.policy, "add_trigger_experience")
+        has_entry_state = self.entry_state is not None
+        LOG.info(
+            "[TRIGGER-CLOSE-DIAG] _add_trigger_experience_for_close: has_method=%s, entry_state_set=%s, action=%s, pnl=%.4f",
+            has_method, has_entry_state, self.entry_action, pnl,
+        )
+        if not has_method or not has_entry_state:
+            LOG.warning(
+                "[TRIGGER-CLOSE-DIAG] SKIPPED: has_add_trigger=%s, entry_state_set=%s",
+                has_method, has_entry_state,
+            )
             return 0.0
         next_state = getattr(getattr(self.policy, "trigger", None), "last_state", None)
         if next_state is None:
@@ -2976,7 +3732,7 @@ class CTraderFixApp(fix.Application):
 
     def _update_circuit_breakers_after_trade(self, pnl: float) -> None:
         """Update circuit breakers post-trade and persist state."""
-        current_equity = self.performance.total_pnl + 10000.0
+        current_equity = self._estimate_account_equity()
         self.circuit_breakers.update_trade(pnl, current_equity)
         breaker_status = self.circuit_breakers.get_status()
         if breaker_status["any_tripped"]:
@@ -3109,7 +3865,10 @@ class CTraderFixApp(fix.Application):
             # Save trade record
             trade_record = {
                 "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
+                "ticket": summary.get("ticket", ""),
+                "position_id": summary.get("position_id", ""),
                 "symbol": self.symbol,
+                "trading_mode": "paper" if self.paper_mode else "live",
                 "direction": summary.get("direction", "UNKNOWN"),
                 "entry_price": entry_price,
                 "exit_price": exit_price,
@@ -3119,8 +3878,14 @@ class CTraderFixApp(fix.Application):
                 "mfe": summary.get("mfe", 0.0),
                 "mae": summary.get("mae", 0.0),
                 "winner_to_loser": summary.get("winner_to_loser", False),
+                "close_reason": summary.get("close_reason", ""),
+                "bars_held": summary.get("bars_held", 0),
             }
-            LOG.debug("[TRADE_RECORD] Prepared for save: trade_id=%s pnl=%.4f", trade_record["trade_id"], pnl)
+            LOG.info(
+                "[TRADE_RECORD] Saving: ticket=%s pos_id=%s trade_id=%s pnl=%.4f close_reason=%s",
+                trade_record["ticket"], trade_record["position_id"],
+                trade_record["trade_id"], pnl, trade_record["close_reason"],
+            )
             try:
                 self._atomic_save_trade(trade_record)
             except Exception as save_err:
@@ -3505,10 +4270,20 @@ class CTraderFixApp(fix.Application):
 
     def _obc_update_bar_metrics(self, c: float, bar: tuple) -> None:
         """Update VaR estimator and path recorders."""
-        if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE:
-            prev_close = self.bars[-2][4] if len(self.bars) >= MIN_BARS_FOR_PREV_CLOSE else c
-            bar_return = SafeMath.safe_div(c - prev_close, prev_close, 0.0)
-            self.var_estimator.update_return(bar_return)
+        self._obc_update_var_estimator(c)
+        self._obc_update_path_recorders(bar)
+        self.last_depth_gate = False
+
+    def _obc_update_var_estimator(self, c: float) -> None:
+        """Update VaR estimator with the latest bar return."""
+        if len(self.bars) < MIN_BARS_FOR_VAR_UPDATE:
+            return
+        prev_close = self.bars[-2][4] if len(self.bars) >= MIN_BARS_FOR_PREV_CLOSE else c
+        bar_return = SafeMath.safe_div(c - prev_close, prev_close, 0.0)
+        self.var_estimator.update_return(bar_return)
+
+    def _obc_update_path_recorders(self, bar: tuple) -> None:
+        """Append the bar to any active position path recorder."""
         if self.trade_integration.trade_manager:
             position = self.trade_integration.trade_manager.get_position()
             if position and abs(position.net_qty) > MIN_POSITION_QTY:
@@ -3519,10 +4294,9 @@ class CTraderFixApp(fix.Application):
                 )
                 if position_id in self.path_recorders:
                     self.path_recorders[position_id].add_bar(bar)
-        elif self.cur_pos != 0:
-            if self.default_position_id in self.path_recorders:
-                self.path_recorders[self.default_position_id].add_bar(bar)
-        self.last_depth_gate = False
+            return
+        if self.cur_pos != 0 and self.default_position_id in self.path_recorders:
+            self.path_recorders[self.default_position_id].add_bar(bar)
 
     def _obc_compute_imbalance(self, c: float) -> tuple:
         """Compute depth + QFI blended imbalance and update depth state.
@@ -3609,35 +4383,53 @@ class CTraderFixApp(fix.Application):
 
     def _obc_post_train_step(self, train_metrics: dict) -> None:
         """Process training metrics: update losses, adjust regularization, checkpoint."""
+        self._obc_update_training_losses(train_metrics)
+        self._obc_log_training_stats()
+        self._obc_adjust_regularization(train_metrics)
+        self._obc_maybe_checkpoint()
+
+    def _obc_update_training_losses(self, train_metrics: dict) -> None:
+        """Update cached trigger/harvester losses from training metrics."""
         if train_metrics.get("trigger"):
             self.last_trigger_loss = train_metrics["trigger"].get("loss", self.last_trigger_loss)
         if train_metrics.get("harvester"):
             self.last_harvester_loss = train_metrics["harvester"].get("loss", self.last_harvester_loss)
+
+    def _obc_log_training_stats(self) -> None:
+        """Log training stats snapshots for trigger and harvester."""
         stats = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
         LOG.info("[TRAINING] TriggerAgent stats: %s", stats.get("trigger", {}))
         LOG.info("[TRAINING] HarvesterAgent stats: %s", stats.get("harvester", {}))
-        if train_metrics.get("trigger") or train_metrics.get("harvester"):
-            trigger_td = (
-                train_metrics.get("trigger", {}).get("mean_td_error", 0)
-                if train_metrics.get("trigger") else 0
-            )
-            harvester_td = (
-                train_metrics.get("harvester", {}).get("mean_td_error", 0)
-                if train_metrics.get("harvester") else 0
-            )
-            avg_td = (trigger_td + harvester_td) / 2 if (trigger_td + harvester_td) else 0
-            if avg_td > TRAINING_TD_HIGH_THRESHOLD:
-                self.adaptive_reg.increase_regularization()
-            elif avg_td < TRAINING_TD_LOW_THRESHOLD:
-                self.adaptive_reg.decrease_regularization()
+
+    def _obc_adjust_regularization(self, train_metrics: dict) -> None:
+        """Adjust regularization based on average TD error."""
+        if not (train_metrics.get("trigger") or train_metrics.get("harvester")):
+            return
+        trigger_td = train_metrics.get("trigger", {}).get("mean_td_error", 0) if train_metrics.get("trigger") else 0
+        harvester_td = train_metrics.get("harvester", {}).get("mean_td_error", 0) if train_metrics.get("harvester") else 0
+        avg_td = (trigger_td + harvester_td) / 2 if (trigger_td + harvester_td) else 0
+        if avg_td > TRAINING_TD_HIGH_THRESHOLD:
+            self.adaptive_reg.increase_regularization()
+        elif avg_td < TRAINING_TD_LOW_THRESHOLD:
+            self.adaptive_reg.decrease_regularization()
+
+    def _obc_maybe_checkpoint(self) -> None:
+        """Auto-save policy checkpoint on step cadence."""
         total_steps = getattr(self.policy.trigger, "training_steps", 0) + getattr(
             self.policy.harvester, "training_steps", 0
         )
-        if total_steps > 0 and total_steps % 50 == 0:
+        if total_steps <= 0 or total_steps % 50 != 0:
+            return
+        try:
+            self.policy.save_checkpoint()
+        except Exception as e_save:
+            LOG.warning("[CHECKPOINT] Auto-save failed: %s", e_save)
+        # Also checkpoint H4 shadow policy when M5 checkpoints
+        if getattr(self, "_h4_enabled", False) and getattr(self, "policy_h4", None):
             try:
-                self.policy.save_checkpoint()
-            except Exception as e_save:
-                LOG.warning("[CHECKPOINT] Auto-save failed: %s", e_save)
+                self.policy_h4.save_checkpoint()
+            except Exception as e_h4:
+                LOG.warning("[CHECKPOINT] H4 auto-save failed: %s", e_h4)
 
     def _obc_run_training_step(self) -> None:
         """Run one training step if enough experience has been collected."""
@@ -3691,11 +4483,18 @@ class CTraderFixApp(fix.Application):
         vpin_zscore: float, imbalance: float,
     ) -> None:
         """Snapshot trigger state and entry coordinates for online learning."""
+        has_trigger = hasattr(self.policy, "trigger")
+        has_last_state = has_trigger and hasattr(self.policy.trigger, "last_state") and self.policy.trigger.last_state is not None
+        LOG.debug(
+            "[ENTRY-STATE-DIAG] _obc_record_entry_state: action=%d, has_trigger=%s, has_last_state=%s",
+            action, has_trigger, has_last_state,
+        )
         if not (
             action != 0
-            and hasattr(self.policy, "trigger")
-            and hasattr(self.policy.trigger, "last_state")
+            and has_trigger
+            and has_last_state
         ):
+            LOG.debug("[ENTRY-STATE-DIAG] Skipping - no entry or missing state (action=%d)", action)
             return
         self.entry_state = (
             self.policy.trigger.last_state.copy()
@@ -3707,6 +4506,7 @@ class CTraderFixApp(fix.Application):
         self.predicted_runway = runway
         self.entry_vpin_z = vpin_zscore
         self.entry_imbalance = imbalance
+        LOG.info("[ENTRY-STATE-DIAG] ✓ Entry state recorded: action=%d, confidence=%.3f", action, confidence)
         self.was_exploration_entry = (
             hasattr(self.policy, "trigger")
             and self.policy.trigger.epsilon > EPSILON_HIGH_THRESHOLD
@@ -3715,19 +4515,29 @@ class CTraderFixApp(fix.Application):
         self._bar_cache.snapshot_entry(self.bars)
 
     def _obc_add_no_entry_experience(self, action: int) -> None:
-        """Add a rate-limited NO_ENTRY experience to the trigger buffer."""
-        if not (
-            action == 0
-            and hasattr(self.policy, "add_trigger_experience")
-            and random.random() < EXPLORATION_SAMPLE_RATE  # nosonar
-        ):
+        """Add a rate-limited NO_ENTRY experience to the trigger buffer.
+
+        During warm-up (buffer below min_experiences), capture every NO_ENTRY
+        bar at 100% so online training starts without waiting hundreds of bars.
+        Once the buffer is seeded, throttle back to EXPLORATION_SAMPLE_RATE to
+        avoid overwhelming the buffer with trivial zero-reward samples.
+        """
+        if not (action == 0 and hasattr(self.policy, "add_trigger_experience")):
+            return
+        # Adaptive sample rate: 1.0 during warm-up, EXPLORATION_SAMPLE_RATE afterwards
+        trig = getattr(self.policy, "trigger", None)
+        trig_buf = getattr(trig, "buffer", None)
+        trig_buf_size = trig_buf.size if trig_buf is not None else 0
+        trig_min_exp = getattr(trig, "min_experiences", 32)
+        sample_rate = 1.0 if trig_buf_size < trig_min_exp else EXPLORATION_SAMPLE_RATE
+        if random.random() >= sample_rate:  # nosonar
             return
         trigger_state = (
-            self.policy.trigger.last_state.copy()
+            trig.last_state.copy()
             if (
-                hasattr(self.policy, "trigger")
-                and hasattr(self.policy.trigger, "last_state")
-                and self.policy.trigger.last_state is not None
+                trig is not None
+                and hasattr(trig, "last_state")
+                and trig.last_state is not None
             )
             else None
         )
@@ -3736,7 +4546,18 @@ class CTraderFixApp(fix.Application):
                 state=trigger_state, action=0, reward=0.0,
                 next_state=trigger_state, done=True,
             )
-            LOG.debug("[ONLINE_LEARNING] Added NO_ENTRY trigger experience (sampled)")
+            LOG.info(
+                "[ONLINE_LEARNING] Added NO_ENTRY trigger experience "
+                "(buf=%d/%d rate=%.2f)",
+                trig_buf_size, trig_min_exp, sample_rate,
+            )
+        else:
+            LOG.warning(
+                "[ONLINE_LEARNING] trigger_state is None — cannot add NO_ENTRY experience "
+                "(trig=%s, has_last_state=%s)",
+                trig is not None,
+                hasattr(trig, "last_state") and trig.last_state is not None,
+            )
 
     def _obc_handle_flat_entry(
         self, bar: tuple, imbalance: float,
@@ -3745,12 +4566,56 @@ class CTraderFixApp(fix.Application):
         vpin_zscore: float, realized_vol: float,
         event_features: dict, is_high_liq: bool,
     ):
-        """Handle entry decision when flat. Returns None to abort, else decision tuple."""
+        """Handle entry decision when flat. Returns None to abort, else decision tuple.
+
+        DESIGN: The policy decision runs FIRST so that ``last_state`` is always
+        populated and a NO_ENTRY experience can be recorded even when gate
+        checks (circuit breaker, depth) block actual order execution.  This
+        prevents the training-pipeline deadlock where buffers never fill
+        because every bar is gated before the experience function is reached.
+        """
         t, o, h, low_price, c = bar
+
+        # ── 1. Run the policy decision (populates trigger.last_state) ───────
+        action, confidence, runway = self.policy.decide_entry(
+            self.bars, imbalance=imbalance, vpin_z=vpin_zscore,
+            depth_ratio=depth_ratio, realized_vol=realized_vol,
+            event_features=event_features,
+        )
+        if action == ACTION_LONG:
+            desired = 1
+        elif action == ACTION_SHORT:
+            desired = -1
+        else:
+            desired = 0
+        LOG.info(
+            "[FLOW-TRACE] Step 4 COMPLETE: action=%d, desired=%d, confidence=%.3f",
+            action, desired, confidence,
+        )
+
+        # ── 2. Always record NO_ENTRY experience (training needs this) ──────
+        if action != 0:
+            import uuid  # noqa: PLC0415
+            self.current_trade_id = str(uuid.uuid4())[:8]
+        _bar_trade_id = self.current_trade_id if action != 0 else None
+        decision_str, regime, geom_temp = self._obc_get_trigger_context(action)
+        self.decision_log.log_trigger_decision(
+            decision=decision_str, confidence=confidence, price=c,
+            volatility=realized_vol, imbalance=imbalance, vpin_z=vpin_zscore,
+            regime=regime, predicted_runway=runway,
+            feasibility=geom_temp.get("feasibility", 1.0),
+            circuit_breakers_ok=not self.circuit_breakers.is_any_tripped(),
+            trade_id=_bar_trade_id,
+            position_id=self._broker_pids() or None,
+        )
+        self._obc_record_entry_state(action, confidence, runway, vpin_zscore, imbalance)
+        self._obc_add_no_entry_experience(action)
+
+        # ── 3. Gate checks — block execution but NOT experience recording ───
         if self.circuit_breakers.is_any_tripped():
             tripped = self.circuit_breakers.get_tripped_breakers()
             LOG.warning("[CIRCUIT-BREAKER] Trading halted: %s", ", ".join([b.name for b in tripped]))
-            LOG.error("[FLOW-ABORT] Stopped at circuit breaker check")
+            LOG.error("[FLOW-ABORT] Stopped at circuit breaker check (experience still recorded)")
             self._export_hud_data()
             return None
         if len(self.bars) % 10 == 0:
@@ -3771,40 +4636,12 @@ class CTraderFixApp(fix.Application):
                 "[DEPTH] Order book thin: bid=%.3f ask=%.3f min=%.3f < buffer=%.3f (levels=%d)",
                 depth_bid, depth_ask, min_depth, depth_floor, depth_levels,
             )
-            LOG.error("[FLOW-ABORT] Stopped at depth check")
+            LOG.error("[FLOW-ABORT] Stopped at depth check (experience still recorded)")
             self._export_hud_data()
             return None
         self.last_depth_gate = False
-        action, confidence, runway = self.policy.decide_entry(
-            self.bars, imbalance=imbalance, vpin_z=vpin_zscore,
-            depth_ratio=depth_ratio, realized_vol=realized_vol,
-            event_features=event_features,
-        )
-        if action == ACTION_LONG:
-            desired = 1
-        elif action == ACTION_SHORT:
-            desired = -1
-        else:
-            desired = 0
-        LOG.info(
-            "[FLOW-TRACE] Step 4 COMPLETE: action=%d, desired=%d, confidence=%.3f",
-            action, desired, confidence,
-        )
-        if action != 0:
-            import uuid  # noqa: PLC0415
-            self.current_trade_id = str(uuid.uuid4())[:8]
-        _bar_trade_id = self.current_trade_id if action != 0 else None
-        decision_str, regime, geom_temp = self._obc_get_trigger_context(action)
-        self.decision_log.log_trigger_decision(
-            decision=decision_str, confidence=confidence, price=c,
-            volatility=realized_vol, imbalance=imbalance, vpin_z=vpin_zscore,
-            regime=regime, predicted_runway=runway,
-            feasibility=geom_temp.get("feasibility", 1.0),
-            circuit_breakers_ok=not self.circuit_breakers.is_any_tripped(),
-            trade_id=_bar_trade_id,
-        )
-        self._obc_record_entry_state(action, confidence, runway, vpin_zscore, imbalance)
-        self._obc_add_no_entry_experience(action)
+
+        # ── 4. Passed all gates — prepare result ────────────────────────────
         geom = (
             self.policy.path_geometry.last
             if hasattr(self.policy, "path_geometry") and self.policy.path_geometry
@@ -3826,6 +4663,12 @@ class CTraderFixApp(fix.Application):
             hasattr(self.policy, "add_harvester_experience")
             and self.prev_harvester_state is not None
         ):
+            LOG.info(
+                "[DIAG] _obc_add_harvester_experience: SKIPPED — "
+                "has_add=%s, prev_state=%s",
+                hasattr(self.policy, "add_harvester_experience"),
+                self.prev_harvester_state is not None,
+            )
             return
         pos_metrics = (
             self.policy.get_position_metrics()
@@ -3862,7 +4705,14 @@ class CTraderFixApp(fix.Application):
                 state=self.prev_harvester_state, action=self.prev_exit_action,
                 reward=reward, next_state=next_state, done=False,
             )
-            LOG.debug("[HARVESTER_EXP] HOLD reward=%.4f", reward)
+            LOG.info("[HARVESTER_EXP] HOLD reward=%.4f", reward)
+        else:
+            LOG.info(
+                "[DIAG] _obc_add_harvester_experience: next_state is None "
+                "(has_harvester=%s, has_last_state=%s)",
+                hasattr(self.policy, "harvester"),
+                hasattr(self.policy.harvester, "last_state") if hasattr(self.policy, "harvester") else False,
+            )
 
     def _obc_update_harvester_state(self, exit_action: int) -> None:
         """Persist current harvester state for the next bar's experience."""
@@ -3886,50 +4736,22 @@ class CTraderFixApp(fix.Application):
     ) -> tuple:
         """Handle exit decision when in a position. Returns decision tuple."""
         t, o, h, low_price, c = bar
-        _already_closing = hasattr(self, "_pending_closes") and len(self._pending_closes) > 0
-        if _already_closing:
-            LOG.debug("[BAR] Tick harvester already issued close — skipping bar-level exit check")
-            exit_action, exit_conf = 0, 0.0
-        else:
-            exit_action, exit_conf = self.policy.decide_exit(
-                self.bars, current_price=c, imbalance=imbalance,
-                vpin_z=vpin_zscore, depth_ratio=depth_ratio, event_features=event_features,
-            )
+        exit_action, exit_conf, _already_closing = self._obc_get_exit_action(
+            c, imbalance, depth_ratio, vpin_zscore, event_features
+        )
         desired = 0 if exit_action == 1 else self.cur_pos
         self._last_harvester_conf = 0.9 * self._last_harvester_conf + 0.1 * exit_conf
-        _active_tracker = (
-            next(iter(self.mfe_mae_trackers.values()), self.mfe_mae_tracker)
-            if self.mfe_mae_trackers else self.mfe_mae_tracker
+        metrics = self._obc_get_tracker_metrics(c)
+        _bar_trade_id, _close_pending = self._obc_log_harvester_decision(
+            exit_action, exit_conf, _already_closing, c, metrics
         )
-        pos_metrics = _active_tracker.get_summary()
-        entry_price = _active_tracker.entry_price or 0.0
-        mfe = _active_tracker.mfe
-        mae = _active_tracker.mae
-        ticks_held = pos_metrics.get("ticks_held", 0)
-        unrealized_pnl = (c - entry_price) * self.cur_pos if entry_price > 0 else 0.0
-        capture_ratio = (unrealized_pnl / mfe) if mfe > 0 else 0.0
-        _bar_trade_id = self.current_trade_id
-        _close_pending = _already_closing
-        if _already_closing:
-            _harvester_decision_str = "CLOSE_PENDING"
-        elif exit_action == 1:
-            _harvester_decision_str = "CLOSE"
+        # When HARVESTER decides to exit this bar, cancel the trailing stop order
+        # first to prevent a double-fill (stop + market exit both executing).
+        if exit_action == 1 and hasattr(self, "trade_integration") and self.trade_integration.trailing_stop_active:
+            LOG.info("[TRAILING-STOP] Cancelling stop — HARVESTER exit on this bar (prevents double-fill)")
+            self.trade_integration.disable_trailing_stop()
         else:
-            _harvester_decision_str = "HOLD"
-        self.decision_log.log_harvester_decision(
-            decision=_harvester_decision_str, confidence=exit_conf, price=c,
-            entry_price=entry_price, mfe=mfe, mae=mae, ticks_held=ticks_held,
-            unrealized_pnl=unrealized_pnl, capture_ratio=capture_ratio,
-            trade_id=_bar_trade_id, in_position=(self.cur_pos != 0),
-        )
-        if exit_action == 1:
-            self.current_trade_id = None
-        if hasattr(self, "trade_integration") and self.trade_integration.trailing_stop_active:
-            mid_price = (
-                (float(self.best_bid) + float(self.best_ask)) / 2.0
-                if self.best_bid and self.best_ask else c
-            )
-            self.trade_integration.update_trailing_stop(mid_price)
+            self._obc_update_trailing_stop(c)
         LOG.info(
             "[BAR M%d] %s O=%.2f H=%.2f L=%.2f C=%.2f "
             "| HARVESTER: exit=%d conf=%.2f | desired=%s cur=%s",
@@ -3939,6 +4761,105 @@ class CTraderFixApp(fix.Application):
         self._obc_add_harvester_experience(c)
         self._obc_update_harvester_state(exit_action)
         return exit_action, exit_conf, desired, _bar_trade_id, _close_pending
+
+    def _obc_get_exit_action(
+        self, price: float, imbalance: float, depth_ratio: float,
+        vpin_zscore: float, event_features: dict,
+    ) -> tuple[int, float, bool]:
+        """Return (exit_action, exit_conf, already_closing)."""
+        _already_closing = hasattr(self, "_pending_closes") and len(self._pending_closes) > 0
+        if _already_closing:
+            LOG.debug("[BAR] Tick harvester already issued close — skipping bar-level exit check")
+            return 0, 0.0, True
+        exit_action, exit_conf = self.policy.decide_exit(
+            self.bars, current_price=price, imbalance=imbalance,
+            vpin_z=vpin_zscore, depth_ratio=depth_ratio, event_features=event_features,
+        )
+        return exit_action, exit_conf, False
+
+    def _obc_get_tracker_metrics(self, price: float) -> dict:
+        """Collect tracker metrics for harvester logging."""
+        _active_tracker = (
+            next(iter(self.mfe_mae_trackers.values()), self.mfe_mae_tracker)
+            if self.mfe_mae_trackers else self.mfe_mae_tracker
+        )
+        pos_metrics = _active_tracker.get_summary()
+        entry_price = _active_tracker.entry_price or 0.0
+        mfe = _active_tracker.mfe
+        mae = _active_tracker.mae
+        ticks_held = pos_metrics.get("ticks_held", 0)
+        unrealized_pnl = (price - entry_price) * self.cur_pos if entry_price > 0 else 0.0
+        capture_ratio = (unrealized_pnl / mfe) if mfe > 0 else 0.0
+        return {
+            "entry_price": entry_price,
+            "mfe": mfe,
+            "mae": mae,
+            "ticks_held": ticks_held,
+            "unrealized_pnl": unrealized_pnl,
+            "capture_ratio": capture_ratio,
+        }
+
+    def _broker_pids(self) -> list[str]:
+        """Return list of currently open broker position IDs (ticket numbers).
+
+        Primary source: trade_integration.position_tickets (populated by fill callbacks).
+        Fallback: mfe_mae_trackers keys (internal position IDs, always present when in position).
+        """
+        ti = getattr(self, "trade_integration", None)
+        if ti is not None:
+            tickets = list(getattr(ti, "position_tickets", {}).keys())
+            if tickets:
+                return tickets
+        # Fallback: use internal mfe_mae_trackers position IDs
+        # (present even before the broker fill callback fires)
+        if hasattr(self, "mfe_mae_trackers") and self.mfe_mae_trackers:
+            return [k for k in self.mfe_mae_trackers if k != "default"]
+        return []
+
+    def _obc_log_harvester_decision(
+        self,
+        exit_action: int,
+        exit_conf: float,
+        already_closing: bool,
+        price: float,
+        metrics: dict,
+    ) -> tuple[str | None, bool]:
+        """Log the harvester decision and return (trade_id, close_pending)."""
+        _bar_trade_id = self.current_trade_id
+        _close_pending = already_closing
+        if already_closing:
+            _harvester_decision_str = "CLOSE_PENDING"
+        elif exit_action == 1:
+            _harvester_decision_str = "CLOSE"
+        else:
+            _harvester_decision_str = "HOLD"
+        self.decision_log.log_harvester_decision(
+            decision=_harvester_decision_str,
+            confidence=exit_conf,
+            price=price,
+            entry_price=metrics["entry_price"],
+            mfe=metrics["mfe"],
+            mae=metrics["mae"],
+            ticks_held=metrics["ticks_held"],
+            unrealized_pnl=metrics["unrealized_pnl"],
+            capture_ratio=metrics["capture_ratio"],
+            trade_id=_bar_trade_id,
+            in_position=(self.cur_pos != 0),
+            position_id=self._broker_pids() or None,
+        )
+        if exit_action == 1:
+            self.current_trade_id = None
+        return _bar_trade_id, _close_pending
+
+    def _obc_update_trailing_stop(self, price: float) -> None:
+        """Update trailing stop if active."""
+        if not (hasattr(self, "trade_integration") and self.trade_integration.trailing_stop_active):
+            return
+        mid_price = (
+            (float(self.best_bid) + float(self.best_ask)) / 2.0
+            if self.best_bid and self.best_ask else price
+        )
+        self.trade_integration.update_trailing_stop(mid_price)
 
     def _obc_simple_policy_decide(self, bar: tuple) -> tuple:
         """Fallback for non-dual policy agents. Returns (action, desired)."""
@@ -3958,19 +4879,21 @@ class CTraderFixApp(fix.Application):
         return action, desired
 
     def _obc_write_decision_log(
-        self, t, o: float, h: float, low_price: float, c: float,
-        desired=None, action=None, confidence=None, runway=None, feas=None,
-        exit_action=None, exit_conf=None,
-        imbalance=None, depth_bid=None, depth_ask=None, depth_ratio=None,
-        _bar_trade_id=None, _close_pending: bool = False,
+        self, t, o: float, h: float, low_price: float, c: float, decision: dict
     ) -> None:
         """Append a bar-close decision entry to data/decision_log.json."""
         try:
             log_path = Path("data/decision_log.json")
             log_path.parent.mkdir(exist_ok=True)
             if log_path.exists():
-                with open(log_path, encoding="utf-8") as f:
-                    log_entries = json.load(f)
+                try:
+                    with open(log_path, encoding="utf-8") as f:
+                        log_entries = json.load(f)
+                except (json.JSONDecodeError, ValueError) as je:
+                    LOG.warning("[DECISION_LOG] Corrupt file — rotating: %s", je)
+                    corrupt = log_path.with_suffix(".json.broken")
+                    log_path.rename(corrupt)
+                    log_entries = []
             else:
                 log_entries = []
             pos_metrics: dict = {}
@@ -3978,17 +4901,25 @@ class CTraderFixApp(fix.Application):
                 pos_metrics = self.policy.get_position_metrics()
             log_entry = {
                 "timestamp": t.isoformat() if hasattr(t, "isoformat") else str(t),
+                "trading_mode": "paper" if self.paper_mode else "live",
                 "event": "bar_close",
-                "trade_id": _bar_trade_id,
-                "close_pending": _close_pending,
+                "trade_id": decision.get("bar_trade_id"),
+
+                "position_ids": self._broker_pids() or None,
+                "close_pending": decision.get("close_pending", False),
                 "details": {
                     "open": o, "high": h, "low": low_price, "close": c,
-                    "cur_pos": self.cur_pos, "desired": desired,
-                    "depth_bid": depth_bid, "depth_ask": depth_ask,
-                    "depth_ratio": depth_ratio, "imbalance": imbalance,
-                    "runway": runway, "feasibility": feas,
-                    "action": action, "confidence": confidence,
-                    "exit_action": exit_action, "exit_conf": exit_conf,
+                    "cur_pos": self.cur_pos, "desired": decision.get("desired"),
+                    "depth_bid": decision.get("depth_bid"),
+                    "depth_ask": decision.get("depth_ask"),
+                    "depth_ratio": decision.get("depth_ratio"),
+                    "imbalance": decision.get("imbalance"),
+                    "runway": decision.get("runway"),
+                    "feasibility": decision.get("feas"),
+                    "action": decision.get("action"),
+                    "confidence": decision.get("confidence"),
+                    "exit_action": decision.get("exit_action"),
+                    "exit_conf": decision.get("exit_conf"),
                     "mfe": pos_metrics.get("mfe"),
                     "mae": pos_metrics.get("mae"),
                     "bars_held": pos_metrics.get("bars_held"),
@@ -4027,65 +4958,84 @@ class CTraderFixApp(fix.Application):
         self, vpin_zscore: float, realized_vol: float
     ) -> bool:
         """Check VaR, VPIN, and spread gates. Returns True if execution should abort."""
+        if self._obc_var_gate(vpin_zscore, realized_vol):
+            return True
+        if self._obc_vpin_gate(vpin_zscore):
+            return True
+        return self._obc_spread_gate()
+
+    def _obc_var_gate(self, vpin_zscore: float, realized_vol: float) -> bool:
+        """Gate new entries based on VaR threshold."""
         current_var = self.var_estimator.estimate_var(
             regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
         )
         self.last_estimated_var = current_var
         self.entry_var = current_var
         max_var_threshold = self.vol_cap
-        if current_var > max_var_threshold:
-            if not self.paper_mode:
-                LOG.warning(
-                    "[CIRCUIT_BREAKER] VaR=%.4f exceeds threshold=%.4f - skipping entry",
-                    current_var, max_var_threshold,
-                )
-                self._export_hud_data()
-                return True
-            else:
-                LOG.debug(
-                    "[PAPER-GATE] VaR=%.4f > cap=%.4f — allowing entry so RL learns via regime reward",
-                    current_var, max_var_threshold,
-                )
-        if self.vpin_z_threshold > 0 and vpin_zscore > self.vpin_z_threshold:
-            if not self.paper_mode:
-                LOG.warning(
-                    "[VPIN] z-score %.2f exceeds threshold %.2f - skipping entry",
-                    vpin_zscore, self.vpin_z_threshold,
-                )
-                self._export_hud_data()
-                return True
-            else:
-                LOG.debug(
-                    "[PAPER-GATE] VPIN z=%.2f > thresh=%.2f — allowing so RL learns via regime reward",
-                    vpin_zscore, self.vpin_z_threshold,
-                )
+        if current_var <= max_var_threshold:
+            return False
+        if self.paper_mode:
+            LOG.debug(
+                "[PAPER-GATE] VaR=%.4f > cap=%.4f — allowing entry so RL learns via regime reward",
+                current_var, max_var_threshold,
+            )
+            return False
+        LOG.warning(
+            "[CIRCUIT_BREAKER] VaR=%.4f exceeds threshold=%.4f - skipping entry",
+            current_var, max_var_threshold,
+        )
+        self._export_hud_data()
+        return True
+
+    def _obc_vpin_gate(self, vpin_zscore: float) -> bool:
+        """Gate new entries based on VPIN z-score threshold."""
+        if self.vpin_z_threshold <= 0 or vpin_zscore <= self.vpin_z_threshold:
+            return False
+        if self.paper_mode:
+            LOG.debug(
+                "[PAPER-GATE] VPIN z=%.2f > thresh=%.2f — allowing so RL learns via regime reward",
+                vpin_zscore, self.vpin_z_threshold,
+            )
+            return False
+        LOG.warning(
+            "[VPIN] z-score %.2f exceeds threshold %.2f - skipping entry",
+            vpin_zscore, self.vpin_z_threshold,
+        )
+        self._export_hud_data()
+        return True
+
+    def _obc_spread_gate(self) -> bool:
+        """Gate new entries based on learned spread constraints."""
         env_multiplier = None
         spread_override = os.environ.get("SPREAD_RELAX_MULTIPLIER")
         if spread_override:
             try:
                 env_multiplier = float(spread_override)
             except ValueError:
-                LOG.warning("[SPREAD_FILTER] Invalid SPREAD_RELAX_MULTIPLIER=%s - ignoring", spread_override)
+                LOG.warning(
+                    "[SPREAD_FILTER] Invalid SPREAD_RELAX_MULTIPLIER=%s - ignoring",
+                    spread_override,
+                )
         is_acceptable, current_spread, max_spread = self.friction_calculator.is_spread_acceptable(
             env_multiplier
         )
         effective_multiplier = (
             env_multiplier if env_multiplier is not None else self.friction_calculator.spread_multiplier
         )
-        if not is_acceptable:
-            if not self.paper_mode:
-                LOG.warning(
-                    "[SPREAD_FILTER] Current=%.2f pips > Learned max=%.2f pips (%.1fx min) - skipping",
-                    current_spread, max_spread, effective_multiplier,
-                )
-                self._export_hud_data()
-                return True
-            else:
-                LOG.debug(
-                    "[PAPER-GATE] Spread %.2f > max %.2f — allowing so RL learns friction cost",
-                    current_spread, max_spread,
-                )
-        return False
+        if is_acceptable:
+            return False
+        if self.paper_mode:
+            LOG.debug(
+                "[PAPER-GATE] Spread %.2f > max %.2f — allowing so RL learns friction cost",
+                current_spread, max_spread,
+            )
+            return False
+        LOG.warning(
+            "[SPREAD_FILTER] Current=%.2f pips > Learned max=%.2f pips (%.1fx min) - skipping",
+            current_spread, max_spread, effective_multiplier,
+        )
+        self._export_hud_data()
+        return True
 
     def _obc_new_entry_gate_blocked(
         self, desired: int, vpin_zscore: float, realized_vol: float
@@ -4095,13 +5045,20 @@ class CTraderFixApp(fix.Application):
             return False
         LOG.debug("[FLOW-TRACE] Step 6a: Checking kurtosis breaker")
         if self.kurtosis_monitor.is_breaker_active:
-            LOG.warning(
-                "[CIRCUIT_BREAKER] Kurtosis breaker ACTIVE (kurtosis=%.2f) - skipping entry",
-                self.kurtosis_monitor.current_kurtosis,
-            )
-            LOG.error("[FLOW-ABORT] Stopped at kurtosis check")
-            self._export_hud_data()
-            return True
+            if self.paper_mode:
+                LOG.debug(
+                    "[PAPER-GATE] Kurtosis=%.2f > %.1f — allowing entry so RL learns",
+                    self.kurtosis_monitor.current_kurtosis,
+                    self.kurtosis_monitor.threshold,
+                )
+            else:
+                LOG.warning(
+                    "[CIRCUIT_BREAKER] Kurtosis breaker ACTIVE (kurtosis=%.2f) - skipping entry",
+                    self.kurtosis_monitor.current_kurtosis,
+                )
+                LOG.error("[FLOW-ABORT] Stopped at kurtosis check")
+                self._export_hud_data()
+                return True
         LOG.debug("[FLOW-TRACE] Step 6a PASSED: Kurtosis OK")
         return self._obc_check_var_vpin_spread_gates(vpin_zscore, realized_vol)
 
@@ -4133,7 +5090,7 @@ class CTraderFixApp(fix.Application):
     def on_bar_close(self, bar):
         """Process a completed bar: update state, run policy decisions, execute orders."""
         t, o, h, low_price, c = bar
-        LOG.debug(
+        LOG.info(
             "[BAR] on_bar_close called: t=%s, o=%s, h=%s, l=%s, c=%s",
             t, o, h, low_price, c,
         )
@@ -4171,6 +5128,12 @@ class CTraderFixApp(fix.Application):
             "[POLICY-CHECK] policy type=%s, has_decide_entry=%s",
             type(self.policy).__name__, has_dual,
         )
+
+        # Reconcile ghost hedged positions before branching.
+        # Ghost positions (LONG+SHORT net=0 with stale tickets) block entry forever.
+        if has_dual and self.cur_pos == 0:
+            self.trade_integration.reconcile_ghost_positions()
+
         if has_dual and not self.trade_integration.has_any_open_positions():
             LOG.debug(
                 "[FLAT: Check for entry] has_positions=False, cur_pos=%d", self.cur_pos
@@ -4185,8 +5148,22 @@ class CTraderFixApp(fix.Application):
             action, confidence, runway, desired, feas, _bar_trade_id = result
         elif has_dual:
             LOG.debug(
-                "[FLAT: Check for entry] has_positions=True, cur_pos=%d", self.cur_pos
+                "[IN-POSITION] has_positions=True, cur_pos=%d", self.cur_pos
             )
+            # CRITICAL FIX: Keep trigger.last_state updated while in position
+            # so that when the trade closes, entry_state will be populated for
+            # experience recording. Without this, ALL position-closing experiences
+            # fail to be added because entry_state is None.
+            try:
+                realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.005
+                state = self.policy._build_state(
+                    self.bars, imbalance, vpin_zscore, depth_ratio, realized_vol, event_features
+                )
+                if state is not None and hasattr(self.policy, "trigger"):
+                    self.policy.trigger.last_state = state.copy()
+                    LOG.debug("[IN-POSITION] Updated trigger.last_state (will use for close experience)")
+            except Exception as e:
+                LOG.debug("[IN-POSITION] Failed to update trigger.last_state: %s", e)
             exit_action, exit_conf, desired, _bar_trade_id, _close_pending = (
                 self._obc_handle_in_position(
                     bar, imbalance, depth_ratio, vpin_zscore, event_features
@@ -4195,14 +5172,22 @@ class CTraderFixApp(fix.Application):
         else:
             action, desired = self._obc_simple_policy_decide(bar)
 
-        self._obc_write_decision_log(
-            t, o, h, low_price, c,
-            desired=desired, action=action, confidence=confidence,
-            runway=runway, feas=feas, exit_action=exit_action, exit_conf=exit_conf,
-            imbalance=imbalance, depth_bid=depth_bid, depth_ask=depth_ask,
-            depth_ratio=depth_ratio, _bar_trade_id=_bar_trade_id,
-            _close_pending=_close_pending,
-        )
+        decision_payload = {
+            "desired": desired,
+            "action": action,
+            "confidence": confidence,
+            "runway": runway,
+            "feas": feas,
+            "exit_action": exit_action,
+            "exit_conf": exit_conf,
+            "imbalance": imbalance,
+            "depth_bid": depth_bid,
+            "depth_ask": depth_ask,
+            "depth_ratio": depth_ratio,
+            "bar_trade_id": _bar_trade_id,
+            "close_pending": _close_pending,
+        }
+        self._obc_write_decision_log(t, o, h, low_price, c, decision_payload)
 
         LOG.info(
             "[FLOW-TRACE] Step 5: Checking execution preconditions "
@@ -4222,45 +5207,197 @@ class CTraderFixApp(fix.Application):
         self._export_hud_data()
         self._obc_send_order(desired)
 
+    # ── H4 shadow training ────────────────────────────────────────────────
+
+    def _on_h4_bar_close(self, bar: tuple) -> None:  # noqa: PLR0912, PLR0915
+        """
+        Shadow-trade the H4 DualPolicy without placing real orders.
+
+        Workflow per closed H4 bar:
+        - flat  → decide_entry → on_entry (record shadow position)
+        - held  → decide_exit  → on_exit  (record outcome & train)
+        - every 2 H4 bars (8 h of M5 bars): train_step
+        - every 8 H4 bars: save checkpoint + export stats
+        """
+        if not self._h4_enabled or self.policy_h4 is None:
+            return
+        if len(self.bars_h4) < (self.policy_h4.min_bars_for_features or 10):
+            return
+
+        t, _o, _h, _l, c = bar
+        H4_MAX_HOLD_BARS = 12  # ~2 days; force-close stale shadow positions
+
+        try:
+            if self._h4_shadow_pos == 0:
+                # ── Flat: ask trigger for entry ──────────────────────────
+                action, confidence, _runway = self.policy_h4.decide_entry(
+                    bars=self.bars_h4,
+                )
+                if action in (1, 2):
+                    direction = 1 if action == 1 else -1
+                    self.policy_h4.on_entry(direction, c, t)
+                    self._h4_shadow_pos = direction
+                    self._h4_entry_price = c
+                    self._h4_entry_conf = confidence
+                    self._h4_entry_time = t
+                    self._h4_hold_bars = 0
+                    LOG.info(
+                        "[H4-SHADOW] Entry %s @ %.2f conf=%.3f",
+                        "LONG" if direction == 1 else "SHORT",
+                        c, confidence,
+                    )
+            else:
+                # ── In shadow position: ask harvester for exit ───────────
+                self._h4_hold_bars = getattr(self, "_h4_hold_bars", 0) + 1
+                exit_action, _exit_conf = self.policy_h4.decide_exit(
+                    bars=self.bars_h4,
+                    current_price=c,
+                )
+                force_exit = self._h4_hold_bars >= H4_MAX_HOLD_BARS
+                if exit_action == 1 or force_exit:
+                    ep = self._h4_entry_price
+                    mfe = self.policy_h4.mfe
+                    pnl_pct = (c - ep) / ep * self._h4_shadow_pos if ep > 0 else 0.0
+                    capture_ratio = (
+                        pnl_pct / max(mfe, 1e-8) if mfe > 1e-8 else 0.0
+                    )
+                    was_wtl = bool(mfe > 1e-8 and pnl_pct < 0)
+                    self.policy_h4.on_exit(c, capture_ratio, was_wtl, self._h4_entry_conf)
+                    LOG.info(
+                        "[H4-SHADOW] Exit @ %.2f pnl_pct=%.4f cap=%.2f wtl=%s%s",
+                        c, pnl_pct, capture_ratio, was_wtl,
+                        " (forced)" if force_exit else "",
+                    )
+                    self._h4_shadow_pos = 0
+                    self._h4_entry_price = 0.0
+                    self._h4_entry_conf = 0.5
+                    self._h4_entry_time = None
+                    self._h4_hold_bars = 0
+
+            # ── Periodic training (every 2 H4 bars ≈ 8 hours) ────────────
+            self._h4_bars_since_training += 1
+            if self._h4_bars_since_training >= 2 and hasattr(self.policy_h4, "train_step"):
+                t_size = getattr(self.policy_h4.trigger, "buffer_size", 0)
+                h_size = getattr(self.policy_h4.harvester, "buffer_size", 0)
+                if t_size >= 32 or h_size >= 32:
+                    try:
+                        self.policy_h4.train_step()
+                        LOG.debug("[H4-TRAIN] step done T=%d H=%d", t_size, h_size)
+                    except Exception as e:
+                        LOG.warning("[H4-TRAIN] train_step error: %s", e)
+                self._h4_bars_since_training = 0
+
+            # ── Stats export every H4 bar close (keeps HUD live) ─────────
+            self._export_h4_training_stats()
+
+            # ── Periodic checkpoint (every 8 training steps) ─────────────
+            h4_steps = (
+                getattr(self.policy_h4.trigger, "training_steps", 0)
+                + getattr(self.policy_h4.harvester, "training_steps", 0)
+            )
+            if h4_steps > 0 and h4_steps % 8 == 0:
+                try:
+                    self.policy_h4.save_checkpoint()
+                    LOG.debug("[H4-CKPT] Saved at step %d", h4_steps)
+                except Exception as e:
+                    LOG.warning("[H4-CKPT] Save error: %s", e)
+
+        except Exception as e:
+            LOG.error("[H4-SHADOW] Error in _on_h4_bar_close: %s", e, exc_info=True)
+
+    def _export_h4_training_stats(self) -> None:
+        """Write data/training_stats_{symbol}_M240.json for HUD Training tab."""
+        if not self._h4_enabled or self.policy_h4 is None:
+            return
+        try:
+            stats: dict = {}
+            if hasattr(self.policy_h4, "get_training_stats"):
+                stats = self.policy_h4.get_training_stats() or {}
+            stats["h4_shadow_pos"] = self._h4_shadow_pos
+            stats["h4_bars"] = len(self.bars_h4)
+            stats["symbol"] = self.symbol
+            stats["timeframe"] = "M240"
+            out = self.hud_data_dir / f"training_stats_{self.symbol}_M240.json"
+            with open(out, "w", encoding="utf-8") as f:
+                import json as _json
+                _json.dump(stats, f, indent=2)
+        except Exception as e:
+            LOG.debug("[H4-EXPORT] Stats export error: %s", e)
+
     def send_market_order(self, side: str, qty: float):
         """DEPRECATED: Use TradeManager API via trade_integration.enter_position() instead."""
         # FIX P0-3: Migrate to TradeManager API for centralized order tracking
         # ROCK SOLID: Block trading on stale prices or unhealthy connection
-        if not self.connection_healthy:
-            LOG.warning("[SAFETY] ✗ Order blocked - connection unhealthy")
-            return None
-
-        if self.last_quote_heartbeat:
-            quote_age = (utc_now() - self.last_quote_heartbeat).total_seconds()
-            if quote_age > self.max_quote_age_for_trading:
-                LOG.warning(
-                    "[SAFETY] ✗ Order blocked - quote data stale (%.1fs old, max=%ds)",
-                    quote_age,
-                    self.max_quote_age_for_trading,
-                )
-                return None
-
-        if not self.trade_sid:
-            LOG.warning("[SAFETY] ✗ Order blocked - TRADE session not connected")
-            return None
-
-        if not self.trade_integration.trade_manager:
-            LOG.error("[SAFETY] ✗ Order blocked - TradeManager not initialized")
+        if not self._can_submit_market_order():
             return None
 
         # P0 FIX: Check for order acknowledgment timeouts
         self.trade_integration.trade_manager.check_pending_order_timeouts()
 
         # P0 FIX: Adjust quantity for realistic execution costs
-        last_close = self.bars[-1][4] if self.bars else 0.0
-        mid_price = (
-            (float(self.best_bid) + float(self.best_ask)) / 2.0 if self.best_bid and self.best_ask else last_close
+        mid_price, spread_bps = self._resolve_mid_price_and_spread()
+        exec_side = self._map_execution_side(side)
+        qty = self._adjust_qty_for_execution_costs(exec_side, qty, mid_price, spread_bps)
+        qty = self._normalize_order_qty(qty)
+        return self._submit_market_order_tm(side, qty)
+
+    def _can_submit_market_order(self) -> bool:
+        """Return True if trading prerequisites are satisfied."""
+        if not self.connection_healthy:
+            LOG.warning("[SAFETY] ✗ Order blocked - connection unhealthy")
+            return False
+        if not self._quote_is_fresh():
+            return False
+        if not self.trade_sid:
+            LOG.warning("[SAFETY] ✗ Order blocked - TRADE session not connected")
+            return False
+        if not self.trade_integration.trade_manager:
+            LOG.error("[SAFETY] ✗ Order blocked - TradeManager not initialized")
+            return False
+        return True
+
+    def _quote_is_fresh(self) -> bool:
+        """Return True if the last quote heartbeat is recent enough for trading."""
+        if not self.last_quote_heartbeat:
+            return True
+        quote_age = (utc_now() - self.last_quote_heartbeat).total_seconds()
+        if quote_age <= self.max_quote_age_for_trading:
+            return True
+        LOG.warning(
+            "[SAFETY] ✗ Order blocked - quote data stale (%.1fs old, max=%ds)",
+            quote_age,
+            self.max_quote_age_for_trading,
         )
+        return False
+
+    def _resolve_mid_price_and_spread(self) -> tuple[float, float]:
+        """Return (mid_price, spread_bps) for execution sizing."""
+        last_close = self.bars[-1][4] if self.bars else 0.0
+        if self.best_bid and self.best_ask:
+            mid_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
+        else:
+            mid_price = last_close
         spread_bps = 0.0
         if self.best_bid and self.best_ask and mid_price > 0:
             spread_bps = ((float(self.best_ask) - float(self.best_bid)) / mid_price) * 10000.0
+        return float(mid_price), float(spread_bps)
 
-        exec_side = OrderSide.BUY if side == "1" else OrderSide.SELL
+    def _map_execution_side(self, side: str) -> OrderSide:
+        """Map FIX side to execution model side."""
+        return OrderSide.BUY if side == "1" else OrderSide.SELL
+
+    def _map_tm_side(self, side: str) -> Side:
+        """Map FIX side to TradeManager side."""
+        return Side.BUY if side == "1" else Side.SELL
+
+    def _adjust_qty_for_execution_costs(
+        self,
+        exec_side: OrderSide,
+        qty: float,
+        mid_price: float,
+        spread_bps: float,
+    ) -> float:
+        """Adjust order size for execution costs and log any reduction."""
         adjusted_qty = self.execution_model.adjust_position_size_for_costs(
             side=exec_side,
             target_quantity=qty,
@@ -4268,20 +5405,19 @@ class CTraderFixApp(fix.Application):
             spread_bps=spread_bps,
             regime=getattr(self.policy, "current_regime", "UNKNOWN"),
         )
-
         if adjusted_qty < qty:
+            reduction = 100.0 * (1.0 - adjusted_qty / qty) if qty > 0 else 0.0
             LOG.info(
                 "[EXECUTION] Cost-adjusted quantity: %.6f → %.6f (%.1f%% reduction, spread=%.1f bps)",
                 qty,
                 adjusted_qty,
-                100.0 * (1.0 - adjusted_qty / qty),
+                reduction,
                 spread_bps,
             )
+        return adjusted_qty
 
-        # Use adjusted quantity
-        qty = adjusted_qty
-
-        # Normalize to broker's volume constraints (min/max/step)
+    def _normalize_order_qty(self, qty: float) -> float:
+        """Normalize quantity to broker volume constraints."""
         normalized_qty = self.friction_calculator.normalize_quantity(qty)
         if abs(normalized_qty - qty) > MIN_POSITION_QTY:
             LOG.info(
@@ -4290,20 +5426,23 @@ class CTraderFixApp(fix.Application):
                 normalized_qty,
                 self.friction_calculator.costs.volume_step,
             )
-        qty = normalized_qty
+        return normalized_qty
 
-        # Use TradeManager API for proper order lifecycle tracking
-        tm_side = Side.BUY if side == "1" else Side.SELL
-
-        order = self.trade_integration.trade_manager.submit_market_order(side=tm_side, quantity=qty, tag_prefix="DDQN")
-
+    def _submit_market_order_tm(self, side: str, qty: float):
+        """Submit a market order via TradeManager and log lifecycle events."""
+        tm_side = self._map_tm_side(side)
+        order = self.trade_integration.trade_manager.submit_market_order(
+            side=tm_side,
+            quantity=qty,
+            tag_prefix="DDQN",
+        )
         if order:
-            # GAP 10.1: Log order submission
             self.transaction_log.log_order_submit(
-                order_id=order.clord_id, side=tm_side.name, quantity=qty, price=None  # Market order - no limit price
+                order_id=order.clord_id,
+                side=tm_side.name,
+                quantity=qty,
+                price=None,
             )
-
-            # Phase 3.5: Notify activity monitor of trade execution
             self.activity_monitor.on_trade_executed()
             LOG.info(
                 "[TRADE] Submitted MKT %s qty=%.6f via TradeManager (ClOrdID=%s)",
@@ -4311,52 +5450,28 @@ class CTraderFixApp(fix.Application):
                 qty,
                 order.clord_id,
             )
-        else:
-            LOG.error("[TRADE] Failed to submit order via TradeManager")
-
-        return order
+            return order
+        LOG.error("[TRADE] Failed to submit order via TradeManager")
+        return None
 
     def _build_hud_position_data(self, current_price: float) -> dict:
         """Collect current-position data payload for HUD export."""
-        if self.cur_pos > 0:
-            direction = "LONG"
-        elif self.cur_pos < 0:
-            direction = "SHORT"
-        else:
-            direction = "FLAT"
-        tracker = None
+        direction = self._get_hud_position_direction()
+        tracker = self._resolve_hud_tracker()
+        entry_price, mfe, mae = self._extract_hud_tracker_prices(tracker)
+        mfe, mae, unrealized_pnl, bars_held = self._compute_hud_position_state(
+            current_price,
+            entry_price,
+            mfe,
+            mae,
+        )
+        # Resolve broker position ticket and tracker key for the HUD PID display
+        _pos_ticket = getattr(tracker, "position_ticket", "") or ""
+        if not _pos_ticket:
+            _pids = self._broker_pids()
+            _pos_ticket = _pids[0] if _pids else ""
         with self._tracker_lock:
-            if self.mfe_mae_trackers:
-                tracker = next(reversed(self.mfe_mae_trackers.values()), None)
-        if tracker is None:
-            tracker = self.mfe_mae_tracker
-        entry_price = float(tracker.entry_price) if self.cur_pos != 0 and tracker.entry_price else 0.0
-        if self.cur_pos != 0 and entry_price == 0:
-            LOG.warning(
-                "[HUD_DEBUG] Tracker has entry_price=%s (cur_pos=%d, tracker=%s, trackers_count=%d)",
-                tracker.entry_price, self.cur_pos, type(tracker).__name__, len(self.mfe_mae_trackers),
-            )
-        mfe = float(tracker.mfe) if self.cur_pos != 0 and tracker.mfe else 0.0
-        mae = float(tracker.mae) if self.cur_pos != 0 and tracker.mae else 0.0
-        unrealized_pnl = 0.0
-        bars_held = 0
-        if self.cur_pos != 0 and entry_price > 0:
-            actual_qty = self.qty
-            if self.trade_integration and self.trade_integration.trade_manager:
-                pos = self.trade_integration.trade_manager.get_position()
-                actual_qty = float(abs(pos.net_qty)) if abs(pos.net_qty) > 0 else self.qty
-            mfe *= actual_qty
-            mae *= actual_qty
-            if self.cur_pos > 0:
-                unrealized_pnl = (current_price - entry_price) * actual_qty
-            else:
-                unrealized_pnl = (entry_price - current_price) * actual_qty
-            with self._tracker_lock:
-                position_path_recorder = (
-                    next(iter(self.path_recorders.values()), self.path_recorder)
-                    if self.path_recorders else self.path_recorder
-                )
-            bars_held = len(position_path_recorder.path) if hasattr(position_path_recorder, "path") else 0
+            _tracker_key = next(reversed(self.mfe_mae_trackers), "") if self.mfe_mae_trackers else ""
         return {
             "direction": direction,
             "entry_price": entry_price,
@@ -4365,7 +5480,83 @@ class CTraderFixApp(fix.Application):
             "mae": mae,
             "unrealized_pnl": unrealized_pnl,
             "bars_held": bars_held,
+            # Position identity — for end-to-end trade tracking
+            "position_id": _pos_ticket,
+            "tracker_key": _tracker_key,
+            # Bot identity — lets multi-bot HUD identify the correct per-bot data files
+            "symbol": self.symbol,
+            "timeframe_minutes": self.timeframe_minutes,
         }
+
+    def _get_hud_position_direction(self) -> str:
+        """Resolve HUD position direction label."""
+        if self.cur_pos > 0:
+            return "LONG"
+        if self.cur_pos < 0:
+            return "SHORT"
+        return "FLAT"
+
+    def _resolve_hud_tracker(self):
+        """Return the most recent MFE/MAE tracker for HUD display."""
+        tracker = None
+        with self._tracker_lock:
+            if self.mfe_mae_trackers:
+                tracker = next(reversed(self.mfe_mae_trackers.values()), None)
+        return tracker or self.mfe_mae_tracker
+
+    def _extract_hud_tracker_prices(self, tracker) -> tuple[float, float, float]:
+        """Extract entry price and raw MFE/MAE values from a tracker."""
+        if self.cur_pos == 0 or tracker is None:
+            return 0.0, 0.0, 0.0
+        entry_price = float(getattr(tracker, "entry_price", 0.0) or 0.0)
+        if entry_price == 0:
+            LOG.warning(
+                "[HUD_DEBUG] Tracker has entry_price=%s (cur_pos=%d, tracker=%s, trackers_count=%d)",
+                getattr(tracker, "entry_price", None),
+                self.cur_pos,
+                type(tracker).__name__,
+                len(self.mfe_mae_trackers),
+            )
+        mfe = float(getattr(tracker, "mfe", 0.0) or 0.0)
+        mae = float(getattr(tracker, "mae", 0.0) or 0.0)
+        return entry_price, mfe, mae
+
+    def _compute_hud_position_state(
+        self,
+        current_price: float,
+        entry_price: float,
+        mfe: float,
+        mae: float,
+    ) -> tuple[float, float, float, int]:
+        """Return (mfe, mae, unrealized_pnl, bars_held) for HUD display."""
+        if self.cur_pos == 0 or entry_price <= 0:
+            return mfe, mae, 0.0, 0
+        actual_qty = self._resolve_actual_position_qty()
+        mfe *= actual_qty
+        mae *= actual_qty
+        if self.cur_pos > 0:
+            unrealized_pnl = (current_price - entry_price) * actual_qty
+        else:
+            unrealized_pnl = (entry_price - current_price) * actual_qty
+        bars_held = self._get_hud_bars_held()
+        return mfe, mae, unrealized_pnl, bars_held
+
+    def _resolve_actual_position_qty(self) -> float:
+        """Return actual position quantity from TradeManager when available."""
+        actual_qty = self.qty
+        if self.trade_integration and self.trade_integration.trade_manager:
+            pos = self.trade_integration.trade_manager.get_position()
+            actual_qty = float(abs(pos.net_qty)) if abs(pos.net_qty) > 0 else self.qty
+        return actual_qty
+
+    def _get_hud_bars_held(self) -> int:
+        """Return bar count for the current position path."""
+        with self._tracker_lock:
+            position_path_recorder = (
+                next(iter(self.path_recorders.values()), self.path_recorder)
+                if self.path_recorders else self.path_recorder
+            )
+        return len(position_path_recorder.path) if hasattr(position_path_recorder, "path") else 0
 
     def _get_policy_buffer_size(self, agent_name: str) -> int:
         """Read replay-buffer size from a named policy sub-agent."""
@@ -4381,104 +5572,111 @@ class CTraderFixApp(fix.Application):
 
     def _build_hud_training_stats(self) -> dict:
         """Collect training-stats payload for HUD export."""
-        trigger_loss = getattr(self, "last_trigger_loss", 0.0)
-        harvester_loss = getattr(self, "last_harvester_loss", 0.0)
-        trigger_buffer_size = trigger_training_steps = 0
-        harvester_buffer_size = harvester_training_steps = 0
-        trigger_epsilon = 0.0
-        harvester_beta = 0.4
-        trigger_ready = harvester_ready = False
-        harvester_min_hold = 10
-        total_agents = 0
-        arena_diversity: dict = {"trigger_diversity": 0.0, "harvester_diversity": 0.0}
-        last_agreement = 1.0
+        stats = self._init_hud_training_stats()
+        self._populate_policy_training_stats(stats)
+        self._populate_arena_training_stats(stats)
+        stats["last_training_time"] = (
+            "Active" if self.bars_since_training < self.training_interval else "Never"
+        )
+        return stats
+
+    def _init_hud_training_stats(self) -> dict:
+        """Initialize the training-stats payload with defaults."""
+        return {
+            "trigger_buffer_size": 0,
+            "harvester_buffer_size": 0,
+            "trigger_training_steps": 0,
+            "harvester_training_steps": 0,
+            "trigger_epsilon": 0.0,
+            "harvester_beta": 0.4,
+            "trigger_ready": False,
+            "harvester_ready": False,
+            "harvester_min_hold_ticks": 10,
+            "total_agents": 0,
+            "arena_diversity": {"trigger_diversity": 0.0, "harvester_diversity": 0.0},
+            "last_agreement_score": 1.0,
+            "consensus_mode": "weighted_average",
+            "trigger_loss": getattr(self, "last_trigger_loss", 0.0),
+            "harvester_loss": getattr(self, "last_harvester_loss", 0.0),
+            "trigger_confidence": getattr(self, "_last_trigger_conf", 0.5),
+            "harvester_confidence": getattr(self, "_last_harvester_conf", 0.5),
+        }
+
+    def _populate_policy_training_stats(self, stats: dict) -> None:
+        """Fill training stats from policy or buffers."""
         if hasattr(self.policy, "get_training_stats"):
             ps = self.policy.get_training_stats()
             t = ps.get("trigger", {})
             h = ps.get("harvester", {})
-            trigger_buffer_size = t.get("buffer_size", 0)
-            harvester_buffer_size = h.get("buffer_size", 0)
-            trigger_training_steps = t.get("training_steps", 0)
-            harvester_training_steps = h.get("training_steps", 0)
-            trigger_epsilon = t.get("epsilon", 0.0)
-            harvester_beta = h.get("beta", 0.4)
-            trigger_ready = t.get("ready_to_train", False)
-            harvester_ready = h.get("ready_to_train", False)
-            harvester_min_hold = h.get("min_hold_ticks", 10)
-        else:
-            trigger_buffer_size = self._get_policy_buffer_size("trigger")
-            harvester_buffer_size = self._get_policy_buffer_size("harvester")
-        if hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "arena"):
-            arena = self.policy.trigger.arena
-            total_agents = len(arena.agents) if hasattr(arena, "agents") else 0
-            if hasattr(arena, "last_diversity"):
-                arena_diversity["trigger_diversity"] = arena.last_diversity
-            if hasattr(arena, "last_agreement"):
-                last_agreement = arena.last_agreement
-        return {
-            "trigger_buffer_size": trigger_buffer_size,
-            "harvester_buffer_size": harvester_buffer_size,
-            "trigger_training_steps": trigger_training_steps,
-            "harvester_training_steps": harvester_training_steps,
-            "trigger_epsilon": trigger_epsilon,
-            "harvester_beta": harvester_beta,
-            "trigger_ready": trigger_ready,
-            "harvester_ready": harvester_ready,
-            "harvester_min_hold_ticks": harvester_min_hold,
-            "total_agents": total_agents,
-            "arena_diversity": arena_diversity,
-            "last_agreement_score": last_agreement,
-            "consensus_mode": "weighted_average",
-            "trigger_loss": trigger_loss,
-            "harvester_loss": harvester_loss,
-            "last_training_time": ("Active" if self.bars_since_training < self.training_interval else "Never"),
-        }
+            LOG.info(
+                "[TRAINING-DIAG] get_training_stats: trigger=%s, harvester=%s",
+                t, h,
+            )
+            stats.update(
+                {
+                    "trigger_buffer_size": t.get("buffer_size", 0),
+                    "harvester_buffer_size": h.get("buffer_size", 0),
+                    "trigger_total_added": t.get("total_added", 0),
+                    "harvester_total_added": h.get("total_added", 0),
+                    "trigger_training_steps": t.get("training_steps", 0),
+                    "harvester_training_steps": h.get("training_steps", 0),
+                    "trigger_epsilon": t.get("epsilon", 0.0),
+                    "harvester_beta": h.get("beta", 0.4),
+                    "trigger_ready": t.get("ready_to_train", False),
+                    "harvester_ready": h.get("ready_to_train", False),
+                    "harvester_min_hold_ticks": h.get("min_hold_ticks", 10),
+                    # Whether the bot is currently in a position — used by HUD
+                    # to label which buffer is actively filling right now.
+                    "is_in_position": self.cur_pos != 0,
+                }
+            )
+            return
+        stats["trigger_buffer_size"] = self._get_policy_buffer_size("trigger")
+        stats["harvester_buffer_size"] = self._get_policy_buffer_size("harvester")
+
+    def _populate_arena_training_stats(self, stats: dict) -> None:
+        """Fill arena metrics when using trigger-agent arena."""
+        if not (hasattr(self.policy, "trigger") and hasattr(self.policy.trigger, "arena")):
+            return
+        arena = self.policy.trigger.arena
+        stats["total_agents"] = len(arena.agents) if hasattr(arena, "agents") else 0
+        if hasattr(arena, "last_diversity"):
+            stats["arena_diversity"]["trigger_diversity"] = arena.last_diversity
+        if hasattr(arena, "last_agreement"):
+            stats["last_agreement_score"] = arena.last_agreement
 
     def _build_hud_risk_metrics(self) -> dict:
         """Collect risk-metrics payload for HUD export."""
-        realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
-        vpin_stats = self.last_vpin_stats if hasattr(self, "last_vpin_stats") else {"vpin": 0.0, "zscore": 0.0}
-        vpin_value = vpin_stats.get("vpin", 0.0)
-        vpin_zscore = vpin_stats.get("zscore", 0.0)
-        current_var = (
-            self.var_estimator.estimate_var(
-                regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
-            )
-            if hasattr(self.var_estimator, "estimate_var")
-            else 0.0
-        )
-        self.last_estimated_var = current_var
-        current_kurtosis = (
-            self.kurtosis_monitor.current_kurtosis if hasattr(self.kurtosis_monitor, "current_kurtosis") else 0.0
-        )
-        circuit_breaker = "ACTIVE" if self.kurtosis_monitor.is_breaker_active else "INACTIVE"
-        if (
-            hasattr(self.policy, "seed_regime_from_bars")
-            and getattr(self.policy, "current_regime", "UNKNOWN") == "UNKNOWN"
-            and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED
-        ):
-            self.policy.seed_regime_from_bars(self.bars)
+        realized_vol = self._calc_hud_realized_vol()
+        vpin_value, vpin_zscore = self._get_hud_vpin_stats()
+        current_var = self._estimate_current_var(realized_vol, vpin_zscore)
+        current_kurtosis, _kurtosis_cb = self._get_kurtosis_state()
+        # Use the full CircuitBreakerManager for the overall status — not just kurtosis
+        circuit_breaker = "ACTIVE" if self.circuit_breakers.is_any_tripped() else "INACTIVE"
+        kurtosis_gate_active = self.kurtosis_monitor.is_breaker_active
+        self._ensure_regime_seed()
         regime = getattr(self.policy, "current_regime", "UNKNOWN")
         regime_zeta = getattr(self.policy, "current_zeta", 1.0)
-        if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
-            geom = self.path_geometry.update(self.bars, realized_vol)
-        else:
-            geom = self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
+        _rd = getattr(self.policy, "regime_detector", None)
+        regime_vr = getattr(_rd, "current_vr", 1.0) if _rd else 1.0
+        regime_updates = getattr(_rd, "total_updates", 0) if _rd else 0
+        regime_bars_since = getattr(_rd, "bars_since_update", 0) if _rd else 0
+        regime_next_in = max(0, (getattr(_rd, "update_interval", 5) if _rd else 5) - regime_bars_since)
+        geom = self._get_path_geometry_snapshot(realized_vol)
         spread = float(self.best_ask) - float(self.best_bid) if self.best_bid and self.best_ask else 0.0
         depth_metrics = getattr(self, "last_depth_metrics", {}) or {}
-        depth_bid = depth_metrics.get("bid", 0.0)
-        depth_ask = depth_metrics.get("ask", 0.0)
-        imbalance = (
-            SafeMath.safe_div(depth_bid - depth_ask, depth_bid + depth_ask, 0.0)
-            if (depth_bid + depth_ask) > 0 else 0.0
-        )
+        depth_bid, depth_ask, imbalance = self._get_depth_snapshot(depth_metrics)
         return {
             "var": current_var,
             "kurtosis": current_kurtosis,
             "circuit_breaker": circuit_breaker,
+            "kurtosis_gate_active": kurtosis_gate_active,
             "realized_vol": realized_vol,
             "regime": regime,
             "regime_zeta": regime_zeta,
+            "regime_vr": regime_vr,
+            "regime_updates": regime_updates,
+            "regime_next_in": regime_next_in,
             "vpin": vpin_value,
             "vpin_zscore": vpin_zscore,
             "vpin_threshold": self.vpin_z_threshold,
@@ -4505,8 +5703,68 @@ class CTraderFixApp(fix.Application):
             "vol_reference": self.vol_ref,
         }
 
+    def _calc_hud_realized_vol(self) -> float:
+        """Calculate realized volatility for HUD risk metrics."""
+        return self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VAR_UPDATE else 0.0
+
+    def _get_hud_vpin_stats(self) -> tuple[float, float]:
+        """Return (vpin, vpin_zscore) for HUD risk metrics."""
+        vpin_stats = self.last_vpin_stats if hasattr(self, "last_vpin_stats") else {"vpin": 0.0, "zscore": 0.0}
+        return vpin_stats.get("vpin", 0.0), vpin_stats.get("zscore", 0.0)
+
+    def _estimate_current_var(self, realized_vol: float, vpin_zscore: float) -> float:
+        """Estimate current VaR and cache last_estimated_var."""
+        if hasattr(self.var_estimator, "estimate_var"):
+            current_var = self.var_estimator.estimate_var(
+                regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
+            )
+        else:
+            current_var = 0.0
+        self.last_estimated_var = current_var
+        return current_var
+
+    def _get_kurtosis_state(self) -> tuple[float, str]:
+        """Return (kurtosis_value, circuit_breaker_state)."""
+        current_kurtosis = (
+            self.kurtosis_monitor.current_kurtosis if hasattr(self.kurtosis_monitor, "current_kurtosis") else 0.0
+        )
+        circuit_breaker = "ACTIVE" if self.kurtosis_monitor.is_breaker_active else "INACTIVE"
+        return current_kurtosis, circuit_breaker
+
+    def _ensure_regime_seed(self) -> None:
+        """Seed regime detector from bars when needed."""
+        if (
+            hasattr(self.policy, "seed_regime_from_bars")
+            and getattr(self.policy, "current_regime", "UNKNOWN") == "UNKNOWN"
+            and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED
+        ):
+            self.policy.seed_regime_from_bars(self.bars)
+
+    def _get_path_geometry_snapshot(self, realized_vol: float) -> dict:
+        """Return the current path geometry snapshot for HUD risk metrics."""
+        if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
+            return self.path_geometry.update(self.bars, realized_vol)
+        return self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
+
+    def _get_depth_snapshot(self, depth_metrics: dict) -> tuple[float, float, float]:
+        """Return (depth_bid, depth_ask, imbalance) from depth metrics."""
+        depth_bid = depth_metrics.get("bid", 0.0)
+        depth_ask = depth_metrics.get("ask", 0.0)
+        if (depth_bid + depth_ask) > 0:
+            imbalance = SafeMath.safe_div(depth_bid - depth_ask, depth_bid + depth_ask, 0.0)
+        else:
+            imbalance = 0.0
+        return depth_bid, depth_ask, imbalance
+
     def _export_hud_data(self):
         """Export real-time data to JSON files for HUD display."""
+        # Global rate-limit: avoid I/O floods from timer + bar-close + gate-abort callers
+        _now_mono = time.time()
+        if _now_mono - self._last_hud_export_time < HUD_EXPORT_MIN_INTERVAL_S:
+            return
+        self._last_hud_export_time = _now_mono
+        # Pick up live balance from Open API sidecar (scripts/fetch_balance.py)
+        self._read_openapi_balance()
         try:
             now = dt.datetime.now(dt.UTC)
             uptime_seconds = int((now - self.start_time).total_seconds())
@@ -4514,40 +5772,210 @@ class CTraderFixApp(fix.Application):
                 "symbol": self.symbol,
                 "symbol_id": self.symbol_id,
                 "timeframe": f"{self.timeframe_minutes}m",
+                "timeframe_minutes": self.timeframe_minutes,
+                "trading_mode": "paper" if self.paper_mode else "live",
                 "uptime_seconds": uptime_seconds,
                 "bar_count": self.bar_count,
                 "training_enabled": os.environ.get("DDQN_ONLINE_LEARNING", "1") == "1",
                 "starting_equity": self.starting_equity,
                 "qty": self.qty,
+                "next_bar_close_utc": self.builder.next_bar_close_utc(),
+                # Real broker values — None until CollateralReport (BA) arrives
+                "real_account_balance": self.real_account_balance,
+                "real_account_equity": self.real_account_equity,
+                "real_margin_free": self.real_margin_free,
             }
             with open(self.hud_data_dir / "bot_config.json", "w", encoding="utf-8") as f:
                 json.dump(bot_config, f, indent=2)
-            current_price = (
-                (float(self.best_bid) + float(self.best_ask)) / 2.0
-                if self.best_bid and self.best_ask
-                else (float(self.bars[-1][4]) if self.bars else 0.0)
-            )
+
+            training_stats = self._build_hud_training_stats()
+            metrics = self._get_performance_metrics()
+            # Per-bot stats file — allows the HUD to show per-instrument
+            # training and connection info in the paper pipeline tab even when
+            # multiple bots share the same data/ directory.
+            if self.paper_mode:
+                _ts = training_stats
+                _pm = metrics
+                _paper_stats = {
+                    "symbol":             self.symbol,
+                    "timeframe_minutes":  self.timeframe_minutes,
+                    "trading_mode":       "paper",
+                    "uptime_seconds":     uptime_seconds,
+                    "bar_count":          self.bar_count,
+                    "quote_ok":           self.quote_sid is not None,
+                    "trade_ok":           self.trade_sid is not None,
+                    "connection_healthy": self.connection_healthy,
+                    "total_reconnects":   self.total_reconnects,
+                    "trigger_steps":      _ts.get("trigger_training_steps", 0),
+                    "trigger_epsilon":    _ts.get("trigger_epsilon", 0.0),
+                    "trigger_buffer":     _ts.get("trigger_buffer_size", 0),
+                    "trigger_loss":       _ts.get("trigger_loss", 0.0),
+                    "trigger_ready":      _ts.get("trigger_ready", False),
+                    "harvester_steps":    _ts.get("harvester_training_steps", 0),
+                    "harvester_beta":     _ts.get("harvester_beta", 0.4),
+                    "harvester_buffer":   _ts.get("harvester_buffer_size", 0),
+                    "harvester_loss":     _ts.get("harvester_loss", 0.0),
+                    "harvester_ready":    _ts.get("harvester_ready", False),
+                    "total_trades":       _pm.get("total_trades", 0),
+                    "total_pnl":          _pm.get("total_pnl", 0.0),
+                    "win_rate":           _pm.get("win_rate", 0.0),
+                    # Real broker balance — None until CollateralReport arrives
+                    "real_account_balance": self.real_account_balance,
+                    "real_account_equity":  self.real_account_equity,
+                    "real_margin_free":     self.real_margin_free,
+                    "next_bar_close_utc":  self.builder.next_bar_close_utc(),
+                    "updated_at":         now.isoformat(),
+                }
+                _stats_path = (
+                    self.hud_data_dir
+                    / f"paper_stats_{self.symbol}_M{self.timeframe_minutes}.json"
+                )
+                with open(_stats_path, "w", encoding="utf-8") as _f:
+                    json.dump(_paper_stats, _f, indent=2)
+            current_price = self._get_hud_current_price()
             position_data = self._build_hud_position_data(current_price)
-            with open(self.hud_data_dir / "current_position.json", "w", encoding="utf-8") as f:
+            _pos_file = f"current_position_{self.symbol}_M{self.timeframe_minutes}.json"
+            with open(self.hud_data_dir / _pos_file, "w", encoding="utf-8") as f:
                 json.dump(position_data, f, indent=2)
-            metrics = self.performance.get_metrics() if hasattr(self.performance, "get_metrics") else {}
-            _m = metrics
-            performance_snapshot = {
-                "daily":    {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
-                "weekly":   {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
-                "monthly":  {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
-                "lifetime": {"total_trades": _m.get("total_trades", 0), "win_rate": _m.get("win_rate", 0.0), "total_pnl": _m.get("total_pnl", 0.0), "sharpe_ratio": _m.get("sharpe", 0.0), "sortino_ratio": _m.get("sortino", 0.0), "omega_ratio": _m.get("omega", 0.0), "max_drawdown": _m.get("max_drawdown", 0.0)},
-            }
+            performance_snapshot = self._build_performance_snapshot(metrics)
             with open(self.hud_data_dir / "performance_snapshot.json", "w", encoding="utf-8") as f:
                 json.dump(performance_snapshot, f, indent=2)
-            training_stats = self._build_hud_training_stats()
             with open(self.hud_data_dir / "training_stats.json", "w", encoding="utf-8") as f:
+                json.dump(training_stats, f, indent=2)
+            # Per-bot training stats — lets multi-bot HUD show the correct bot's stats
+            _bot_train = self.hud_data_dir / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json"
+            with open(_bot_train, "w", encoding="utf-8") as f:
                 json.dump(training_stats, f, indent=2)
             risk_metrics = self._build_hud_risk_metrics()
             with open(self.hud_data_dir / "risk_metrics.json", "w", encoding="utf-8") as f:
                 json.dump(risk_metrics, f, indent=2)
+            # Per-bot risk metrics — correct VaR/vol/regime for the active position's symbol
+            _bot_risk = self.hud_data_dir / f"risk_metrics_{self.symbol}_M{self.timeframe_minutes}.json"
+            with open(_bot_risk, "w", encoding="utf-8") as f:
+                json.dump(risk_metrics, f, indent=2)
         except Exception as e:
             LOG.error("[HUD] Failed to export data: %s", str(e))
+
+    def _get_hud_current_price(self) -> float:
+        """Resolve the current price for HUD exports."""
+        if self.best_bid and self.best_ask:
+            return (float(self.best_bid) + float(self.best_ask)) / 2.0
+        if self.bars:
+            return float(self.bars[-1][4])
+        return 0.0
+
+    def _get_performance_metrics(self) -> dict:
+        """Return performance metrics from the tracker if available."""
+        if hasattr(self.performance, "get_metrics"):
+            return self.performance.get_metrics()
+        return {}
+
+    def _build_performance_snapshot(self, metrics: dict) -> dict:
+        """Build HUD performance snapshot from trade_log.jsonl (single source of truth).
+
+        Uses rolling time windows identical to the HUD so that all consumers of
+        performance_snapshot.json see consistent numbers.  Session-based counters
+        from self.performance are intentionally NOT used here because they reset
+        on every bot restart and would show zeros after a reconnect.
+        """
+        import math as _math
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+
+        def _period_metrics(pts: list) -> dict:
+            if not pts:
+                return {"total_trades": 0, "win_rate": 0.0, "total_pnl": 0.0,
+                        "sharpe_ratio": 0.0, "sortino_ratio": 0.0, "max_drawdown": 0.0,
+                        "avg_win": 0.0, "avg_loss": 0.0, "profit_factor": 0.0,
+                        "expectancy": 0.0, "best_trade": 0.0, "worst_trade": 0.0,
+                        "max_consec_wins": 0, "max_consec_losses": 0}
+            pnls = [t.get("pnl", 0.0) for t in pts]
+            wins = [p for p in pnls if p > 0]
+            losses = [p for p in pnls if p < 0]
+            n = len(pnls)
+            total_pnl = sum(pnls)
+            win_rate = len(wins) / n
+            avg_win = sum(wins) / len(wins) if wins else 0.0
+            avg_loss = sum(losses) / len(losses) if losses else 0.0
+            pf = sum(wins) / abs(sum(losses)) if losses else float("inf")
+            expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+            mean_p = total_pnl / n
+            variance = sum((p - mean_p) ** 2 for p in pnls) / n
+            std_p = _math.sqrt(variance) if variance > 0 else 0.0
+            sharpe = mean_p / std_p if std_p > 0 else 0.0
+            down_var = sum(p ** 2 for p in pnls if p < 0) / n
+            sortino = mean_p / _math.sqrt(down_var) if down_var > 0 else 0.0
+            eq = float(self.starting_equity)
+            peak = eq
+            max_dd = 0.0
+            for p in pnls:
+                eq += p
+                peak = max(peak, eq)
+                if peak > 0:
+                    max_dd = max(max_dd, (peak - eq) / peak * 100.0)
+            max_cw = max_cl = cw = cl = 0
+            for p in pnls:
+                if p > 0:
+                    cw += 1
+                    cl = 0
+                else:
+                    cl += 1
+                    cw = 0
+                max_cw = max(max_cw, cw)
+                max_cl = max(max_cl, cl)
+            return {
+                "total_trades": n, "win_rate": win_rate, "total_pnl": total_pnl,
+                "sharpe_ratio": sharpe, "sortino_ratio": sortino,
+                "max_drawdown": max_dd, "avg_win": avg_win, "avg_loss": avg_loss,
+                "profit_factor": min(pf, 99.0), "expectancy": expectancy,
+                "best_trade": max(pnls), "worst_trade": min(pnls),
+                "max_consec_wins": max_cw, "max_consec_losses": max_cl,
+            }
+
+        # Load trade log
+        trade_file = Path("data") / "trade_log.jsonl"
+        all_trades: list = []
+        try:
+            with open(trade_file, encoding="utf-8") as _f:
+                for _line in _f:
+                    _s = _line.strip()
+                    if _s:
+                        all_trades.append(json.loads(_s))
+        except Exception:
+            pass
+
+        now = _dt.now(dt.UTC)
+        cutoff_24h  = now - _td(hours=24)
+        cutoff_7d   = now - _td(days=7)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        daily: list = []
+        weekly: list = []
+        monthly: list = []
+        for t in all_trades:
+            raw = t.get("entry_time", "")
+            try:
+                tdt = _dt.fromisoformat(raw.replace("Z", "+00:00"))
+                if tdt.tzinfo is None:
+                    tdt = tdt.replace(tzinfo=dt.UTC)
+            except Exception:
+                continue
+            if tdt >= cutoff_24h:
+                daily.append(t)
+            if tdt >= cutoff_7d:
+                weekly.append(t)
+            if tdt >= month_start:
+                monthly.append(t)
+
+        # Stamp the trading_mode onto each period dict for display
+        mode = "paper" if self.paper_mode else "live"
+        return {
+            "trading_mode": mode,
+            "daily":    _period_metrics(daily),
+            "weekly":   _period_metrics(weekly),
+            "monthly":  _period_metrics(monthly),
+            "lifetime": _period_metrics(all_trades),
+        }
 
     def _compute_order_qty(self, abs_delta: int, size_multiplier: float, is_new_entry: bool) -> float:
         base_qty = abs_delta * self.qty * size_multiplier
@@ -4586,10 +6014,18 @@ class CTraderFixApp(fix.Application):
         return adjusted
 
     def _estimate_account_equity(self) -> float:
+        """Return best available account equity estimate.
+
+        Priority:
+          1. real_account_equity (TotalNetValue from last CollateralReport) if less than 30 min old
+          2. starting_equity (recalibrated from real_account_balance) + session PnL
+        """
         try:
             pnl = self.performance.total_pnl
         except AttributeError:
             pnl = 0.0
+        # If we have real equity from broker and a recalibrated starting_equity,
+        # the formula below already yields the correct number.
         return float(max(self.starting_equity + pnl, 1.0))
 
     def _resolve_param(self, env_key: str | None, param_name: str, default: float) -> float:
@@ -4749,36 +6185,48 @@ def _load_and_validate_config() -> tuple[int, str, float, int, str, str]:
     Raises SystemExit(1) on invalid or missing config.
     """
     try:
-        symbol_id_raw = os.environ.get("CTRADER_SYMBOL_ID", "41").strip().upper()
+        # Accept both CTRADER_-prefixed keys (set by run_universe) and the
+        # short names (set by .env / run.sh) so both launch paths work.
+        def _env(ctrader_key: str, short_key: str, default: str) -> str:
+            return os.environ.get(ctrader_key) or os.environ.get(short_key) or default
+
+        symbol_id_raw = _env("CTRADER_SYMBOL_ID", "SYMBOL_ID", "41").strip().upper()
         if symbol_id_raw in ("AUTO", "0", ""):
             symbol_id = 0
             LOG.info("[CONFIG] SYMBOL_ID=AUTO - will resolve from SecurityList")
         else:
             symbol_id = int(symbol_id_raw)
-        symbol = os.environ.get("CTRADER_SYMBOL", "XAUUSD")
-        qty = float(os.environ.get("CTRADER_QTY", "0.01"))
-        timeframe_minutes = int(os.environ.get("CTRADER_TIMEFRAME_MIN", "1"))
+        symbol = _env("CTRADER_SYMBOL", "SYMBOL", "XAUUSD")
+        qty = float(_env("CTRADER_QTY", "QTY", "0.01"))
+        timeframe_minutes = int(_env("CTRADER_TIMEFRAME_MIN", "TIMEFRAME_MINUTES", "1"))
     except (ValueError, TypeError) as e:
-        LOG.error("Invalid configuration value: %s", e)
+        LOG.error("[CONFIG] Invalid configuration value: %s", e)
         raise SystemExit(1) from e
 
     cfg_quote = os.environ.get("CTRADER_CFG_QUOTE", "ctrader_quote.cfg")
     cfg_trade = os.environ.get("CTRADER_CFG_TRADE", "ctrader_trade.cfg")
 
     if qty <= 0:
-        LOG.error("CTRADER_QTY must be positive, got: %s", qty); raise SystemExit(1)
+        LOG.error("[CONFIG] CTRADER_QTY must be positive, got: %s", qty)
+        raise SystemExit(1)
     if qty > MAX_QTY_SANITY_CHECK:
-        LOG.error("CTRADER_QTY suspiciously large (>100), got: %s. Aborting for safety.", qty); raise SystemExit(1)
+        LOG.error("[CONFIG] CTRADER_QTY suspiciously large (>100), got: %s. Aborting for safety.", qty)
+        raise SystemExit(1)
     if timeframe_minutes <= 0:
-        LOG.error("CTRADER_TIMEFRAME_MIN must be positive, got: %s", timeframe_minutes); raise SystemExit(1)
+        LOG.error("[CONFIG] CTRADER_TIMEFRAME_MIN must be positive, got: %s", timeframe_minutes)
+        raise SystemExit(1)
     if symbol_id < 0:
-        LOG.error("CTRADER_SYMBOL_ID must be non-negative (0=AUTO), got: %s", symbol_id); raise SystemExit(1)
+        LOG.error("[CONFIG] CTRADER_SYMBOL_ID must be non-negative (0=AUTO), got: %s", symbol_id)
+        raise SystemExit(1)
     if not symbol or not symbol.strip():
-        LOG.error("CTRADER_SYMBOL must be non-empty"); raise SystemExit(1)
+        LOG.error("[CONFIG] CTRADER_SYMBOL must be non-empty")
+        raise SystemExit(1)
     if not os.path.exists(cfg_quote):
-        LOG.error("Quote config file not found: %s", cfg_quote); raise SystemExit(1)
+        LOG.error("[CONFIG] Quote config file not found: %s", cfg_quote)
+        raise SystemExit(1)
     if not os.path.exists(cfg_trade):
-        LOG.error("Trade config file not found: %s", cfg_trade); raise SystemExit(1)
+        LOG.error("Trade config file not found: %s", cfg_trade)
+        raise SystemExit(1)
 
     return symbol_id, symbol, qty, timeframe_minutes, cfg_quote, cfg_trade
 

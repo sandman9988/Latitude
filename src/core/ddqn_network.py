@@ -1,85 +1,118 @@
 """
 Enhanced DDQN Neural Network with Prioritized Experience Replay
 
+Backend: PyTorch with AMD ROCm / CUDA GPU acceleration (CPU fallback).
+
 Features:
+- GPU acceleration (ROCm gfx1100 / CUDA) with transparent CPU fallback
 - Proper Adam optimizer with bias correction
 - Gradient clipping by norm
-- L2 regularization
+- L2 weight decay
 - He initialization for ReLU networks
 - Soft target network updates (τ parameter)
 - Double DQN target calculation
-- Network persistence (save/load weights)
+- Network persistence — saves torch .pt format;
+  also loads legacy NumPy .npz checkpoints transparently
 """
 
 import logging
 from pathlib import Path
 
 import numpy as np
+import torch
+from torch import nn
+
+from src.constants import GAMMA, GRAD_CLIP_NORM, L2_WEIGHT, LEARNING_RATE, TAU
 
 LOG = logging.getLogger(__name__)
 
 
-class AdamOptimizer:
+# ── Device selection ──────────────────────────────────────────────────────────
+def _select_device() -> torch.device:
+    if torch.cuda.is_available():
+        dev = torch.device("cuda")
+        name = torch.cuda.get_device_name(0)
+        vram = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+        LOG.info("[DDQN] GPU: %s (%.1f GB VRAM)  — ROCm/CUDA backend", name, vram)
+    else:
+        dev = torch.device("cpu")
+        LOG.info("[DDQN] GPU not available — falling back to CPU")
+    return dev
+
+
+DEVICE: torch.device = _select_device()
+
+
+# ── Conv1d Q-Network (shared by Trigger / Harvester / Policy agents) ─────────
+class Conv1dQNet(nn.Module):
+    """Conv1d Q-Network for agents operating on (batch, window, features) inputs.
+
+    Architecture (temporal_pool_size=4, the new default):
+        Conv1d(n_features, 64, k=5, pad=2) → ReLU
+        Conv1d(64, 64, k=5, pad=2) → ReLU
+        AdaptiveAvgPool1d(temporal_pool_size) → Flatten
+        Linear(64 * temporal_pool_size, 128) → ReLU
+        Linear(128, n_actions)
+
+    With temporal_pool_size=4 the pooled output retains 4 coarse time-steps
+    (early / mid / late / final quarter of the window), giving the linear
+    head temporal context that AdaptiveAvgPool1d(1) discarded entirely.
+
+    Backward compatibility: pass temporal_pool_size=1 to reproduce the old
+    architecture exactly (required when loading pre-trained weights that were
+    saved with the pool-to-1 architecture).
+
+    Input shape:  (B, T, F)  – batch, time/window, features
+    Output shape: (B, n_actions)
     """
-    Adam optimizer with bias correction.
 
-    Reference: Kingma & Ba (2015) "Adam: A Method for Stochastic Optimization"
-    """
+    def __init__(self, n_features: int, n_actions: int = 3, temporal_pool_size: int = 4):
+        super().__init__()
+        fc_in = 64 * temporal_pool_size
+        self.net = nn.Sequential(
+            nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(64, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(temporal_pool_size),
+            nn.Flatten(),
+            nn.Linear(fc_in, 128),
+            nn.ReLU(),
+            nn.Linear(128, n_actions),
+        )
 
-    def __init__(
-        self,
-        learning_rate: float = 0.0005,
-        beta1: float = 0.9,
-        beta2: float = 0.999,
-        epsilon: float = 1e-8,
-    ):
-        self.lr = learning_rate
-        self.beta1 = beta1
-        self.beta2 = beta2
-        self.epsilon = epsilon
-
-        # Moment estimates (initialized lazily)
-        self.m = {}  # First moment (mean)
-        self.v = {}  # Second moment (variance)
-        self.t = 0  # Time step
-
-    def step(self):
-        """Advance the timestep counter. Call once per batch before updating all parameters."""
-        self.t += 1
-
-    def update(self, param_name: str, param: np.ndarray, grad: np.ndarray) -> np.ndarray:
-        """
-        Update parameter using Adam.
-
-        Args:
-            param_name: Identifier for parameter (for moment storage)
-            param: Current parameter value
-            grad: Gradient
-
-        Returns:
-            Updated parameter
-        """
-        # Initialize moments if first time
-        if param_name not in self.m:
-            self.m[param_name] = np.zeros_like(param)
-            self.v[param_name] = np.zeros_like(param)
-
-        # Update biased first moment estimate
-        self.m[param_name] = self.beta1 * self.m[param_name] + (1 - self.beta1) * grad
-
-        # Update biased second moment estimate
-        self.v[param_name] = self.beta2 * self.v[param_name] + (1 - self.beta2) * (grad**2)
-
-        # Bias correction (t must be incremented via step() before calling update)
-        m_hat = self.m[param_name] / (1 - self.beta1**self.t)
-        v_hat = self.v[param_name] / (1 - self.beta2**self.t)
-
-        # Update parameter
-        param_updated = param - self.lr * m_hat / (np.sqrt(v_hat) + self.epsilon)
-
-        return param_updated
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, F) → (B, F, T)
+        return self.net(x.transpose(1, 2))
 
 
+# ── Internal MLP module (used by DDQNNetwork) ────────────────────────────────
+class _QNet(nn.Module):
+    """3-layer MLP: state_dim → hidden1 → hidden2 → n_actions (linear out)."""
+
+    def __init__(self, state_dim: int, hidden1: int, hidden2: int, n_actions: int):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden1),
+            nn.ReLU(),
+            nn.Linear(hidden1, hidden2),
+            nn.ReLU(),
+            nn.Linear(hidden2, n_actions),
+        )
+        self._he_init()
+
+    def _he_init(self):
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
 class DDQNNetwork:
     """
     Double Deep Q-Network with online and target networks.
@@ -87,12 +120,8 @@ class DDQNNetwork:
     Architecture:
         Input (state_dim) → Hidden1 (128) → Hidden2 (64) → Output (n_actions)
 
-    Features:
-        - He initialization for ReLU
-        - Adam optimizer with bias correction
-        - Gradient clipping
-        - L2 regularization
-        - Soft target updates
+    All public methods accept / return NumPy arrays for drop-in compatibility
+    with the existing agent code. GPU transfers are handled internally.
     """
 
     def __init__(  # noqa: PLR0913
@@ -101,149 +130,72 @@ class DDQNNetwork:
         n_actions: int,
         hidden1_size: int = 128,
         hidden2_size: int = 64,
-        learning_rate: float = 0.0005,
-        gamma: float = 0.99,
-        tau: float = 0.005,
-        l2_weight: float = 0.0001,
-        grad_clip_norm: float = 1.0,
+        learning_rate: float = LEARNING_RATE,
+        gamma: float = GAMMA,
+        tau: float = TAU,
+        l2_weight: float = L2_WEIGHT,
+        grad_clip_norm: float = GRAD_CLIP_NORM,
         seed: int | None = None,
     ):
-        """
-        Initialize DDQN network.
-
-        Args:
-            state_dim: Input state dimension
-            n_actions: Number of actions
-            hidden1_size: First hidden layer size
-            hidden2_size: Second hidden layer size
-            learning_rate: Learning rate for Adam
-            gamma: Discount factor
-            tau: Soft update parameter (0=no update, 1=hard update)
-            l2_weight: L2 regularization weight
-            grad_clip_norm: Maximum gradient norm
-            seed: Random seed for reproducibility (default: None for non-deterministic)
-        """
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.gamma = gamma
         self.tau = tau
         self.l2_weight = l2_weight
         self.grad_clip_norm = grad_clip_norm
+        self.device = DEVICE
 
-        self.rng = np.random.default_rng(seed)
+        if seed is not None:
+            torch.manual_seed(seed)
 
-        # Initialize online network (He initialization for ReLU)
-        self.w1 = self._he_init((state_dim, hidden1_size))
-        self.b1 = np.zeros(hidden1_size)
+        self.online = _QNet(state_dim, hidden1_size, hidden2_size, n_actions).to(self.device)
+        self.target = _QNet(state_dim, hidden1_size, hidden2_size, n_actions).to(self.device)
+        self.target.load_state_dict(self.online.state_dict())
+        self.target.eval()
 
-        self.w2 = self._he_init((hidden1_size, hidden2_size))
-        self.b2 = np.zeros(hidden2_size)
-
-        self.w3 = self._he_init((hidden2_size, n_actions))
-        self.b3 = np.zeros(n_actions)
-
-        # Initialize target network (copy from online)
-        self.target_w1 = self.w1.copy()
-        self.target_b1 = self.b1.copy()
-        self.target_w2 = self.w2.copy()
-        self.target_b2 = self.b2.copy()
-        self.target_w3 = self.w3.copy()
-        self.target_b3 = self.b3.copy()
-
-        # Optimizer
-        self.optimizer = AdamOptimizer(learning_rate=learning_rate)
-
-        # Statistics
-        self.training_steps = 0
-        self.total_grad_norm = 0.0
-
-        LOG.info(
-            "[DDQN] Initialized: state_dim=%d, actions=%d, hidden=[%d,%d], lr=%.4f, tau=%.4f",
-            state_dim,
-            n_actions,
-            hidden1_size,
-            hidden2_size,
-            learning_rate,
-            tau,
+        self.optimizer = torch.optim.Adam(
+            self.online.parameters(),
+            lr=learning_rate,
+            weight_decay=l2_weight,
         )
 
-    def _he_init(self, shape: tuple[int, int]) -> np.ndarray:
-        """
-        He initialization for ReLU networks.
+        self.training_steps: int = 0
+        self.total_grad_norm: float = 0.0
 
-        Variance = 2 / fan_in
-        """
-        fan_in = shape[0]
-        std = np.sqrt(2.0 / fan_in)
-        return self.rng.standard_normal(shape) * std
+        LOG.info(
+            "[DDQN] Initialized: state_dim=%d, actions=%d, hidden=[%d,%d],"
+            " lr=%.4f, tau=%.4f, device=%s",
+            state_dim, n_actions, hidden1_size, hidden2_size,
+            learning_rate, tau, self.device,
+        )
 
-    def _relu(self, x: np.ndarray) -> np.ndarray:
-        """ReLU activation."""
-        return np.maximum(0, x)
+    # ── helpers ────────────────────────────────────────────────────────────
 
-    def _relu_derivative(self, x: np.ndarray) -> np.ndarray:
-        """ReLU derivative (1 if x > 0, else 0)."""
-        return (x > 0).astype(float)
+    def _to_tensor(self, arr: np.ndarray, dtype=torch.float32) -> torch.Tensor:
+        return torch.as_tensor(arr, dtype=dtype, device=self.device)
 
-    def forward(self, state: np.ndarray, use_target: bool = False) -> tuple[np.ndarray, dict]:
-        """
-        Forward pass through network.
-
-        Args:
-            state: Input state (batch_size, state_dim) or (state_dim,)
-            use_target: Use target network instead of online
-
-        Returns:
-            Tuple of (q_values, cache) where cache stores activations for backprop
-        """
-        # Handle single state
-        single_input = False
-        if state.ndim == 1:
-            state = state.reshape(1, -1)
-            single_input = True
-
-        # Select weights
-        if use_target:
-            w1, b1 = self.target_w1, self.target_b1
-            w2, b2 = self.target_w2, self.target_b2
-            w3, b3 = self.target_w3, self.target_b3
-        else:
-            w1, b1 = self.w1, self.b1
-            w2, b2 = self.w2, self.b2
-            w3, b3 = self.w3, self.b3
-
-        # Layer 1
-        z1 = state @ w1 + b1
-        a1 = self._relu(z1)
-
-        # Layer 2
-        z2 = a1 @ w2 + b2
-        a2 = self._relu(z2)
-
-        # Output layer (linear activation for Q-values)
-        q_values = a2 @ w3 + b3
-
-        # Cache for backpropagation
-        cache = {"state": state, "z1": z1, "a1": a1, "z2": z2, "a2": a2, "q_values": q_values}
-
-        if single_input:
-            q_values = q_values[0]
-
-        return q_values, cache
+    # ── inference ──────────────────────────────────────────────────────────
 
     def predict(self, state: np.ndarray, use_target: bool = False) -> np.ndarray:
-        """
-        Get Q-values for state (no cache).
+        """Return Q-values for *state* as a NumPy array (no grad)."""
+        net = self.target if use_target else self.online
+        single = state.ndim == 1
+        s = self._to_tensor(state)
+        if single:
+            s = s.unsqueeze(0)
+        with torch.no_grad():
+            q = net(s)
+        out = q.cpu().numpy()
+        return out[0] if single else out
 
-        Args:
-            state: Input state
-            use_target: Use target network
+    def forward(self, state: np.ndarray, use_target: bool = False):
+        """Legacy shim — returns (q_values_numpy, {}).
 
-        Returns:
-            Q-values for all actions
+        Cache is empty because backprop is handled by PyTorch autograd.
         """
-        q_values, _ = self.forward(state, use_target=use_target)
-        return q_values
+        return self.predict(state, use_target=use_target), {}
+
+    # ── training ───────────────────────────────────────────────────────────
 
     def train_batch(  # noqa: PLR0913
         self,
@@ -254,228 +206,155 @@ class DDQNNetwork:
         dones: np.ndarray,
         weights: np.ndarray,
     ) -> dict:
-        """
-        Train on batch using Double DQN with importance sampling.
+        """Train one batch; returns loss stats and per-sample td_errors."""
+        s  = self._to_tensor(states)
+        ns = self._to_tensor(next_states)
+        a  = self._to_tensor(actions, dtype=torch.long)
+        r  = self._to_tensor(rewards)
+        d  = self._to_tensor(dones)
+        w  = self._to_tensor(weights)
 
-        Args:
-            states: Batch of states (batch_size, state_dim)
-            actions: Batch of actions (batch_size,)
-            rewards: Batch of rewards (batch_size,)
-            next_states: Batch of next states (batch_size, state_dim)
-            dones: Batch of terminal flags (batch_size,)
-            weights: Importance sampling weights (batch_size,)
+        # Online Q-values for taken actions
+        self.online.train()
+        q_online = self.online(s)                                          # (B, A)
+        q_current = q_online.gather(1, a.unsqueeze(1)).squeeze(1)         # (B,)
 
-        Returns:
-            Dictionary with loss, TD errors, and statistics
-        """
-        batch_size = states.shape[0]
+        # Double DQN: online selects next action, target evaluates it
+        with torch.no_grad():
+            next_actions = self.online(ns).argmax(dim=1)                   # (B,)
+            q_next_max   = self.target(ns).gather(
+                1, next_actions.unsqueeze(1)
+            ).squeeze(1)                                                   # (B,)
 
-        # Forward pass (online network)
-        q_values, cache = self.forward(states, use_target=False)
+        td_targets = r + self.gamma * q_next_max * (1.0 - d)
+        td_errors_t = (td_targets - q_current).detach()                   # no grad
 
-        # Double DQN: Online network selects actions for next states
-        q_next_online, _ = self.forward(next_states, use_target=False)
-        best_actions = np.argmax(q_next_online, axis=1)
+        # Importance-sampling weighted MSE
+        loss = (w * td_errors_t ** 2).mean()
 
-        # Target network evaluates those actions
-        q_next_target, _ = self.forward(next_states, use_target=True)
-        q_next_max = q_next_target[np.arange(batch_size), best_actions]
+        # Separate forward for the backward pass (avoid double-graph issue)
+        q_bp = self.online(s).gather(1, a.unsqueeze(1)).squeeze(1)
+        loss_bp = (w * (td_targets - q_bp) ** 2).mean()
 
-        # TD targets
-        td_targets = rewards + self.gamma * q_next_max * (1 - dones)
+        self.optimizer.zero_grad()
+        loss_bp.backward()
 
-        # Current Q-values for taken actions
-        q_current = q_values[np.arange(batch_size), actions]
-
-        # TD errors
-        td_errors = td_targets - q_current
-
-        # Weighted MSE loss (importance sampling)
-        loss = np.mean(weights * (td_errors**2))
-
-        # Add L2 regularization
-        l2_loss = self.l2_weight * (np.sum(self.w1**2) + np.sum(self.w2**2) + np.sum(self.w3**2))
-        total_loss = loss + l2_loss
-
-        # Backward pass
-        self._backward(cache, actions, td_errors, weights, batch_size)
-
-        # Soft update target network
-        self._update_target_network()
-
-        self.training_steps += 1
-
-        return {
-            "loss": float(loss),
-            "l2_loss": float(l2_loss),
-            "total_loss": float(total_loss),
-            "mean_q": float(np.mean(q_values)),
-            "mean_td_error": float(np.mean(np.abs(td_errors))),
-            "max_td_error": float(np.max(np.abs(td_errors))),
-            "grad_norm": float(self.total_grad_norm),
-            "td_errors": td_errors,  # For priority updates
-        }
-
-    def _backward(
-        self,
-        cache: dict,
-        actions: np.ndarray,
-        td_errors: np.ndarray,
-        weights: np.ndarray,
-        batch_size: int,
-    ):
-        """
-        Backward pass with gradient clipping.
-
-        Args:
-            cache: Activations from forward pass
-            actions: Actions taken (batch_size,)
-            td_errors: TD errors (batch_size,)
-            weights: Importance sampling weights (batch_size,)
-            batch_size: Batch size
-        """
-        # Gradient of loss w.r.t. Q-values
-        # Only update Q-values for actions actually taken
-        dq = np.zeros_like(cache["q_values"])
-        dq[np.arange(batch_size), actions] = -2 * weights * td_errors / batch_size
-
-        # Layer 3 gradients
-        dw3 = cache["a2"].T @ dq
-        db3 = np.sum(dq, axis=0)
-
-        # Add L2 regularization gradient
-        dw3 += 2 * self.l2_weight * self.w3
-
-        # Backprop to layer 2
-        da2 = dq @ self.w3.T
-        dz2 = da2 * self._relu_derivative(cache["z2"])
-
-        dw2 = cache["a1"].T @ dz2
-        db2 = np.sum(dz2, axis=0)
-        dw2 += 2 * self.l2_weight * self.w2
-
-        # Backprop to layer 1
-        da1 = dz2 @ self.w2.T
-        dz1 = da1 * self._relu_derivative(cache["z1"])
-
-        dw1 = cache["state"].T @ dz1
-        db1 = np.sum(dz1, axis=0)
-        dw1 += 2 * self.l2_weight * self.w1
-
-        # Gradient clipping by norm
-        gradients = [dw1, db1, dw2, db2, dw3, db3]
-        self.total_grad_norm = self._clip_gradients(gradients)
-
-        # Advance Adam timestep once per batch (not per parameter)
+        total_norm = nn.utils.clip_grad_norm_(
+            self.online.parameters(), self.grad_clip_norm
+        )
+        self.total_grad_norm = float(total_norm)
         self.optimizer.step()
 
-        # Update weights with Adam
-        self.w3 = self.optimizer.update("w3", self.w3, dw3)
-        self.b3 = self.optimizer.update("b3", self.b3, db3)
-        self.w2 = self.optimizer.update("w2", self.w2, dw2)
-        self.b2 = self.optimizer.update("b2", self.b2, db2)
-        self.w1 = self.optimizer.update("w1", self.w1, dw1)
-        self.b1 = self.optimizer.update("b1", self.b1, db1)
+        # Soft update target
+        self._soft_update_target()
+        self.online.eval()
+        self.training_steps += 1
 
-    def _clip_gradients(self, gradients: list) -> float:
-        """
-        Clip gradients by global norm.
+        td_np = td_errors_t.cpu().numpy()
+        return {
+            "loss":          float(loss),
+            "l2_loss":       0.0,          # absorbed into Adam weight_decay
+            "total_loss":    float(loss),
+            "mean_q":        float(q_online.detach().mean()),
+            "mean_td_error": float(np.mean(np.abs(td_np))),
+            "max_td_error":  float(np.max(np.abs(td_np))),
+            "grad_norm":     self.total_grad_norm,
+            "td_errors":     td_np,
+        }
 
-        Args:
-            gradients: List of gradient arrays
+    # ── target network ─────────────────────────────────────────────────────
 
-        Returns:
-            Total gradient norm before clipping
-        """
-        # Calculate global norm
-        total_norm = np.sqrt(sum(np.sum(g**2) for g in gradients))
-
-        # Clip if necessary
-        if total_norm > self.grad_clip_norm:
-            scale = self.grad_clip_norm / (total_norm + 1e-8)
-            for g in gradients:
-                g *= scale  # noqa: PLW2901 — in-place numpy mutation is intentional
-
-        return total_norm
-
-    def _update_target_network(self):
-        """
-        Soft update of target network: θ_target ← τ*θ_online + (1-τ)*θ_target
-        """
-        self.target_w1 = self.tau * self.w1 + (1 - self.tau) * self.target_w1
-        self.target_b1 = self.tau * self.b1 + (1 - self.tau) * self.target_b1
-
-        self.target_w2 = self.tau * self.w2 + (1 - self.tau) * self.target_w2
-        self.target_b2 = self.tau * self.b2 + (1 - self.tau) * self.target_b2
-
-        self.target_w3 = self.tau * self.w3 + (1 - self.tau) * self.target_w3
-        self.target_b3 = self.tau * self.b3 + (1 - self.tau) * self.target_b3
+    def _soft_update_target(self):
+        """θ_target ← τ·θ_online + (1−τ)·θ_target"""
+        with torch.no_grad():
+            for p_on, p_tgt in zip(
+                self.online.parameters(), self.target.parameters(), strict=False
+            ):
+                p_tgt.data.mul_(1.0 - self.tau)
+                p_tgt.data.add_(self.tau * p_on.data)
 
     def hard_update_target(self):
-        """Copy online network to target network (τ=1.0 update)."""
-        self.target_w1 = self.w1.copy()
-        self.target_b1 = self.b1.copy()
-        self.target_w2 = self.w2.copy()
-        self.target_b2 = self.b2.copy()
-        self.target_w3 = self.w3.copy()
-        self.target_b3 = self.b3.copy()
-        LOG.info("[DDQN] Hard update: Copied online → target network")
+        """Copy online → target (τ = 1)."""
+        self.target.load_state_dict(self.online.state_dict())
+        LOG.info("[DDQN] Hard update: copied online → target")
+
+    # ── persistence ────────────────────────────────────────────────────────
 
     def save_weights(self, filepath: str):
-        """
-        Save network weights to file.
-
-        Args:
-            filepath: Path to save weights
-        """
-        Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-
-        np.savez(
-            filepath,
-            w1=self.w1,
-            b1=self.b1,
-            w2=self.w2,
-            b2=self.b2,
-            w3=self.w3,
-            b3=self.b3,
-            target_w1=self.target_w1,
-            target_b1=self.target_b1,
-            target_w2=self.target_w2,
-            target_b2=self.target_b2,
-            target_w3=self.target_w3,
-            target_b3=self.target_b3,
-            training_steps=self.training_steps,
+        """Save to *filepath* (torch .pt format, .pt suffix auto-added)."""
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pt_path = path.with_suffix(".pt") if path.suffix != ".pt" else path
+        torch.save(
+            {
+                "online":         self.online.state_dict(),
+                "target":         self.target.state_dict(),
+                "optimizer":      self.optimizer.state_dict(),
+                "training_steps": self.training_steps,
+            },
+            pt_path,
         )
-        LOG.info("[DDQN] Saved weights to %s (step %d)", filepath, self.training_steps)
+        LOG.info("[DDQN] Saved weights → %s (step %d)", pt_path, self.training_steps)
 
     def load_weights(self, filepath: str):
-        """
-        Load network weights from file.
+        """Load weights from *filepath*.
 
-        Args:
-            filepath: Path to load weights from
+        Supports:
+        - New torch .pt checkpoint
+        - Legacy NumPy .npz checkpoint (migrates weight layout automatically)
         """
-        if not Path(filepath).exists():
+        path = Path(filepath)
+        pt_path = path.with_suffix(".pt") if path.suffix != ".pt" else path
+
+        # Prefer .pt, fall back to the exact path, then .npz
+        candidates = [pt_path, path, path.with_suffix(".npz")]
+        found = next((p for p in candidates if p.exists()), None)
+        if found is None:
             LOG.warning("[DDQN] Weight file not found: %s", filepath)
             return
 
-        data = np.load(filepath)
+        if found.suffix in (".pt", ".pth"):
+            ckpt = torch.load(found, map_location=self.device, weights_only=True)
+            self.online.load_state_dict(ckpt["online"])
+            self.target.load_state_dict(ckpt["target"])
+            if "optimizer" in ckpt:
+                try:
+                    self.optimizer.load_state_dict(ckpt["optimizer"])
+                except Exception as exc:
+                    LOG.warning("[DDQN] Skipping optimizer state load (shape mismatch?): %s", exc)
+            self.training_steps = int(ckpt.get("training_steps", 0))
+            LOG.info("[DDQN] Loaded %s (step %d)", found, self.training_steps)
+        else:
+            self._load_npz(found)
 
-        self.w1 = data["w1"]
-        self.b1 = data["b1"]
-        self.w2 = data["w2"]
-        self.b2 = data["b2"]
-        self.w3 = data["w3"]
-        self.b3 = data["b3"]
+    def _load_npz(self, path: Path):
+        """Migrate a legacy NumPy .npz checkpoint into the torch model.
 
-        self.target_w1 = data["target_w1"]
-        self.target_b1 = data["target_b1"]
-        self.target_w2 = data["target_w2"]
-        self.target_b2 = data["target_b2"]
-        self.target_w3 = data["target_w3"]
-        self.target_b3 = data["target_b3"]
+        NumPy layout: w1 (fan_in × fan_out) → torch expects (fan_out × fan_in).
+        """
+        data = np.load(path)
+        # (torch_key, npz_key, transpose?)
+        mapping = [
+            ("net.0.weight", "w1",        True),
+            ("net.0.bias",   "b1",        False),
+            ("net.2.weight", "w2",        True),
+            ("net.2.bias",   "b2",        False),
+            ("net.4.weight", "w3",        True),
+            ("net.4.bias",   "b3",        False),
+        ]
+
+        def _apply(module: _QNet, npz_prefix: str):
+            sd = module.state_dict()
+            for torch_key, npz_key, transpose in mapping:
+                arr = data[npz_prefix + npz_key]
+                t = torch.as_tensor(arr.T if transpose else arr, dtype=torch.float32)
+                sd[torch_key] = t
+            module.load_state_dict(sd)
+
+        _apply(self.online, "")
+        _apply(self.target, "target_")
 
         if "training_steps" in data:
             self.training_steps = int(data["training_steps"])
 
-        LOG.info("[DDQN] Loaded weights from %s (step %d)", filepath, self.training_steps)
+        LOG.info("[DDQN] Migrated NumPy checkpoint %s → torch (step %d)", path, self.training_steps)

@@ -18,8 +18,12 @@ The loop breaker provides interventions to restart healthy learning dynamics.
 import json
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+
+from src.constants import DEFAULT_VOLATILITY
+from src.utils.safe_utils import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +72,7 @@ class FeedbackLoopBreaker:
         self,
         # No-trade detection
         no_trade_window_bars: int = 240,  # 4 hours at 1-min bars
-        min_volatility_threshold: float = 0.005,  # 50 bps - market is moving
+        min_volatility_threshold: float = DEFAULT_VOLATILITY,  # 50 bps - market is moving
         # Circuit breaker detection
         circuit_breaker_stuck_bars: int = 120,  # 2 hours
         # Performance decay detection
@@ -94,10 +98,10 @@ class FeedbackLoopBreaker:
         self.bars_since_trade = 0
         self.bars_since_circuit_breaker_trip = 0
         self.circuit_breaker_tripped = False
-        self.recent_volatilities: list[float] = []
-        self.recent_sharpes: list[float] = []
-        self.recent_win_rates: list[float] = []
-        self.recent_action_entropies: list[float] = []
+        self.recent_volatilities: deque[float] = deque(maxlen=no_trade_window_bars)
+        self.recent_sharpes: deque[float] = deque(maxlen=_PERF_SNAPSHOT_WINDOW)
+        self.recent_win_rates: deque[float] = deque(maxlen=_PERF_SNAPSHOT_WINDOW)
+        self.recent_action_entropies: deque[float] = deque(maxlen=_ENTROPY_WINDOW)
         self.bars_since_intervention = 999999  # Large number initially
 
         # Intervention history
@@ -109,13 +113,14 @@ class FeedbackLoopBreaker:
     # ── Rolling-window helpers ────────────────────────────────────────────────
 
     @staticmethod
-    def _bounded_append(lst: list, value: float, max_len: int) -> None:
-        """Append to a bounded list, dropping the oldest entry when at capacity."""
+    def _bounded_append(lst: list | deque, value: float, max_len: int) -> None:
+        """Append to a bounded collection, dropping the oldest entry when at capacity."""
         lst.append(value)
-        if len(lst) > max_len:
+        # If using a plain list, trim; deque(maxlen=...) handles it automatically
+        if isinstance(lst, list) and len(lst) > max_len:
             lst.pop(0)
 
-    def _append_optional(self, lst: list, value: float | None, max_len: int) -> None:
+    def _append_optional(self, lst: list | deque, value: float | None, max_len: int) -> None:
         """Append to a bounded list only when *value* is not None."""
         if value is not None:
             self._bounded_append(lst, value, max_len)
@@ -217,8 +222,9 @@ class FeedbackLoopBreaker:
             return None  # Not enough history
 
         # Check for declining trend in Sharpe
-        early_sharpe = sum(self.recent_sharpes[:3]) / 3
-        recent_sharpe = sum(self.recent_sharpes[-3:]) / 3
+        sharpes = list(self.recent_sharpes)
+        early_sharpe = sum(sharpes[:3]) / 3
+        recent_sharpe = sum(sharpes[-3:]) / 3
 
         if early_sharpe <= 0:
             return None  # Was already bad
@@ -343,16 +349,14 @@ class FeedbackLoopBreaker:
             "bars_since_circuit_breaker_trip": self.bars_since_circuit_breaker_trip,
             "circuit_breaker_tripped": self.circuit_breaker_tripped,
             "bars_since_intervention": self.bars_since_intervention,
-            "recent_volatilities": self.recent_volatilities,
-            "recent_sharpes": self.recent_sharpes,
-            "recent_win_rates": self.recent_win_rates,
-            "recent_action_entropies": self.recent_action_entropies,
+            "recent_volatilities": list(self.recent_volatilities),
+            "recent_sharpes": list(self.recent_sharpes),
+            "recent_win_rates": list(self.recent_win_rates),
+            "recent_action_entropies": list(self.recent_action_entropies),
             "interventions": self.interventions[-100:],  # Keep last 100
         }
 
-        self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.state_file, "w") as f:
-            json.dump(state, f, indent=2)
+        save_json_atomic(self.state_file, state)
 
     def load_state(self) -> bool:
         """Load state from disk."""
@@ -360,17 +364,17 @@ class FeedbackLoopBreaker:
             return False
 
         try:
-            with open(self.state_file) as f:
+            with open(self.state_file, encoding="utf-8") as f:
                 state = json.load(f)
 
             self.bars_since_trade = state.get("bars_since_trade", 0)
             self.bars_since_circuit_breaker_trip = state.get("bars_since_circuit_breaker_trip", 0)
             self.circuit_breaker_tripped = state.get("circuit_breaker_tripped", False)
             self.bars_since_intervention = state.get("bars_since_intervention", 999999)
-            self.recent_volatilities = state.get("recent_volatilities", [])
-            self.recent_sharpes = state.get("recent_sharpes", [])
-            self.recent_win_rates = state.get("recent_win_rates", [])
-            self.recent_action_entropies = state.get("recent_action_entropies", [])
+            self.recent_volatilities = deque(state.get("recent_volatilities", []), maxlen=self.no_trade_window_bars)
+            self.recent_sharpes = deque(state.get("recent_sharpes", []), maxlen=_PERF_SNAPSHOT_WINDOW)
+            self.recent_win_rates = deque(state.get("recent_win_rates", []), maxlen=_PERF_SNAPSHOT_WINDOW)
+            self.recent_action_entropies = deque(state.get("recent_action_entropies", []), maxlen=_ENTROPY_WINDOW)
             self.interventions = state.get("interventions", [])
 
             logger.info(f"Loaded FeedbackLoopBreaker state from {self.state_file}")
@@ -410,7 +414,7 @@ if __name__ == "__main__":
     for i in range(150):
         signal = breaker2.update(
             bars_since_last_trade=i,
-            current_volatility=0.005,
+            current_volatility=DEFAULT_VOLATILITY,
             circuit_breakers_tripped=True,  # Stuck
         )
         if signal and signal.loop_type == "circuit_breaker":
@@ -427,7 +431,7 @@ if __name__ == "__main__":
     for i, sharpe in enumerate(sharpes):
         signal = breaker3.update(
             bars_since_last_trade=10,
-            current_volatility=0.005,
+            current_volatility=DEFAULT_VOLATILITY,
             circuit_breakers_tripped=False,
             recent_sharpe=sharpe,
         )
@@ -444,7 +448,7 @@ if __name__ == "__main__":
     for i in range(100):
         signal = breaker4.update(
             bars_since_last_trade=10,
-            current_volatility=0.005,
+            current_volatility=DEFAULT_VOLATILITY,
             circuit_breakers_tripped=False,
             action_entropy=0.05,  # Very low
             exploration_rate=0.01,  # Very low
@@ -478,7 +482,8 @@ if __name__ == "__main__":
     print("\nTest 6: State persistence")
     import tempfile
 
-    temp_file = Path(tempfile.mktemp(suffix=".json"))
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".json") as tmp:
+        temp_file = Path(tmp.name)
     breaker6 = FeedbackLoopBreaker(state_file=temp_file)
     breaker6.update(
         bars_since_last_trade=100,

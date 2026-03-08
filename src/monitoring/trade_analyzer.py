@@ -70,10 +70,32 @@ class TradeAnalyzer:
 
     def get_summary_stats(self) -> dict:
         """Get comprehensive summary statistics."""
+        total_trades, wins, losses = self._split_trades()
+        pnl_stats = self._calc_pnl_stats(total_trades, wins, losses)
+        risk_stats = self._calc_risk_metrics()
+        drawdown_stats = self._calc_drawdown_stats()
+        streak_stats = self._calc_streaks()
+        mfe_stats = self._calc_mfe_mae_stats()
+        duration_stats = self._calc_duration_stats()
+
+        return {
+            **pnl_stats,
+            **risk_stats,
+            **drawdown_stats,
+            **streak_stats,
+            **mfe_stats,
+            **duration_stats,
+            "first_trade": self.df["entry_time"].min(),
+            "last_trade": self.df["entry_time"].max(),
+        }
+
+    def _split_trades(self) -> tuple[int, pd.DataFrame, pd.DataFrame]:
         total_trades = len(self.df)
         wins = self.df[self.df["is_win"]]
         losses = self.df[~self.df["is_win"]]
+        return total_trades, wins, losses
 
+    def _calc_pnl_stats(self, total_trades: int, wins: pd.DataFrame, losses: pd.DataFrame) -> dict:
         total_pnl = self.df["pnl"].sum()
         win_rate = len(wins) / total_trades if total_trades > 0 else 0
 
@@ -84,39 +106,8 @@ class TradeAnalyzer:
         gross_loss = abs(losses["pnl"].sum()) if len(losses) > 0 else 0
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
 
-        # Risk-adjusted metrics
         returns = self.df["pnl"].values
-        sharpe = (returns.mean() / (returns.std() + 1e-8)) * np.sqrt(252) if len(returns) > 1 else 0
-
-        downside_returns = returns[returns < 0]
-        sortino = (returns.mean() / (downside_returns.std() + 1e-8)) * np.sqrt(252) if len(downside_returns) > 1 else 0
-
-        # Drawdown metrics
-        max_dd = self.df["drawdown"].min()
-        max_dd_pct = self.df["drawdown_pct"].min()
-
-        # Consecutive trades
-        self.df["win_streak"] = (self.df["is_win"] != self.df["is_win"].shift()).cumsum()
-        win_streaks = self.df[self.df["is_win"]].groupby("win_streak").size()
-        loss_streaks = self.df[~self.df["is_win"]].groupby("win_streak").size()
-
-        max_win_streak = win_streaks.max() if len(win_streaks) > 0 else 0
-        max_loss_streak = loss_streaks.max() if len(loss_streaks) > 0 else 0
-
-        # MFE/MAE analysis
-        if "mfe" in self.df.columns and "mae" in self.df.columns:
-            avg_mfe = self.df["mfe"].mean()
-            avg_mae = self.df["mae"].mean()
-            avg_capture = self.df["capture_efficiency"].mean() if "capture_efficiency" in self.df.columns else 0
-        else:
-            avg_mfe = avg_mae = avg_capture = None
-
-        # Duration analysis
-        if "duration_seconds" in self.df.columns:
-            avg_duration = self.df["duration_seconds"].mean()
-            median_duration = self.df["duration_seconds"].median()
-        else:
-            avg_duration = median_duration = None
+        expectancy = returns.mean() if len(returns) > 0 else 0
 
         return {
             "total_trades": total_trades,
@@ -127,20 +118,70 @@ class TradeAnalyzer:
             "avg_win": avg_win,
             "avg_loss": avg_loss,
             "profit_factor": profit_factor,
-            "expectancy": returns.mean() if len(returns) > 0 else 0,
+            "expectancy": expectancy,
+        }
+
+    def _calc_risk_metrics(self) -> dict:
+        returns = self.df["pnl"].values
+        if len(returns) > 1:
+            sharpe = (returns.mean() / (returns.std() + 1e-8)) * np.sqrt(252)
+        else:
+            sharpe = 0
+
+        downside_returns = returns[returns < 0]
+        if len(downside_returns) > 1:
+            sortino = (returns.mean() / (downside_returns.std() + 1e-8)) * np.sqrt(252)
+        else:
+            sortino = 0
+
+        return {
             "sharpe_ratio": sharpe,
             "sortino_ratio": sortino,
-            "max_drawdown": max_dd,
-            "max_drawdown_pct": max_dd_pct,
+        }
+
+    def _calc_drawdown_stats(self) -> dict:
+        return {
+            "max_drawdown": self.df["drawdown"].min(),
+            "max_drawdown_pct": self.df["drawdown_pct"].min(),
+        }
+
+    def _calc_streaks(self) -> dict:
+        self.df["win_streak"] = (self.df["is_win"] != self.df["is_win"].shift()).cumsum()
+        win_streaks = self.df[self.df["is_win"]].groupby("win_streak").size()
+        loss_streaks = self.df[~self.df["is_win"]].groupby("win_streak").size()
+
+        max_win_streak = win_streaks.max() if len(win_streaks) > 0 else 0
+        max_loss_streak = loss_streaks.max() if len(loss_streaks) > 0 else 0
+
+        return {
             "max_win_streak": max_win_streak,
             "max_loss_streak": max_loss_streak,
+        }
+
+    def _calc_mfe_mae_stats(self) -> dict:
+        if "mfe" in self.df.columns and "mae" in self.df.columns:
+            avg_mfe = self.df["mfe"].mean()
+            avg_mae = self.df["mae"].mean()
+            avg_capture = self.df["capture_efficiency"].mean() if "capture_efficiency" in self.df.columns else 0
+        else:
+            avg_mfe = avg_mae = avg_capture = None
+
+        return {
             "avg_mfe": avg_mfe,
             "avg_mae": avg_mae,
             "avg_capture_efficiency": avg_capture,
+        }
+
+    def _calc_duration_stats(self) -> dict:
+        if "duration_seconds" in self.df.columns:
+            avg_duration = self.df["duration_seconds"].mean()
+            median_duration = self.df["duration_seconds"].median()
+        else:
+            avg_duration = median_duration = None
+
+        return {
             "avg_duration_seconds": avg_duration,
             "median_duration_seconds": median_duration,
-            "first_trade": self.df["entry_time"].min(),
-            "last_trade": self.df["entry_time"].max(),
         }
 
     def analyze_by_hour(self) -> pd.DataFrame:

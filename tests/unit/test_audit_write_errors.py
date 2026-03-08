@@ -36,6 +36,7 @@ class TestDecisionLoggerWriteError:
         logger.log_file = Path("/dev/null/impossible/path/decision.jsonl")
         logger.lock = threading.Lock()
         logger.session_id = "test_session"
+        logger.trading_mode = "paper"
 
         # Should not raise, error is caught and logged
         logger.log_decision(
@@ -57,6 +58,7 @@ class TestDecisionLoggerWriteError:
         logger.log_file = log_file
         logger.lock = threading.Lock()
         logger.session_id = "test_session"
+        logger.trading_mode = "paper"
 
         # Make directory read-only
         os.chmod(log_dir, 0o444)

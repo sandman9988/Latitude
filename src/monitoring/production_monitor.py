@@ -287,9 +287,9 @@ class ProductionMonitor:
             "updated_at": time.time(),
         }
 
-        self.metrics_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.metrics_file, "w") as f:
-            json.dump(data, f, indent=2)
+        from src.utils.safe_utils import save_json_atomic  # noqa: PLC0415
+
+        save_json_atomic(self.metrics_file, data)
 
     def get_metrics_json(self) -> str:
         """Get metrics as JSON string."""

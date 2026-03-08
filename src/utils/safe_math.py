@@ -363,3 +363,29 @@ def safe_array_operation(arr: np.ndarray, operation: str, default: float = 0.0) 
         return result if SafeMath.is_valid(result) else default
     except Exception:
         return default
+
+
+# ── Rolling statistics (shared by ctrader_ddqn_paper, dual_policy) ────────
+
+def rolling_mean(x: np.ndarray, n: int) -> np.ndarray:
+    """Simple rolling mean; positions with fewer than *n* samples are NaN."""
+    out = np.full_like(x, np.nan, dtype=np.float64)
+    if len(x) >= n:
+        cs = np.cumsum(np.insert(x, 0, 0.0))
+        out[n - 1:] = (cs[n:] - cs[:-n]) / n
+    return out
+
+
+def rolling_std(x: np.ndarray, n: int) -> np.ndarray:
+    """Simple rolling standard deviation; positions with fewer than *n* samples are NaN."""
+    out = np.full_like(x, np.nan, dtype=np.float64)
+    if len(x) >= n:
+        for i in range(n - 1, len(x)):
+            out[i] = np.std(x[i - n + 1: i + 1])
+    return out
+
+
+def softmax(x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+    """Softmax with temperature for confidence calculation."""
+    exp_x = np.exp((x - np.max(x)) / temperature)
+    return exp_x / exp_x.sum()

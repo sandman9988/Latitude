@@ -173,7 +173,7 @@ def test_hud_features():
     import pytest
 
     try:
-        from hud_tabbed import TabbedHUD
+        from src.monitoring.hud_tabbed import TabbedHUD
     except ImportError:
         pytest.skip("hud_tabbed module not available")
 
@@ -217,18 +217,18 @@ def test_hud_features():
     # Test 3: Tab configuration
     tests_total += 1
     try:
-        if len(hud.TABS) == 6 and "6" in hud.TABS and hud.TABS["6"] == "log":
-            print("  ✅ Tab 6 (Decision Log) configured")
+        if len(hud.TABS) == 7 and "6" in hud.TABS and hud.TABS["6"] == "log" and hud.TABS["7"] == "trades":
+            print("  ✅ Tab 6 (Decision Log) + Tab 7 (Trades) configured")
             tests_passed += 1
         else:
-            print("  ❌ Tab 6 configuration incorrect")
+            print("  ❌ Tab 6/7 configuration incorrect")
     except Exception as e:
         print(f"  ❌ Tab configuration error: {e}")
 
     # Test 4: Tab order
     tests_total += 1
     try:
-        expected_order = ["overview", "performance", "training", "risk", "market", "log"]
+        expected_order = ["overview", "performance", "training", "risk", "market", "log", "trades"]
         if hud.TAB_ORDER == expected_order:
             print("  ✅ Tab order correct")
             tests_passed += 1

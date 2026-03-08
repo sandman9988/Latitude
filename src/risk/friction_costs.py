@@ -15,12 +15,13 @@ real-time friction estimates for position sizing and reward calculations.
 """
 
 import logging
+import math
 import statistics
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
+from typing import Final, TypedDict
 
 from src.persistence.learned_parameters import LearnedParametersManager
 
@@ -88,6 +89,18 @@ class SymbolCosts:
     last_updated: datetime | None = None
 
 
+class FrictionBreakdown(TypedDict):
+    spread: float
+    commission: float
+    swap: float
+    slippage: float
+    total: float
+    total_pips: float
+    quantity: float
+    side: str
+    price: float
+
+
 class SpreadTracker:
     """
     Track real-time spreads to model spread patterns.
@@ -108,7 +121,6 @@ class SpreadTracker:
 
     def update(self, bid: float, ask: float, pip_size: float = 1.0):
         """Record a new bid/ask spread with defensive validation."""
-        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not all(isinstance(x, (int, float)) for x in (bid, ask, pip_size)):
@@ -159,8 +171,6 @@ class SpreadTracker:
         try:
             avg = statistics.mean(self.spreads)
             # Defensive: Validate result
-            import math  # noqa: PLC0415
-
             if not math.isfinite(avg) or avg < 0:
                 return 0.0
             return avg
@@ -216,7 +226,6 @@ class SpreadTracker:
         Returns:
             Maximum acceptable spread in pips based on learned behavior
         """
-        import math  # noqa: PLC0415
 
         min_spread = self.get_min_spread()
 
@@ -284,7 +293,6 @@ class SlippageModel:
         Returns:
             Expected slippage in pips
         """
-        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not isinstance(quantity, (int, float)):
@@ -479,7 +487,6 @@ class FrictionCalculator:
         Returns:
             Normalized quantity conforming to min/max/step constraints
         """
-        import math  # noqa: PLC0415
 
         # Defensive: Handle invalid input
         if not math.isfinite(quantity) or quantity <= 0:
@@ -515,7 +522,6 @@ class FrictionCalculator:
         Returns:
             Price rounded to instrument's tick_size/digits precision
         """
-        import math  # noqa: PLC0415
 
         # Defensive: Handle invalid input
         if not math.isfinite(price) or price <= 0:
@@ -601,13 +607,13 @@ class FrictionCalculator:
     def _refresh_derived_costs(self) -> None:
         """Derive tick/pip relationships from provided symbol info to avoid hardcoded values."""
         # Derive tick size from digits if provided
-        if self.costs.digits is not None and self.costs.digits > 0:
-            try:
+        try:
+            if self.costs.digits is not None and self.costs.digits > 0:
                 self.costs.tick_size = 10 ** (-int(self.costs.digits))
                 # For FX/CFD style quoting, pip is often the minimum tick
                 self.costs.pip_size = self.costs.tick_size
-            except Exception:
-                pass
+        except (TypeError, ValueError, OverflowError) as exc:
+            LOG.warning("[FRICTION] Failed to derive tick_size from digits=%r: %s", self.costs.digits, exc)
 
         # Derive pip value from contract size when available
         contract_size = getattr(self.costs, "contract_size", 0)
@@ -630,7 +636,6 @@ class FrictionCalculator:
         Returns:
             Inferred number of decimal places
         """
-        import math  # noqa: PLC0415
 
         if not math.isfinite(price) or price <= 0:
             return 2  # Default
@@ -647,7 +652,9 @@ class FrictionCalculator:
         if price > _DIGITS_PRICE_HIGH:  # BTC, indices like NAS100
             return min(_DIGITS_HIGH_MAX, observed_digits)
         elif price > _DIGITS_PRICE_LOW:  # Gold, JPY crosses, indices
-            return min(_DIGITS_HIGH_MAX, observed_digits) if price > _DIGITS_PRICE_MEDIUM else min(_DIGITS_LOW_MAX, observed_digits)
+            if price > _DIGITS_PRICE_MEDIUM:
+                return min(_DIGITS_HIGH_MAX, observed_digits)
+            return min(_DIGITS_LOW_MAX, observed_digits)
         elif price > _DIGITS_PRICE_FLOOR:  # JPY pairs
             return min(_DIGITS_LOW_MAX, observed_digits)
         else:  # Standard forex pairs (EURUSD, GBPUSD)
@@ -690,7 +697,6 @@ class FrictionCalculator:
         Returns:
             Spread cost in USD
         """
-        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not isinstance(quantity, (int, float)):
@@ -736,7 +742,6 @@ class FrictionCalculator:
         Returns:
             Commission in USD
         """
-        import math  # noqa: PLC0415
 
         # Defensive: Validate inputs
         if not all(isinstance(x, (int, float)) for x in (quantity, price)):
@@ -885,7 +890,7 @@ class FrictionCalculator:
         holding_days: float = 1.0,
         volatility_factor: float = 1.0,
         crosses_rollover: bool = False,
-    ) -> dict[str, float]:
+    ) -> FrictionBreakdown:
         """
         Calculate all friction costs for a trade.
 
@@ -995,7 +1000,6 @@ class FrictionCalculator:
         Returns:
             Tuple of (is_acceptable, current_spread, max_acceptable)
         """
-        import math  # noqa: PLC0415
 
         self._load_learned_parameters()
         effective_multiplier = multiplier if multiplier is not None else self.spread_multiplier

@@ -74,7 +74,7 @@ class TradeExporter:
         ]
 
         # Write CSV
-        with open(filepath, "w", newline="") as csvfile:
+        with open(filepath, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
 
@@ -179,7 +179,7 @@ class TradeExporter:
         filepath = self.output_dir / filename
 
         # Write summary as key-value pairs
-        with open(filepath, "w", newline="") as csvfile:
+        with open(filepath, "w", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
             writer.writerow(["Metric", "Value"])
 

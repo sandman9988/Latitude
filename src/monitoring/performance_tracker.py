@@ -70,6 +70,8 @@ class PerformanceTracker:
         self.total_pnl = 0.0
         self.total_winner_pnl = 0.0
         self.total_loser_pnl = 0.0
+        self.best_trade: float = 0.0   # most profitable single trade
+        self.worst_trade: float = 0.0  # least profitable single trade
 
         # Drawdown tracking
         self.peak_equity = self.initial_equity
@@ -110,6 +112,11 @@ class PerformanceTracker:
 
         self._update_win_loss_streaks(pnl > 0, pnl)
         self._update_drawdown()
+        # Track best / worst single trade
+        if self.total_trades == 1 or pnl > self.best_trade:
+            self.best_trade = pnl
+        if self.total_trades == 1 or pnl < self.worst_trade:
+            self.worst_trade = pnl
 
         # Store trade record (Phase 3.3: Extended with dual-agent metrics)
         self.trades.append(
@@ -234,6 +241,8 @@ class PerformanceTracker:
             "max_consecutive_wins": self.max_consecutive_wins,
             "max_consecutive_losses": self.max_consecutive_losses,
             "winner_to_loser_count": wtl_count,
+            "best_trade": self.best_trade,
+            "worst_trade": self.worst_trade,
         }
 
     def _calculate_sharpe(self, risk_free_rate: float = 0.0) -> float:
@@ -329,6 +338,8 @@ class PerformanceTracker:
             "max_consecutive_wins": 0,
             "max_consecutive_losses": 0,
             "winner_to_loser_count": 0,
+            "best_trade": 0.0,
+            "worst_trade": 0.0,
         }
 
     def print_dashboard(self) -> str:

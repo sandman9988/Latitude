@@ -341,9 +341,10 @@ def _chk_risk_metrics() -> tuple[Sev, str]:
         return Sev.INFO, "not found — will be written after first bar"
     try:
         data = json.loads(p.read_text())
-        var  = data.get("var_95", 0)
+        var  = data.get("var", 0)
         vol  = data.get("realized_vol", 0)
-        age  = time.time() - (data.get("timestamp") or 0)
+        # Use file mtime for freshness — the JSON has no timestamp field
+        age  = time.time() - p.stat().st_mtime
         return Sev.PASS if age < _STALE_DAY_SECS else Sev.WARNING, (
             f"VaR={var:.4f} vol={vol:.4f} age={age/3600:.1f}h"
             + (" (stale)" if age >= _STALE_DAY_SECS else "")

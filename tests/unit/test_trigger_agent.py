@@ -114,9 +114,15 @@ class TestTriggerDecide:
         ta = TriggerAgent(window=64, n_features=7)
         ta.epsilon = 1.0  # Force exploration
         state = np.zeros((64, 7), dtype=np.float32)
-        action, conf, runway = ta.decide(state, current_position=0)
-        assert action in [1, 2]  # Random LONG or SHORT (excludes 0)
-        assert conf == pytest.approx(0.5)
+        # Run many trials — exploration now includes NO_ENTRY (0) with 50% weight
+        # so all three actions (0=NO_ENTRY, 1=LONG, 2=SHORT) are valid
+        seen_actions = set()
+        for _ in range(100):
+            action, conf, runway = ta.decide(state, current_position=0)
+            assert action in [0, 1, 2], f"Unexpected action {action}"
+            seen_actions.add(action)
+        # With 100 trials and weights [2,1,1] we should see all 3 actions
+        assert seen_actions == {0, 1, 2}, f"Expected all actions explored, got {seen_actions}"
 
     def test_decide_resets_bars_since_trade_when_in_position(self):
         ta = TriggerAgent(window=64, n_features=7)

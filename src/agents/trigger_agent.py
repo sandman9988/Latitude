@@ -22,15 +22,25 @@ Phase 3.5: Online Learning
 """
 
 import logging
-import math
 import os
 import random
+from typing import NamedTuple
 
 import numpy as np
 
+from src.agents.agent_training_mixin import AgentTrainingMixin, softmax
+from src.constants import (
+    GAMMA,
+    GRAD_CLIP_NORM,
+    L2_WEIGHT,
+    LEARNING_RATE,
+    STATE_WINDOW_SIZE,
+    TAU,
+    TRIGGER_BUFFER_CAPACITY,
+)
 from src.core.ddqn_network import DDQNNetwork
 from src.persistence.learned_parameters import LearnedParametersManager
-from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
+from src.utils.experience_buffer import ExperienceBuffer
 
 LOG = logging.getLogger(__name__)
 
@@ -46,17 +56,22 @@ LIVE_BASE_THRESHOLD = 0.3
 _UTILIZATION_BAD_THRESHOLD: float = 0.3   # utilization below this is a bad entry
 _UTILIZATION_OUTLIER_LOW: float = 0.2     # below this is an outlier (too poor)
 _UTILIZATION_OUTLIER_HIGH: float = 2.0    # above this is an outlier (excessive)
-_TRAINING_LOG_PERIOD: int = 100           # steps before switching to reduced log frequency
 PREDICTED_RUNWAY_FALLBACK = 0.0015
 Q_RUNWAY_MIN = 0.0010
 Q_RUNWAY_MAX = 0.0050
 Q_RUNWAY_MAX_Q = 3.0
-TD_ERROR_CAP = 10.0
 FALLBACK_VOL_SCALE_QUIET: float = 0.70  # Runway scale during below-average volatility
 FALLBACK_VOL_SCALE_HOT: float = 1.50    # Runway scale during above-average volatility
 
 
-class TriggerAgent:
+class _EconomicsGateParams(NamedTuple):
+    expected_gain: float
+    expected_loss: float
+    friction_cost: float
+    breakeven_prob: float
+
+
+class TriggerAgent(AgentTrainingMixin):
     """
     Entry specialist agent - decides WHEN and WHICH DIRECTION to enter.
 
@@ -82,9 +97,11 @@ class TriggerAgent:
         - predicted_runway: Expected MFE in price units
     """
 
+    _AGENT_TAG = "TRIGGER"
+
     def __init__(  # noqa: PLR0913
         self,
-        window: int = 64,
+        window: int = STATE_WINDOW_SIZE,
         n_features: int = 7,
         enable_training: bool = False,
         symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
@@ -92,7 +109,7 @@ class TriggerAgent:
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
         timeframe_minutes: int = 5,
-        buffer_capacity: int = 2_000,
+        buffer_capacity: int = TRIGGER_BUFFER_CAPACITY,
     ):
         """
         Initialize Trigger Agent.
@@ -143,11 +160,11 @@ class TriggerAgent:
             DDQNNetwork(
                 state_dim=window * n_features,  # Flattened state vector
                 n_actions=3,  # three actions: NO_ENTRY, LONG, SHORT
-                learning_rate=0.0005,
-                gamma=0.99,
-                tau=0.005,
-                l2_weight=0.0001,
-                grad_clip_norm=1.0,
+                learning_rate=LEARNING_RATE,
+                gamma=GAMMA,
+                tau=TAU,
+                l2_weight=L2_WEIGHT,
+                grad_clip_norm=GRAD_CLIP_NORM,
             )
             if enable_training
             else None
@@ -177,7 +194,7 @@ class TriggerAgent:
         # Log consolidated initialization
         mode_str = "TRAINING" if (self.disable_gates or self.paper_mode) else "LIVE"
         training_str = f"online_learn={enable_training}" if enable_training else "no_training"
-        LOG.info("[TRIGGER] Init: %s ε=%.2f→%.2f decay=%.3f | %s",
+        LOG.info("[TRIGGER] Init: %s ε=%.2f→%.2f decay=%.4f | %s",
             mode_str, self.epsilon, self.epsilon_end, self.epsilon_decay, training_str)
 
         # Try to load model if path specified
@@ -218,40 +235,22 @@ class TriggerAgent:
         """Load PyTorch DDQN model for trigger agent."""
         try:
             import torch  # noqa: PLC0415
-            from torch import nn  # noqa: PLC0415
 
-            class TriggerQNet(nn.Module):
-                """Q-Network for trigger agent (entry specialist)."""
-
-                def __init__(self, window: int, n_features: int, n_actions: int = 3):
-                    super().__init__()
-                    self.net = nn.Sequential(
-                        nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
-                        nn.ReLU(),
-                        nn.Conv1d(64, 64, kernel_size=5, padding=2),
-                        nn.ReLU(),
-                        nn.AdaptiveAvgPool1d(1),
-                        nn.Flatten(),
-                        nn.Linear(64, 128),
-                        nn.ReLU(),
-                        nn.Linear(128, n_actions),
-                    )
-
-                def forward(self, x):
-                    # x: (B,T,F) -> (B,F,T)
-                    return self.net(x.transpose(1, 2))
+            from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
 
             self.torch = torch
-            self.model = TriggerQNet(window=self.window, n_features=self.n_features, n_actions=3)
-            self.model.load_state_dict(torch.load(model_path, map_location="cpu"))
+            # Saved weights were trained with pool-to-1 architecture; use
+            # temporal_pool_size=1 here so load_state_dict succeeds.
+            self.model = Conv1dQNet(n_features=self.n_features, n_actions=3, temporal_pool_size=1)
+            self.model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
             self.model.eval()
             self.use_torch = True
             LOG.info("[TRIGGER] Loaded DDQN model: %s", model_path)
-        except Exception as e:
+        except (OSError, ImportError, RuntimeError) as e:
             LOG.warning("[TRIGGER] Failed to load model: %s. Using fallback.", e)
             self.use_torch = False
 
-    def _try_training_decision(self, state: np.ndarray) -> tuple[int, float, float] | None:
+    def _try_training_decision(self) -> tuple[int, float, float] | None:
         """
         Attempt an epsilon-greedy or forced-exploration decision (training / paper mode).
 
@@ -259,16 +258,21 @@ class TriggerAgent:
         the caller should continue to the live-mode logic.
         """
         # Epsilon-greedy: randomly explore with probability ε
+        # Include NO_ENTRY (action=0) with 50% weight so the agent learns when
+        # NOT to enter — without this, exploration never discovers staying flat
+        # and the replay buffer is 100% entry samples (severe class imbalance).
         if random.random() < self.epsilon:
-            action = random.choice([1, 2])
+            action = random.choices([0, 1, 2], weights=[2, 1, 1])[0]
             LOG.info(
                 "[TRIGGER] EXPLORE: random action=%d (ε=%.3f, bars_flat=%d)",
                 action, self.epsilon, self.bars_since_trade,
             )
             self._decay_epsilon()
-            self.bars_since_trade = 0
-            self.last_state = state.copy()
+            if action != 0:
+                self.bars_since_trade = 0
             self.last_action = action
+            if action == 0:
+                return 0, 0.0, 0.0
             return action, 0.5, PREDICTED_RUNWAY_FALLBACK
 
         # Forced entry when idle for too many bars
@@ -276,7 +280,6 @@ class TriggerAgent:
             action = random.choice([1, 2])
             LOG.info("[TRIGGER] FORCED ENTRY after %d bars flat: action=%d", self.bars_since_trade, action)
             self.bars_since_trade = 0
-            self.last_state = state.copy()
             self.last_action = action
             return action, 0.5, PREDICTED_RUNWAY_FALLBACK
 
@@ -303,7 +306,6 @@ class TriggerAgent:
             if action == 0:
                 return 0, 0.0, 0.0
 
-        self.last_state = state.copy()
         self.last_action = action
 
         if not self.paper_mode and confidence < self.confidence_floor:
@@ -343,44 +345,84 @@ class TriggerAgent:
         """
         self.bars_since_trade += 1
 
-        if current_position != 0:
+        # Always record the state we see — needed for experience replay
+        # regardless of which gate or decision path fires.
+        self.last_state = state.copy()
+        LOG.debug(
+            "[TRIGGER-DIAG] decide() called: state_shape=%s, setting last_state for experience buffers",
+            state.shape if hasattr(state, 'shape') else 'unknown',
+        )
+
+        if self._should_block_for_position(current_position):
             self.bars_since_trade = 0
-            return 0, 0.0, 0.0  # NO_ENTRY
+            return 0, 0.0, 0.0
 
-        # TRAINING MODE: epsilon-greedy / forced-exploration (no gates applied)
-        if self.paper_mode or self.disable_gates:
-            result = self._try_training_decision(state)
-            if result is not None:
-                return result
+        result = self._maybe_training_decision()
+        if result is not None:
+            return result
 
-        # LIVE MODE: feasibility gate
-        if not self.disable_gates and feasibility < self.feasibility_threshold:
-            LOG.debug("[TRIGGER] BLOCKED by feasibility gate: %.3f < %.3f", feasibility, self.feasibility_threshold)
-            return 0, 0.0, 0.0  # NO_ENTRY
+        if self._feasibility_gate_blocked(feasibility):
+            return 0, 0.0, 0.0
 
-        if not self.use_torch:
+        if not self._use_torch_inference():
             return self._decide_numpy_path(state, regime_threshold_adj, friction_cost)
 
-        # Model-based (PyTorch) decision
-        with self.torch.no_grad():
-            t = self.torch.from_numpy(state).unsqueeze(0).float()
-            q_values = self.model(t).squeeze(0).numpy()
+        return self._decide_torch_path(state, expected_gain, expected_loss, friction_cost)
+
+    def _should_block_for_position(self, current_position: int) -> bool:
+        """Return True if a position is already open."""
+        return current_position != 0
+
+    def _maybe_training_decision(self) -> tuple[int, float, float] | None:
+        """Return a training-mode decision when applicable."""
+        if self.paper_mode or self.disable_gates:
+            return self._try_training_decision()
+        return None
+
+    def _feasibility_gate_blocked(self, feasibility: float) -> bool:
+        """Return True if the feasibility gate blocks entry."""
+        if self.disable_gates or feasibility >= self.feasibility_threshold:
+            return False
+        LOG.debug("[TRIGGER] BLOCKED by feasibility gate: %.3f < %.3f", feasibility, self.feasibility_threshold)
+        return True
+
+    def _use_torch_inference(self) -> bool:
+        """Return True when torch inference is available and enabled."""
+        return bool(self.use_torch and self.torch is not None and self.model is not None)
+
+    def _decide_torch_path(
+        self,
+        state: np.ndarray,
+        expected_gain: float,
+        expected_loss: float,
+        friction_cost: float,
+    ) -> tuple[int, float, float]:
+        """Decision path when torch inference is enabled."""
+        torch = self.torch
+        model = self.model
+        if torch is None or model is None:
+            return self._decide_numpy_path(state, 0.0, friction_cost)
+
+        with torch.no_grad():
+            t = torch.from_numpy(state).unsqueeze(0).float()
+            q_values = model(t).squeeze(0).numpy()
             action = int(q_values.argmax())
             probs = self._softmax(q_values)
             raw_prob = float(probs[action])
             calibrated_prob = self._platt_calibrate(raw_prob)
 
-            if not self.paper_mode and calibrated_prob < self.confidence_floor:
-                LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self.confidence_floor)
-                return 0, calibrated_prob, 0.0  # NO_ENTRY
+            if self._confidence_gate_blocked(calibrated_prob):
+                return 0, calibrated_prob, 0.0
 
-            breakeven_prob = (expected_loss + friction_cost) / (expected_gain + expected_loss + 1e-9)
-            if not self.paper_mode and action != 0 and calibrated_prob < breakeven_prob:
-                LOG.debug(
-                    "[TRIGGER] BLOCKED by economics: p=%.3f < breakeven=%.3f (G=%.4f, L=%.4f, K=%.4f)",
-                    calibrated_prob, breakeven_prob, expected_gain, expected_loss, friction_cost,
-                )
-                return 0, 0.0, 0.0  # NO_ENTRY
+            breakeven_prob = self._calc_breakeven_prob(expected_gain, expected_loss, friction_cost)
+            econ_params = _EconomicsGateParams(
+                expected_gain=expected_gain,
+                expected_loss=expected_loss,
+                friction_cost=friction_cost,
+                breakeven_prob=breakeven_prob,
+            )
+            if self._economics_gate_blocked(action, calibrated_prob, econ_params):
+                return 0, 0.0, 0.0
 
             q_max = q_values[action]
             gross_runway = self._q_to_runway(q_max)
@@ -394,6 +436,35 @@ class TriggerAgent:
 
             self._decay_epsilon()
             return action, calibrated_prob, predicted_runway
+
+    def _confidence_gate_blocked(self, calibrated_prob: float) -> bool:
+        """Return True if confidence floor blocks entry."""
+        if self.paper_mode or calibrated_prob >= self.confidence_floor:
+            return False
+        LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self.confidence_floor)
+        return True
+
+    def _calc_breakeven_prob(self, expected_gain: float, expected_loss: float, friction_cost: float) -> float:
+        return (expected_loss + friction_cost) / (expected_gain + expected_loss + 1e-9)
+
+    def _economics_gate_blocked(
+        self,
+        action: int,
+        calibrated_prob: float,
+        params: _EconomicsGateParams,
+    ) -> bool:
+        """Return True if economics gate blocks entry."""
+        if self.paper_mode or action == 0 or calibrated_prob >= params.breakeven_prob:
+            return False
+        LOG.debug(
+            "[TRIGGER] BLOCKED by economics: p=%.3f < breakeven=%.3f (G=%.4f, L=%.4f, K=%.4f)",
+            calibrated_prob,
+            params.breakeven_prob,
+            params.expected_gain,
+            params.expected_loss,
+            params.friction_cost,
+        )
+        return True
 
     def _decay_epsilon(self):
         """Decay epsilon for exploration schedule."""
@@ -417,21 +488,50 @@ class TriggerAgent:
         Returns:
             (action, confidence, predicted_runway)
         """
-        if not isinstance(state, np.ndarray):
-            state = np.array(state)
-
-        if state.shape[0] == 0 or state.shape[1] < MIN_FEATURE_COLS:
+        state = self._normalize_fallback_state(state)
+        if self._fallback_state_invalid(state):
             return 0, 0.0, 0.0
 
-        # Extract normalised features from the latest bar
-        ma_diff   = float(state[-1, 2])
-        ret1      = float(state[-1, 0])
-        ret5      = float(state[-1, 1])
-        vol_z     = float(state[-1, VOL_Z_INDEX]) if state.shape[1] > VOL_Z_INDEX else 0.0
-        imbalance = float(state[-1, IMBALANCE_INDEX]) if state.shape[1] > IMBALANCE_INDEX else 0.0
-        vpin_z    = float(state[-1, VPIN_Z_INDEX]) if state.shape[1] > VPIN_Z_INDEX else 0.0
+        ma_diff, ret1, ret5, vol_z, imbalance, vpin_z = self._extract_fallback_features(state)
+        adjusted_threshold, tilt = self._resolve_fallback_threshold(imbalance, regime_threshold_adj)
+        direction = self._resolve_fallback_direction(ma_diff, adjusted_threshold, tilt)
+        if direction == 0:
+            return 0, 0.0, 0.0
 
-        # Regime-adjusted threshold (same adaptive logic as before)
+        ret1_ok, ret5_ok = self._momentum_flags(direction, ret1, ret5)
+        if not (ret1_ok or ret5_ok):
+            return 0, 0.0, 0.0
+
+        if not self._vpin_allows(direction, vpin_z):
+            return 0, 0.0, 0.0
+
+        confidence = self._fallback_confidence(direction, ret1_ok, ret5_ok, vpin_z)
+        predicted_runway = self._fallback_runway(vol_z)
+        action = 1 if direction == 1 else 2
+        return action, confidence, predicted_runway
+
+    def _normalize_fallback_state(self, state: np.ndarray) -> np.ndarray:
+        """Ensure fallback state is a numpy array."""
+        if isinstance(state, np.ndarray):
+            return state
+        return np.array(state)
+
+    def _fallback_state_invalid(self, state: np.ndarray) -> bool:
+        """Return True if fallback state is missing required columns."""
+        return state.shape[0] == 0 or state.shape[1] < MIN_FEATURE_COLS
+
+    def _extract_fallback_features(self, state: np.ndarray) -> tuple[float, float, float, float, float, float]:
+        """Extract normalized features from the latest bar."""
+        ma_diff = float(state[-1, 2])
+        ret1 = float(state[-1, 0])
+        ret5 = float(state[-1, 1])
+        vol_z = float(state[-1, VOL_Z_INDEX]) if state.shape[1] > VOL_Z_INDEX else 0.0
+        imbalance = float(state[-1, IMBALANCE_INDEX]) if state.shape[1] > IMBALANCE_INDEX else 0.0
+        vpin_z = float(state[-1, VPIN_Z_INDEX]) if state.shape[1] > VPIN_Z_INDEX else 0.0
+        return ma_diff, ret1, ret5, vol_z, imbalance, vpin_z
+
+    def _resolve_fallback_threshold(self, imbalance: float, regime_threshold_adj: float) -> tuple[float, float]:
+        """Return (adjusted_threshold, tilt) for fallback decision."""
         paper_mode = os.environ.get("PAPER_MODE") == "1"
         seed_threshold = PAPER_BASE_THRESHOLD if paper_mode else LIVE_BASE_THRESHOLD
         base_threshold, _ = self._resolve_gate_value(
@@ -441,46 +541,48 @@ class TriggerAgent:
         )
         tilt = imbalance * TILT_SCALE
         adjusted_threshold = max(base_threshold * (1.0 + regime_threshold_adj), 0.0)
+        return adjusted_threshold, tilt
 
-        # Primary: MA-diff crossover
-        ma_long  = ma_diff > (adjusted_threshold - tilt)
-        ma_short = ma_diff < -(adjusted_threshold + tilt)
-
+    def _resolve_fallback_direction(self, ma_diff: float, threshold: float, tilt: float) -> int:
+        """Return 1 for LONG, -1 for SHORT, or 0 for no signal."""
+        ma_long = ma_diff > (threshold - tilt)
+        ma_short = ma_diff < -(threshold + tilt)
         if not ma_long and not ma_short:
-            return 0, 0.0, 0.0
+            return 0
+        return 1 if ma_long else -1
 
-        direction = 1 if ma_long else -1
+    def _momentum_flags(self, direction: int, ret1: float, ret5: float) -> tuple[bool, bool]:
+        """Return momentum alignment flags for ret1 and ret5."""
+        momentum_min = 0.05
+        ret1_ok = (direction == 1 and ret1 > momentum_min) or (direction == -1 and ret1 < -momentum_min)
+        ret5_ok = (direction == 1 and ret5 > momentum_min) or (direction == -1 and ret5 < -momentum_min)
+        return ret1_ok, ret5_ok
 
-        # Momentum confirmation: at least one of ret1/ret5 must align with direction.
-        # Min deviation 0.05σ filters positions where both returns are near-zero noise.
-        MOMENTUM_MIN = 0.05
-        ret1_ok = (direction == 1 and ret1 > MOMENTUM_MIN) or (direction == -1 and ret1 < -MOMENTUM_MIN)
-        ret5_ok = (direction == 1 and ret5 > MOMENTUM_MIN) or (direction == -1 and ret5 < -MOMENTUM_MIN)
+    def _vpin_allows(self, direction: int, vpin_z: float) -> bool:
+        """Return True if VPIN does not veto the fallback entry."""
+        vpin_veto = 2.0
+        return not (
+            (direction == 1 and vpin_z < -vpin_veto)
+            or (direction == -1 and vpin_z > vpin_veto)
+        )
 
-        if not (ret1_ok or ret5_ok):
-            return 0, 0.0, 0.0  # No momentum support: likely noise spike
-
-        # VPIN toxicity veto: strong opposing flow (>±2σ) blocks entry
-        VPIN_VETO = 2.0
-        if (direction == 1 and vpin_z < -VPIN_VETO) or (direction == -1 and vpin_z > VPIN_VETO):
-            return 0, 0.0, 0.0  # Opposing institutional flow: skip
-
-        # Dynamic confidence: base + bonus per confirming factor
+    def _fallback_confidence(self, direction: int, ret1_ok: bool, ret5_ok: bool, vpin_z: float) -> float:
+        """Compute fallback confidence based on confirmation factors."""
         vpin_agrees = (direction == 1 and vpin_z > 0.0) or (direction == -1 and vpin_z < 0.0)
         confidence = 0.55 + 0.10 * int(ret1_ok) + 0.10 * int(ret5_ok) + 0.05 * int(vpin_agrees)
-        confidence = min(confidence, 0.85)
+        return min(confidence, 0.85)
 
-        # Vol-scaled runway: linear interpolation QUIET(0.70)→HOT(1.50) over vol_z ∈ [-1,+1]
+    def _fallback_runway(self, vol_z: float) -> float:
+        """Compute volatility-scaled fallback runway."""
         if vol_z < -1.0:
             vol_scale = FALLBACK_VOL_SCALE_QUIET
         elif vol_z > 1.0:
             vol_scale = FALLBACK_VOL_SCALE_HOT
         else:
-            vol_scale = FALLBACK_VOL_SCALE_QUIET + (FALLBACK_VOL_SCALE_HOT - FALLBACK_VOL_SCALE_QUIET) * (vol_z + 1.0) / 2.0
-        predicted_runway = float(np.clip(PREDICTED_RUNWAY_FALLBACK * vol_scale, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
-
-        action = 1 if direction == 1 else 2
-        return action, confidence, predicted_runway
+            vol_scale = FALLBACK_VOL_SCALE_QUIET + (
+                (FALLBACK_VOL_SCALE_HOT - FALLBACK_VOL_SCALE_QUIET) * (vol_z + 1.0) / 2.0
+            )
+        return float(np.clip(PREDICTED_RUNWAY_FALLBACK * vol_scale, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
 
     def _fallback_strategy(self, state: np.ndarray, regime_threshold_adj: float = 0.0) -> int:
         """Action-only shim for backward compatibility. Delegates to _fallback_decide()."""
@@ -488,9 +590,8 @@ class TriggerAgent:
         return action
 
     def _softmax(self, x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-        """Softmax with temperature for confidence calculation."""
-        exp_x = np.exp((x - np.max(x)) / temperature)
-        return exp_x / exp_x.sum()
+        """Softmax with temperature. Delegates to shared utility."""
+        return softmax(x, temperature)
 
     def _platt_calibrate(self, raw_prob: float) -> float:
         """
@@ -586,299 +687,93 @@ class TriggerAgent:
             actual_mfe: Actual MFE achieved during trade
             predicted_runway: What trigger predicted
         """
-        if predicted_runway > 0:
-            error = actual_mfe - predicted_runway
-            error_pct = (error / predicted_runway) * 100
-            LOG.debug(
-                "[TRIGGER] Runway prediction: %.4f vs actual: %.4f (error: %.1f%%)",
-                predicted_runway,
-                actual_mfe,
-                error_pct,
+        if predicted_runway <= 0:
+            return
+        utilization = self._log_runway_error(actual_mfe, predicted_runway)
+        outcome = self._trade_outcome(actual_mfe, predicted_runway)
+        self._update_platt_from_trade(entry_confidence, outcome)
+        self._update_confidence_from_trade(utilization)
+
+    def _log_runway_error(self, actual_mfe: float, predicted_runway: float) -> float:
+        """Log runway prediction error and return utilization."""
+        error = actual_mfe - predicted_runway
+        error_pct = (error / predicted_runway) * 100
+        LOG.debug(
+            "[TRIGGER] Runway prediction: %.4f vs actual: %.4f (error: %.1f%%)",
+            predicted_runway,
+            actual_mfe,
+            error_pct,
+        )
+        return actual_mfe / predicted_runway if predicted_runway > 0 else 0.0
+
+    def _trade_outcome(self, actual_mfe: float, predicted_runway: float) -> float:
+        """Return 1.0 for success, 0.0 for failure based on runway utilization."""
+        trade_success = actual_mfe >= (predicted_runway * 0.5)
+        return 1.0 if trade_success else 0.0
+
+    def _update_platt_from_trade(self, entry_confidence: float, outcome: float) -> None:
+        """Update Platt calibration parameters from trade outcome."""
+        if not (self.enable_training and hasattr(self, "platt_a")):
+            return
+        predicted_prob = float(entry_confidence)
+        self.update_platt_params(predicted_prob, outcome)
+
+    def _update_confidence_from_trade(self, utilization: float) -> None:
+        """Update confidence_floor and related parameters using utilization."""
+        if self.param_manager is None:
+            return
+        try:
+            gradient = self._confidence_gradient_from_utilization(utilization)
+            new_floor = self.param_manager.update(
+                self.symbol,
+                "confidence_floor",
+                gradient,
+                timeframe=self.timeframe,
+                broker=self.broker,
+            )
+            self.confidence_floor = float(new_floor)
+
+            self.param_manager.update(
+                self.symbol,
+                "fallback_base_threshold",
+                gradient * 0.5,
+                timeframe=self.timeframe,
+                broker=self.broker,
             )
 
-            # Determine if trade was a success (MFE exceeded prediction)
-            # Use 50% of predicted runway as success threshold
-            trade_success = actual_mfe >= (predicted_runway * 0.5)
-            outcome = 1.0 if trade_success else 0.0
-
-            # Update Platt calibration with actual outcome
-            if self.enable_training and hasattr(self, "platt_a"):
-                # Use the last known confidence as predicted probability
-                # (Platt calibration improves over time)
-                predicted_prob = float(entry_confidence)  # Actual calibrated confidence at entry
-                self.update_platt_params(predicted_prob, outcome)
-
-            # Update confidence_floor via LearnedParameters
-            if self.param_manager is not None:
-                try:
-                    utilization = actual_mfe / predicted_runway if predicted_runway > 0 else 0.0
-                    if utilization < _UTILIZATION_BAD_THRESHOLD:
-                        # Bad entry - raise confidence floor to be more selective
-                        gradient = 0.05
-                    elif utilization > 1.0:
-                        # Great entry - can slightly lower floor to allow more trades
-                        gradient = -0.02
-                    else:
-                        # Moderate - small adjustment toward center
-                        gradient = (0.6 - utilization) * 0.03
-
-                    new_floor = self.param_manager.update(
-                        self.symbol,
-                        "confidence_floor",
-                        gradient,
-                        timeframe=self.timeframe,
-                        broker=self.broker,
-                    )
-                    self.confidence_floor = float(new_floor)
-
-                    # Update fallback_base_threshold in the same direction.
-                    # Bad entry → threshold was too permissive → raise it.
-                    # Great entry → can afford to lower it slightly.
-                    self.param_manager.update(
-                        self.symbol,
-                        "fallback_base_threshold",
-                        gradient * 0.5,  # Half the learning rate of confidence_floor
-                        timeframe=self.timeframe,
-                        broker=self.broker,
-                    )
-
-                    # Update regime_adj_scale: if utilization is very bad or
-                    # very good, it may indicate the current regime scale is
-                    # wrong (too aggressive or too timid). Pull toward a
-                    # neutral signal; leave the absolute magnitude to drift
-                    # based on regime-specific performance over time.
-                    if utilization < _UTILIZATION_OUTLIER_LOW or utilization > _UTILIZATION_OUTLIER_HIGH:
-                        # Outlier trade — soften the regime signal slightly
-                        self.param_manager.update(
-                            self.symbol,
-                            "regime_adj_scale",
-                            -0.001,  # Small nudge toward less aggressive gating
-                            timeframe=self.timeframe,
-                            broker=self.broker,
-                        )
-
-                    self.param_manager.save()
-                    LOG.debug(
-                        "[TRIGGER] Updated confidence_floor: %.3f (gradient=%.3f, utilization=%.2f)",
-                        self.confidence_floor,
-                        gradient,
-                        utilization,
-                    )
-                except Exception as exc:
-                    LOG.warning("[TRIGGER] Failed to update confidence_floor: %s", exc)
-
-    def add_experience(  # noqa: PLR0913
-        self,
-        state: np.ndarray,
-        action: int,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        regime: int = RegimeSampling.UNKNOWN,
-    ):
-        """Add experience to replay buffer.
-
-        Args:
-            state: Entry state vector
-            action: Action taken (0=NO_ENTRY, 1=LONG, 2=SHORT)
-            reward: Runway utilization reward
-            next_state: Exit state vector
-            done: Always True for trigger (trade completed)
-            regime: Current market regime
-        """
-        if not self.enable_training or self.buffer is None:
-            return
-
-        self.buffer.add(
-            state=state,
-            action=action,
-            reward=reward,
-            next_state=next_state,
-            done=done,
-            regime=regime,
-        )
-
-        LOG.debug(
-            "[TRIGGER] Experience added: action=%d, reward=%.4f, buffer_size=%d",
-            action,
-            reward,
-            self.buffer.tree.n_entries,
-        )
-
-    def train_step(self) -> dict | None:
-        """Perform one training step using prioritized experience replay.
-
-        Uses DDQNNetwork.train_batch() for actual backpropagation and weight updates.
-
-        Returns:
-            Dictionary with training metrics, or None if insufficient data
-        """
-        if not self.enable_training or self.buffer is None:
-            return None
-
-        # Check if we have enough experiences
-        if self.buffer.tree.n_entries < self.min_experiences:
-            return None
-
-        # Sample batch
-        batch = self.buffer.sample(batch_size=self.batch_size)
-        if batch is None:
-            return None
-
-        rewards = batch["rewards"]  # (batch_size,)
-        indices = batch["indices"]  # (batch_size,)
-
-        # Defensive: Validate batch
-        if not all(math.isfinite(r) for r in rewards):
-            LOG.warning("[TRIGGER] Non-finite rewards in batch, skipping training")
-            return None
-
-        if self.ddqn is not None:
-            # Real DDQN training with backpropagation
-            try:
-                # Flatten states: (batch, window, features) -> (batch, window*features)
-                states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
-                next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
-                actions = batch["actions"].astype(np.intp)
-                dones = batch["dones"].astype(np.float64)
-                weights = batch["weights"].astype(np.float64)
-                rewards_f = rewards.astype(np.float64)
-
-                # Train batch: forward pass, TD targets, backward pass, weight update
-                train_result = self.ddqn.train_batch(
-                    states=states,
-                    actions=actions,
-                    rewards=rewards_f,
-                    next_states=next_states,
-                    dones=dones,
-                    weights=weights,
+            if utilization < _UTILIZATION_OUTLIER_LOW or utilization > _UTILIZATION_OUTLIER_HIGH:
+                self.param_manager.update(
+                    self.symbol,
+                    "regime_adj_scale",
+                    -0.001,
+                    timeframe=self.timeframe,
+                    broker=self.broker,
                 )
 
-                # Update buffer priorities with actual TD errors
-                td_errors = np.abs(train_result["td_errors"])
-                td_errors = np.clip(td_errors, 0, TD_ERROR_CAP)
-                self.buffer.update_priorities(indices, td_errors)
-
-                metrics = {
-                    "loss": train_result["loss"],
-                    "mean_q": train_result["mean_q"],
-                    "mean_td_error": train_result["mean_td_error"],
-                    "max_td_error": train_result["max_td_error"],
-                    "grad_norm": train_result["grad_norm"],
-                    "mean_reward": float(np.mean(rewards)),
-                }
-            except Exception as e:
-                LOG.error("[TRIGGER] DDQN train_batch failed: %s", e, exc_info=True)
-                # Fallback to priority-only update
-                td_errors = np.clip(np.abs(rewards), 0, TD_ERROR_CAP)
-                self.buffer.update_priorities(indices, td_errors)
-                metrics = {
-                    "loss": 0.0,
-                    "mean_q": 0.0,
-                    "mean_td_error": float(np.mean(td_errors)),
-                    "max_td_error": float(np.max(td_errors)),
-                    "mean_reward": float(np.mean(rewards)),
-                }
-        elif self.use_torch:
-            # PyTorch training path
-            metrics = self._train_step_torch(batch)
-        else:
-            # No network available - priority updates only (degraded mode)
-            td_errors = np.abs(rewards)
-            td_errors = np.clip(td_errors, -TD_ERROR_CAP, TD_ERROR_CAP)
-            self.buffer.update_priorities(indices, td_errors)
-            metrics = {
-                "loss": 0.0,
-                "mean_q": 0.0,
-                "mean_td_error": float(np.mean(td_errors)),
-                "max_td_error": float(np.max(td_errors)),
-                "mean_reward": float(np.mean(rewards)),
-            }
-            LOG.warning("[TRIGGER] No DDQN network - only updating priorities (no weight updates)")
-
-        self.training_steps += 1
-
-        # Log every 10 steps (more frequent during early training)
-        log_interval = 10 if self.training_steps < _TRAINING_LOG_PERIOD else _TRAINING_LOG_PERIOD
-        if self.training_steps % log_interval == 0:
-            LOG.info(
-                "[TRIGGER] Training step %d: loss=%.4f, mean_q=%.3f, mean_reward=%.4f, mean_td=%.4f, buffer=%d",
-                self.training_steps,
-                metrics.get("loss", 0.0),
-                metrics.get("mean_q", 0.0),
-                metrics.get("mean_reward", 0.0),
-                metrics.get("mean_td_error", 0.0),
-                self.buffer.tree.n_entries,
+            self.param_manager.save()
+            LOG.debug(
+                "[TRIGGER] Updated confidence_floor: %.3f (gradient=%.3f, utilization=%.2f)",
+                self.confidence_floor,
+                gradient,
+                utilization,
             )
+        except Exception as exc:
+            LOG.warning("[TRIGGER] Failed to update confidence_floor: %s", exc)
 
-        return metrics
+    def _confidence_gradient_from_utilization(self, utilization: float) -> float:
+        """Return gradient adjustment from utilization metrics."""
+        if utilization < _UTILIZATION_BAD_THRESHOLD:
+            return 0.05
+        if utilization > 1.0:
+            return -0.02
+        return (0.6 - utilization) * 0.03
 
-    def _train_step_torch(self, batch: dict) -> dict:
-        """Training step when use_torch=True (PyTorch model loaded from disk).
+    # add_experience, train_step, _train_step_torch, get_training_stats
+    # are inherited from AgentTrainingMixin.
 
-        Delegates to the numpy DDQN network for actual weight updates.
-        The PyTorch model is only used for inference (pre-trained).
-
-        Args:
-            batch: Sampled batch from buffer
-
-        Returns:
-            Training metrics
-        """
-        # Delegate to DDQN numpy network for online learning
-        if self.ddqn is not None:
-            states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
-            next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
-            train_result = self.ddqn.train_batch(
-                states=states,
-                actions=batch["actions"].astype(np.intp),
-                rewards=batch["rewards"].astype(np.float64),
-                next_states=next_states,
-                dones=batch["dones"].astype(np.float64),
-                weights=batch["weights"].astype(np.float64),
-            )
-            self.buffer.update_priorities(batch["indices"], np.abs(train_result["td_errors"]))
-            return {
-                "loss": train_result["loss"],
-                "mean_q": train_result["mean_q"],
-                "mean_td_error": train_result["mean_td_error"],
-                "mean_reward": float(np.mean(batch["rewards"])),
-            }
-
-        # No DDQN network — priority-only update (degraded mode)
-        LOG.warning("[TRIGGER] No DDQN network in torch path — priority-only update")
-        td_errors = np.abs(batch["rewards"])
-        td_errors = np.clip(td_errors, 0, 10.0)
-        self.buffer.update_priorities(batch["indices"], td_errors)
-        return {
-            "loss": 0.0,
-            "mean_q": 0.0,
-            "mean_td_error": float(np.mean(td_errors)),
-            "mean_reward": float(np.mean(batch["rewards"])),
-        }
-
-    def get_training_stats(self) -> dict:
-        """Get training statistics for monitoring.
-
-        Returns:
-            Dictionary with training stats
-        """
-        if not self.enable_training or self.buffer is None:
-            return {"enabled": False}
-
-        buffer_stats = self.buffer.get_stats()
-
-        return {
-            "enabled": True,
-            "training_steps": self.training_steps,
-            "buffer_size": buffer_stats["size"],
-            "buffer_utilization": buffer_stats["utilization"],
-            "total_added": buffer_stats["total_added"],
-            "total_sampled": buffer_stats["total_sampled"],
-            "beta": buffer_stats["beta"],
-            "ready_to_train": buffer_stats["size"] >= self.min_experiences,
-            "epsilon": self.epsilon,
-        }
+    def _extra_training_stats(self) -> dict:
+        """Trigger-specific stats appended by the mixin."""
+        return {"epsilon": self.epsilon}
 
 
 # ============================================================================
@@ -894,13 +789,13 @@ if __name__ == "__main__":
 
     # Test 1: Initialize without model (fallback)
     print("\n[TEST 1] Initialize without model")
-    trigger = TriggerAgent(window=64, n_features=7)
+    trigger = TriggerAgent(window=STATE_WINDOW_SIZE, n_features=7)
     assert not trigger.use_torch
     print("✓ Fallback mode initialized")
 
     # Test 2: Decide with synthetic state (flat position)
     print("\n[TEST 2] Entry decision (flat position)")
-    state = rng.standard_normal((64, 7)).astype(np.float32)
+    state = rng.standard_normal((STATE_WINDOW_SIZE, 7)).astype(np.float32)
     state[:, 2] = 0.35  # Strong positive MA diff → should signal LONG
     action, conf, runway = trigger.decide(state, current_position=0)
     assert action in [0, 1, 2]

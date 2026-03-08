@@ -1,183 +1,141 @@
 """
-Tests for src.core.ddqn_network
+Tests for src.core.ddqn_network  (PyTorch backend)
 
-Coverage targets:
-- AdamOptimizer: step, update, moment initialization, bias correction
-- DDQNNetwork: init, forward, predict, train_batch, backward, gradient clipping,
-               target update, hard update, save/load weights
+Covers:
+- DDQNNetwork init, forward/predict, train_batch, target updates, save/load
+- _QNet He initialization, architecture
+- Conv1dQNet architecture (tested in test_conv1d_qnet.py — import-only check here)
 """
 
 from pathlib import Path
 
 import numpy as np
+import pytest
+import torch
+
+from src.core.ddqn_network import Conv1dQNet, DDQNNetwork, _QNet
 
 rng = np.random.default_rng(42)
 
-import pytest
 
-from src.core.ddqn_network import AdamOptimizer, DDQNNetwork
+# ── _QNet (internal MLP) ──────────────────────────────────────────────────────
 
+class TestQNet:
+    def test_output_shape(self):
+        net = _QNet(state_dim=10, hidden1=128, hidden2=64, n_actions=3)
+        x = torch.randn(4, 10)
+        out = net(x)
+        assert out.shape == (4, 3)
 
-# ── AdamOptimizer ───────────────────────────────────────────────────────────
+    def test_single_input(self):
+        net = _QNet(state_dim=5, hidden1=32, hidden2=16, n_actions=2)
+        x = torch.randn(1, 5)
+        out = net(x)
+        assert out.shape == (1, 2)
 
-class TestAdamOptimizer:
-    def test_defaults(self):
-        opt = AdamOptimizer()
-        assert opt.lr == pytest.approx(0.0005)
-        assert opt.beta1 == pytest.approx(0.9)
-        assert opt.beta2 == pytest.approx(0.999)
-        assert opt.epsilon == 1e-8
-        assert opt.t == 0
+    def test_he_initialization(self):
+        """Kaiming (He) init should produce reasonable weight scales."""
+        net = _QNet(state_dim=100, hidden1=128, hidden2=64, n_actions=3)
+        first_layer = net.net[0]
+        assert isinstance(first_layer, torch.nn.Linear)
+        w_std = first_layer.weight.detach().std().item()
+        # He uniform: std ≈ sqrt(2 / fan_in) * sqrt(3) / sqrt(3) ≈ sqrt(2/100) ≈ 0.14
+        expected_std = np.sqrt(2.0 / 100)
+        assert abs(w_std - expected_std) < expected_std * 0.5  # within 50%
 
-    def test_step_increments_timestep(self):
-        opt = AdamOptimizer()
-        opt.step()
-        assert opt.t == 1
-        opt.step()
-        assert opt.t == 2
+    def test_biases_initialized_to_zero(self):
+        net = _QNet(state_dim=10, hidden1=32, hidden2=16, n_actions=3)
+        for m in net.net:
+            if isinstance(m, torch.nn.Linear):
+                assert torch.all(m.bias == 0).item()
 
-    def test_update_initializes_moments(self):
-        opt = AdamOptimizer(learning_rate=0.01)
-        opt.step()
-        param = np.ones(5)
-        grad = np.ones(5) * 0.1
-        updated = opt.update("p", param, grad)
-        assert "p" in opt.m
-        assert "p" in opt.v
-        assert updated.shape == param.shape
-
-    def test_update_moves_param(self):
-        opt = AdamOptimizer(learning_rate=0.1)
-        param = np.ones(3) * 10.0
-        grad = np.ones(3) * 1.0  # Positive gradient → decrease param
-        opt.step()
-        updated = opt.update("w", param, grad)
-        assert np.all(updated < param)
-
-    def test_multiple_steps(self):
-        opt = AdamOptimizer(learning_rate=0.01)
-        param = np.ones(3) * 5.0
-        for _ in range(5):
-            opt.step()
-            param = opt.update("w", param, np.ones(3) * 0.1)
-        assert np.all(param < 5.0)  # Should have decreased
-
-    def test_zero_gradient_no_change(self):
-        opt = AdamOptimizer(learning_rate=0.01)
-        param = np.array([1.0, 2.0, 3.0])
-        opt.step()
-        updated = opt.update("w", param, np.zeros(3))
-        # With zero gradient, Adam still adjusts due to epsilon, but changes are tiny
-        np.testing.assert_allclose(updated, param, atol=0.01)
+    def test_gradient_flow(self):
+        net = _QNet(state_dim=4, hidden1=16, hidden2=8, n_actions=3)
+        x = torch.randn(2, 4, requires_grad=True)
+        out = net(x)
+        loss = out.sum()
+        loss.backward()
+        assert x.grad is not None
+        assert not torch.all(x.grad == 0).item()
 
 
-# ── DDQNNetwork.__init__ ───────────────────────────────────────────────────
+# ── DDQNNetwork.__init__ ──────────────────────────────────────────────────────
 
 class TestDDQNNetworkInit:
     def test_default_dimensions(self):
         net = DDQNNetwork(state_dim=10, n_actions=3, seed=42)
         assert net.state_dim == 10
         assert net.n_actions == 3
-        assert net.w1.shape == (10, 128)
-        assert net.b1.shape == (128,)
-        assert net.w2.shape == (128, 64)
-        assert net.b2.shape == (64,)
-        assert net.w3.shape == (64, 3)
-        assert net.b3.shape == (3,)
         assert net.training_steps == 0
 
     def test_custom_hidden_sizes(self):
         net = DDQNNetwork(state_dim=5, n_actions=2, hidden1_size=32, hidden2_size=16, seed=42)
-        assert net.w1.shape == (5, 32)
-        assert net.w2.shape == (32, 16)
-        assert net.w3.shape == (16, 2)
+        # Verify online network architecture has correct layer sizes
+        first_layer = net.online.net[0]
+        assert first_layer.in_features == 5
+        assert first_layer.out_features == 32
 
     def test_target_network_initialized_as_copy(self):
         net = DDQNNetwork(state_dim=5, n_actions=2, seed=42)
-        np.testing.assert_array_equal(net.w1, net.target_w1)
-        np.testing.assert_array_equal(net.b1, net.target_b1)
-        np.testing.assert_array_equal(net.w2, net.target_w2)
-        np.testing.assert_array_equal(net.b2, net.target_b2)
-        np.testing.assert_array_equal(net.w3, net.target_w3)
-        np.testing.assert_array_equal(net.b3, net.target_b3)
-
-    def test_he_initialization_scale(self):
-        net = DDQNNetwork(state_dim=100, n_actions=3, seed=42)
-        # He init: std = sqrt(2/fan_in)
-        expected_std = np.sqrt(2.0 / 100)
-        actual_std = np.std(net.w1)
-        # Should be roughly correct (within 20%)
-        assert abs(actual_std - expected_std) < expected_std * 0.3
+        for p_on, p_tgt in zip(net.online.parameters(), net.target.parameters()):
+            assert torch.equal(p_on, p_tgt)
 
     def test_seed_reproducibility(self):
         net1 = DDQNNetwork(state_dim=5, n_actions=2, seed=99)
         net2 = DDQNNetwork(state_dim=5, n_actions=2, seed=99)
-        np.testing.assert_array_equal(net1.w1, net2.w1)
-        np.testing.assert_array_equal(net1.w2, net2.w2)
-        np.testing.assert_array_equal(net1.w3, net2.w3)
+        for p1, p2 in zip(net1.online.parameters(), net2.online.parameters()):
+            assert torch.equal(p1, p2)
+
+    def test_target_in_eval_mode(self):
+        net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
+        assert not net.target.training
 
 
-# ── Forward pass ───────────────────────────────────────────────────────────
+# ── Forward / Predict ─────────────────────────────────────────────────────────
 
-class TestForward:
+class TestForwardPredict:
     @pytest.fixture
     def net(self):
         return DDQNNetwork(state_dim=4, n_actions=3, seed=42)
 
-    def test_single_state(self, net):
-        state = rng.standard_normal(4)
-        q_vals, cache = net.forward(state)
-        assert q_vals.shape == (3,)
-        assert "state" in cache
-        assert "z1" in cache
-        assert "a1" in cache
-        assert "z2" in cache
-        assert "a2" in cache
-        assert "q_values" in cache
-
-    def test_batch_states(self, net):
-        states = rng.standard_normal((8, 4))
-        q_vals, cache = net.forward(states)
-        assert q_vals.shape == (8, 3)
-
-    def test_target_network_forward(self, net):
-        state = rng.standard_normal(4)
-        q_online, _ = net.forward(state, use_target=False)
-        q_target, _ = net.forward(state, use_target=True)
-        # Initially identical
-        np.testing.assert_array_equal(q_online, q_target)
-
-    def test_relu_applied(self, net):
-        state = rng.standard_normal(4)
-        _, cache = net.forward(state)
-        # Activations after ReLU should be non-negative
-        assert np.all(cache["a1"] >= 0)
-        assert np.all(cache["a2"] >= 0)
-
-    def test_relu_derivative(self, net):
-        x = np.array([-2, -1, 0, 1, 2], dtype=float)
-        deriv = net._relu_derivative(x)
-        np.testing.assert_array_equal(deriv, [0, 0, 0, 1, 1])
-
-
-# ── Predict ────────────────────────────────────────────────────────────────
-
-class TestPredict:
-    def test_predict_returns_q_values(self):
-        net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
-        state = rng.standard_normal(4)
+    def test_predict_single_state(self, net):
+        state = rng.standard_normal(4).astype(np.float32)
         q = net.predict(state)
         assert q.shape == (3,)
+        assert q.dtype == np.float32 or q.dtype == np.float64
 
-    def test_predict_matches_forward(self):
-        net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
-        state = rng.standard_normal(4)
+    def test_predict_batch_states(self, net):
+        states = rng.standard_normal((8, 4)).astype(np.float32)
+        q = net.predict(states)
+        assert q.shape == (8, 3)
+
+    def test_forward_returns_tuple(self, net):
+        state = rng.standard_normal(4).astype(np.float32)
+        q, cache = net.forward(state)
+        assert q.shape == (3,)
+        assert isinstance(cache, dict)
+
+    def test_predict_matches_forward(self, net):
+        state = rng.standard_normal(4).astype(np.float32)
         q_pred = net.predict(state)
         q_fwd, _ = net.forward(state)
         np.testing.assert_array_equal(q_pred, q_fwd)
 
+    def test_target_network_forward(self, net):
+        state = rng.standard_normal(4).astype(np.float32)
+        q_online = net.predict(state, use_target=False)
+        q_target = net.predict(state, use_target=True)
+        # Initially identical
+        np.testing.assert_array_almost_equal(q_online, q_target, decimal=5)
 
-# ── Train batch ────────────────────────────────────────────────────────────
+    def test_predict_deterministic(self, net):
+        state = rng.standard_normal(4).astype(np.float32)
+        q1 = net.predict(state)
+        q2 = net.predict(state)
+        np.testing.assert_array_equal(q1, q2)
+
+
+# ── Train batch ───────────────────────────────────────────────────────────────
 
 class TestTrainBatch:
     @pytest.fixture
@@ -185,27 +143,22 @@ class TestTrainBatch:
         return DDQNNetwork(state_dim=4, n_actions=3, learning_rate=0.001, seed=42)
 
     def _make_batch(self, batch_size=8, state_dim=4, n_actions=3):
-        rng = np.random.default_rng(123)
+        rng_local = np.random.default_rng(123)
         return dict(
-            states=rng.standard_normal((batch_size, state_dim)),
-            actions=rng.integers(0, n_actions, batch_size),
-            rewards=rng.standard_normal(batch_size),
-            next_states=rng.standard_normal((batch_size, state_dim)),
-            dones=rng.choice([0.0, 1.0], batch_size, p=[0.8, 0.2]),
-            weights=np.ones(batch_size),
+            states=rng_local.standard_normal((batch_size, state_dim)).astype(np.float32),
+            actions=rng_local.integers(0, n_actions, batch_size),
+            rewards=rng_local.standard_normal(batch_size).astype(np.float32),
+            next_states=rng_local.standard_normal((batch_size, state_dim)).astype(np.float32),
+            dones=rng_local.choice([0.0, 1.0], batch_size, p=[0.8, 0.2]).astype(np.float32),
+            weights=np.ones(batch_size, dtype=np.float32),
         )
 
-    def test_returns_stats(self, net):
+    def test_returns_expected_keys(self, net):
         batch = self._make_batch()
         result = net.train_batch(**batch)
-        assert "loss" in result
-        assert "l2_loss" in result
-        assert "total_loss" in result
-        assert "mean_q" in result
-        assert "mean_td_error" in result
-        assert "max_td_error" in result
-        assert "grad_norm" in result
-        assert "td_errors" in result
+        for key in ("loss", "l2_loss", "total_loss", "mean_q", "mean_td_error",
+                     "max_td_error", "grad_norm", "td_errors"):
+            assert key in result, f"Missing key: {key}"
 
     def test_loss_is_nonneg(self, net):
         batch = self._make_batch()
@@ -221,101 +174,143 @@ class TestTrainBatch:
         net.train_batch(**batch)
         assert net.training_steps == 2
 
-    def test_weights_change_after_training(self, net):
-        w1_before = net.w1.copy()
-        batch = self._make_batch()
-        net.train_batch(**batch)
-        assert not np.array_equal(net.w1, w1_before)
-
-    def test_target_network_soft_updated(self, net):
-        net.tau = 0.5  # Make soft update noticeable
-        target_w1_before = net.target_w1.copy()
-        batch = self._make_batch()
-        net.train_batch(**batch)
-        # Target should have shifted toward online
-        assert not np.array_equal(net.target_w1, target_w1_before)
-
     def test_td_errors_shape(self, net):
         batch = self._make_batch(batch_size=16)
         result = net.train_batch(**batch)
         assert result["td_errors"].shape == (16,)
 
+    def test_weights_change_after_training(self, net):
+        params_before = [p.clone() for p in net.online.parameters()]
+        batch = self._make_batch()
+        net.train_batch(**batch)
+        any_changed = any(
+            not torch.equal(p_before, p_after)
+            for p_before, p_after in zip(params_before, net.online.parameters())
+        )
+        assert any_changed, "Online weights should change after training"
+
+    def test_target_network_soft_updated(self, net):
+        """After training, target should have shifted (τ > 0)."""
+        target_before = [p.clone() for p in net.target.parameters()]
+        batch = self._make_batch()
+        net.train_batch(**batch)
+        any_changed = any(
+            not torch.equal(p_before, p_after)
+            for p_before, p_after in zip(target_before, net.target.parameters())
+        )
+        assert any_changed, "Target weights should shift via soft update"
+
     def test_gradient_clipping(self):
         net = DDQNNetwork(state_dim=4, n_actions=3, grad_clip_norm=0.1, seed=42)
-        batch = self._make_batch()
+        rng_local = np.random.default_rng(123)
+        batch = dict(
+            states=rng_local.standard_normal((8, 4)).astype(np.float32),
+            actions=rng_local.integers(0, 3, 8),
+            rewards=rng_local.standard_normal(8).astype(np.float32) * 100,  # large rewards → large gradients
+            next_states=rng_local.standard_normal((8, 4)).astype(np.float32),
+            dones=np.zeros(8, dtype=np.float32),
+            weights=np.ones(8, dtype=np.float32),
+        )
         result = net.train_batch(**batch)
-        # Grad norm after clipping should be <= clip_norm (or close)
-        # Note: total_grad_norm is BEFORE clipping, so it can be > clip_norm
         assert result["grad_norm"] >= 0
 
+    def test_loss_decreases_over_training(self):
+        """Training on identical batch should eventually reduce loss."""
+        net = DDQNNetwork(state_dim=4, n_actions=3, learning_rate=0.01, seed=42)
+        rng_local = np.random.default_rng(42)
+        batch = dict(
+            states=rng_local.standard_normal((16, 4)).astype(np.float32),
+            actions=rng_local.integers(0, 3, 16),
+            rewards=rng_local.standard_normal(16).astype(np.float32),
+            next_states=rng_local.standard_normal((16, 4)).astype(np.float32),
+            dones=np.zeros(16, dtype=np.float32),
+            weights=np.ones(16, dtype=np.float32),
+        )
+        losses = []
+        for _ in range(20):
+            result = net.train_batch(**batch)
+            losses.append(result["loss"])
+        # Loss should generally decrease (allow some noise)
+        assert losses[-1] < losses[0], f"Loss did not decrease: {losses[0]:.4f} → {losses[-1]:.4f}"
 
-# ── Hard target update ─────────────────────────────────────────────────────
+
+# ── Hard target update ────────────────────────────────────────────────────────
 
 class TestHardUpdate:
     def test_hard_update_copies_exactly(self):
         net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
         # Modify online weights
-        net.w1 += 1.0
-        net.b2 += 0.5
+        with torch.no_grad():
+            for p in net.online.parameters():
+                p.add_(1.0)
+        # Verify online ≠ target
+        assert not torch.equal(
+            list(net.online.parameters())[0],
+            list(net.target.parameters())[0],
+        )
         net.hard_update_target()
-        np.testing.assert_array_equal(net.w1, net.target_w1)
-        np.testing.assert_array_equal(net.b2, net.target_b2)
-        np.testing.assert_array_equal(net.w3, net.target_w3)
+        # Now they should match exactly
+        for p_on, p_tgt in zip(net.online.parameters(), net.target.parameters()):
+            assert torch.equal(p_on, p_tgt)
 
 
-# ── Save / Load weights ───────────────────────────────────────────────────
+# ── Save / Load weights ──────────────────────────────────────────────────────
 
 class TestSaveLoadWeights:
     def test_save_and_load_roundtrip(self, tmp_path):
-        filepath = str(tmp_path / "weights.npz")
+        filepath = str(tmp_path / "weights")
         net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
-        # Train a bit
-        rng = np.random.default_rng(1)
+        # Train a bit so weights diverge from initialization
+        rng_local = np.random.default_rng(1)
         net.train_batch(
-            states=rng.standard_normal((4, 4)),
-            actions=rng.integers(0, 3, 4),
-            rewards=rng.standard_normal(4),
-            next_states=rng.standard_normal((4, 4)),
-            dones=np.zeros(4),
-            weights=np.ones(4),
+            states=rng_local.standard_normal((4, 4)).astype(np.float32),
+            actions=rng_local.integers(0, 3, 4),
+            rewards=rng_local.standard_normal(4).astype(np.float32),
+            next_states=rng_local.standard_normal((4, 4)).astype(np.float32),
+            dones=np.zeros(4, dtype=np.float32),
+            weights=np.ones(4, dtype=np.float32),
         )
         net.save_weights(filepath)
 
         net2 = DDQNNetwork(state_dim=4, n_actions=3, seed=99)
         net2.load_weights(filepath)
-        np.testing.assert_array_equal(net.w1, net2.w1)
-        np.testing.assert_array_equal(net.target_w3, net2.target_w3)
+        for p1, p2 in zip(net.online.parameters(), net2.online.parameters()):
+            assert torch.equal(p1, p2)
+        for p1, p2 in zip(net.target.parameters(), net2.target.parameters()):
+            assert torch.equal(p1, p2)
         assert net.training_steps == net2.training_steps
 
     def test_load_nonexistent_file(self, tmp_path):
         net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
-        w1_before = net.w1.copy()
-        net.load_weights(str(tmp_path / "no_such_file.npz"))
+        params_before = [p.clone() for p in net.online.parameters()]
+        net.load_weights(str(tmp_path / "no_such_file.pt"))
         # Weights unchanged
-        np.testing.assert_array_equal(net.w1, w1_before)
+        for p_before, p_now in zip(params_before, net.online.parameters()):
+            assert torch.equal(p_before, p_now)
 
     def test_save_creates_directories(self, tmp_path):
-        filepath = str(tmp_path / "deep" / "path" / "weights.npz")
+        filepath = str(tmp_path / "deep" / "path" / "weights")
         net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
         net.save_weights(filepath)
-        assert Path(filepath).exists()
+        assert Path(filepath).with_suffix(".pt").exists()
 
+    def test_training_steps_persisted(self, tmp_path):
+        filepath = str(tmp_path / "weights")
+        net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
+        rng_local = np.random.default_rng(1)
+        batch = dict(
+            states=rng_local.standard_normal((4, 4)).astype(np.float32),
+            actions=rng_local.integers(0, 3, 4),
+            rewards=rng_local.standard_normal(4).astype(np.float32),
+            next_states=rng_local.standard_normal((4, 4)).astype(np.float32),
+            dones=np.zeros(4, dtype=np.float32),
+            weights=np.ones(4, dtype=np.float32),
+        )
+        for _ in range(5):
+            net.train_batch(**batch)
+        assert net.training_steps == 5
+        net.save_weights(filepath)
 
-# ── Gradient clipping utility ──────────────────────────────────────────────
-
-class TestClipGradients:
-    def test_gradients_below_norm_unchanged(self):
-        net = DDQNNetwork(state_dim=4, n_actions=3, grad_clip_norm=100.0, seed=42)
-        grads = [np.ones(3) * 0.1, np.ones(2) * 0.1]
-        originals = [g.copy() for g in grads]
-        _norm = net._clip_gradients(grads)
-        for g, orig in zip(grads, originals):
-            np.testing.assert_array_almost_equal(g, orig)
-
-    def test_gradients_above_norm_clipped(self):
-        net = DDQNNetwork(state_dim=4, n_actions=3, grad_clip_norm=1.0, seed=42)
-        grads = [np.ones(10) * 10.0]  # Norm = sqrt(10*100) ≈ 31.6
-        norm = net._clip_gradients(grads)
-        assert norm > 1.0  # Was above clip norm
-        clipped_norm = np.sqrt(sum(np.sum(g**2) for g in grads))
-        np.testing.assert_almost_equal(clipped_norm, 1.0, decimal=5)
+        net2 = DDQNNetwork(state_dim=4, n_actions=3, seed=99)
+        net2.load_weights(filepath)
+        assert net2.training_steps == 5

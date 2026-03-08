@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Literal
 
 from src.utils.safe_math import SafeMath
+from src.utils.safe_utils import save_json_atomic
 
 LOG = logging.getLogger(__name__)
 
@@ -384,6 +385,8 @@ class ParameterStalenessDetector:
 
         # Count how many bars have been in different regime
         different_count = sum(1 for r in recent_regimes if r != baseline_regime)
+        if not recent_regimes:
+            return None
         shift_fraction = different_count / len(recent_regimes)
 
         if shift_fraction > _REGIME_SHIFT_FRACTION_MIN:  # >80% of recent bars in different regime
@@ -578,9 +581,7 @@ class ParameterStalenessDetector:
             "snapshots_count": len(self.snapshots),
         }
 
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(state, f, indent=2)
+        save_json_atomic(path, state)
 
         LOG.info("Staleness detector state saved to %s", path)
 

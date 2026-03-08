@@ -147,6 +147,21 @@ class TestFallbackStrategy:
         action = ha._fallback_strategy(mfe=10, mae=5, ticks_held=10, entry_price=0.0)
         assert action == 0  # HOLD (can't evaluate)
 
+    def test_hard_time_stop_safety_valve_in_decide(self):
+        """Hard time stop overrides DDQN/model decision in decide() itself."""
+        ha = HarvesterAgent(window=64, n_features=10, enable_training=True)
+        market_state = rng.standard_normal((64, 7)).astype(np.float32)
+        # Force ticks well past hard time stop
+        ticks = ha.hard_time_stop_bars + 10
+        action, conf = ha.decide(
+            market_state=market_state,
+            mfe=0.5, mae=0.0,
+            ticks_held=ticks,
+            entry_price=100.0,
+        )
+        assert action == 1  # CLOSE forced
+        assert conf == 1.0  # Full confidence
+
 
 # ---------------------------------------------------------------------------
 # Build full state

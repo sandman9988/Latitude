@@ -26,6 +26,7 @@ log() {
 HUD_MODE="auto"           # auto|on|off
 HUD_ONLY=0                 # --hud-only flag
 INTERNAL_BOT_DAEMON=0      # internal recursive call flag
+COMMAND=""                 # train|pipeline|universe|production|live-train|status|monitor|monitor-setup|help
 declare -a FORWARDED_ARGS=()
 BOT_LAUNCHER_PID=""
 HUD_INTERRUPTED=0
@@ -44,6 +45,33 @@ parse_args() {
                 ;;
             --bot-daemon)
                 INTERNAL_BOT_DAEMON=1
+                ;;
+            pipeline|--pipeline)
+                COMMAND="pipeline"
+                ;;
+            universe|--universe|paper|--paper)
+                COMMAND="universe"
+                ;;
+            train|--train)
+                COMMAND="train"
+                ;;
+            status|--status)
+                COMMAND="status"
+                ;;
+            production|--production)
+                COMMAND="production"
+                ;;
+            live-train|--live-train|explore|--explore)
+                COMMAND="live-train"
+                ;;
+            monitor|--monitor)
+                COMMAND="monitor"
+                ;;
+            monitor-setup|--monitor-setup)
+                COMMAND="monitor-setup"
+                ;;
+            help|--help|-h)
+                COMMAND="help"
                 ;;
             *)
                 FORWARDED_ARGS+=("$1")
@@ -190,11 +218,20 @@ setup_logging() {
 }
 
 # Kill any existing bot processes
+# NOTE: Only kills the single bot managed by run.sh (via .bot.pid).
+# Universe-managed paper bots are intentionally left alone.
 cleanup_old_processes() {
-    if pgrep -f "ctrader_ddqn_paper" > /dev/null; then
-        log "${YELLOW}⚠ Found running bot process, stopping...${NC}"
-        pkill -f "ctrader_ddqn_paper" || true
-        sleep 2
+    if [[ -f .bot.pid ]]; then
+        local old_pid
+        old_pid=$(cat .bot.pid 2>/dev/null)
+        if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+            log "${YELLOW}⚠ Stopping previous bot (PID: ${old_pid})...${NC}"
+            kill -TERM "$old_pid" 2>/dev/null || true
+            sleep 2
+            # Force kill if still alive
+            kill -0 "$old_pid" 2>/dev/null && kill -KILL "$old_pid" 2>/dev/null || true
+        fi
+        rm -f .bot.pid
     fi
 }
 
@@ -219,16 +256,17 @@ should_enable_hud() {
 }
 
 bot_process_running() {
-    pgrep -f "ctrader_ddqn_paper" > /dev/null
+    [[ -n "$BOT_LAUNCHER_PID" ]] && kill -0 "$BOT_LAUNCHER_PID" 2>/dev/null
 }
 
 wait_for_bot_process() {
     local retries=30
-    local bot_pid
+    # BOT_LAUNCHER_PID becomes the bot process directly (setsid + exec in main()).
+    # Don't use pgrep-by-name — that would match universe paper bots too.
     for ((i=1; i<=retries; i++)); do
-        if bot_pid=$(pgrep -f "ctrader_ddqn_paper" | head -n1); then
-            echo "$bot_pid" > .bot.pid
-            log "${GREEN}✓ Trading bot running (PID: ${bot_pid})${NC}"
+        if kill -0 "$BOT_LAUNCHER_PID" 2>/dev/null; then
+            echo "$BOT_LAUNCHER_PID" > .bot.pid
+            log "${GREEN}✓ Trading bot running (PID: ${BOT_LAUNCHER_PID})${NC}"
             return 0
         fi
         sleep 1
@@ -425,6 +463,10 @@ handle_hud_sigint() {
 }
 
 launch_hud_foreground() {
+    # Kill any stale HUD before spawning a new one
+    pkill -f hud_tabbed 2>/dev/null || true
+    rm -f /tmp/ctrader_hud.pid
+    sleep 0.3
     log ""
     log "=========================================="
     log "  Launching HUD"
@@ -436,7 +478,7 @@ launch_hud_foreground() {
     trap handle_hud_sigint INT
     local hud_status=0
     set +e
-    python3 src/monitoring/hud_tabbed.py
+    python3 -m src.monitoring.hud_tabbed
     hud_status=$?
     set -e
 
@@ -454,32 +496,194 @@ launch_hud_foreground() {
     log "${BLUE}Stop bot: pkill -f ctrader_ddqn_paper${NC}"
 }
 
-launch_hud_background() {
+# ── Pipeline commands ─────────────────────────────────────────────────────────
+
+help_flow() {
+    echo -e ""
+    echo -e "${GREEN}cTrader Trading Bot${NC} — unified launcher"
+    echo -e ""
+    echo -e "${YELLOW}Usage:${NC}  ./run.sh [command] [options]"
+    echo -e ""
+    echo -e "${BLUE}Bot commands:${NC}"
+    echo -e "  (none)            launch live bot with HUD (auto-detects terminal)"
+    echo -e "  production        production mode: minimal epsilon, all gates active"
+    echo -e "  live-train        live training mode: full exploration, gates off"
+    echo -e "  --hud-only        reattach HUD to already-running bot"
+    echo -e "  --no-hud          run bot without HUD"
+    echo -e ""
+    echo -e "${BLUE}Pipeline commands:${NC}"
+    echo -e "  train             offline training only (XAUUSD + BTCUSD, all TFs)"
+    echo -e "  pipeline          offline train → auto-promote → universe watcher"
+    echo -e "  universe          (re)start paper trading supervisor in background"
+    echo -e "  paper             alias for 'universe'"
+    echo -e ""
+    echo -e "${BLUE}Ops commands:${NC}"
+    echo -e "  status            show running processes and universe.json summary"
+    echo -e "  monitor           run one market open/close check (as cron does)"
+    echo -e "  monitor-setup     install/update cron entry for market monitoring"
+    echo -e ""
+    echo -e "${BLUE}Override env vars for train/pipeline:${NC}"
+    echo -e "  SYMBOLS=\"XAUUSD\"          single symbol"
+    echo -e "  TIMEFRAMES=\"H1 H4\"        specific timeframes"
+    echo -e "  THRESHOLD=1.5             stricter Z-Omega gate"
+    echo -e "  EPOCHS=5                  training passes per dataset"
+    echo -e "  WORKERS=4                 parallel workers"
+    echo -e ""
+    echo -e "${BLUE}Examples:${NC}"
+    echo -e "  ./run.sh"
+    echo -e "  ./run.sh production"
+    echo -e "  ./run.sh live-train"
+    echo -e "  ./run.sh pipeline"
+    echo -e "  SYMBOLS=\"XAUUSD\" TIMEFRAMES=\"H4\" ./run.sh train"
+    echo -e "  ./run.sh status"
+    echo -e ""
+}
+
+status_flow() {
     log ""
-    log "=========================================="
-    log "  Launching HUD (background mode)"
-    log "=========================================="
+    log "${BLUE}=== Process Status ===${NC}"
     log ""
-    log "HUD is running in background. Use 'pkill -f hud_tabbed' to stop it."
-    log "Bot console log: logs/bot_console.log"
+    log "${YELLOW}Live/paper bot:${NC}"
+    pgrep -af "ctrader_ddqn_paper" 2>/dev/null | grep -v grep || log "  (none)"
     log ""
+    log "${YELLOW}Universe watcher:${NC}"
+    pgrep -af "run_universe" 2>/dev/null | grep -v grep || log "  (none)"
+    log ""
+    log "${YELLOW}Offline training:${NC}"
+    pgrep -af "train_offline" 2>/dev/null | grep -v grep || log "  (none)"
+    log ""
+    log "${YELLOW}HUD:${NC}"
+    pgrep -af "hud_tabbed" 2>/dev/null | grep -v grep || log "  (none)"
+    log ""
+    log "${YELLOW}Universe (from data/universe.json):${NC}"
+    python3 -c "
+import json, sys
+try:
+    u = json.load(open('data/universe.json'))
+    inst = u.get('instruments', u)  # handle both formats
+    for sym, v in inst.items():
+        print(f'  {sym}: stage={v.get(\"stage\",\"?\")}, z_omega={v.get(\"z_omega\",0):.4f}, tf=M{v.get(\"timeframe_minutes\",\"?\")}')
+except Exception as e:
+    print(f'  (could not read: {e})')
+" 2>/dev/null || log "  (no universe.json)"
+    log ""
+}
+
+universe_flow() {
+    activate_venv
+    log ""
+    log "${YELLOW}Stopping any existing universe watcher...${NC}"
+    pkill -f run_universe 2>/dev/null || true
+    sleep 1
+    log "${GREEN}Starting universe watcher (paper trading supervisor)...${NC}"
     mkdir -p logs
-    nohup python3 src/monitoring/hud_tabbed.py >> logs/hud_console.log 2>&1 &
-    HUD_PID=$!
-    sleep 2
-    if ! kill -0 "$HUD_PID" 2>/dev/null; then
-        log "${RED}✗ HUD failed to start. Check hud_console.log${NC}"
+    nohup python3 run_universe.py --watch >> logs/run_universe.log 2>&1 &
+    UPID=$!
+    sleep 3
+    if kill -0 "$UPID" 2>/dev/null; then
+        log "${GREEN}✓ Universe watcher started (PID: ${UPID})${NC}"
+        log "  Log: logs/run_universe.log"
+        log "  Stop: pkill -f run_universe"
+        log ""
+        log "${BLUE}Recent log:${NC}"
+        tail -8 logs/run_universe.log 2>/dev/null || true
+    else
+        log "${RED}✗ Universe watcher failed to start — see logs/run_universe.log${NC}"
+        tail -20 logs/run_universe.log 2>/dev/null || true
         exit 1
     fi
-    log "${GREEN}✓ HUD started (PID: ${HUD_PID})${NC}"
-    log "${BLUE}Stop HUD: pkill -f hud_tabbed${NC}"
-    log "${BLUE}Stop bot: pkill -f ctrader_ddqn_paper${NC}"
+}
+
+train_flow() {
+    activate_venv
+    local hist_dir="${HISTORY_DIR:-/home/renierdejager/Projects/Kinetra/data/master_standardized}"
+    local symbols="${SYMBOLS:-XAUUSD BTCUSD}"
+    local timeframes="${TIMEFRAMES:-M15 M30 H1 H4}"
     log ""
-    log "Both bot and HUD are running. Press Ctrl+C to exit this script."
-    log "The processes will continue running in background."
-    # Wait for Ctrl+C
-    trap 'log "${YELLOW}Script exiting. Processes continue running.${NC}"; exit 0' INT
-    wait
+    log "${BLUE}=== Offline Training ===${NC}"
+    log "  History : $hist_dir"
+    log "  Symbols : $symbols"
+    log "  TFs     : $timeframes"
+    log ""
+    # shellcheck disable=SC2206
+    SYM_ARR=($symbols)
+    TF_ARR=($timeframes)
+    python3 train_offline.py "$hist_dir" \
+        --symbols "${SYM_ARR[@]}" \
+        --timeframes "${TF_ARR[@]}" \
+        --workers "${WORKERS:-$(nproc)}" \
+        --n-epochs "${EPOCHS:-3}" \
+        --warm-start \
+        --auto-promote \
+        --paper-threshold "${THRESHOLD:-1.0}" \
+        --retrain-rounds "${RETRAIN_ROUNDS:-3}" \
+        "${FORWARDED_ARGS[@]}"
+}
+
+pipeline_flow() {
+    # Full offline training → auto-promote → launch paper universe watcher
+    train_flow
+    log ""
+    log "${GREEN}Training complete — starting universe watcher...${NC}"
+    universe_flow
+}
+
+production_flow() {
+    # Production mode: minimal exploration, all learned gates active
+    export PAPER_MODE=0
+    export DISABLE_GATES=0
+    export EPSILON_START=0.05
+    export EPSILON_END=0.01
+    export EPSILON_DECAY=0.9995
+    export EXPLORATION_BOOST=0.0
+    export FORCE_EXPLORATION=0
+    export MAX_BARS_INACTIVE=1000
+    export DDQN_ONLINE_LEARNING=1
+    log ""
+    log "${BLUE}=== Production Mode ===${NC}"
+    log "  PAPER_MODE=0 | gates ACTIVE | epsilon 0.05 → 0.01 | online learning ON"
+    log ""
+    if [[ ! -f "data/learned_parameters.json" ]]; then
+        log "${YELLOW}⚠ No learned_parameters.json found.${NC}"
+        log "  Consider running: ./run.sh train"
+        read -r -p "Continue anyway with defaults? (y/N): " _reply
+        [[ "$_reply" =~ ^[Yy]$ ]] || { log "Aborted."; exit 1; }
+    fi
+    orchestrate_with_hud
+}
+
+live_train_flow() {
+    # Live/paper training mode: full exploration, no confidence gates
+    export PAPER_MODE=1
+    export DISABLE_GATES=1
+    export EPSILON_START=1.0
+    export EPSILON_END=0.1
+    export EPSILON_DECAY=0.998
+    export EXPLORATION_BOOST=0.5
+    export FORCE_EXPLORATION=1
+    export MAX_BARS_INACTIVE=10
+    export DDQN_ONLINE_LEARNING=1
+    log ""
+    log "${BLUE}=== Live Training Mode ===${NC}"
+    log "  PAPER_MODE=1 | gates OFF | epsilon 1.0 → 0.1 | full exploration"
+    log ""
+    orchestrate_with_hud
+}
+
+monitor_flow() {
+    # Run one market-monitor check (same logic called by cron every 30 min)
+    if [[ ! -x "$SCRIPT_DIR/market_monitor.sh" ]]; then
+        chmod +x "$SCRIPT_DIR/market_monitor.sh"
+    fi
+    exec bash "$SCRIPT_DIR/market_monitor.sh" "${FORWARDED_ARGS[@]}"
+}
+
+monitor_setup_flow() {
+    # Install (or update) the cron entry for automatic market monitoring
+    if [[ ! -x "$SCRIPT_DIR/setup_market_monitor.sh" ]]; then
+        chmod +x "$SCRIPT_DIR/setup_market_monitor.sh"
+    fi
+    exec bash "$SCRIPT_DIR/setup_market_monitor.sh"
 }
 
 hud_only_flow() {
@@ -567,7 +771,20 @@ main() {
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     parse_args "$@"
 
-    if [[ $HUD_ONLY -eq 1 ]]; then
+    # Pipeline sub-commands take priority over HUD flags
+    if [[ -n "$COMMAND" ]]; then
+        case "$COMMAND" in
+            pipeline)       pipeline_flow      ;;
+            universe)       universe_flow      ;;
+            train)          train_flow         ;;
+            status)         status_flow        ;;
+            production)     production_flow    ;;
+            live-train)     live_train_flow    ;;
+            monitor)        monitor_flow       ;;
+            monitor-setup)  monitor_setup_flow ;;
+            help)           help_flow          ;;
+        esac
+    elif [[ $HUD_ONLY -eq 1 ]]; then
         hud_only_flow
     elif [[ $INTERNAL_BOT_DAEMON -eq 1 ]]; then
         main "${FORWARDED_ARGS[@]}"

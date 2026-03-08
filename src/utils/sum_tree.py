@@ -246,6 +246,7 @@ class PrioritizedReplayBuffer:
         self.size = 0
         self.frame_count = 0
         self.max_priority = 1.0  # Initialize with 1.0 for new experiences
+        self.rng = np.random.default_rng()  # RNG for stratified sampling
 
     def _get_beta(self) -> float:
         """
@@ -311,12 +312,15 @@ class PrioritizedReplayBuffer:
             raise ValueError("Cannot sample from empty buffer")
 
         batch_size = min(batch_size, self.size)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0")
 
         # Stratified sampling (divide priority range into segments)
         indices = np.zeros(batch_size, dtype=np.int32)
         priorities = np.zeros(batch_size, dtype=np.float32)
 
-        priority_segment = self.tree.total() / batch_size
+        total_priority = self.tree.total()
+        priority_segment = total_priority / batch_size if total_priority > 0 else 1.0 / batch_size
 
         for i in range(batch_size):
             # Sample uniformly within segment

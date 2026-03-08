@@ -316,7 +316,7 @@ class TestLaunchPaperBots:
              patch.object(ru, "_launch_paper_bot", return_value=5555) as mock_launch:
             result = ru.launch_paper_bots(registry, specs, base_env)
 
-        mock_launch.assert_called_once_with("XAUUSD", 240, 41, 0.01, base_env)
+        mock_launch.assert_called_once_with("XAUUSD", 240, 41, 0.01, base_env, None)
         assert result["instruments"]["XAUUSD"]["paper_pid"] == 5555
 
     def test_skips_non_paper_stages(self, tmp_path, monkeypatch):

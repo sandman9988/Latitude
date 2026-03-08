@@ -177,25 +177,22 @@ class TestDecideExitClose:
 
 class TestUpdateMfeMaeExceptions:
     def test_non_float_current_price_handled(self):
-        """Non-convertible current_price → cp = 0.0 (lines 386-387)."""
+        """Non-convertible current_price → no crash, MFE/MAE unchanged."""
         dp = DualPolicy(window=64)
         dp.on_entry(direction=1, entry_price=100.0, entry_time=dt.datetime.now())
 
         # Pass an object that cannot be converted to float
         dp._update_mfe_mae(object())
-        # Should not crash; mfe/mae should be based on cp=0.0 vs ep=100.0
-        # For LONG: profit = 0.0 - 100.0 = -100.0 → mae = 100.0
-        assert dp.mae == pytest.approx(100.0)
+        # Should not crash; mfe/mae should remain at 0.0 (no update)
+        assert dp.mfe == pytest.approx(0.0)
+        assert dp.mae == pytest.approx(0.0)
 
     def test_non_float_entry_price_handled(self):
-        """Non-convertible entry_price → ep = 0.0 (lines 390-391)."""
+        """Non-convertible entry_price → no crash, MFE/MAE unchanged."""
         dp = DualPolicy(window=64)
         dp.current_position = 1
         # Use a numeric-like object that passes SafeMath.is_zero (not zero)
         # but fails float() conversion for the ep variable.
-        # Since entry_price goes through SafeMath.is_zero first, we need it to
-        # be non-zero (pass the guard) but then fail float() conversion.
-        # A custom class that has __abs__ and __lt__ but no __float__:
         class BadFloat:
             def __abs__(self):
                 return 1.0  # Non-zero → passes is_zero check
@@ -206,8 +203,9 @@ class TestUpdateMfeMaeExceptions:
         dp.entry_price = BadFloat()
 
         dp._update_mfe_mae(100.0)
-        # cp=100.0, ep=0.0 → profit=100.0 → mfe=100.0
-        assert dp.mfe == pytest.approx(100.0)
+        # Should not crash; MFEMAECalculator.start() rejects non-numeric entry_price
+        assert dp.mfe == pytest.approx(0.0)
+        assert dp.mae == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

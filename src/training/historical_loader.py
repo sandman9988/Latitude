@@ -133,7 +133,9 @@ def load_jsonl_cache(
                     bar = _parse_jsonl_bar(bar_row)
                     if bar:
                         seen[bar[0]] = bar
-            except (json.JSONDecodeError, Exception) as exc:
+            except json.JSONDecodeError as exc:
+                LOG.debug("[LOADER] Line %d skipped: %s", lineno, exc)
+            except Exception as exc:
                 LOG.debug("[LOADER] Line %d skipped: %s", lineno, exc)
 
     bars = sorted(seen.values(), key=lambda b: b[0])
@@ -181,7 +183,12 @@ def _iter_csv(path: Path) -> Iterator[Bar]:
                 break
         fh.seek(0)
 
-        delimiter = "," if "," in sample else "\t" if "\t" in sample else ";"
+        if "\t" in sample:
+            delimiter = "\t"
+        elif ";" in sample:
+            delimiter = ";"
+        else:
+            delimiter = ","
         reader = csv.DictReader(fh, delimiter=delimiter)
 
         if reader.fieldnames is None:

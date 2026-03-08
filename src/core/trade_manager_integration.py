@@ -68,6 +68,11 @@ class TradeManagerIntegration:
         self.entry_price: float | None = None
         self.position_direction: int = 0
 
+        # Hard stop-loss — a fixed broker-side limit order placed at entry.
+        # Survives bot crashes/disconnects. Wider than the HARVESTER soft SL.
+        self.hard_sl_order: Order | None = None
+        self.hard_sl_pct: float = 2.5  # 2.5% from entry (configurable via param_manager)
+
         # Position recovery tracking
         self.position_recovered: bool = False
 
@@ -127,6 +132,82 @@ class TradeManagerIntegration:
             with self.app._tracker_lock:
                 self.app.path_recorders.clear()
             LOG.warning("[CLEANUP] Removed %d stale path recorders", recorder_count)
+
+    def reconcile_ghost_positions(self) -> bool:
+        """
+        Detect and clear ghost hedged positions that block new entries.
+
+        Ghost positions occur when hedged LONG+SHORT positions (net=0) leave
+        stale entries in position_tickets after both legs close. This causes
+        has_any_open_positions() to return True while cur_pos=0, permanently
+        blocking the entry decision path.
+
+        Returns:
+            True if ghost positions were cleaned up, False if no action taken.
+        """
+        cur_pos = getattr(self.app, "cur_pos", 0)
+        if cur_pos != 0:
+            return False  # Legitimately in a position
+
+        has_tickets = bool(self.position_tickets)
+        has_trackers = (
+            hasattr(self.app, "mfe_mae_trackers") and bool(self.app.mfe_mae_trackers)
+        )
+
+        if not has_tickets and not has_trackers:
+            return False  # No ghost state
+
+        # Ghost positions detected: tickets/trackers exist but cur_pos=0
+        ghost_tickets = dict(self.position_tickets)
+        LOG.warning(
+            "[GHOST-RECONCILE] Detected %d ghost ticket(s) and %d stale tracker(s) "
+            "while cur_pos=0. Clearing to unblock entry path. "
+            "Ghost tickets: %s",
+            len(self.position_tickets),
+            len(self.app.mfe_mae_trackers) if has_trackers else 0,
+            ghost_tickets,
+        )
+
+        # Attempt to recover ghost trades before clearing — write to trade_log so nothing is lost
+        if has_trackers:
+            mid_price = 0.0
+            if hasattr(self.app, "order_book") and self.app.order_book:
+                try:
+                    bid, ask = self.app.order_book.best_bid_ask()
+                    mid_price = ((bid or 0.0) + (ask or 0.0)) / 2
+                except Exception:
+                    pass
+            if not mid_price and hasattr(self.app, "_last_mid"):
+                mid_price = self.app._last_mid or 0.0
+            with self.app._tracker_lock:
+                ghost_trackers = dict(self.app.mfe_mae_trackers)
+            for pos_id, tracker in ghost_trackers.items():
+                if not getattr(tracker, "entry_price", None):
+                    continue
+                ghost_summary = tracker.get_summary()
+                ghost_summary["ticket"] = getattr(tracker, "position_ticket", pos_id) or pos_id
+                ghost_summary["position_id"] = pos_id
+                ghost_summary["close_reason"] = "GHOST_RECONCILE"
+                LOG.warning(
+                    "[GHOST-RECONCILE] Recovering trade: pos_id=%s ticket=%s entry=%.5f mid=%.5f",
+                    pos_id, ghost_summary["ticket"], ghost_summary["entry_price"], mid_price,
+                )
+                self._process_trade_completion_if_available(ghost_summary, mid_price)
+
+        # Clear position tickets
+        self.position_tickets.clear()
+
+        # Clear trackers and path recorders
+        self.cleanup_stale_trackers()
+
+        # Persist the cleaned state
+        self._persist_state()
+
+        LOG.warning(
+            "[GHOST-RECONCILE] Ghost position cleanup complete. "
+            "Entry path is now unblocked."
+        )
+        return True
 
     def initialize_trade_manager(self) -> bool:
         """
@@ -198,7 +279,7 @@ class TradeManagerIntegration:
             LOG.error("[INTEGRATION] Failed to initialize TradeManager: %s", e, exc_info=True)
             return False
 
-    def _notify_policy_on_exit(self, order: "Order", tracker_summary: dict, pnl: float, mfe: float, mae: float) -> dict:
+    def _notify_policy_on_exit(self, order: Order, tracker_summary: dict, pnl: float, mfe: float, mae: float) -> dict:
         """Sync policy MFE/MAE values and call policy.on_exit. Returns updated tracker_summary."""
         if not (hasattr(self.app, "policy") and hasattr(self.app.policy, "on_exit")):
             return tracker_summary
@@ -222,7 +303,7 @@ class TradeManagerIntegration:
         )
         return tracker_summary
 
-    def _find_and_process_exit_tracker(self, order: "Order", closed_ticket: str) -> tuple:
+    def _find_and_process_exit_tracker(self, order: Order, closed_ticket: str) -> tuple:
         """Scan mfe_mae_trackers for the closing ticket, calc P&L, notify policy, clean up.
 
         Returns (position_id_to_remove, tracker_summary) or (None, None).
@@ -231,16 +312,16 @@ class TradeManagerIntegration:
             return None, None
 
         position_id_to_remove = None
+        tracker_summary = None
         with self.app._tracker_lock:
             for pos_id, tracker in self.app.mfe_mae_trackers.items():
                 if getattr(tracker, "position_ticket", None) == closed_ticket:
                     position_id_to_remove = pos_id
+                    tracker_summary = tracker.get_summary()
                     break
 
         if not position_id_to_remove:
             return None, None
-
-        tracker_summary = self.app.mfe_mae_trackers[position_id_to_remove].get_summary()
         mfe = tracker_summary.get("mfe", 0.0)
         mae = tracker_summary.get("mae", 0.0)
         entry_price = tracker_summary.get("entry_price", 0.0)
@@ -272,6 +353,14 @@ class TradeManagerIntegration:
 
         LOG.info("[HEDGING] ✓ Closed position ticket %s (tracker=%s)", closed_ticket, position_id_to_remove)
         tracker_summary = self._notify_policy_on_exit(order, tracker_summary, pnl, mfe, mae)
+        # Enrich summary with position identifiers for end-to-end traceability
+        tracker_summary["ticket"] = closed_ticket
+        tracker_summary["position_id"] = position_id_to_remove
+        tracker_summary.setdefault("close_reason", "Signal")
+        LOG.info(
+            "[TRADE_RECORD] close: ticket=%s pos_id=%s pnl=%.4f close_reason=%s",
+            closed_ticket, position_id_to_remove, pnl, tracker_summary["close_reason"],
+        )
         return position_id_to_remove, tracker_summary
 
     def _restore_policy_entry_after_hedge(self, position_id_removed: str) -> None:
@@ -297,53 +386,81 @@ class TradeManagerIntegration:
                     )
                 break
 
-    def _close_hedged_position(self, order: "Order", closed_ticket: str) -> None:
+    def _close_hedged_position(self, order: Order, closed_ticket: str) -> None:
         """Handle fill for an exit (close) order in hedging mode."""
+        # Cancel hard SL bracket order before processing exit to prevent double-fill
+        self.disable_hard_sl()
         position_id_to_remove, tracker_summary = self._find_and_process_exit_tracker(order, closed_ticket)
+        self._remove_position_ticket(closed_ticket)
+        self._sync_position_after_exit()
+        if position_id_to_remove:
+            self._restore_policy_entry_after_hedge(position_id_to_remove)
+        self._process_trade_completion_if_available(tracker_summary, order.avg_price)
+        self._persist_state()
 
+    def _remove_position_ticket(self, closed_ticket: str) -> None:
+        """Remove a closed ticket from the ticket map if present."""
         if closed_ticket in self.position_tickets:
             del self.position_tickets[closed_ticket]
 
+    def _sync_position_after_exit(self) -> None:
+        """Sync app position direction after an exit fill."""
         self.app.cur_pos = self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
         self.position_direction = self.app.cur_pos
         LOG.info("[INTEGRATION] Position synced after exit: cur_pos=%d", self.app.cur_pos)
 
-        if position_id_to_remove:
-            self._restore_policy_entry_after_hedge(position_id_to_remove)
-
+    def _process_trade_completion_if_available(self, tracker_summary: dict | None, avg_price: float) -> None:
+        """Process trade completion callback if available."""
         if hasattr(self.app, "_process_trade_completion") and tracker_summary:
-            self.app._process_trade_completion(tracker_summary, order.avg_price)
+            self.app._process_trade_completion(tracker_summary, avg_price)
 
-        self._persist_state()
-
-    def _start_entry_tracker_and_path(self, order: "Order", position_id: str) -> None:
+    def _start_entry_tracker_and_path(self, order: Order, position_id: str) -> None:
         """Create MFE/MAE tracker, path recorder, and notify DualPolicy for a new entry fill."""
-        if hasattr(self.app, "mfe_mae_trackers") and order.avg_price > 0:
-            direction = 1 if order.side == Side.BUY else -1
-            with self.app._tracker_lock:
-                if position_id not in self.app.mfe_mae_trackers:
-                    from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
-                    self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
-                    self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
-                self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
-            self.app.trade_entry_time = order.filled_at
-            self.audit.log_position_open(
-                position_id=position_id,
-                direction="LONG" if direction > 0 else "SHORT",
-                quantity=order.filled_qty, entry_price=order.avg_price,
-                ticket=order.position_ticket or "UNKNOWN",
-            )
-            if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
-                self.app.policy.on_entry(direction=direction, entry_price=order.avg_price, entry_time=order.filled_at)
+        direction = self._resolve_order_direction(order)
+        tracker_started = self._start_mfe_mae_tracker(order, position_id, direction)
+        if tracker_started:
+            self._log_entry_and_notify_policy(order, position_id, direction)
+        self._start_path_recorder(order, position_id, direction)
 
-        if hasattr(self.app, "path_recorders") and order.filled_at:
-            direction = 1 if order.side == Side.BUY else -1
-            if position_id not in self.app.path_recorders:
-                from src.core.ctrader_ddqn_paper import PathRecorder  # noqa: PLC0415
-                self.app.path_recorders[position_id] = PathRecorder(position_id)
-            self.app.path_recorders[position_id].start_recording(order.filled_at, order.avg_price, direction)
+    def _resolve_order_direction(self, order: Order) -> int:
+        """Return numeric direction for an order side."""
+        return 1 if order.side == Side.BUY else -1
 
-    def _open_hedged_position(self, order: "Order", position_id: str) -> None:
+    def _start_mfe_mae_tracker(self, order: Order, position_id: str, direction: int) -> bool:
+        """Create and start MFE/MAE tracker for an entry fill."""
+        if not (hasattr(self.app, "mfe_mae_trackers") and order.avg_price > 0):
+            return False
+        with self.app._tracker_lock:
+            if position_id not in self.app.mfe_mae_trackers:
+                from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
+                self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
+                self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
+            self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
+        self.app.trade_entry_time = order.filled_at
+        return True
+
+    def _log_entry_and_notify_policy(self, order: Order, position_id: str, direction: int) -> None:
+        """Log entry and notify policy after tracker start."""
+        self.audit.log_position_open(
+            position_id=position_id,
+            direction="LONG" if direction > 0 else "SHORT",
+            quantity=order.filled_qty,
+            entry_price=order.avg_price,
+            ticket=order.position_ticket or "UNKNOWN",
+        )
+        if hasattr(self.app, "policy") and hasattr(self.app.policy, "on_entry"):
+            self.app.policy.on_entry(direction=direction, entry_price=order.avg_price, entry_time=order.filled_at)
+
+    def _start_path_recorder(self, order: Order, position_id: str, direction: int) -> None:
+        """Start path recorder for an entry fill when configured."""
+        if not (hasattr(self.app, "path_recorders") and order.filled_at):
+            return
+        if position_id not in self.app.path_recorders:
+            from src.core.ctrader_ddqn_paper import PathRecorder  # noqa: PLC0415
+            self.app.path_recorders[position_id] = PathRecorder(position_id)
+        self.app.path_recorders[position_id].start_recording(order.filled_at, order.avg_price, direction)
+
+    def _open_hedged_position(self, order: Order, position_id: str) -> None:
         """Handle fill for an entry (open) order in hedging mode."""
         if order.avg_price > 0:
             self.entry_price = order.avg_price
@@ -379,6 +496,58 @@ class TradeManagerIntegration:
                 timeframe=self.app.timeframe_label, broker="default", default=0.20,
             )
             self.enable_trailing_stop(distance_pct=float(distance))
+            sl_pct = float(self.app.param_manager.get(
+                self.app.symbol, "hard_sl_pct",
+                timeframe=self.app.timeframe_label, broker="default", default=2.5,
+            ))
+            self.hard_sl_pct = sl_pct
+        self._submit_hard_sl(order.avg_price, 1 if order.side.name == "BUY" else -1)
+
+    def _submit_hard_sl(self, entry_price: float, direction: int) -> None:
+        """Submit a fixed hard stop-loss limit order at the broker.
+
+        This order persists at the broker regardless of bot state — it is the
+        last line of defence if the bot crashes or loses connection.
+        Placed at hard_sl_pct% away from entry, opposite to direction.
+        """
+        if not (self.trade_manager and entry_price and entry_price > 0):
+            return
+        # Cancel any existing hard SL first
+        self.disable_hard_sl()
+        sl_price = (
+            entry_price * (1.0 - self.hard_sl_pct / 100.0)
+            if direction > 0  # LONG: stop below entry
+            else entry_price * (1.0 + self.hard_sl_pct / 100.0)  # SHORT: stop above entry
+        )
+        from src.core.trade_manager import Side  # noqa: PLC0415
+        sl_side = Side.SELL if direction > 0 else Side.BUY
+        try:
+            order = self.trade_manager.submit_stop_order(
+                side=sl_side,
+                quantity=self.app.qty,
+                stop_price=round(sl_price, 2),
+                tag_prefix="HARDSL",
+            )
+            if order:
+                self.hard_sl_order = order
+                LOG.info(
+                    "[HARD-SL] ✓ Placed %s stop @ %.5f (entry=%.5f sl_pct=%.2f%%)",
+                    sl_side.name, sl_price, entry_price, self.hard_sl_pct,
+                )
+            else:
+                LOG.warning("[HARD-SL] ⚠ Order returned None — no hard SL placed")
+        except Exception as e:
+            LOG.warning("[HARD-SL] Failed to place stop order: %s", e)
+
+    def disable_hard_sl(self) -> None:
+        """Cancel hard SL order at broker and clear local state."""
+        if self.hard_sl_order and self.trade_manager:
+            try:
+                self.trade_manager.cancel_order(self.hard_sl_order.clord_id)
+                LOG.info("[HARD-SL] Cancelled hard stop order %s", self.hard_sl_order.clord_id)
+            except Exception as e:
+                LOG.warning("[HARD-SL] Failed to cancel hard stop: %s", e)
+        self.hard_sl_order = None
 
     def on_order_filled(self, order: Order):
         """
@@ -478,29 +647,13 @@ class TradeManagerIntegration:
         Returns:
             True if trailing stop enabled, False otherwise
         """
-        if not self.trade_manager:
-            LOG.error("[TRAILING-STOP] TradeManager not initialized")
-            return False
-
-        pos_dir = self.get_current_position()
+        pos_dir = self._resolve_trailing_stop_position()
         if pos_dir == 0:
-            LOG.warning("[TRAILING-STOP] No position to protect")
             return False
 
-        self.trailing_stop_distance_pct = distance_pct
-        self.position_direction = pos_dir
-        self.trailing_stop_active = True
-
-        # Initialize price tracking
-        if hasattr(self.app, "best_bid") and hasattr(self.app, "best_ask"):
-            mid = (self.app.best_bid + self.app.best_ask) / 2.0 if self.app.best_bid and self.app.best_ask else None
-            if mid:
-                self.highest_price_since_entry = mid if pos_dir == 1 else None
-                self.lowest_price_since_entry = mid if pos_dir == -1 else None
-
-        if hasattr(self.app, "mfe_mae_tracker"):
-            summary = self.app.mfe_mae_tracker.get_summary()
-            self.entry_price = summary.get("entry_price", mid)
+        self._activate_trailing_stop_state(pos_dir, distance_pct)
+        mid = self._init_trailing_stop_prices(pos_dir)
+        self._init_trailing_stop_entry_price(mid)
 
         LOG.info(
             "[TRAILING-STOP] ✓ Enabled for %s position (distance=%.2f%%, entry=%.5f)",
@@ -509,6 +662,38 @@ class TradeManagerIntegration:
             self.entry_price or 0,
         )
         return True
+
+    def _resolve_trailing_stop_position(self) -> int:
+        """Return current position direction, or 0 if unavailable."""
+        if not self.trade_manager:
+            LOG.error("[TRAILING-STOP] TradeManager not initialized")
+            return 0
+        pos_dir = self.get_current_position()
+        if pos_dir == 0:
+            LOG.warning("[TRAILING-STOP] No position to protect")
+        return pos_dir
+
+    def _activate_trailing_stop_state(self, pos_dir: int, distance_pct: float) -> None:
+        """Activate trailing stop state for a position."""
+        self.trailing_stop_distance_pct = distance_pct
+        self.position_direction = pos_dir
+        self.trailing_stop_active = True
+
+    def _init_trailing_stop_prices(self, pos_dir: int) -> float | None:
+        """Initialize high/low tracking and return mid price if available."""
+        mid = None
+        if hasattr(self.app, "best_bid") and hasattr(self.app, "best_ask"):
+            mid = (self.app.best_bid + self.app.best_ask) / 2.0 if self.app.best_bid and self.app.best_ask else None
+            if mid:
+                self.highest_price_since_entry = mid if pos_dir == 1 else None
+                self.lowest_price_since_entry = mid if pos_dir == -1 else None
+        return mid
+
+    def _init_trailing_stop_entry_price(self, mid: float | None) -> None:
+        """Set entry_price from tracker summary when available."""
+        if hasattr(self.app, "mfe_mae_tracker"):
+            summary = self.app.mfe_mae_tracker.get_summary()
+            self.entry_price = summary.get("entry_price", mid)
 
     def update_trailing_stop(self, current_price: float):
         """
@@ -527,60 +712,66 @@ class TradeManagerIntegration:
 
         if self.position_direction == 0:
             LOG.debug("[TRAILING-STOP] Position closed, disabling")
-            self.trailing_stop_active = False
+            self._mark_trailing_stop_closed()
+            return
+
+        if not self._is_valid_trailing_price(current_price):
+            return
+
+        if self.position_direction == 1:
+            self._update_long_trailing_stop(current_price)
+        elif self.position_direction == -1:
+            self._update_short_trailing_stop(current_price)
+
+    def _mark_trailing_stop_closed(self) -> None:
+        """Mark trailing stop inactive after position closes."""
+        self.trailing_stop_active = False
+        self._persist_state()
+
+    def _is_valid_trailing_price(self, current_price: float) -> bool:
+        """Validate current price before applying trailing stop logic."""
+        import math  # noqa: PLC0415
+        if math.isfinite(current_price) and current_price > 0:
+            return True
+        LOG.error("[TRAILING-STOP] Invalid price: %s", current_price)
+        return False
+
+    def _update_long_trailing_stop(self, current_price: float) -> None:
+        if self.highest_price_since_entry is None:
+            self.highest_price_since_entry = current_price
             self._persist_state()
             return
-
-        # Defensive: Validate price
-        import math  # noqa: PLC0415
-
-        if not (math.isfinite(current_price) and current_price > 0):
-            LOG.error("[TRAILING-STOP] Invalid price: %s", current_price)
+        if current_price <= self.highest_price_since_entry:
             return
+        old_high = self.highest_price_since_entry
+        self.highest_price_since_entry = current_price
+        new_stop = current_price * (1.0 - self.trailing_stop_distance_pct / 100.0)
+        LOG.info(
+            "[TRAILING-STOP] LONG: New high %.5f (was %.5f) → Stop moved to %.5f",
+            current_price,
+            old_high,
+            new_stop,
+        )
+        self._submit_stop_order(new_stop)
+        self._persist_state()
 
-        # Track highest/lowest price
-        if self.position_direction == 1:  # LONG position
-            if self.highest_price_since_entry is None:
-                self.highest_price_since_entry = current_price
-                self._persist_state()
-            elif current_price > self.highest_price_since_entry:
-                old_high = self.highest_price_since_entry
-                self.highest_price_since_entry = current_price
-
-                # Calculate new stop level (trails upward)
-                new_stop = current_price * (1.0 - self.trailing_stop_distance_pct / 100.0)
-
-                LOG.info(
-                    "[TRAILING-STOP] LONG: New high %.5f (was %.5f) → Stop moved to %.5f",
-                    current_price,
-                    old_high,
-                    new_stop,
-                )
-
-                # Submit/modify stop order via TradeManager
-                self._submit_stop_order(new_stop)
-                self._persist_state()
-
-        elif self.position_direction == -1:  # SHORT position
-            if self.lowest_price_since_entry is None:
-                self.lowest_price_since_entry = current_price
-                self._persist_state()
-            elif current_price < self.lowest_price_since_entry:
-                old_low = self.lowest_price_since_entry
-                self.lowest_price_since_entry = current_price
-
-                # Calculate new stop level (trails downward)
-                new_stop = current_price * (1.0 + self.trailing_stop_distance_pct / 100.0)
-
-                LOG.info(
-                    "[TRAILING-STOP] SHORT: New low %.5f (was %.5f) → Stop moved to %.5f",
-                    current_price,
-                    old_low,
-                    new_stop,
-                )
-
-                # Submit/modify stop order via TradeManager
-                self._submit_stop_order(new_stop)
+    def _update_short_trailing_stop(self, current_price: float) -> None:
+        if self.lowest_price_since_entry is None:
+            self.lowest_price_since_entry = current_price
+            self._persist_state()
+            return
+        if current_price >= self.lowest_price_since_entry:
+            return
+        old_low = self.lowest_price_since_entry
+        self.lowest_price_since_entry = current_price
+        new_stop = current_price * (1.0 + self.trailing_stop_distance_pct / 100.0)
+        LOG.info(
+            "[TRAILING-STOP] SHORT: New low %.5f (was %.5f) → Stop moved to %.5f",
+            current_price,
+            old_low,
+            new_stop,
+        )
+        self._submit_stop_order(new_stop)
 
     def _submit_stop_order(self, stop_price: float):
         """
@@ -621,10 +812,10 @@ class TradeManagerIntegration:
             # Submit new stop order
             try:
                 side = Side.SELL if self.position_direction == 1 else Side.BUY
-                self.trailing_stop_order = self.trade_manager.submit_limit_order(
+                self.trailing_stop_order = self.trade_manager.submit_stop_order(
                     side=side,
                     quantity=self.app.qty,
-                    price=stop_price,
+                    stop_price=stop_price,
                     tag_prefix="STOP",
                 )
                 LOG.info("[TRAILING-STOP] Submitted stop order @ %.5f", stop_price)
@@ -663,59 +854,67 @@ class TradeManagerIntegration:
             LOG.error("[INTEGRATION] TradeManager not initialized")
             return False
 
-        # If position_id specified, close that specific position
-        if position_id and hasattr(self.app, "mfe_mae_trackers"):
-            tracker = self.app.mfe_mae_trackers.get(position_id)
-            if not tracker:
-                LOG.warning("[INTEGRATION] Position %s not found in trackers", position_id)
-                return False
-
-            direction = getattr(tracker, "direction", None)
-            if direction is None or direction == 0:
-                LOG.warning("[INTEGRATION] Position %s has invalid direction", position_id)
-                return False
-
-            # Get broker ticket for this position
-            ticket = getattr(tracker, "position_ticket", None)
-            if not ticket:
-                LOG.warning("[INTEGRATION] Position %s has no broker ticket", position_id)
-                return False
-
-            # Submit opposite order to close
-            exit_side = Side.SELL if direction > 0 else Side.BUY
-            order = self.trade_manager.submit_market_order(
-                side=exit_side,
-                quantity=self.app.qty,
-                tag_prefix=f"EXIT_{reason}",
-                position_ticket=ticket,  # HEDGING MODE FIX: Close specific position by ticket
-            )
-
-            if order:
-                # HEDGING MODE: Map exit order to broker ticket being closed
-                self.exit_order_to_ticket[order.clord_id] = ticket
-                LOG.info(
-                    "[INTEGRATION] Closing position ticket=%s: %s %.6f @ market (clOrdID=%s reason=%s)",
-                    ticket,
-                    exit_side.name,
-                    self.app.qty,
-                    order.clord_id,
-                    reason,
-                )
-            return order is not None
+        if position_id:
+            return self._close_position_by_id(position_id, reason)
 
         # Otherwise close net position (legacy behavior)
+        return self._close_net_position(reason)
+
+    def _close_position_by_id(self, position_id: str, reason: str) -> bool:
+        """Close a specific position in hedging mode by position_id."""
+        if not hasattr(self.app, "mfe_mae_trackers"):
+            LOG.warning("[INTEGRATION] Position %s not found in trackers", position_id)
+            return False
+        direction, ticket = self._resolve_close_details(position_id)
+        if not ticket:
+            return False
+        exit_side = Side.SELL if direction > 0 else Side.BUY
+        order = self.trade_manager.submit_market_order(
+            side=exit_side,
+            quantity=self.app.qty,
+            tag_prefix=f"EXIT_{reason}",
+            position_ticket=ticket,
+        )
+        if order:
+            self.exit_order_to_ticket[order.clord_id] = ticket
+            LOG.info(
+                "[INTEGRATION] Closing position ticket=%s: %s %.6f @ market (clOrdID=%s reason=%s)",
+                ticket,
+                exit_side.name,
+                self.app.qty,
+                order.clord_id,
+                reason,
+            )
+        return order is not None
+
+    def _resolve_close_details(self, position_id: str) -> tuple[int, str | None]:
+        """Return (direction, ticket) for the given position_id."""
+        tracker = self.app.mfe_mae_trackers.get(position_id)
+        if not tracker:
+            LOG.warning("[INTEGRATION] Position %s not found in trackers", position_id)
+            return 0, None
+        direction = getattr(tracker, "direction", None)
+        if direction is None or direction == 0:
+            LOG.warning("[INTEGRATION] Position %s has invalid direction", position_id)
+            return 0, None
+        ticket = getattr(tracker, "position_ticket", None)
+        if not ticket:
+            LOG.warning("[INTEGRATION] Position %s has no broker ticket", position_id)
+            return 0, None
+        return direction, ticket
+
+    def _close_net_position(self, reason: str) -> bool:
+        """Close the net position when hedging is not used."""
         pos_dir = self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
         if pos_dir == 0:
             LOG.warning("[INTEGRATION] No net position to exit")
             return False
-
         exit_side = Side.SELL if pos_dir > 0 else Side.BUY
         order = self.trade_manager.submit_market_order(
             side=exit_side,
             quantity=self.app.qty,
             tag_prefix=f"EXIT_{reason}",
         )
-
         if order:
             LOG.info("[INTEGRATION] Closing net position: %s %.6f (reason=%s)", exit_side.name, self.app.qty, reason)
         return order is not None
@@ -783,60 +982,10 @@ class TradeManagerIntegration:
     def _persist_state(self):
         """Persist current position and trailing stop state for crash recovery"""
         try:
-            # Include position data for recovery
-            position_data = None
-            if self.trade_manager and self.trade_manager.position:
-                position_data = self.trade_manager.position.to_dict()
-
-            # MULTI-POSITION: Persist all active trackers
-            active_trackers = {}
-            if hasattr(self.app, "mfe_mae_trackers"):
-                for pos_id, tracker in self.app.mfe_mae_trackers.items():
-                    entry_price = getattr(tracker, "entry_price", None)
-                    direction = getattr(tracker, "direction", None)
-                    # Only persist initialized trackers
-                    if entry_price and entry_price > 0 and direction and direction != 0:
-                        active_trackers[pos_id] = {
-                            "entry_price": round(entry_price, 8),
-                            "direction": direction,
-                            "mfe": round(getattr(tracker, "mfe", 0.0), 8),
-                            "mae": round(getattr(tracker, "mae", 0.0), 8),
-                        }
-
-            # HEDGING MODE: Persist broker ticket mappings
-            position_tickets = {}
-            if hasattr(self.app, "mfe_mae_trackers"):
-                for ticket, pos_id in self.position_tickets.items():
-                    tracker = self.app.mfe_mae_trackers.get(pos_id)
-                    if tracker:
-                        entry_price = getattr(tracker, "entry_price", None)
-                        direction = getattr(tracker, "direction", None)
-                        if entry_price and entry_price > 0 and direction and direction != 0:
-                            position_tickets[ticket] = {
-                                "position_id": pos_id,
-                                "entry_price": round(entry_price, 8),
-                                "direction": direction,
-                                "quantity": round(self.app.qty, 8),
-                                "entry_time": getattr(tracker, "entry_time", utc_now()).isoformat(),
-                            }
-
-            state = {
-                "trailing_stop_active": self.trailing_stop_active,
-                "trailing_stop_distance_pct": round(self.trailing_stop_distance_pct, 8),
-                "highest_price_since_entry": (
-                    round(self.highest_price_since_entry, 8) if self.highest_price_since_entry else None
-                ),
-                "lowest_price_since_entry": (
-                    round(self.lowest_price_since_entry, 8) if self.lowest_price_since_entry else None
-                ),
-                "entry_price": round(self.entry_price, 8) if self.entry_price else None,
-                "position_direction": self.position_direction,
-                "symbol_id": self.app.symbol_id,
-                "position": position_data,
-                "active_trackers": active_trackers,  # Legacy tracker data
-                "position_tickets": position_tickets,  # NEW: Broker ticket → position mapping
-                "persisted_at": utc_now().isoformat(),
-            }
+            position_data = self._collect_position_data()
+            active_trackers = self._collect_active_trackers()
+            position_tickets = self._collect_position_tickets()
+            state = self._build_persist_state(position_data, active_trackers, position_tickets)
             self.persistence.save_json(state, self.state_filename, create_backup=True)
             LOG.info(
                 "[INTEGRATION] 💾 Position persisted: net=%.6f trackers=%d tickets=%d",
@@ -846,6 +995,86 @@ class TradeManagerIntegration:
             )
         except Exception as e:
             LOG.error("[INTEGRATION] Failed to persist state: %s", e, exc_info=True)
+
+    def _collect_position_data(self) -> dict | None:
+        """Collect position data from TradeManager for persistence."""
+        if self.trade_manager and self.trade_manager.position:
+            return self.trade_manager.position.to_dict()
+        return None
+
+    def _collect_active_trackers(self) -> dict:
+        """Collect active tracker state for persistence."""
+        active_trackers: dict = {}
+        if not hasattr(self.app, "mfe_mae_trackers"):
+            return active_trackers
+        for pos_id, tracker in self.app.mfe_mae_trackers.items():
+            entry_price = getattr(tracker, "entry_price", None)
+            direction = getattr(tracker, "direction", None)
+            if entry_price and entry_price > 0 and direction and direction != 0:
+                active_trackers[pos_id] = {
+                    "entry_price": float(round(entry_price, 8)),
+                    "direction": int(direction),
+                    "mfe": float(round(getattr(tracker, "mfe", 0.0), 8)),
+                    "mae": float(round(getattr(tracker, "mae", 0.0), 8)),
+                }
+        return active_trackers
+
+    def _collect_position_tickets(self) -> dict:
+        """Collect broker ticket mapping data for persistence."""
+        position_tickets: dict = {}
+        if not hasattr(self.app, "mfe_mae_trackers"):
+            return position_tickets
+        for ticket, pos_id in self.position_tickets.items():
+            tracker = self.app.mfe_mae_trackers.get(pos_id) if hasattr(self.app, "mfe_mae_trackers") else None
+            entry_price = getattr(tracker, "entry_price", None) or self.entry_price
+            direction = getattr(tracker, "direction", None) or self.position_direction
+            entry_time = getattr(tracker, "entry_time", None)
+            if not (entry_price and entry_price > 0 and direction and direction != 0):
+                # Persist ticket with minimal fallback so it isn't silently lost on restart
+                LOG.warning(
+                    "[INTEGRATION] Persisting ticket %s with fallback data (no tracker found)", ticket,
+                )
+                position_tickets[ticket] = {
+                    "position_id": pos_id,
+                    "entry_price": 0.0,
+                    "direction": int(self.position_direction or (1 if getattr(self.app, "cur_pos", 0) > 0 else -1)),
+                    "quantity": float(round(self.app.qty, 8)),
+                    "entry_time": utc_now().isoformat(),
+                }
+                continue
+            position_tickets[ticket] = {
+                "position_id": pos_id,
+                "entry_price": float(round(entry_price, 8)),
+                "direction": int(direction),
+                "quantity": float(round(self.app.qty, 8)),
+                "entry_time": entry_time.isoformat() if hasattr(entry_time, "isoformat") else utc_now().isoformat(),
+            }
+        return position_tickets
+
+    def _build_persist_state(
+        self,
+        position_data: dict | None,
+        active_trackers: dict,
+        position_tickets: dict,
+    ) -> dict:
+        """Build the persisted state payload."""
+        return {
+            "trailing_stop_active": self.trailing_stop_active,
+            "trailing_stop_distance_pct": float(round(self.trailing_stop_distance_pct, 8)),
+            "highest_price_since_entry": (
+                float(round(self.highest_price_since_entry, 8)) if self.highest_price_since_entry else None
+            ),
+            "lowest_price_since_entry": (
+                float(round(self.lowest_price_since_entry, 8)) if self.lowest_price_since_entry else None
+            ),
+            "entry_price": float(round(self.entry_price, 8)) if self.entry_price else None,
+            "position_direction": int(self.position_direction),
+            "symbol_id": self.app.symbol_id,
+            "position": position_data,
+            "active_trackers": active_trackers,
+            "position_tickets": position_tickets,
+            "persisted_at": utc_now().isoformat(),
+        }
 
     def _recover_position_from_state(self, state: dict) -> bool:
         """Restore TradeManager position and cur_pos from persisted state. Returns position_recovered."""
@@ -860,22 +1089,9 @@ class TradeManagerIntegration:
         )
         has_trackers = len(state.get("active_trackers", {})) > 0
         has_tickets = len(state.get("position_tickets", {})) > 0
-        if has_position and (has_trackers or has_tickets):
-            self.trade_manager.position = recovered_pos
-            if recovered_pos.net_qty > 0:
-                self.app.cur_pos = 1
-            elif recovered_pos.net_qty < 0:
-                self.app.cur_pos = -1
-            else:
-                self.app.cur_pos = 0
-            if self.app.cur_pos == 1:
-                _dir = "LONG"
-            elif self.app.cur_pos == -1:
-                _dir = "SHORT"
-            elif has_position:
-                _dir = "HEDGED"
-            else:
-                _dir = "FLAT"
+        if has_position:
+            self._apply_recovered_position(recovered_pos)
+            _dir = self._recovery_direction_label(has_position)
             LOG.info(
                 "[INTEGRATION] 🔄 POSITION RECOVERED: long=%.6f short=%.6f net=%.6f "
                 "direction=%s trackers=%d tickets=%d (persisted_at=%s)",
@@ -883,14 +1099,34 @@ class TradeManagerIntegration:
                 _dir, len(state.get("active_trackers", {})), len(state.get("position_tickets", {})),
                 state.get("persisted_at", "unknown"),
             )
+            if not (has_trackers or has_tickets):
+                LOG.warning(
+                    "[INTEGRATION] ⚠️ Position recovered with NO trackers/tickets "
+                    "(long=%.6f short=%.6f) — position tracked but entry metadata unavailable",
+                    recovered_pos.long_qty, recovered_pos.short_qty,
+                )
             return True
-        if has_position:
-            LOG.warning(
-                "[INTEGRATION] ⚠️ Ignoring stale position data "
-                "(long=%.6f short=%.6f net=%.6f) - no active trackers/tickets",
-                recovered_pos.long_qty, recovered_pos.short_qty, recovered_pos.net_qty,
-            )
         return False
+
+    def _apply_recovered_position(self, recovered_pos) -> None:
+        """Apply recovered position to TradeManager and app."""
+        self.trade_manager.position = recovered_pos
+        if recovered_pos.net_qty > 0:
+            self.app.cur_pos = 1
+        elif recovered_pos.net_qty < 0:
+            self.app.cur_pos = -1
+        else:
+            self.app.cur_pos = 0
+
+    def _recovery_direction_label(self, has_position: bool) -> str:
+        """Return a direction label for recovery logs."""
+        if self.app.cur_pos == 1:
+            return "LONG"
+        if self.app.cur_pos == -1:
+            return "SHORT"
+        if has_position:
+            return "HEDGED"
+        return "FLAT"
 
     def _restore_mfe_mae_trackers(self, active_trackers: dict) -> None:
         """Recreate MFEMAETracker objects from persisted active_trackers dict."""
@@ -898,38 +1134,51 @@ class TradeManagerIntegration:
             return
         from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
         for pos_id, tracker_data in active_trackers.items():
-            try:
-                if not isinstance(tracker_data, dict):
-                    LOG.error("[RECOVERY] Invalid tracker_data type for %s - skipping", pos_id)
-                    continue
-                entry_price = tracker_data.get("entry_price")
-                direction = tracker_data.get("direction")
-                if entry_price is None or entry_price <= 0:
-                    LOG.error("[RECOVERY] Invalid entry_price for %s - skipping tracker", pos_id)
-                    continue
-                if direction not in (1, -1):
-                    LOG.warning("[RECOVERY] Invalid direction=%s for %s - defaulting to LONG", direction, pos_id)
-                    direction = 1
-                if pos_id not in self.app.mfe_mae_trackers:
-                    self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id)
-                self.app.mfe_mae_trackers[pos_id].start_tracking(entry_price, direction)
-                mfe_val = float(tracker_data.get("mfe", 0.0))
-                mae_val = float(tracker_data.get("mae", 0.0))
-                self.app.mfe_mae_trackers[pos_id].mfe = mfe_val
-                self.app.mfe_mae_trackers[pos_id].mae = mae_val
-                self.app.mfe_mae_trackers[pos_id].best_profit = mfe_val
-                self.app.mfe_mae_trackers[pos_id].worst_loss = -mae_val
-            except Exception as e:
-                LOG.error("[RECOVERY] Error restoring tracker %s: %s", pos_id, e, exc_info=True)
-                continue
-            LOG.info("[MULTI-POS] ✓ Recovered tracker %s: entry=%.5f dir=%d MFE=%.4f MAE=%.4f",
-                     pos_id, tracker_data["entry_price"], tracker_data.get("direction", 1),
-                     tracker_data.get("mfe", 0.0), tracker_data.get("mae", 0.0))
+            if self._restore_single_tracker(pos_id, tracker_data, MFEMAETracker):
+                LOG.info(
+                    "[MULTI-POS] ✓ Recovered tracker %s: entry=%.5f dir=%d MFE=%.4f MAE=%.4f",
+                    pos_id,
+                    tracker_data["entry_price"],
+                    tracker_data.get("direction", 1),
+                    tracker_data.get("mfe", 0.0),
+                    tracker_data.get("mae", 0.0),
+                )
+
+    def _restore_single_tracker(self, pos_id: str, tracker_data: dict, tracker_cls) -> bool:
+        """Restore a single MFEMAE tracker from persisted data."""
+        try:
+            if not isinstance(tracker_data, dict):
+                LOG.error("[RECOVERY] Invalid tracker_data type for %s - skipping", pos_id)
+                return False
+            entry_price = tracker_data.get("entry_price")
+            direction = tracker_data.get("direction")
+            if entry_price is None or entry_price <= 0:
+                LOG.error("[RECOVERY] Invalid entry_price for %s - skipping tracker", pos_id)
+                return False
+            if direction not in (1, -1):
+                LOG.warning("[RECOVERY] Invalid direction=%s for %s - defaulting to LONG", direction, pos_id)
+                direction = 1
+            if pos_id not in self.app.mfe_mae_trackers:
+                self.app.mfe_mae_trackers[pos_id] = tracker_cls(pos_id)
+            tracker = self.app.mfe_mae_trackers[pos_id]
+            tracker.start_tracking(entry_price, direction)
+            mfe_val = float(tracker_data.get("mfe", 0.0))
+            mae_val = float(tracker_data.get("mae", 0.0))
+            tracker.mfe = mfe_val
+            tracker.mae = mae_val
+            tracker.best_profit = mfe_val
+            tracker.worst_loss = -mae_val
+            return True
+        except Exception as e:
+            LOG.error("[RECOVERY] Error restoring tracker %s: %s", pos_id, e, exc_info=True)
+            return False
 
     def _restore_position_tickets(self, position_tickets: dict) -> None:
         """Recreate broker ticket → position_id mappings and MFEMAETrackers from persisted tickets."""
         if not (position_tickets and hasattr(self.app, "mfe_mae_trackers")):
             return
+        import datetime as _dt  # noqa: PLC0415
+
         from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
         for ticket, ticket_data in position_tickets.items():
             position_id = ticket_data["position_id"]
@@ -941,6 +1190,13 @@ class TradeManagerIntegration:
                 tracker.start_tracking(ticket_data["entry_price"], ticket_data["direction"])
             tracker.position_ticket = ticket
             self.position_tickets[ticket] = position_id
+            # Restore trade_entry_time for bars_held calculation after restart
+            entry_time_str = ticket_data.get("entry_time")
+            if entry_time_str and hasattr(self.app, "trade_entry_time"):
+                try:
+                    self.app.trade_entry_time = _dt.datetime.fromisoformat(entry_time_str)
+                except (ValueError, TypeError):
+                    pass
             LOG.info(
                 "[HEDGING] ✓ Recovered position ticket=%s: pos_id=%s entry=%.5f dir=%d qty=%.6f",
                 ticket, position_id, ticket_data["entry_price"], ticket_data["direction"], ticket_data["quantity"],
@@ -964,34 +1220,58 @@ class TradeManagerIntegration:
         """Call policy.on_recovery (or on_entry) for the most recently persisted position."""
         if not hasattr(self.app, "policy"):
             return
+        if self._recover_from_position_tickets(position_tickets):
+            return
+        if self._recover_from_active_trackers(active_trackers):
+            return
+        self._recover_from_net_position(position_recovered)
 
-        if position_tickets:
-            last = list(position_tickets.values())[-1]
-            pos_id = last.get("position_id")
-            mfe, mae = 0.0, 0.0
-            if pos_id and hasattr(self.app, "mfe_mae_trackers"):
-                tr = self.app.mfe_mae_trackers.get(pos_id)
-                if tr:
-                    mfe = getattr(tr, "mfe", 0.0)
-                    mae = getattr(tr, "mae", 0.0)
-            self._call_policy_recovery(last["direction"], last["entry_price"], mfe, mae)
-        elif active_trackers:
-            last = list(active_trackers.values())[-1]
-            self._call_policy_recovery(
-                last["direction"], last["entry_price"],
-                last.get("mfe", 0.0), last.get("mae", 0.0),
-            )
-        elif position_recovered and self.entry_price and self.position_direction != 0:
-            pos_id = f"{self.app.symbol_id}_net"
-            if hasattr(self.app, "mfe_mae_trackers"):
-                from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
-                if pos_id not in self.app.mfe_mae_trackers:
-                    self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id)
-                self.app.mfe_mae_trackers[pos_id].start_tracking(self.entry_price, self.position_direction)
-            tr = self.app.mfe_mae_trackers.get(pos_id) if hasattr(self.app, "mfe_mae_trackers") else None
-            mfe = getattr(tr, "mfe", 0.0) if tr else 0.0
-            mae = getattr(tr, "mae", 0.0) if tr else 0.0
-            self._call_policy_recovery(self.position_direction, self.entry_price, mfe, mae)
+    def _recover_from_position_tickets(self, position_tickets: dict) -> bool:
+        """Recover policy state from the most recent position ticket."""
+        if not position_tickets:
+            return False
+        last = list(position_tickets.values())[-1]
+        pos_id = last.get("position_id")
+        mfe, mae = self._lookup_tracker_mfe_mae(pos_id)
+        self._call_policy_recovery(last["direction"], last["entry_price"], mfe, mae)
+        return True
+
+    def _recover_from_active_trackers(self, active_trackers: dict) -> bool:
+        """Recover policy state from legacy active trackers."""
+        if not active_trackers:
+            return False
+        last = list(active_trackers.values())[-1]
+        self._call_policy_recovery(
+            last["direction"],
+            last["entry_price"],
+            last.get("mfe", 0.0),
+            last.get("mae", 0.0),
+        )
+        return True
+
+    def _recover_from_net_position(self, position_recovered: bool) -> None:
+        """Recover policy state from net position if no trackers are available."""
+        if not (position_recovered and self.entry_price and self.position_direction != 0):
+            return
+        pos_id = f"{self.app.symbol_id}_net"
+        if hasattr(self.app, "mfe_mae_trackers"):
+            from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
+            if pos_id not in self.app.mfe_mae_trackers:
+                self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id)
+            self.app.mfe_mae_trackers[pos_id].start_tracking(self.entry_price, self.position_direction)
+        tr = self.app.mfe_mae_trackers.get(pos_id) if hasattr(self.app, "mfe_mae_trackers") else None
+        mfe = getattr(tr, "mfe", 0.0) if tr else 0.0
+        mae = getattr(tr, "mae", 0.0) if tr else 0.0
+        self._call_policy_recovery(self.position_direction, self.entry_price, mfe, mae)
+
+    def _lookup_tracker_mfe_mae(self, pos_id: str | None) -> tuple[float, float]:
+        """Return (mfe, mae) for the given tracker id if available."""
+        if not (pos_id and hasattr(self.app, "mfe_mae_trackers")):
+            return 0.0, 0.0
+        tr = self.app.mfe_mae_trackers.get(pos_id)
+        if not tr:
+            return 0.0, 0.0
+        return getattr(tr, "mfe", 0.0), getattr(tr, "mae", 0.0)
 
     def _force_mfe_mae_recovery_update(self) -> None:
         """Force a single MFE/MAE update using current mid-price after recovery."""
@@ -1028,7 +1308,7 @@ class TradeManagerIntegration:
                 bool(state.get("position")), len(state.get("active_trackers", {})),
             )
 
-            if state.get("symbol_id") != self.app.symbol_id:
+            if str(state.get("symbol_id")) != str(self.app.symbol_id):
                 LOG.warning(
                     "[INTEGRATION] State symbol mismatch: %s vs %s, skipping recovery",
                     state.get("symbol_id"), self.app.symbol_id,
@@ -1099,7 +1379,7 @@ class TradeManagerIntegration:
                         "CRITICAL", f"Position validation failed: Expected {expected_direction}, got {actual_direction}"
                     )
             else:
-                direction_str = "LONG" if actual_direction > 0 else ("SHORT" if actual_direction < 0 else "FLAT")
+                direction_str = self._format_direction_label(actual_direction)
                 LOG.debug(
                     "[VALIDATION] \u2713 Position confirmed: %s=%d (%.6f lots)",
                     direction_str,
@@ -1109,6 +1389,14 @@ class TradeManagerIntegration:
 
         except Exception as e:
             LOG.error("[VALIDATION] Position validation failed: %s", e, exc_info=True)
+
+    def _format_direction_label(self, direction: int) -> str:
+        """Return a human-readable direction label."""
+        if direction > 0:
+            return "LONG"
+        if direction < 0:
+            return "SHORT"
+        return "FLAT"
 
     def _get_position_id_for_order(self, order: Order) -> str:
         """

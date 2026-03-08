@@ -181,23 +181,26 @@ class DecisionLogger:
     - Reasoning/features that influenced decision
     """
 
-    def __init__(self, log_dir: str = "logs/audit", filename: str = "decisions.jsonl"):
+    def __init__(self, log_dir: str = "logs/audit", filename: str = "decisions.jsonl", trading_mode: str = "live"):
         """
         Initialize decision logger.
 
         Args:
             log_dir: Directory for log files
             filename: Log filename (JSON Lines format)
+            trading_mode: "paper" or "live" — stamped on every entry
         """
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = self.log_dir / filename
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
+        self.trading_mode = trading_mode
 
     def log_decision(  # noqa: PLR0913
         self, agent: str, decision: str, confidence: float, context: dict[str, Any], reasoning: dict[str, Any] = None,
         trade_id: str | None = None,
+        position_id: list[str] | None = None,
     ):
         """
         Log an agent decision.
@@ -213,6 +216,7 @@ class DecisionLogger:
         entry = {
             "timestamp": datetime.now(UTC).isoformat(),
             "session": self.session_id,
+            "trading_mode": self.trading_mode,
             "agent": agent,
             "decision": decision,
             "confidence": float(confidence),
@@ -221,6 +225,8 @@ class DecisionLogger:
         }
         if trade_id is not None:
             entry["trade_id"] = trade_id
+        if position_id is not None:
+            entry["position_id"] = position_id if isinstance(position_id, list) else [position_id]
 
         try:
             with self.lock, open(self.log_file, "a", encoding="utf-8") as f:
@@ -241,6 +247,7 @@ class DecisionLogger:
         feasibility: float = 1.0,
         circuit_breakers_ok: bool = True,
         trade_id: str | None = None,
+        position_id: list[str] | None = None,
     ):
         """Log TriggerAgent decision with full context."""
         self.log_decision(
@@ -260,6 +267,7 @@ class DecisionLogger:
                 "circuit_breakers_ok": circuit_breakers_ok,
             },
             trade_id=trade_id,
+            position_id=position_id,
         )
 
     def log_harvester_decision(  # noqa: PLR0913
@@ -275,6 +283,7 @@ class DecisionLogger:
         capture_ratio: float = 0.0,
         trade_id: str | None = None,
         in_position: bool = True,
+        position_id: list[str] | None = None,
     ):
         """Log HarvesterAgent decision with position context.
 
@@ -306,6 +315,7 @@ class DecisionLogger:
                 "capture_ratio": capture_ratio,
             },
             trade_id=trade_id,
+            position_id=position_id,
         )
 
 

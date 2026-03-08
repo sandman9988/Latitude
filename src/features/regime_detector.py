@@ -23,6 +23,7 @@ Performance Optimization:
 """
 
 import logging
+from collections import deque
 from typing import Literal
 
 import numpy as np
@@ -85,12 +86,14 @@ class RegimeDetector:
         self.update_interval = update_interval
 
         # Price history (rolling window)
-        self.price_buffer: list[float] = []
+        self.price_buffer: deque[float] = deque(maxlen=window_size)
 
         # Cached regime state
         self.current_regime: RegimeType = "UNKNOWN"
         self.current_zeta = NEUTRAL_ZETA  # Damping ratio
+        self.current_vr: float = 1.0  # Variance ratio (1.0 = random walk)
         self.bars_since_update = 0
+        self.total_updates: int = 0  # How many times regime has been recalculated
 
         # Performance cache
         self._cache_invalidated: bool = True
@@ -127,8 +130,7 @@ class RegimeDetector:
 
         # Add to rolling buffer
         self.price_buffer.append(price)
-        if len(self.price_buffer) > self.window_size:
-            self.price_buffer.pop(0)  # Remove oldest
+        # deque(maxlen=...) auto-evicts oldest
 
         # Performance: Invalidate cache
         self._cache_invalidated = True  # attribute defined in __init__
@@ -159,6 +161,8 @@ class RegimeDetector:
             if vr is None:
                 return
 
+            self.current_vr = vr
+            self.total_updates += 1
             self._classify_regime(vr, var_1)
 
         except (ValueError, ArithmeticError, RuntimeError) as e:

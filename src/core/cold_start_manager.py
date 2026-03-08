@@ -42,6 +42,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.utils.safe_utils import save_json_atomic
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -430,9 +432,7 @@ class ColdStartManager:
             ],
         }
 
-        self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        save_json_atomic(self.state_file, state)
 
     def load_state(self) -> bool:
         """Load state from disk."""

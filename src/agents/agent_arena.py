@@ -13,6 +13,7 @@ Architecture:
 
 import logging
 import traceback
+from collections import deque
 from enum import Enum
 
 import numpy as np
@@ -38,8 +39,8 @@ class AgentStats:
 
     def __init__(self, window_size: int = 100):
         self.window_size = window_size
-        self.recent_rewards = []
-        self.recent_accuracies = []
+        self.recent_rewards: deque[float] = deque(maxlen=window_size)
+        self.recent_accuracies: deque[float] = deque(maxlen=window_size)
         self.total_decisions = 0
         self.correct_decisions = 0
         self.total_reward = 0.0
@@ -47,12 +48,8 @@ class AgentStats:
     def update(self, reward: float, was_correct: bool):
         """Update statistics with new outcome."""
         self.recent_rewards.append(reward)
-        if len(self.recent_rewards) > self.window_size:
-            self.recent_rewards.pop(0)
 
         self.recent_accuracies.append(1.0 if was_correct else 0.0)
-        if len(self.recent_accuracies) > self.window_size:
-            self.recent_accuracies.pop(0)
 
         self.total_decisions += 1
         if was_correct:

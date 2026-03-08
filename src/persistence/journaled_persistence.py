@@ -104,6 +104,10 @@ class Journal:
             self.sequence_num,
         )
 
+    def __del__(self):
+        """Release file handle on garbage collection."""
+        self.close()
+
     def _get_last_sequence(self) -> int:
         """Get last sequence number from existing journal."""
         if not self.journal_path.exists():
@@ -280,14 +284,26 @@ class Journal:
 
             LOG.info("[JOURNAL] Rotated to: %s", archive_path.name)
 
-            # Open new journal — kept open for object lifetime
-            self.journal_file = open(self.journal_path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
-
-            # Create checkpoint in new journal
-            self.checkpoint()
-
         except Exception as e:
             LOG.error("[JOURNAL] Journal rotation failed: %s", e, exc_info=True)
+        finally:
+            # Always reopen a handle — either the new rotated file or
+            # the original path if rename failed.  Without this the
+            # object is left with a closed file descriptor.
+            try:
+                self.journal_file = open(self.journal_path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
+            except OSError as reopen_err:
+                LOG.critical("[JOURNAL] Cannot reopen journal after rotation: %s", reopen_err)
+                # Last resort: open /dev/null so later writes don't raise
+                import os  # noqa: PLC0415
+
+                self.journal_file = open(os.devnull, "a")  # noqa: SIM115
+
+        # Create checkpoint in new journal (outside try so errors propagate)
+        try:
+            self.checkpoint()
+        except Exception:
+            LOG.warning("[JOURNAL] Checkpoint after rotation failed", exc_info=True)
 
     def replay_from_checkpoint(self, callback: callable = None) -> list[JournalEntry]:
         """

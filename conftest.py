@@ -11,6 +11,7 @@ collect_ignore_glob = [
     "tests/test_phase3_dual_agent.py",
     "tests/test_phase1_fixes.py",
     "tests/validation/test_decision_log_format.py",
+    "tests/archived/*",
     "scripts/testing/*",
 ]
 

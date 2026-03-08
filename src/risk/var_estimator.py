@@ -11,9 +11,10 @@ from enum import Enum
 
 import numpy as np
 
+from src.constants import KURTOSIS_ALERT_THRESHOLD, KURTOSIS_MIN_SAMPLES
 from src.utils.safe_utils import SafeMath, safe_percentile, safe_std
 
-MIN_KURTOSIS_SAMPLE = 30
+MIN_KURTOSIS_SAMPLE = KURTOSIS_MIN_SAMPLES
 MIN_KURTOSIS_STATS = 4
 STD_EPS = 1e-12
 MIN_VAR_SAMPLE = 30
@@ -42,7 +43,7 @@ class KurtosisMonitor:
     Handbook: "Kurtosis > 3 indicates fat tails; trigger circuit breaker"
     """
 
-    def __init__(self, window: int = 100, threshold: float = 3.0):
+    def __init__(self, window: int = 100, threshold: float = KURTOSIS_ALERT_THRESHOLD):
         """
         Args:
             window: Rolling window for kurtosis calculation
@@ -130,6 +131,14 @@ class KurtosisMonitor:
     def current_kurtosis(self) -> float:
         """Get last calculated kurtosis"""
         return self._last_kurtosis
+
+    def reset(self) -> None:
+        """Manually reset the kurtosis circuit breaker gate"""
+        if self._breaker_active:
+            logger.info(f"Kurtosis gate manually reset (was active at κ={self._last_kurtosis:.2f})")
+            self._breaker_active = False
+        else:
+            logger.info("Kurtosis gate reset (was already inactive)")
 
 
 class VaREstimator:

@@ -7,6 +7,7 @@ Reference: MQL5 AdaptiveRegularization.mqh
 """
 
 import logging
+from collections import deque
 
 import numpy as np
 
@@ -45,7 +46,7 @@ class AdaptiveRegularization:
         self.dropout_min, self.dropout_max = dropout_range
         self.adjustment_rate = adjustment_rate
 
-        self.adjustment_history: list[str] = []
+        self.adjustment_history: deque[str] = deque(maxlen=1000)
 
         LOG.info(
             "[ADAPT-REG] Initialized: L2=%.5f [%.5f, %.5f], Dropout=%.3f [%.3f, %.3f]",

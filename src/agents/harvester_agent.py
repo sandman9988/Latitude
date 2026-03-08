@@ -22,39 +22,45 @@ Phase 3.5: Online Learning
 """
 
 import logging
-import math
 import os
 
 import numpy as np
 
+from src.agents.agent_training_mixin import AgentTrainingMixin, softmax
+from src.constants import (
+    BREAKEVEN_TRIGGER_PCT,
+    CAPTURE_DECAY_MIN_MFE_PCT,
+    CAPTURE_DECAY_THRESHOLD,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_FRICTION_PCT,
+    GAMMA,
+    GRAD_CLIP_NORM,
+    HARD_TIME_STOP_BARS,
+    HARVESTER_BUFFER_CAPACITY,
+    L2_WEIGHT,
+    LEARNING_RATE,
+    MICRO_WINNER_GIVEBACK_PCT,
+    MICRO_WINNER_MFE_THRESHOLD_PCT,
+    MIN_EXPERIENCES,
+    MIN_SOFT_PROFIT_PCT,
+    PROFIT_TARGET_PCT_DEFAULT,
+    SOFT_TIME_STOP_BARS,
+    STATE_WINDOW_SIZE,
+    STOP_LOSS_PCT_DEFAULT,
+    TAU,
+    TRAILING_STOP_ACTIVATION_PCT,
+    TRAILING_STOP_DISTANCE_PCT,
+)
 from src.core.ddqn_network import DDQNNetwork
 from src.persistence.learned_parameters import LearnedParametersManager
-from src.utils.experience_buffer import ExperienceBuffer, RegimeSampling
+from src.utils.experience_buffer import ExperienceBuffer
 
 LOG = logging.getLogger(__name__)
 
-# Capacity sized to ~20 days of dense bar-level experiences (~500 bars/day while in a
-# position at 100 trades × ~5 bars each).  Staleness halflife = 1 day, so entries older
-# than ~10,000 bars are near-zero weight and only waste memory.
-BUFFER_CAPACITY: int = 10_000
-MIN_EXPERIENCES_DEFAULT: int = 32  # 1 batch – start training as soon as we have enough
-BATCH_SIZE_DEFAULT: int = 64
+# Internal implementation constants (harvester-only, not shared across modules)
 CONFIDENCE_FALLBACK: float = 0.7
 PCT_SCALE: float = 100.0
 TICKS_HELD_NORM_DENOM: float = 100.0  # Normalize tick count to [0,1] range
-SOFT_TIME_STOP_BARS: int = 200  # Soft time stop threshold (adaptive via learned parameters)
-HARD_TIME_STOP_BARS: int = 400  # Hard time stop limit (adaptive via learned parameters)
-MIN_SOFT_PROFIT_PCT: float = 0.20  # Minimum unrealized profit percentage required for soft time stop exit
-PROFIT_TARGET_PCT_DEFAULT: float = 0.45  # Target profit as percentage of entry price (instrument-agnostic)
-STOP_LOSS_PCT_DEFAULT: float = 0.40  # Maximum adverse excursion percentage before forced exit
-
-# Trailing stop & profit protection constants (all as percentages for instrument-agnostic operation)
-BREAKEVEN_TRIGGER_PCT: float = 0.40  # MFE threshold to move stop to breakeven (profit protection)
-TRAILING_STOP_ACTIVATION_PCT: float = 0.35  # MFE percentage to activate trailing stop
-TRAILING_STOP_DISTANCE_PCT: float = 0.15  # Distance to trail behind peak MFE (as percentage)
-MIN_HOLD_TICKS_DEFAULT: int = 10  # Minimum ticks held before DDQN close is allowed (~3-5 sec at typical feed)
-CAPTURE_DECAY_THRESHOLD: float = 0.35  # Exit if current profit / MFE ratio falls below threshold
-CAPTURE_DECAY_MIN_MFE_PCT: float = 0.10  # Only apply capture decay logic above this MFE percentage
 
 # Magic number constants for code quality
 MAX_MAE_PCT: float = 100.0  # Maximum MAE percentage (clip suspicious values)
@@ -65,12 +71,9 @@ EXCELLENT_CAPTURE_RATIO: float = 0.8  # Excellent capture ratio for trailing sto
 FLOAT_EPSILON: float = 1e-9  # Floating point comparison tolerance
 MFE_TO_SL_RATIO_HIGH: float = 2.0  # High MFE to SL ratio threshold
 MFE_TO_SL_RATIO_LOW: float = 0.5  # Low MFE to SL ratio threshold
-TRAINING_LOG_INTERVAL_EARLY: int = 10  # Log every 10 steps for first 100 steps
-TRAINING_LOG_INTERVAL_LATE: int = 100  # Log every 100 steps after 100 steps
-TRAINING_STEPS_EARLY: int = 100  # Number of steps considered "early training"
 
 
-class HarvesterAgent:
+class HarvesterAgent(AgentTrainingMixin):
     """
     Exit specialist agent - decides WHEN to close position.
 
@@ -100,9 +103,11 @@ class HarvesterAgent:
         - confidence: [0, 1] from softmax probabilities
     """
 
+    _AGENT_TAG = "HARVESTER"
+
     def __init__(  # noqa: PLR0913
         self,
-        window: int = 64,
+        window: int = STATE_WINDOW_SIZE,
         n_features: int = 10,
         enable_training: bool = False,
         symbol: str = "XAUUSD",  # Instrument-agnostic: required param, default only for tests
@@ -111,7 +116,7 @@ class HarvesterAgent:
         param_manager: LearnedParametersManager | None = None,
         friction_calculator=None,
         timeframe_minutes: int = 5,
-        buffer_capacity: int = BUFFER_CAPACITY,
+        buffer_capacity: int = HARVESTER_BUFFER_CAPACITY,
     ):
         """
         Initialize Harvester Agent.
@@ -137,8 +142,8 @@ class HarvesterAgent:
         # Phase 3.5: Experience replay buffer
         self.enable_training = enable_training
         self.buffer = ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes) if enable_training else None
-        self.min_experiences = MIN_EXPERIENCES_DEFAULT  # Minimum before training starts
-        self.batch_size = BATCH_SIZE_DEFAULT
+        self.min_experiences = MIN_EXPERIENCES
+        self.batch_size = DEFAULT_BATCH_SIZE
         self.training_steps = 0
         self.last_state = None  # Track state for experience creation
 
@@ -147,11 +152,11 @@ class HarvesterAgent:
             DDQNNetwork(
                 state_dim=window * n_features,
                 n_actions=2,
-                learning_rate=0.0005,
-                gamma=0.99,
-                tau=0.005,
-                l2_weight=0.0001,
-                grad_clip_norm=1.0,
+                learning_rate=LEARNING_RATE,
+                gamma=GAMMA,
+                tau=TAU,
+                l2_weight=L2_WEIGHT,
+                grad_clip_norm=GRAD_CLIP_NORM,
             )
             if enable_training
             else None
@@ -180,32 +185,14 @@ class HarvesterAgent:
         """Load PyTorch DDQN model for harvester agent."""
         try:
             import torch  # noqa: PLC0415
-            from torch import nn  # noqa: PLC0415 - conditional import for optional torch dependency
 
-            class HarvesterQNet(nn.Module):
-                """Q-Network for harvester agent (exit specialist)."""
-
-                def __init__(self, n_features: int, n_actions: int = 2):
-                    super().__init__()
-                    self.net = nn.Sequential(
-                        nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
-                        nn.ReLU(),
-                        nn.Conv1d(64, 64, kernel_size=5, padding=2),
-                        nn.ReLU(),
-                        nn.AdaptiveAvgPool1d(1),
-                        nn.Flatten(),
-                        nn.Linear(64, 128),
-                        nn.ReLU(),
-                        nn.Linear(128, n_actions),
-                    )
-
-                def forward(self, x):
-                    # x: (B,T,F) -> (B,F,T)
-                    return self.net(x.transpose(1, 2))
+            from src.core.ddqn_network import (
+                Conv1dQNet,  # noqa: PLC0415 - conditional import for optional torch dependency
+            )
 
             self.torch = torch
-            self.model = HarvesterQNet(n_features=self.n_features, n_actions=2)
-            self.model.load_state_dict(torch.load(model_path, map_location="cpu"))
+            self.model = Conv1dQNet(n_features=self.n_features, n_actions=2, temporal_pool_size=1)
+            self.model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
             self.model.eval()
             self.use_torch = True
             LOG.info("[HARVESTER] Loaded DDQN model: %s", model_path)
@@ -282,17 +269,8 @@ class HarvesterAgent:
         Returns:
             (action, confidence)
         """
-        # Augment state with position information
-        # Normalize MFE/MAE/ticks_held to [0, 1] range
-        mfe_norm = (mfe / entry_price) * PCT_SCALE  # Convert to percentage
-        mae_norm = (mae / entry_price) * PCT_SCALE
-        ticks_held_norm = min(ticks_held / TICKS_HELD_NORM_DENOM, 1.0)  # Cap at normalization window
-
-        # Broadcast position features across window
-        position_features = np.full((market_state.shape[0], 3), [mfe_norm, mae_norm, ticks_held_norm], dtype=np.float32)
-
-        # Combine: (window, 7 + 3) = (window, 10)
-        full_state = np.hstack([market_state, position_features])
+        # Delegate to the single source of truth for state construction
+        full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
 
         # Model-based decision
         with self.torch.no_grad():
@@ -350,6 +328,11 @@ class HarvesterAgent:
             self.training_steps,
         )
 
+        # Always build & record the state we see — needed for experience replay
+        # regardless of which gate fires (emergency stop, min-hold, etc.).
+        full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
+        self.last_state = full_state.copy()
+
         # Emergency stop loss check (always executed, not subject to min-hold)
         should_exit, exit_decision = self._check_emergency_stop_loss(mae, entry_price)
         if should_exit:
@@ -366,11 +349,30 @@ class HarvesterAgent:
             )
             return 0, 0.0  # HOLD
 
-        if not self.use_torch:
-            # Build full state for DDQN (market + position features)
-            full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
-            self.last_state = full_state.copy()  # Track for experience creation
+        # Hard time stop: safety valve that overrides DDQN/model decisions.
+        # Prevents degenerate Q-functions from holding positions indefinitely.
+        if ticks_held > self.hard_time_stop_bars:
+            LOG.warning(
+                "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d → CLOSE",
+                ticks_held, self.hard_time_stop_bars,
+            )
+            return 1, 1.0  # CLOSE with full confidence
 
+        # Soft time stop: exit when holding too long with diminished or positive profits.
+        if ticks_held > self.soft_time_stop_bars and entry_price > 0:
+            mfe_pct = (mfe / entry_price) * PCT_SCALE
+            mae_pct = (mae / entry_price) * PCT_SCALE
+            current_profit_pct = max(0.0, mfe_pct - mae_pct)
+            friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE
+            net_profit_pct = mfe_pct - friction_pct
+            if self._check_soft_time_stop(ticks_held, mfe_pct, current_profit_pct, net_profit_pct):
+                LOG.info(
+                    "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d → CLOSE",
+                    ticks_held, self.soft_time_stop_bars,
+                )
+                return 1, 0.9  # CLOSE with high confidence
+
+        if not self.use_torch:
             # Use DDQN network if available and trained, else fallback
             if self.ddqn is not None and self.enable_training and self.training_steps > 0:
                 return self._decide_with_ddqn(full_state)
@@ -423,6 +425,33 @@ class HarvesterAgent:
                 self.profit_target_pct,
             )
             return True
+        return False
+
+    def _check_micro_winner_exit(self, mfe_pct: float, current_profit_pct: float) -> bool:
+        """Check if micro-winner protection should trigger.
+
+        Exits immediately when:
+        - Trade has shown ANY profit (MFE > threshold)
+        - But is NOW reversing back (giving back > 30% of MFE)
+        - Prevents small winners from becoming massive losses (winner-to-loser trades)
+        """
+        mfe_threshold = getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT)
+        giveback_threshold = getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)
+
+        # Only apply if MFE is very small (below normal trailing stop activation)
+        if mfe_pct >= TRAILING_STOP_ACTIVATION_PCT:
+            return False  # Normal exits handle larger winners
+
+        if mfe_pct > mfe_threshold:
+            giveback_pct = mfe_pct - current_profit_pct
+            if giveback_pct >= (mfe_pct * giveback_threshold):
+                LOG.info(
+                    "[HARVESTER] Micro-winner quick exit: MFE=%.4f%%, current=%.4f%%, giveback=%.1f%% of MFE",
+                    mfe_pct,
+                    current_profit_pct,
+                    (giveback_pct / mfe_pct * 100),
+                )
+                return True
         return False
 
     def _check_trailing_stop(self, mfe_pct: float, current_profit_pct: float) -> bool:
@@ -536,6 +565,8 @@ class HarvesterAgent:
             return 1
         if self._check_profit_target(net_profit_pct, mfe_pct, friction_pct):
             return 1
+        if self._check_micro_winner_exit(mfe_pct, current_profit_pct):
+            return 1
         if self._check_trailing_stop(mfe_pct, current_profit_pct):
             return 1
         if self._check_breakeven_stop(mfe_pct, current_profit_pct, friction_pct):
@@ -596,47 +627,16 @@ class HarvesterAgent:
             )
             return True
 
-        # Trailing stop check
-        trailing_activation = getattr(self, "trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT)
-        trailing_distance = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
-        if mfe_pct >= trailing_activation:
-            giveback_pct = mfe_pct - max(0.0, current_pnl_pct)
-            if giveback_pct >= trailing_distance:
-                LOG.info(
-                    "[TICK_HARVESTER] Trailing stop: MFE=%.2f%%, current=%.2f%%, giveback=%.2f%% >= %.2f%%",
-                    mfe_pct,
-                    current_pnl_pct,
-                    giveback_pct,
-                    trailing_distance,
-                )
-                return True
-
-        # Breakeven stop check
-        breakeven_trigger = getattr(self, "breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT)
-        if mfe_pct >= breakeven_trigger and current_pnl_pct <= friction_pct:
-            LOG.info(
-                "[TICK_HARVESTER] Breakeven stop: MFE=%.2f%%, current_pnl=%.2f%% <= friction=%.2f%%",
-                mfe_pct,
-                current_pnl_pct,
-                friction_pct,
-            )
+        # Micro-winner quick exit (prevent w2l on small winners)
+        if self._check_micro_winner_exit(mfe_pct, max(0.0, current_pnl_pct)):
             return True
 
-        # Capture decay check
-        capture_decay_min = getattr(self, "capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT)
-        capture_decay_thresh = getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)
-        if mfe_pct >= capture_decay_min and mfe_pct > 0:
-            capture_ratio = max(0.0, current_pnl_pct) / mfe_pct
-            if capture_ratio < capture_decay_thresh:
-                LOG.info(
-                    "[TICK_HARVESTER] Capture decay: capture=%.1f%% < %.1f%%, MFE=%.2f%%",
-                    capture_ratio * 100,
-                    capture_decay_thresh * 100,
-                    mfe_pct,
-                )
-                return True
-
-        return False
+        # Trailing stop / breakeven / capture decay — delegate to shared bar-exit methods
+        if self._check_trailing_stop(mfe_pct, max(0.0, current_pnl_pct)):
+            return True
+        if self._check_breakeven_stop(mfe_pct, current_pnl_pct, friction_pct):
+            return True
+        return self._check_capture_decay(mfe_pct, max(0.0, current_pnl_pct))
 
     def _init_exit_thresholds(self):
         """Load exit thresholds from LearnedParametersManager (or defaults).
@@ -700,7 +700,7 @@ class HarvesterAgent:
         if not self.friction_calculator or entry_price <= 0:
             # Conservative estimate: spread ~0.10% + commission ~0.02% + slippage ~0.03% = 0.15%
             # Example: 0.15% friction on $4600 entry = $6.90 cost
-            return 0.0015  # Default 0.15% friction estimate (instrument-agnostic)
+            return DEFAULT_FRICTION_PCT  # Default 0.15% friction estimate (instrument-agnostic)
 
         try:
             # Calculate total friction in USD
@@ -733,7 +733,7 @@ class HarvesterAgent:
         except (AttributeError, TypeError, ZeroDivisionError) as exc:
             LOG.warning("[HARVESTER] Friction calculation failed: %s", exc)
 
-        return 0.0015  # Fallback to conservative 0.15%
+        return DEFAULT_FRICTION_PCT  # Fallback to conservative 0.15%
 
     def _ensure_param_manager(self) -> LearnedParametersManager:
         if self.param_manager is None:
@@ -751,9 +751,8 @@ class HarvesterAgent:
             return float(default)
 
     def _softmax(self, x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-        """Softmax with temperature for confidence calculation."""
-        exp_x = np.exp((x - np.max(x)) / temperature)
-        return exp_x / exp_x.sum()
+        """Softmax with temperature. Delegates to shared utility."""
+        return softmax(x, temperature)
 
     # ── Parameter learning helpers ────────────────────────────────────────────
 
@@ -839,220 +838,12 @@ class HarvesterAgent:
         except (AttributeError, ValueError, TypeError, OSError) as exc:
             LOG.warning("[HARVESTER] Failed to update parameters: %s", exc)
 
-    def add_experience(  # noqa: PLR0913
-        self,
-        state: np.ndarray,
-        action: int,
-        reward: float,
-        next_state: np.ndarray,
-        done: bool,
-        regime: int = RegimeSampling.UNKNOWN,
-    ):
-        """Add experience to replay buffer.
+    # add_experience, train_step, _train_step_torch, get_training_stats
+    # are inherited from AgentTrainingMixin.
 
-        Args:
-            state: Position state vector (market + MFE/MAE/bars)
-            action: Action taken (0=HOLD, 1=CLOSE)
-            reward: Capture efficiency reward
-            next_state: Next position state
-            done: True if position closed
-            regime: Current market regime
-        """
-        if not self.enable_training or self.buffer is None:
-            return
-
-        self.buffer.add(
-            state=state,
-            action=action,
-            reward=reward,
-            next_state=next_state,
-            done=done,
-            regime=regime,
-        )
-
-        LOG.debug(
-            "[HARVESTER] Experience added: action=%d, reward=%.4f, buffer_size=%d",
-            action,
-            reward,
-            self.buffer.tree.n_entries,
-        )
-
-    def train_step(self) -> dict | None:
-        """Perform one training step using prioritized experience replay.
-
-        Uses DDQNNetwork.train_batch() for actual backpropagation and weight updates.
-
-        Returns:
-            Dictionary with training metrics, or None if insufficient data
-        """
-        if not self.enable_training or self.buffer is None:
-            return None
-
-        # Check if we have enough experiences
-        if self.buffer.tree.n_entries < self.min_experiences:
-            return None
-
-        # Sample batch
-        batch = self.buffer.sample(batch_size=self.batch_size)
-        if batch is None:
-            return None
-
-        # Extract batch components
-        rewards = batch["rewards"]  # (batch_size,)
-        indices = batch["indices"]  # (batch_size,)
-
-        # Defensive: Validate batch
-        if not all(math.isfinite(r) for r in rewards):
-            LOG.warning("[HARVESTER] Non-finite rewards in batch, skipping training")
-            return None
-
-        TD_ERROR_CAP = 10.0
-
-        if self.ddqn is not None:
-            # Real DDQN training with backpropagation
-            try:
-                # Flatten states: (batch, window, features) -> (batch, window*features)
-                states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
-                next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
-                actions = batch["actions"].astype(np.intp)
-                dones = batch["dones"].astype(np.float64)
-                weights = batch["weights"].astype(np.float64)
-                rewards_f = rewards.astype(np.float64)
-
-                # Train batch: forward pass, TD targets, backward pass, weight update
-                train_result = self.ddqn.train_batch(
-                    states=states,
-                    actions=actions,
-                    rewards=rewards_f,
-                    next_states=next_states,
-                    dones=dones,
-                    weights=weights,
-                )
-
-                # Update buffer priorities with actual TD errors
-                td_errors = np.abs(train_result["td_errors"])
-                td_errors = np.clip(td_errors, 0, TD_ERROR_CAP)
-                self.buffer.update_priorities(indices, td_errors)
-
-                metrics = {
-                    "loss": train_result["loss"],
-                    "mean_q": train_result["mean_q"],
-                    "mean_td_error": train_result["mean_td_error"],
-                    "max_td_error": train_result["max_td_error"],
-                    "grad_norm": train_result["grad_norm"],
-                    "mean_reward": float(np.mean(rewards)),
-                }
-            except (ValueError, TypeError, AttributeError) as e:
-                LOG.error("[HARVESTER] DDQN train_batch failed: %s", e, exc_info=True)
-                td_errors = np.clip(np.abs(rewards), 0, TD_ERROR_CAP)
-                self.buffer.update_priorities(indices, td_errors)
-                metrics = {
-                    "loss": 0.0,
-                    "mean_q": 0.0,
-                    "mean_td_error": float(np.mean(td_errors)),
-                    "max_td_error": float(np.max(td_errors)),
-                    "mean_reward": float(np.mean(rewards)),
-                }
-        elif self.use_torch:
-            metrics = self._train_step_torch(batch)
-        else:
-            # No network available - priority updates only (degraded mode)
-            td_errors = np.abs(rewards)
-            td_errors = np.clip(td_errors, -TD_ERROR_CAP, TD_ERROR_CAP)
-            self.buffer.update_priorities(indices, td_errors)
-            metrics = {
-                "loss": 0.0,
-                "mean_q": 0.0,
-                "mean_td_error": float(np.mean(td_errors)),
-                "max_td_error": float(np.max(td_errors)),
-                "mean_reward": float(np.mean(rewards)),
-            }
-            LOG.warning("[HARVESTER] No DDQN network - only updating priorities (no weight updates)")
-
-        self.training_steps += 1
-
-        # Log every 10 steps (more frequent during early training)
-        log_interval = (
-            TRAINING_LOG_INTERVAL_EARLY if self.training_steps < TRAINING_STEPS_EARLY else TRAINING_LOG_INTERVAL_LATE
-        )
-        if self.training_steps % log_interval == 0:
-            LOG.info(
-                "[HARVESTER] Training step %d: loss=%.4f, mean_q=%.3f, mean_reward=%.4f, mean_td=%.4f, buffer=%d",
-                self.training_steps,
-                metrics.get("loss", 0.0),
-                metrics.get("mean_q", 0.0),
-                metrics.get("mean_reward", 0.0),
-                metrics.get("mean_td_error", 0.0),
-                self.buffer.tree.n_entries,
-            )
-
-        return metrics
-
-    def _train_step_torch(self, batch: dict) -> dict:
-        """Training step when use_torch=True (PyTorch model loaded from disk).
-
-        Delegates to the numpy DDQN network for actual weight updates.
-        The PyTorch model is only used for inference (pre-trained).
-
-        Args:
-            batch: Sampled batch from buffer
-
-        Returns:
-            Training metrics
-        """
-        if self.ddqn is not None:
-            states = batch["states"].reshape(batch["states"].shape[0], -1).astype(np.float64)
-            next_states = batch["next_states"].reshape(batch["next_states"].shape[0], -1).astype(np.float64)
-            train_result = self.ddqn.train_batch(
-                states=states,
-                actions=batch["actions"].astype(np.intp),
-                rewards=batch["rewards"].astype(np.float64),
-                next_states=next_states,
-                dones=batch["dones"].astype(np.float64),
-                weights=batch["weights"].astype(np.float64),
-            )
-            self.buffer.update_priorities(batch["indices"], np.abs(train_result["td_errors"]))
-            return {
-                "loss": train_result["loss"],
-                "mean_q": train_result["mean_q"],
-                "mean_td_error": train_result["mean_td_error"],
-                "mean_reward": float(np.mean(batch["rewards"])),
-            }
-
-        # No DDQN network — priority-only update (degraded mode)
-        LOG.warning("[HARVESTER] No DDQN network in torch path — priority-only update")
-        td_errors = np.abs(batch["rewards"])
-        td_errors = np.clip(td_errors, 0, 10.0)
-        self.buffer.update_priorities(batch["indices"], td_errors)
-        return {
-            "loss": 0.0,
-            "mean_q": 0.0,
-            "mean_td_error": float(np.mean(td_errors)),
-            "mean_reward": float(np.mean(batch["rewards"])),
-        }
-
-    def get_training_stats(self) -> dict:
-        """Get training statistics for monitoring.
-
-        Returns:
-            Dictionary with training stats
-        """
-        if not self.enable_training or self.buffer is None:
-            return {"enabled": False}
-
-        buffer_stats = self.buffer.get_stats()
-
-        return {
-            "enabled": True,
-            "training_steps": self.training_steps,
-            "buffer_size": buffer_stats["size"],
-            "buffer_utilization": buffer_stats["utilization"],
-            "total_added": buffer_stats["total_added"],
-            "total_sampled": buffer_stats["total_sampled"],
-            "beta": buffer_stats["beta"],
-            "ready_to_train": buffer_stats["size"] >= self.min_experiences,
-            "min_hold_ticks": self.min_hold_ticks,
-        }
+    def _extra_training_stats(self) -> dict:
+        """Harvester-specific stats appended by the mixin."""
+        return {"min_hold_ticks": self.min_hold_ticks}
 
 
 # ============================================================================
@@ -1068,13 +859,13 @@ if __name__ == "__main__":
 
     # Test 1: Initialize without model (fallback)
     print("\n[TEST 1] Initialize without model")
-    harvester = HarvesterAgent(window=64, n_features=10)
+    harvester = HarvesterAgent(window=STATE_WINDOW_SIZE, n_features=10)
     assert not harvester.use_torch
     print("✓ Fallback mode initialized")
 
     # Test 2: Decide with synthetic state (profit target)
     print("\n[TEST 2] Exit decision (profit target hit)")
-    market_state = rng.standard_normal((64, 7)).astype(np.float32)
+    market_state = rng.standard_normal((STATE_WINDOW_SIZE, 7)).astype(np.float32)
     entry_price = 100000.0
     mfe = entry_price * 0.004  # 0.4% MFE (above 0.3% target)
     mae = entry_price * 0.001  # 0.1% MAE

@@ -8,6 +8,7 @@ Lightweight L2 order book and VPIN calculator for microstructure signals.
 - Tracks trades and feeds VPIN (volume-synchronized probability of informed trading)
 """
 
+import math
 from collections import deque
 
 
@@ -28,7 +29,6 @@ class OrderBook:
     def update_level(self, side: str, price: float, size: float) -> None:
         """Update order book level with defensive validation."""
         # Defensive: Validate inputs
-        import math  # noqa: PLC0415
 
         if not isinstance(price, (int, float)) or not math.isfinite(price) or price <= 0:
             return  # Invalid price, skip silently
@@ -70,7 +70,6 @@ class OrderBook:
             return 0.0  # Crossed book, return zero spread
         spread_value = ask - bid
         # Defensive: Validate result
-        import math  # noqa: PLC0415
 
         if not math.isfinite(spread_value) or spread_value < 0:
             return None
@@ -110,7 +109,6 @@ class VPINCalculator:
     def update(self, volume: float, side: str) -> float | None:
         """Update VPIN with defensive validation."""
         # Defensive: Validate volume
-        import math  # noqa: PLC0415
 
         if not isinstance(volume, (int, float)) or not math.isfinite(volume) or volume <= 0:
             return None
@@ -157,7 +155,6 @@ class VPINCalculator:
 
     def get_stats(self) -> dict:
         """Get VPIN statistics with defensive validation."""
-        import math  # noqa: PLC0415
 
         vpin = self.get_vpin()
         if not self.completed:

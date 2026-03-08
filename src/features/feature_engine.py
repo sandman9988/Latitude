@@ -141,7 +141,7 @@ class RogerSatchellVolatility:
         result = {"rs_volatility": 0.0, "rs_variance": 0.0, "valid": False}
 
         # Validate input
-        if len(highs) < self.min_bars or len(highs) != len(lows) != len(opens) != len(closes):
+        if len(highs) < self.min_bars or not (len(highs) == len(lows) == len(opens) == len(closes)):
             return result
 
         try:
@@ -467,7 +467,7 @@ class RangeFeatures:
             "valid": False,
         }
 
-        if len(highs) < MIN_RANGE_SAMPLES or len(highs) != len(lows) != len(closes):
+        if len(highs) < MIN_RANGE_SAMPLES or not (len(highs) == len(lows) == len(closes)):
             return result
 
         try:
@@ -595,7 +595,7 @@ class FeatureEngine:
         features: dict[str, float | int | bool] = {"valid": False, "window_size": self.min_window}
 
         # Validate input
-        if len(highs) < self.min_window or len(highs) != len(lows) != len(opens) != len(closes):
+        if len(highs) < self.min_window or not (len(highs) == len(lows) == len(opens) == len(closes)):
             logger.warning("Insufficient data for feature calculation")
             return features
 

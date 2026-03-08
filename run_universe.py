@@ -163,9 +163,17 @@ def _pid_alive(pid: int | None) -> bool:
         return False
     try:
         os.kill(pid, 0)   # signal 0 = existence check only
-        return True
     except OSError:
         return False
+    # Reject zombie (defunct) processes — os.kill(pid, 0) succeeds for zombies
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat", "--no-headers"],
+            capture_output=True, text=True,
+        )
+        return bool(result.stdout.strip()) and "Z" not in result.stdout
+    except Exception:
+        return True  # ps unavailable — assume alive
 
 
 def _launch_paper_bot(
@@ -174,6 +182,7 @@ def _launch_paper_bot(
     symbol_id: int,
     qty: float,
     base_env: dict[str, str],
+    starting_equity: float | None = None,
 ) -> int:
     """
     Start an isolated paper-bot subprocess.
@@ -190,12 +199,25 @@ def _launch_paper_bot(
     env = {
         **base_env,
         **_PAPER_ENV_DEFAULTS,
-        # Per-instrument overrides (highest priority)
-        "SYMBOL":            symbol,
-        "SYMBOL_ID":         str(symbol_id),
-        "TIMEFRAME_MINUTES": str(timeframe_minutes),
-        "QTY":               str(qty),
+        # Per-instrument overrides (highest priority).
+        # Set BOTH the legacy short names (used by run.sh / .env checks) and the
+        # CTRADER_-prefixed names that ctrader_ddqn_paper._load_and_validate_config()
+        # actually reads.  Without the CTRADER_ keys the bot falls back to its
+        # hardcoded defaults (XAUUSD / M1) regardless of what universe.json says.
+        "SYMBOL":               symbol,
+        "SYMBOL_ID":            str(symbol_id),
+        "TIMEFRAME_MINUTES":    str(timeframe_minutes),
+        "QTY":                  str(qty),
+        "CTRADER_SYMBOL":       symbol,
+        "CTRADER_SYMBOL_ID":    str(symbol_id),
+        "CTRADER_TIMEFRAME_MIN": str(timeframe_minutes),
+        "CTRADER_QTY":          str(qty),
     }
+    # Pass real starting equity when available so HUD balance reflects the
+    # actual Pepperstone demo account (cTrader FIX doesn't expose it via
+    # CollateralInquiry — the user must set starting_equity in universe.json).
+    if starting_equity is not None:
+        env["CTRADER_STARTING_EQUITY"] = str(starting_equity)
 
     cmd = [sys.executable, "-m", _BOT_MODULE]
     LOG.info(
@@ -289,9 +311,10 @@ def launch_paper_bots(
             continue
 
         qty = float(spec.get("min_volume", 0.01))
+        starting_equity = entry.get("starting_equity")  # None → bot uses default 10 000
 
         try:
-            new_pid = _launch_paper_bot(symbol, tf, int(symbol_id), qty, base_env)
+            new_pid = _launch_paper_bot(symbol, tf, int(symbol_id), qty, base_env, starting_equity)
             entry["paper_pid"]        = new_pid
             entry["paper_started_at"] = datetime.now(timezone.utc).isoformat()
             entry["paper_log"]        = f"logs/paper_{symbol}_M{tf}.log"
@@ -515,9 +538,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while True:
             time.sleep(_WATCH_INTERVAL)
-            # Re-read file so new train_offline.py promotions are picked up
-            registry = _load_universe()
-            registry = launch_paper_bots(registry, specs, base_env)
+            try:
+                # Re-read file so new train_offline.py promotions are picked up
+                registry = _load_universe()
+                registry = launch_paper_bots(registry, specs, base_env)
+            except Exception as exc:
+                LOG.error("Supervisor poll error (will retry in %ds): %s", _WATCH_INTERVAL, exc)
     except KeyboardInterrupt:
         LOG.info(
             "Supervisor stopped.  Paper bots continue running in background.\n"

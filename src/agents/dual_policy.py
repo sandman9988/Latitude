@@ -13,43 +13,55 @@ From MASTER_HANDBOOK.md Section 2.2: Dual-Agent Architecture
 
 import logging
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 
 from src.agents.harvester_agent import HarvesterAgent
 from src.agents.trigger_agent import TriggerAgent
+from src.constants import (
+    DEFAULT_VOLATILITY,
+    HARVESTER_BUFFER_CAPACITY,
+    MIN_BARS_FOR_FEATURES,
+    RETURN_LAG_MEDIUM,
+    RETURN_LAG_SHORT,
+    STATE_WINDOW_SIZE,
+    TRIGGER_BUFFER_CAPACITY,
+)
 from src.features.regime_detector import RegimeDetector  # Phase 3.4
 from src.persistence.learned_parameters import LearnedParametersManager
 from src.utils.experience_buffer import RegimeSampling
-from src.utils.safe_math import SafeMath
+from src.utils.mfe_mae import MFEMAECalculator
+from src.utils.safe_math import SafeMath, rolling_mean, rolling_std
 
 LOG = logging.getLogger(__name__)
 
-# Feature calculation constants
-MIN_BARS_FOR_FEATURES: int = 70
-RETURN_LAG_SHORT: int = 2
-RETURN_LAG_MEDIUM: int = 6
 TEST_ENTRY_PRICE: float = 100000.0
 _FEATURE_VARIANCE_FLOOR: float = 1e-6  # minimum std to treat a feature column as variable
 _MIN_SEED_BARS: int = 3                # minimum bars required to seed the regime detector
 
 
-def _dp_rolling_mean(x: np.ndarray, n: int) -> np.ndarray:
-    """Simple rolling mean; positions with fewer than *n* samples are NaN."""
-    out = np.full_like(x, np.nan, dtype=np.float64)
-    if len(x) >= n:
-        cs = np.cumsum(np.insert(x, 0, 0.0))
-        out[n - 1:] = (cs[n:] - cs[:-n]) / n
-    return out
+@dataclass
+class DualPolicyConfig:
+    window: int = STATE_WINDOW_SIZE
+    enable_regime_detection: bool = True
+    path_geometry: object | None = None
+    enable_training: bool = False
+    enable_event_features: bool = True
+    param_manager: LearnedParametersManager | None = None
+    symbol: str = "XAUUSD"
+    timeframe: str = "M15"
+    broker: str = "default"
+    timeframe_minutes: int = 5
+    min_bars_for_features: int = MIN_BARS_FOR_FEATURES
+    friction_calculator: object | None = None
+    trigger_buffer_capacity: int = TRIGGER_BUFFER_CAPACITY
+    harvester_buffer_capacity: int = HARVESTER_BUFFER_CAPACITY
 
 
-def _dp_rolling_std(x: np.ndarray, n: int) -> np.ndarray:
-    """Simple rolling standard deviation; positions with fewer than *n* samples are NaN."""
-    out = np.full_like(x, np.nan, dtype=np.float64)
-    if len(x) >= n:
-        for i in range(n - 1, len(x)):
-            out[i] = np.std(x[i - n + 1: i + 1])
-    return out
+# Delegate to shared rolling helpers (single source of truth in safe_math)
+_dp_rolling_mean = rolling_mean
+_dp_rolling_std = rolling_std
 
 
 def _build_event_feature_columns(event_features: dict | None, n_c: int) -> list:
@@ -80,34 +92,50 @@ class DualPolicy:
     - If DDQN_DUAL_AGENT=1: Uses dual-agent architecture
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
-        window: int = 64,
-        enable_regime_detection: bool = True,
-        path_geometry=None,
-        enable_training: bool = False,
-        enable_event_features: bool = True,
-        param_manager: LearnedParametersManager | None = None,
-        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
-        timeframe: str = "M15",
-        broker: str = "default",
-        timeframe_minutes: int = 5,
-        min_bars_for_features: int = 70,
-        friction_calculator=None,
-        trigger_buffer_capacity: int = 2_000,
-        harvester_buffer_capacity: int = 10_000,
+        *args,
+        config: DualPolicyConfig | None = None,
+        **kwargs,
     ):
         """
         Initialize DualPolicy with trigger and harvester agents.
 
         Args:
-            window: Lookback window for state
-            enable_regime_detection: Enable Phase 3.4 regime detection (default True)
-            path_geometry: PathGeometry instance for entry features (optional)
-            enable_training: Enable online learning with PER buffer (default False)
-            enable_event_features: Enable Phase 3 event-relative time features (default True)
-            friction_calculator: FrictionCalculator for cost-aware exit decisions
+            config: Optional DualPolicyConfig instance
+            **kwargs: Field overrides for DualPolicyConfig
         """
+        if args:
+            if len(args) > 1:
+                raise TypeError("DualPolicy accepts at most one positional argument (window)")
+            if "window" in kwargs:
+                raise TypeError("DualPolicy received both positional window and keyword window")
+            kwargs["window"] = args[0]
+
+        if config is None:
+            config = DualPolicyConfig()
+
+        for key, value in kwargs.items():
+            if hasattr(config, key):
+                setattr(config, key, value)
+            else:
+                raise TypeError(f"Unexpected argument: {key}")
+
+        window = config.window
+        enable_regime_detection = config.enable_regime_detection
+        enable_training = config.enable_training
+        enable_event_features = config.enable_event_features
+        param_manager = config.param_manager
+        symbol = config.symbol
+        timeframe = config.timeframe
+        broker = config.broker
+        timeframe_minutes = config.timeframe_minutes
+        min_bars_for_features = config.min_bars_for_features
+        friction_calculator = config.friction_calculator
+        trigger_buffer_capacity = config.trigger_buffer_capacity
+        harvester_buffer_capacity = config.harvester_buffer_capacity
+        path_geometry = config.path_geometry
+
         self.window = window
         self.enable_training = enable_training
         self.enable_event_features = enable_event_features
@@ -175,8 +203,7 @@ class DualPolicy:
         self.current_position = 0  # -1=SHORT, 0=FLAT, +1=LONG
         self.entry_price = 0.0
         self.entry_bar_time = None
-        self.mfe = 0.0  # Maximum favorable excursion
-        self.mae = 0.0  # Maximum adverse excursion
+        self._mfe_calc = MFEMAECalculator()  # single source of truth
         self.ticks_held = 0  # Number of market data ticks (not bars!)
         self.predicted_runway = 0.0  # From trigger agent
 
@@ -187,13 +214,31 @@ class DualPolicy:
 
         LOG.info("[DUAL_POLICY] Initialized with TriggerAgent + HarvesterAgent")
 
+    # ── MFE / MAE properties (delegate to _mfe_calc) ──────────────────────
+
+    @property
+    def mfe(self) -> float:
+        return self._mfe_calc.mfe
+
+    @mfe.setter
+    def mfe(self, value: float) -> None:
+        self._mfe_calc.mfe = value
+
+    @property
+    def mae(self) -> float:
+        return self._mfe_calc.mae
+
+    @mae.setter
+    def mae(self, value: float) -> None:
+        self._mfe_calc.mae = value
+
     def decide_entry(  # noqa: PLR0913
         self,
         bars: deque,
         imbalance: float = 0.0,
         vpin_z: float = 0.0,
         depth_ratio: float = 1.0,
-        realized_vol: float = 0.005,  # For economics calculations
+        realized_vol: float = DEFAULT_VOLATILITY,  # For economics calculations
         event_features: dict = None,  # Phase 3: Event-relative time features
     ) -> tuple[int, float, float]:
         """
@@ -213,9 +258,24 @@ class DualPolicy:
             - confidence: [0, 1] Platt-calibrated probability
             - predicted_runway: Expected MFE
         """
-        # Phase 3.4: Update regime detection with latest price
-        if len(bars) > 0:
-            self._ingest_price_for_regime(bars[-1][4])
+        # Defensive sync: decide_entry is ONLY called when the bot confirms FLAT.
+        # If DualPolicy.current_position disagrees, force-reset to prevent the
+        # trigger from being permanently blocked by _should_block_for_position().
+        if self.current_position != 0:
+            LOG.warning(
+                "[DUAL_POLICY] Position desync: current_position=%d but entry decision "
+                "requested (syncing to FLAT)",
+                self.current_position,
+            )
+            self.current_position = 0
+            self.entry_price = 0.0
+            self.entry_bar_time = None
+            self.mfe = 0.0
+            self.mae = 0.0
+            self.ticks_held = 0
+            self.predicted_runway = 0.0
+
+        self._update_regime_from_bars(bars)
 
         # Build state (includes path geometry and event features if available)
         state = self._build_state(bars, imbalance, vpin_z, depth_ratio, realized_vol, event_features)
@@ -225,51 +285,9 @@ class DualPolicy:
         if self.regime_detector:
             regime_threshold_adj = self.regime_detector.get_trigger_threshold_adjustment()
 
-        # Phase 2: Get path geometry feasibility
-        feasibility = 1.0
-        if self.path_geometry:
-            feasibility = self.path_geometry.last.get("feasibility", 1.0)
-
-        # Regime-confidence gate: low ζ → scale down effective feasibility so
-        # the trigger's hard gate demands a cleaner setup in uncertain regimes.
-        # ζ=1.0: no change.  ζ=0.5: feasibility × 0.75.  ζ=0: feasibility × 0.5.
-        _zeta = max(0.0, min(1.0, self.current_zeta))
-        if _zeta < 1.0:
-            _zeta_scale = 0.5 + 0.5 * _zeta   # maps [0,1] → [0.5, 1.0]
-            _raw_feas = feasibility
-            feasibility = feasibility * _zeta_scale
-            LOG.debug(
-                "[DUAL_POLICY] ζ=%.2f → feasibility %.3f → %.3f (regime uncertainty gate)",
-                _zeta, _raw_feas, feasibility,
-            )
-
-        # Phase 2: Calculate economics parameters
-        # Expected gain/loss based on realized volatility and typical move sizes
-        expected_gain = realized_vol * 2.0  # Expect 2σ move on winning trades
-        expected_loss = realized_vol * 1.0  # Risk 1σ on losing trades
-
-        # Calculate actual friction from broker data (spread, commission, swap, slippage)
-        # Uses actual broker commission rates and swap fees (varies by instrument)
-        # SAME CODE PATH for both paper trading and live trading
-        if self.friction_calculator and len(bars) > 0:
-            current_price = bars[-1][4]
-            # Calculate friction for typical M5 intraday trade
-            # CRITICAL: M5 trades (~2-3 hours) typically DON'T cross rollover → swap = 0
-            # Swap only charged if position held through daily rollover (5pm EST/10pm UTC)
-            friction_data = self.friction_calculator.calculate_total_friction(
-                quantity=0.10,
-                side="BUY",  # Use BUY as reference (SELL has similar costs)
-                price=current_price,
-                holding_days=0.1,  # ~2.4 hours for M5 trades
-                volatility_factor=1.0,
-                crosses_rollover=False,  # Intraday trades don't cross rollover → swap = 0
-            )
-            # Convert USD total to price units (for XAUUSD @ $4600: $6-7 friction = 0.0015 price units)
-            # Breakdown: spread (~$1.6) + commission (~$0.8) + swap ($0) + slippage (~$1.0) = ~$3.4
-            friction_cost = friction_data["total"] / current_price if current_price > 0 else 0.0002
-        else:
-            # Conservative fallback: 0.03% (spread + commission + slippage, no swap)
-            friction_cost = 3.0 * 0.0001
+        feasibility = self._resolve_feasibility()
+        expected_gain, expected_loss = self._estimate_economics(realized_vol)
+        friction_cost = self._estimate_friction_cost(bars)
 
         # Call TriggerAgent with friction costs and economics parameters
         action, confidence, predicted_runway = self.trigger.decide(
@@ -282,8 +300,51 @@ class DualPolicy:
             friction_cost=friction_cost,  # Phase 2: Actual broker friction (commission + swap + spread + slippage)
         )
 
-        # Phase 3.4: Apply regime-aware runway adjustment
-        if action in [1, 2] and self.regime_detector:  # LONG or SHORT
+        self._record_predicted_runway(action, confidence, predicted_runway)
+
+        return action, confidence, predicted_runway
+
+    def _update_regime_from_bars(self, bars: deque) -> None:
+        if len(bars) > 0:
+            self._ingest_price_for_regime(bars[-1][4])
+
+    def _resolve_feasibility(self) -> float:
+        feasibility = 1.0
+        if self.path_geometry:
+            feasibility = self.path_geometry.last.get("feasibility", 1.0)
+
+        _zeta = max(0.0, min(1.0, self.current_zeta))
+        if _zeta < 1.0:
+            _zeta_scale = 0.5 + 0.5 * _zeta
+            _raw_feas = feasibility
+            feasibility = feasibility * _zeta_scale
+            LOG.debug(
+                "[DUAL_POLICY] ζ=%.2f → feasibility %.3f → %.3f (regime uncertainty gate)",
+                _zeta, _raw_feas, feasibility,
+            )
+        return feasibility
+
+    def _estimate_economics(self, realized_vol: float) -> tuple[float, float]:
+        expected_gain = realized_vol * 2.0
+        expected_loss = realized_vol * 1.0
+        return expected_gain, expected_loss
+
+    def _estimate_friction_cost(self, bars: deque) -> float:
+        if self.friction_calculator and len(bars) > 0:
+            current_price = bars[-1][4]
+            friction_data = self.friction_calculator.calculate_total_friction(
+                quantity=0.10,
+                side="BUY",
+                price=current_price,
+                holding_days=0.1,
+                volatility_factor=1.0,
+                crosses_rollover=False,
+            )
+            return friction_data["total"] / current_price if current_price > 0 else 0.0002
+        return 3.0 * 0.0001
+
+    def _record_predicted_runway(self, action: int, confidence: float, predicted_runway: float) -> None:
+        if action in [1, 2] and self.regime_detector:
             regime_multiplier = self.regime_detector.get_regime_multiplier()
             predicted_runway_adjusted = predicted_runway * regime_multiplier
 
@@ -298,7 +359,7 @@ class DualPolicy:
             )
 
             self.predicted_runway = predicted_runway_adjusted
-        elif action in [1, 2]:  # No regime detection
+        elif action in [1, 2]:
             self.predicted_runway = predicted_runway
             LOG.info(
                 "[DUAL_POLICY] TRIGGER: %s entry, conf=%.2f, predicted_runway=%.4f",
@@ -306,8 +367,6 @@ class DualPolicy:
                 confidence,
                 predicted_runway,
             )
-
-        return action, confidence, predicted_runway
 
     def decide_exit(  # noqa: PLR0913
         self,
@@ -401,15 +460,13 @@ class DualPolicy:
                 entry_price,
             )
             # Reset state before opening new position
-            self.mfe = 0.0
-            self.mae = 0.0
+            self._mfe_calc.reset()
             self.ticks_held = 0
 
         self.current_position = direction
         self.entry_price = float(entry_price)
         self.entry_bar_time = entry_time
-        self.mfe = 0.0
-        self.mae = 0.0
+        self._mfe_calc.start(entry_price, direction)
         self.ticks_held = 0
         LOG.info(
             "[DUAL_POLICY] Position entered: %s @ %.2f",
@@ -435,8 +492,12 @@ class DualPolicy:
         self.current_position = direction
         self.entry_price = float(entry_price)
         self.entry_bar_time = entry_time
-        self.mfe = float(mfe)
-        self.mae = float(mae)
+        self._mfe_calc.start(entry_price, direction)
+        # Restore persisted MFE/MAE into the calculator
+        self._mfe_calc.mfe = float(mfe)
+        self._mfe_calc.best_profit = float(mfe)
+        self._mfe_calc.mae = float(mae)
+        self._mfe_calc.worst_loss = -float(mae) if mae > 0 else 0.0
         self.ticks_held = int(ticks_held)
         LOG.info(
             "[DUAL_POLICY] Position recovered: %s @ %.2f (MFE=%.4f MAE=%.4f ticks=%d)",
@@ -480,46 +541,19 @@ class DualPolicy:
         self.current_position = 0
         self.entry_price = 0.0
         self.entry_bar_time = None
-        self.mfe = 0.0
-        self.mae = 0.0
+        self._mfe_calc.reset()
         self.ticks_held = 0
         self.predicted_runway = 0.0
 
     def _update_mfe_mae(self, current_price: float):
-        """Update MFE and MAE based on current price."""
-        # Defensive: Validate entry_price (guard against zero — no position open)
-        if SafeMath.is_zero(self.entry_price):
-            return
+        """Update MFE and MAE based on current price.
 
-        # Defensive: Validate position direction
-        if self.current_position not in (1, -1):
-            LOG.debug("[DUAL_POLICY] No position to update MFE/MAE (direction=%d)", self.current_position)
-            return
-
-        # Convert prices to float, falling back to 0.0 for non-numeric types.
-        # A 0.0 fallback lets the calculation proceed so callers can observe the
-        # resulting MFE/MAE (e.g. LONG at ep=100 with cp=0 → mae=100, correct
-        # worst-case adverse excursion).
-        try:
-            cp = float(current_price) if current_price is not None else 0.0
-        except (TypeError, ValueError) as e:
-            LOG.error("[DUAL_POLICY] Price conversion error for current_price: %s", e)
-            cp = 0.0
-
-        try:
-            ep = float(self.entry_price)
-        except (TypeError, ValueError) as e:
-            LOG.error("[DUAL_POLICY] Entry price conversion error: %s", e)
-            ep = 0.0
-
-        if self.current_position == 1:  # LONG
-            profit = cp - ep
-            self.mfe = max(self.mfe, profit)
-            self.mae = max(self.mae, -profit)
-        elif self.current_position == -1:  # SHORT
-            profit = ep - cp
-            self.mfe = max(self.mfe, profit)
-            self.mae = max(self.mae, -profit)
+        Delegates to the shared MFEMAECalculator.
+        """
+        # Ensure calculator is initialized for this position
+        if self._mfe_calc.entry_price is None and not SafeMath.is_zero(self.entry_price):
+            self._mfe_calc.start(self.entry_price, self.current_position)
+        self._mfe_calc.update(current_price)
 
 
     def _build_state(  # noqa: PLR0913, PLR0915
@@ -528,7 +562,7 @@ class DualPolicy:
         imbalance: float,
         vpin_z: float,
         depth_ratio: float,
-        realized_vol: float = 0.005,  # Provide RS volatility for geometry calculation
+        realized_vol: float = DEFAULT_VOLATILITY,  # Provide RS volatility for geometry calculation
         event_features: dict = None,  # Phase 3: Event-relative time features
     ) -> np.ndarray:
         """
@@ -730,9 +764,19 @@ class DualPolicy:
             next_state: State after trade closed
             done: Episode terminal (True for completed trade)
         """
+        LOG.debug(
+            "[TRIGGER-EXPERIENCE-DIAG] add_trigger_experience called: enable=%s, buffer=%s, action=%d, reward=%.4f",
+            self.enable_training, self.trigger.buffer is not None if self.trigger else None, action, reward,
+        )
         if not self.enable_training:
+            LOG.warning("[TRIGGER-EXPERIENCE-DIAG] SKIPPED — enable_training=%s", self.enable_training)
             return
 
+        LOG.info(
+            "[TRIGGER-EXPERIENCE-DIAG] Adding experience: "
+            "(state_shape=%s, action=%d, reward=%.4f, enable_training=%s, regime=%s)",
+            state.shape, action, reward, self.enable_training, self.current_regime_enum,
+        )
         self.trigger.add_experience(
             state=state,
             action=action,
@@ -740,6 +784,10 @@ class DualPolicy:
             next_state=next_state,
             done=done,
             regime=self.current_regime_enum,
+        )
+        LOG.info(
+            "[TRIGGER-EXPERIENCE-DIAG] DONE — buffer_size=%d",
+            self.trigger.buffer.size if self.trigger.buffer else -1,
         )
 
     def add_harvester_experience(
@@ -761,8 +809,14 @@ class DualPolicy:
             done: Episode terminal (True for position closed)
         """
         if not self.enable_training:
+            LOG.info("[DIAG] add_harvester_experience: SKIPPED — enable_training=%s", self.enable_training)
             return
 
+        LOG.info(
+            "[DIAG] add_harvester_experience: CALLING harvester.add_experience "
+            "(state_shape=%s, action=%d, reward=%.4f, regime=%s)",
+            state.shape, action, reward, self.current_regime_enum,
+        )
         self.harvester.add_experience(
             state=state,
             action=action,
@@ -770,6 +824,10 @@ class DualPolicy:
             next_state=next_state,
             done=done,
             regime=self.current_regime_enum,
+        )
+        LOG.info(
+            "[DIAG] add_harvester_experience: DONE — buffer_size=%d",
+            self.harvester.buffer.size if self.harvester.buffer else -1,
         )
 
     def train_step(self, adaptive_reg=None) -> dict:
@@ -787,8 +845,10 @@ class DualPolicy:
 
         metrics = {}
 
-        # Get current regularization if provided
-        adaptive_reg.get_current() if adaptive_reg else None
+        # Get current regularization if provided (for logging / future per-step tuning)
+        reg_params = adaptive_reg.get_current() if adaptive_reg else {}
+        if reg_params:
+            metrics["adaptive_reg"] = reg_params
 
         # Train TriggerAgent
         trigger_metrics = self.trigger.train_step()
@@ -844,7 +904,6 @@ class DualPolicy:
         Returns:
             True if all saves succeeded
         """
-        import json  # noqa: PLC0415
         from pathlib import Path  # noqa: PLC0415
 
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
@@ -865,14 +924,16 @@ class DualPolicy:
         metadata = {
             "trigger_training_steps": self.trigger.training_steps,
             "trigger_epsilon": self.trigger.epsilon,
+            "trigger_epsilon_decay": self.trigger.epsilon_decay,
             "harvester_training_steps": self.harvester.training_steps,
             "trigger_platt_a": getattr(self.trigger, "platt_a", 1.0),
             "trigger_platt_b": getattr(self.trigger, "platt_b", 0.0),
         }
         try:
+            from src.utils.safe_utils import save_json_atomic  # noqa: PLC0415
+
             meta_path = Path(checkpoint_dir) / "training_metadata.json"
-            with open(meta_path, "w") as f:
-                json.dump(metadata, f, indent=2)
+            save_json_atomic(meta_path, metadata)
             LOG.info("[CHECKPOINT] Saved training metadata: %s", metadata)
         except Exception as e:
             LOG.error("[CHECKPOINT] Failed to save metadata: %s", e)
@@ -887,8 +948,7 @@ class DualPolicy:
                     "current_zeta": self.current_zeta,
                 }
                 regime_path = Path(checkpoint_dir) / "regime_state.json"
-                with open(regime_path, "w") as f:
-                    json.dump(regime_state, f)
+                save_json_atomic(regime_path, regime_state)
                 LOG.debug("[CHECKPOINT] Saved regime state: regime=%s, %d prices",
                           self.current_regime, len(self.regime_detector.price_buffer))
             except Exception as e:
@@ -943,6 +1003,8 @@ class DualPolicy:
                 metadata = json.load(f)
             self.trigger.training_steps = metadata.get("trigger_training_steps", 0)
             self.trigger.epsilon = metadata.get("trigger_epsilon", self.trigger.epsilon)
+            if "trigger_epsilon_decay" in metadata:
+                self.trigger.epsilon_decay = metadata["trigger_epsilon_decay"]
             self.harvester.training_steps = metadata.get("harvester_training_steps", 0)
             if self.trigger.ddqn is not None:
                 self.trigger.ddqn.training_steps = self.trigger.training_steps
@@ -968,7 +1030,7 @@ class DualPolicy:
                 regime_state = json.load(f)
             prices = regime_state.get("price_buffer", [])
             if prices:
-                self.regime_detector.price_buffer = list(prices)
+                self.regime_detector.price_buffer = deque(prices, maxlen=self.regime_detector.window_size)
                 self.regime_detector._update_regime()
                 self.current_regime = self.regime_detector.current_regime
                 self.current_zeta = self.regime_detector.current_zeta

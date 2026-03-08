@@ -22,46 +22,85 @@ FIX Tag Reference:
 """
 
 import logging
+import threading
 import time
 import uuid
 from collections import deque
 from collections.abc import Callable
 from enum import Enum
+from typing import Any
+
+from src.monitoring.trade_audit_logger import get_trade_audit_logger
+from src.utils.safe_math import SafeMath
+from src.utils.safe_utils import utc_now
+
+fix: Any
+fix44: Any
 
 try:
-    import quickfix as fix
-    import quickfix44 as fix44
+    import quickfix as _fix  # type: ignore[import-not-found]
+    import quickfix44 as _fix44  # type: ignore[import-not-found]
+    fix = _fix
+    fix44 = _fix44
 except ImportError:
     def _make_stub(name: str):
         """Return a lightweight stub class for FIX field/message types."""
-        return type(name, (), {"__init__": lambda self, *a, **kw: None,
-                               "__repr__": lambda self: f"<{name}>",
-                               "setField": lambda self, *a: None,
-                               "sendToTarget": staticmethod(lambda *a: None)})
+        return type(
+            name,
+            (),
+            {
+                "__init__": lambda self, *a, **kw: None,
+                "__repr__": lambda self: f"<{name}>",
+                "setField": lambda self, *a: None,
+                "sendToTarget": staticmethod(lambda *a: None),
+            },
+        )
 
-    class fix:  # type: ignore[no-redef]
+    class _FixStub:
         """Stub namespace – quickfix C-extension not installed."""
         def __getattr__(self, name):  # noqa: D105 – instance
             return _make_stub(name)
         __class_getitem__ = classmethod(lambda cls, item: None)
 
-        Application = _make_stub("Application")  # NOSONAR
-        Session = _make_stub("Session")  # NOSONAR
-        SessionID = _make_stub("SessionID")  # NOSONAR
-        Message = _make_stub("Message")  # NOSONAR
+    class _Fix44Stub:
+        """Stub namespace for quickfix44 message types."""
 
-    for _attr in ("ClOrdID", "Symbol", "Side", "TransactTime", "OrdType",
-                  "OrderQty", "Price", "OrigClOrdID", "Text", "ExecType",
-                  "OrdStatus", "CumQty", "AvgPx", "LeavesQty"):
+    fix = _FixStub()
+    fix44 = _Fix44Stub()
+
+    fix.Application = _make_stub("Application")  # NOSONAR
+    fix.Session = _make_stub("Session")  # NOSONAR
+    fix.SessionID = _make_stub("SessionID")  # NOSONAR
+    fix.Message = _make_stub("Message")  # NOSONAR
+
+    for _attr in (
+        "ClOrdID",
+        "Symbol",
+        "Side",
+        "TransactTime",
+        "OrdType",
+        "OrderQty",
+        "Price",
+        "OrigClOrdID",
+        "Text",
+        "ExecType",
+        "OrdStatus",
+        "CumQty",
+        "AvgPx",
+        "LeavesQty",
+        "LastQty",
+        "LastPx",
+        "OrderID",
+        "PosReqID",
+        "StringField",
+    ):
         setattr(fix, _attr, _make_stub(_attr))
 
-    class fix44:  # type: ignore[no-redef]
-        NewOrderSingle = _make_stub("NewOrderSingle")  # NOSONAR
-        OrderCancelRequest = _make_stub("OrderCancelRequest")  # NOSONAR
-
-from src.monitoring.trade_audit_logger import get_trade_audit_logger
-from src.utils.safe_math import SafeMath
-from src.utils.safe_utils import utc_now
+    fix44.NewOrderSingle = _make_stub("NewOrderSingle")  # NOSONAR
+    fix44.OrderCancelRequest = _make_stub("OrderCancelRequest")  # NOSONAR
+    fix44.OrderCancelReplaceRequest = _make_stub("OrderCancelReplaceRequest")  # NOSONAR
+    fix44.OrderStatusRequest = _make_stub("OrderStatusRequest")  # NOSONAR
+    fix44.RequestForPositions = _make_stub("RequestForPositions")  # NOSONAR
 
 LOG = logging.getLogger(__name__)
 
@@ -403,6 +442,10 @@ class TradeManager:
         self.broker_orders: dict[str, str] = {}  # order_id -> clord_id
         self.clord_counter = 0
 
+        # Thread safety: protects orders, pending_orders, broker_orders, position
+        # against concurrent mutation from paper-fill daemon threads.
+        self._lock = threading.Lock()
+
         # Position tracking
         self.position = Position(symbol=self.symbol_id)
 
@@ -455,6 +498,11 @@ class TradeManager:
         timestamp = int(time.time())
         return f"cl_{timestamp}_{self.clord_counter}"
 
+    @property
+    def active_order_count(self) -> int:
+        """Count orders currently in an active (non-terminal) state."""
+        return sum(1 for o in self.orders.values() if o.is_active())
+
     def submit_market_order(
         self,
         side: Side,
@@ -473,7 +521,7 @@ class TradeManager:
         Returns:
             Order object if submitted, None if failed
         """
-        if len([o for o in self.orders.values() if o.is_active()]) >= self.max_pending_orders:
+        if self.active_order_count >= self.max_pending_orders:
             LOG.warning("[TRADEMGR] Max pending orders reached (%d)", self.max_pending_orders)
             return None
 
@@ -503,13 +551,14 @@ class TradeManager:
 
         try:
             fix.Session.sendToTarget(msg, self.session_id)
-            self.orders[clord_id] = order
+            with self._lock:
+                self.orders[clord_id] = order
 
-            # P0 FIX: Track order submission time for timeout detection
-            self.pending_orders[clord_id] = {
-                "submitted_at": utc_now(),
-                "retries": 0,
-            }
+                # P0 FIX: Track order submission time for timeout detection
+                self.pending_orders[clord_id] = {
+                    "submitted_at": utc_now(),
+                    "retries": 0,
+                }
 
             LOG.info(
                 "[TRADEMGR] ✓ Submitted MKT order: %s %s qty=%.6f clOrdID=%s",
@@ -556,7 +605,7 @@ class TradeManager:
         Returns:
             Order object if submitted, None if failed
         """
-        if len([o for o in self.orders.values() if o.is_active()]) >= self.max_pending_orders:
+        if self.active_order_count >= self.max_pending_orders:
             LOG.warning("[TRADEMGR] Max pending orders reached (%d)", self.max_pending_orders)
             return None
 
@@ -581,13 +630,14 @@ class TradeManager:
 
         try:
             fix.Session.sendToTarget(msg, self.session_id)
-            self.orders[clord_id] = order
+            with self._lock:
+                self.orders[clord_id] = order
 
-            # P0 FIX: Track order submission time for timeout detection
-            self.pending_orders[clord_id] = {
-                "submitted_at": utc_now(),
-                "retries": 0,
-            }
+                # P0 FIX: Track order submission time for timeout detection
+                self.pending_orders[clord_id] = {
+                    "submitted_at": utc_now(),
+                    "retries": 0,
+                }
 
             LOG.info(
                 "[TRADEMGR] ✓ Submitted LMT order: %s %s qty=%.6f @%.5f clOrdID=%s",
@@ -600,6 +650,72 @@ class TradeManager:
             return order
         except Exception as e:
             LOG.error("[TRADEMGR] ✗ Failed to submit limit order: %s", e)
+            return None
+
+    def submit_stop_order(
+        self,
+        side: Side,
+        quantity: float,
+        stop_price: float,
+        tag_prefix: str | None = None,
+    ) -> "Order | None":
+        """Submit a market-stop order (OrdType=STOP) via NewOrderSingle (35=D).
+
+        When the market reaches `stop_price`, the order executes as a market order.
+        Use for hard stop-loss protection: SELL STOP below entry for LONGs,
+        BUY STOP above entry for SHORTs.
+
+        Args:
+            side: Side.SELL (LONG stop) or Side.BUY (SHORT stop)
+            quantity: Order quantity
+            stop_price: Trigger price (StopPx, tag 99)
+            tag_prefix: Optional prefix for ClOrdID
+
+        Returns:
+            Order object if submitted, None if failed
+        """
+        if self.active_order_count >= self.max_pending_orders:
+            LOG.warning("[TRADEMGR] Max pending orders reached (%d)", self.max_pending_orders)
+            return None
+
+        clord_id = f"{tag_prefix}_{self._generate_clord_id()}" if tag_prefix else self._generate_clord_id()
+        order = Order(
+            clord_id=clord_id,
+            symbol=self.symbol_id,
+            side=side,
+            ord_type=OrdType.STOP,
+            quantity=quantity,
+            price=stop_price,  # stored locally as reference; broker uses StopPx
+        )
+
+        msg = fix44.NewOrderSingle()
+        msg.setField(fix.ClOrdID(clord_id))
+        msg.setField(fix.Symbol(self.symbol_id))
+        msg.setField(fix.Side(side.value))
+        msg.setField(fix.TransactTime())
+        msg.setField(fix.OrdType(OrdType.STOP.value))
+        msg.setField(fix.OrderQty(round(float(quantity), 2)))
+        msg.setField(fix.StopPx(float(stop_price)))
+
+        try:
+            fix.Session.sendToTarget(msg, self.session_id)
+            with self._lock:
+                self.orders[clord_id] = order
+                self.pending_orders[clord_id] = {
+                    "submitted_at": utc_now(),
+                    "retries": 0,
+                }
+            LOG.info(
+                "[TRADEMGR] ✓ Submitted STP order: %s %s qty=%.6f stop=%.5f clOrdID=%s",
+                side.name,
+                self.symbol_id,
+                quantity,
+                stop_price,
+                clord_id,
+            )
+            return order
+        except Exception as e:
+            LOG.error("[TRADEMGR] ✗ Failed to submit stop order: %s", e)
             return None
 
     def cancel_order(self, clord_id: str) -> bool:
@@ -749,14 +865,15 @@ class TradeManager:
             quantity: Order quantity
         """
         # Check if order is still pending (broker hasn't responded)
-        if clord_id not in self.pending_orders:
-            # Already received broker response, no paper fill needed
-            return
+        with self._lock:
+            if clord_id not in self.pending_orders:
+                # Already received broker response, no paper fill needed
+                return
 
-        order = self.orders.get(clord_id)
-        if not order:
-            LOG.warning("[PAPER] Order not found for paper fill: %s", clord_id)
-            return
+            order = self.orders.get(clord_id)
+            if not order:
+                LOG.warning("[PAPER] Order not found for paper fill: %s", clord_id)
+                return
 
         # Order is still pending - simulate fill
         LOG.warning(
@@ -772,6 +889,8 @@ class TradeManager:
 
         This creates a fake ExecutionReport that updates position and triggers
         all the same callbacks as a real broker fill.
+
+        Thread-safe: acquires ``_lock`` before mutating shared state.
 
         Args:
             order: Order to fill
@@ -795,62 +914,63 @@ class TradeManager:
         # BUY fills at ASK, SELL fills at BID
         fill_price = ask if side == Side.BUY else bid
 
-        # Generate paper ticket ID
-        self.paper_fill_counter += 1
-        paper_ticket = f"PAPER_{int(time.time())}_{self.paper_fill_counter}"
-        paper_order_id = f"PAPER_ORD_{self.paper_fill_counter}"
+        with self._lock:
+            # Generate paper ticket ID
+            self.paper_fill_counter += 1
+            paper_ticket = f"PAPER_{int(time.time())}_{self.paper_fill_counter}"
+            paper_order_id = f"PAPER_ORD_{self.paper_fill_counter}"
 
-        # Update order state
-        order.status = OrderStatus.FILLED
-        order.filled_qty = quantity
-        order.avg_price = fill_price
-        order.last_qty = quantity
-        order.last_px = fill_price
-        order.order_id = paper_order_id
-        order.position_ticket = paper_ticket
-        order.filled_at = utc_now()
+            # Update order state
+            order.status = OrderStatus.FILLED
+            order.filled_qty = quantity
+            order.avg_price = fill_price
+            order.last_qty = quantity
+            order.last_px = fill_price
+            order.order_id = paper_order_id
+            order.position_ticket = paper_ticket
+            order.filled_at = utc_now()
 
-        # Remove from pending orders
-        if order.clord_id in self.pending_orders:
-            del self.pending_orders[order.clord_id]
+            # Remove from pending orders
+            if order.clord_id in self.pending_orders:
+                del self.pending_orders[order.clord_id]
 
-        # Store in broker_orders mapping
-        self.broker_orders[paper_order_id] = order.clord_id
+            # Store in broker_orders mapping
+            self.broker_orders[paper_order_id] = order.clord_id
 
-        # Store execution report for debugging
-        self.exec_reports.append(
-            {
-                "timestamp": utc_now(),
-                "clord_id": order.clord_id,
-                "exec_type": "F",
-                "ord_status": "2",
-                "filled_qty": quantity,
-                "avg_price": fill_price,
-                "paper_fill": True,
-            }
-        )
+            # Store execution report for debugging
+            self.exec_reports.append(
+                {
+                    "timestamp": utc_now(),
+                    "clord_id": order.clord_id,
+                    "exec_type": "F",
+                    "ord_status": "2",
+                    "filled_qty": quantity,
+                    "avg_price": fill_price,
+                    "paper_fill": True,
+                }
+            )
 
-        LOG.info(
-            "[PAPER] ✓ Paper fill executed: %s qty=%.6f @%.5f ticket=%s",
-            side.name,
-            quantity,
-            fill_price,
-            paper_ticket,
-        )
+            LOG.info(
+                "[PAPER] ✓ Paper fill executed: %s qty=%.6f @%.5f ticket=%s",
+                side.name,
+                quantity,
+                fill_price,
+                paper_ticket,
+            )
 
-        # Update position from fill
-        self.position.update_from_fill(side, quantity, fill_price)
+            # Update position from fill
+            self.position.update_from_fill(side, quantity, fill_price)
 
-        # Audit log: Paper fill
-        self.audit.log_order_fill(
-            order_id=order.clord_id,
-            fill_price=fill_price,
-            fill_qty=quantity,
-            ticket=paper_ticket,
-            fill_id=paper_order_id,
-        )
+            # Audit log: Paper fill
+            self.audit.log_order_fill(
+                order_id=order.clord_id,
+                fill_price=fill_price,
+                fill_qty=quantity,
+                ticket=paper_ticket,
+                fill_id=paper_order_id,
+            )
 
-        # Trigger fill callback (same as real fill)
+        # Trigger fill callback outside the lock to prevent deadlocks
         if self.on_fill_callback:
             try:
                 self.on_fill_callback(order)
@@ -864,23 +984,27 @@ class TradeManager:
         """
         clord_field = fix.ClOrdID()
         if not msg.isSetField(clord_field):
-            LOG.warning("[TRADEMGR] ExecutionReport missing ClOrdID"); return None
+            LOG.warning("[TRADEMGR] ExecutionReport missing ClOrdID")
+            return None
         msg.getField(clord_field)
         clord_id = clord_field.getValue()
 
         exec_type_field = fix.ExecType()
         if not msg.isSetField(exec_type_field):
-            LOG.warning("[TRADEMGR] ExecutionReport missing ExecType for %s", clord_id); return None
+            LOG.warning("[TRADEMGR] ExecutionReport missing ExecType for %s", clord_id)
+            return None
         msg.getField(exec_type_field)
 
         ord_status_field = fix.OrdStatus()
         if not msg.isSetField(ord_status_field):
-            LOG.warning("[TRADEMGR] ExecutionReport missing OrdStatus for %s", clord_id); return None
+            LOG.warning("[TRADEMGR] ExecutionReport missing OrdStatus for %s", clord_id)
+            return None
         msg.getField(ord_status_field)
 
         order = self.orders.get(clord_id)
         if not order:
-            LOG.warning("[TRADEMGR] Received ExecutionReport for unknown order: %s", clord_id); return None
+            LOG.warning("[TRADEMGR] Received ExecutionReport for unknown order: %s", clord_id)
+            return None
 
         return clord_id, exec_type_field.getValue(), ord_status_field.getValue(), order
 
@@ -897,7 +1021,9 @@ class TradeManager:
             msg.getField(pos_ticket_field)
             order.position_ticket = pos_ticket_field.getValue()
             LOG.debug("[TRADEMGR] Position ticket: %s", order.position_ticket)
-            self.audit.log_ticket_assigned(ticket=order.position_ticket, position_id=None, order_id=clord_id)
+            ticket = order.position_ticket
+            if ticket is not None:
+                self.audit.log_ticket_assigned(ticket=ticket, position_id=None, order_id=clord_id)
 
         cum_qty_field = fix.CumQty()
         if msg.isSetField(cum_qty_field):
@@ -931,7 +1057,8 @@ class TradeManager:
         - ExecType=8 (Rejected): Order rejected
         - ExecType=I (OrderStatus): Status update
         """
-        try:
+        with self._lock:
+          try:
             resolved = self._resolve_exec_report(msg)
             if resolved is None:
                 return
@@ -979,7 +1106,7 @@ class TradeManager:
             if clord_id in self.pending_orders:
                 del self.pending_orders[clord_id]
 
-        except Exception as e:
+          except Exception as e:
             LOG.error("[TRADEMGR] Error processing ExecutionReport: %s", e, exc_info=True)
 
     def _handle_new(self, order: Order):
@@ -1022,8 +1149,8 @@ class TradeManager:
             order_id=order.clord_id,
             fill_price=order.avg_price,
             fill_qty=order.filled_qty,
-            ticket=order.position_ticket,
-            fill_id=order.order_id,
+            ticket=order.position_ticket or "UNKNOWN",
+            fill_id=order.order_id or "UNKNOWN",
         )
 
         # Trigger fill callback
@@ -1131,17 +1258,22 @@ class TradeManager:
         Args:
             req_id: Position request ID to check
         """
-        request_info = self.pending_position_requests.get(req_id)
-        if not request_info:
-            # Already received response
-            return
+        with self._lock:
+            request_info = self.pending_position_requests.get(req_id)
+            if not request_info:
+                # Already received response
+                return
 
-        elapsed = (utc_now() - request_info["sent_at"]).total_seconds()
-        if elapsed < request_info["timeout"]:
-            # Not timed out yet
-            return
+            elapsed = (utc_now() - request_info["sent_at"]).total_seconds()
+            if elapsed < request_info["timeout"]:
+                # Not timed out yet
+                return
 
-        retry_count = request_info["retry_count"]
+            retry_count = request_info["retry_count"]
+            # Remove old request while still under lock
+            self.pending_position_requests.pop(req_id, None)
+
+        # Retry outside lock to avoid potential deadlock with sendToTarget
         if retry_count < self.position_request_max_retries:
             LOG.warning(
                 "[TRADEMGR] Position request timeout (%.1fs) - retrying (%d/%d)",
@@ -1149,16 +1281,12 @@ class TradeManager:
                 retry_count + 1,
                 self.position_request_max_retries,
             )
-            # Remove old request
-            self.pending_position_requests.pop(req_id, None)
-            # Retry
             self.request_positions(retry_count=retry_count + 1)
         else:
             LOG.error(
                 "[TRADEMGR] Position request failed after %d retries - giving up",
                 self.position_request_max_retries,
             )
-            self.pending_position_requests.pop(req_id, None)
 
     def check_all_position_request_timeouts(self):
         """
@@ -1166,7 +1294,9 @@ class TradeManager:
 
         Call this periodically (e.g., every bar) as a fallback to threading-based checks.
         """
-        for req_id in list(self.pending_position_requests.keys()):  # NOSONAR – list() needed: loop body pops from dict
+        with self._lock:
+            req_ids = list(self.pending_position_requests.keys())
+        for req_id in req_ids:
             self._check_position_request_timeout(req_id)
 
     def on_position_report(self, msg: fix.Message):
@@ -1266,7 +1396,7 @@ class TradeManager:
         filled = len([o for o in self.orders.values() if o.status == OrderStatus.FILLED])
         rejected = len([o for o in self.orders.values() if o.status == OrderStatus.REJECTED])
         canceled = len([o for o in self.orders.values() if o.status == OrderStatus.CANCELED])
-        active = len([o for o in self.orders.values() if o.is_active()])
+        active = self.active_order_count
 
         return {
             "total_orders": total_orders,
@@ -1311,49 +1441,48 @@ class TradeManager:
         Query order status via FIX OrderStatusRequest (35=H) after timeout.
         """
         now = utc_now()
-
         for clord_id in list(self.pending_orders.keys()):  # NOSONAR – list() needed: loop body deletes from dict
             pending_info = self.pending_orders[clord_id]
             elapsed = (now - pending_info["submitted_at"]).total_seconds()
+            if elapsed <= self.order_ack_timeout:
+                continue
+            self._handle_order_timeout(clord_id, pending_info, elapsed)
 
-            if elapsed > self.order_ack_timeout:
-                retries = pending_info["retries"]
+    def _handle_order_timeout(self, clord_id: str, pending_info: dict, elapsed: float) -> None:
+        retries = pending_info["retries"]
+        if retries >= self.order_ack_max_retries:
+            self._finalize_timed_out_order(clord_id, retries, elapsed)
+            return
 
-                if retries >= self.order_ack_max_retries:
-                    LOG.error(
-                        "[TRADEMGR] ✗ Order timeout - max retries reached: ClOrdID=%s (%.1fs elapsed)",
-                        clord_id,
-                        elapsed,
-                    )
-                    # Remove from pending (order is lost)
-                    del self.pending_orders[clord_id]
+        LOG.warning(
+            "[TRADEMGR] ⚠ Order acknowledgment timeout: ClOrdID=%s (%.1fs elapsed, retry %d/%d)",
+            clord_id,
+            elapsed,
+            retries + 1,
+            self.order_ack_max_retries,
+        )
+        self._query_order_status(clord_id)
+        pending_info["retries"] += 1
 
-                    # Mark order as failed
-                    if clord_id in self.orders:
-                        order = self.orders[clord_id]
-                        order.status = OrderStatus.REJECTED
-                        order.reject_reason = f"Timeout after {retries} status queries ({elapsed:.1f}s)"
+    def _finalize_timed_out_order(self, clord_id: str, retries: int, elapsed: float) -> None:
+        LOG.error(
+            "[TRADEMGR] ✗ Order timeout - max retries reached: ClOrdID=%s (%.1fs elapsed)",
+            clord_id,
+            elapsed,
+        )
+        self.pending_orders.pop(clord_id, None)
 
-                        # Trigger reject callback
-                        if self.on_reject_callback:
-                            try:
-                                self.on_reject_callback(order)
-                            except Exception as e:
-                                LOG.error("[TRADEMGR] Error in reject callback: %s", e)
-                else:
-                    LOG.warning(
-                        "[TRADEMGR] ⚠ Order acknowledgment timeout: ClOrdID=%s (%.1fs elapsed, retry %d/%d)",
-                        clord_id,
-                        elapsed,
-                        retries + 1,
-                        self.order_ack_max_retries,
-                    )
+        order = self.orders.get(clord_id)
+        if not order:
+            return
+        order.status = OrderStatus.REJECTED
+        order.reject_reason = f"Timeout after {retries} status queries ({elapsed:.1f}s)"
 
-                    # Query order status
-                    self._query_order_status(clord_id)
-
-                    # Increment retry counter
-                    pending_info["retries"] += 1
+        if self.on_reject_callback:
+            try:
+                self.on_reject_callback(order)
+            except Exception as e:
+                LOG.error("[TRADEMGR] Error in reject callback: %s", e)
 
     def _query_order_status(self, clord_id: str):
         """

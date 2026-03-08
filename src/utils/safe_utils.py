@@ -5,10 +5,15 @@ Implements SafeMath and SafeArray patterns from Master Handbook
 Prevents NaN/Inf propagation, division by zero, and array bounds errors
 """
 
+import contextlib
+import json
 import logging
 import math
+import os
+import tempfile
 from collections import deque
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -365,3 +370,29 @@ def utc_now() -> datetime:
         Current datetime in UTC timezone
     """
     return datetime.now(UTC)
+
+
+def save_json_atomic(path: str | Path, data: dict | list, *, indent: int = 2) -> None:
+    """
+    Atomically write JSON to *path*.
+
+    Strategy: write to a temp file in the same directory, then ``os.replace``
+    (atomic on POSIX) to the target.  If the process crashes mid-write the
+    original file is untouched.
+
+    Args:
+        path:   Destination file path.
+        data:   JSON-serialisable data.
+        indent: Pretty-print indent (default 2).
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=indent)
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
