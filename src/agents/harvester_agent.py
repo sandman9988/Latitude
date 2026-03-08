@@ -598,64 +598,6 @@ class HarvesterAgent(AgentTrainingMixin):
 
         return 0  # HOLD
 
-    def quick_exit_check(  # noqa: PLR0911
-        self, mfe: float, mae: float, entry_price: float, current_price: float, direction: int
-    ) -> bool:
-        """
-        Fast tick-based exit check for stop loss, profit target, trailing stop,
-        breakeven, and capture decay. Called on every price tick.
-
-        Args:
-            mfe: Maximum Favorable Excursion (absolute)
-            mae: Maximum Adverse Excursion (absolute)
-            entry_price: Position entry price
-            current_price: Current market price
-            direction: 1 for LONG, -1 for SHORT
-
-        Returns:
-            True if should exit immediately, False otherwise
-        """
-        if entry_price <= 0:
-            return False
-
-        friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE
-        mfe_pct = (mfe / entry_price) * PCT_SCALE
-        mae_pct = (mae / entry_price) * PCT_SCALE
-
-        # Current unrealized P&L in pct
-        if direction == 1:  # LONG
-            current_pnl_pct = ((current_price - entry_price) / entry_price) * PCT_SCALE
-        else:  # SHORT
-            current_pnl_pct = ((entry_price - current_price) / entry_price) * PCT_SCALE
-
-        net_profit_pct = mfe_pct - friction_pct
-
-        # Stop loss check (immediate exit)
-        if mae_pct >= self.stop_loss_pct:
-            LOG.info("[TICK_HARVESTER] Stop loss triggered: %.2f%% >= %.2f%%", mae_pct, self.stop_loss_pct)
-            return True
-
-        # Profit target check (NET profit after friction)
-        if net_profit_pct >= self.profit_target_pct:
-            LOG.info(
-                "[TICK_HARVESTER] Profit target triggered: MFE=%.2f%%, Net=%.2f%% >= %.2f%%",
-                mfe_pct,
-                net_profit_pct,
-                self.profit_target_pct,
-            )
-            return True
-
-        # Micro-winner quick exit (prevent w2l on small winners)
-        if self._check_micro_winner_exit(mfe_pct, max(0.0, current_pnl_pct)):
-            return True
-
-        # Trailing stop / breakeven / capture decay — delegate to shared bar-exit methods
-        if self._check_trailing_stop(mfe_pct, max(0.0, current_pnl_pct)):
-            return True
-        if self._check_breakeven_stop(mfe_pct, current_pnl_pct, friction_pct):
-            return True
-        return self._check_capture_decay(mfe_pct, max(0.0, current_pnl_pct))
-
     def _init_exit_thresholds(self):
         """Load exit thresholds from LearnedParametersManager (or defaults).
 

@@ -209,7 +209,7 @@ class KurtosisBreaker:
 
         if kurtosis > self.threshold:
             self.state.trip(
-                reason="Excess kurtosis detected (fat tails)",
+                reason="Fat-tailed return distribution (total kurtosis > threshold)",
                 value=kurtosis,
                 threshold=self.threshold,
             )
@@ -218,7 +218,12 @@ class KurtosisBreaker:
         return False
 
     def _calculate_kurtosis(self) -> float:
-        """Calculate sample kurtosis (excess kurtosis)"""
+        """Calculate sample kurtosis (total kurtosis, normal distribution = 3).
+
+        Returns total kurtosis so it can be directly compared against
+        KURTOSIS_BREAKER_THRESHOLD (default 5.0).  Normal returns give
+        total kurtosis = 3.0; fat-tailed distributions exceed this.
+        """
         if len(self.returns) < KURTOSIS_MIN_SAMPLE_SIZE:
             return 0.0
 

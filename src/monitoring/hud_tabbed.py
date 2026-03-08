@@ -1990,7 +1990,9 @@ class TabbedHUD:
             print("\033[41;97m║" + " " * al + alert + " " * ar + "║\033[0m")
             print("\033[41;97m╚" + "═" * inner + "╝\033[0m")
         elif kurt_gate:
-            alert = "⚡ KURTOSIS GATE ACTIVE — entries bypassed in paper mode"
+            _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
+            _kurt_note = "entries BLOCKED" if _is_live_mode else "entries bypassed in paper mode"
+            alert = f"⚡ KURTOSIS GATE ACTIVE — {_kurt_note}"
             alert_pad = inner - len(alert)
             al = alert_pad // 2
             ar = alert_pad - al
@@ -3105,10 +3107,12 @@ class TabbedHUD:
             print(f"  ╚════════════════════════════════════════╝{_ANSI_RST}")
             print(f"  {_ANSI_Y}Press [r] to review and reset circuit breakers{_ANSI_RST}\n")
         elif kurt_gate:
+            _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
+            _kurt_note = "entries BLOCKED" if _is_live_mode else "bypassed in paper mode"
             print(
                 f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE "
                 f"(κ={rs.get('kurtosis', 0):.1f} excess > 3.0){_ANSI_RST}  "
-                f"{_ANSI_DIM}bypassed in paper mode{_ANSI_RST}\n"
+                f"{_ANSI_DIM}{_kurt_note}{_ANSI_RST}\n"
             )
         else:
             print(f"  {_ANSI_G}✓ Circuit Breaker: INACTIVE{_ANSI_RST}\n")

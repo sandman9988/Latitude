@@ -6,7 +6,6 @@ Covers:
 - decide() - fallback strategy path
 - _fallback_strategy() - stop loss, profit target, time stops
 - _build_full_state() - market + position features
-- quick_exit_check() - tick-level exit checks
 - _init_exit_thresholds() / _get_timeframe_scale()
 - get_friction_cost_pct()
 - _softmax()
@@ -202,39 +201,6 @@ class TestBuildFullState:
         assert full_state.shape == (64, 10)
         # MFE norm = (1.0/1.0) * 100 = 100.0
         assert abs(full_state[0, 7] - 100.0) < 1e-4
-
-
-# ---------------------------------------------------------------------------
-# Quick exit check
-# ---------------------------------------------------------------------------
-
-
-class TestQuickExitCheck:
-
-    def test_stop_loss_triggers_exit(self):
-        ha = HarvesterAgent(window=64, n_features=10)
-        entry_price = 100.0
-        mfe = 0.0
-        mae = entry_price * ha.stop_loss_pct / PCT_SCALE * 2  # Well above stop
-        assert ha.quick_exit_check(mfe, mae, entry_price, 95.0, direction=1) is True
-
-    def test_profit_target_triggers_exit(self):
-        ha = HarvesterAgent(window=64, n_features=10)
-        entry_price = 100.0
-        mfe = entry_price * (ha.profit_target_pct + 2.0) / PCT_SCALE  # Well above target
-        mae = 0.0
-        assert ha.quick_exit_check(mfe, mae, entry_price, 105.0, direction=1) is True
-
-    def test_no_exit_conditions(self):
-        ha = HarvesterAgent(window=64, n_features=10)
-        entry_price = 100.0
-        mfe = entry_price * 0.001
-        mae = entry_price * 0.001
-        assert ha.quick_exit_check(mfe, mae, entry_price, 100.1, direction=1) is False
-
-    def test_zero_entry_price(self):
-        ha = HarvesterAgent(window=64, n_features=10)
-        assert ha.quick_exit_check(1.0, 1.0, 0.0, 100.0, direction=1) is False
 
 
 # ---------------------------------------------------------------------------
