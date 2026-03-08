@@ -438,8 +438,9 @@ class HarvesterAgent(AgentTrainingMixin):
         mfe_threshold = getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT)
         giveback_threshold = getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)
 
-        # Only apply if MFE is very small (below normal trailing stop activation)
-        if mfe_pct >= TRAILING_STOP_ACTIVATION_PCT:
+        # Only apply if MFE is very small (below normal trailing stop activation).
+        # Use the instance attribute so this scales correctly with the timeframe.
+        if mfe_pct >= getattr(self, "trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT):
             return False  # Normal exits handle larger winners
 
         if mfe_pct > mfe_threshold:
@@ -663,17 +664,34 @@ class HarvesterAgent(AgentTrainingMixin):
         self.min_soft_profit_pct = self._get_param(
             "harvester_min_soft_profit_pct", MIN_SOFT_PROFIT_PCT * timeframe_scale
         )
+        # Trailing / breakeven thresholds — all scaled by timeframe so the same
+        # constants work correctly across M5 (scale=0.6) through H4 (scale=3.5).
+        self.trailing_stop_activation_pct = self._get_param(
+            "harvester_trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT * timeframe_scale
+        )
         self.trailing_stop_distance_pct = self._get_param(
-            "harvester_trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT
+            "harvester_trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT * timeframe_scale
+        )
+        self.breakeven_trigger_pct = self._get_param(
+            "harvester_breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT * timeframe_scale
+        )
+        self.micro_winner_mfe_threshold_pct = self._get_param(
+            "harvester_micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT * timeframe_scale
+        )
+        self.capture_decay_min_mfe_pct = self._get_param(
+            "harvester_capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT * timeframe_scale
         )
         LOG.info(
-            "[HARVESTER] Exit plan: TP=%.2f%% SL=%.2f%% soft=%d bars hard=%d bars min_profit=%.2f%% trail=%.2f%% (timeframe=%s scale=%.2f)",
+            "[HARVESTER] Exit plan: TP=%.2f%% SL=%.2f%% trail_act=%.2f%% trail_dist=%.2f%% "
+            "be=%.2f%% micro=%.3f%% soft=%d bars hard=%d bars (timeframe=%s scale=%.2f)",
             self.profit_target_pct,
             self.stop_loss_pct,
+            self.trailing_stop_activation_pct,
+            self.trailing_stop_distance_pct,
+            self.breakeven_trigger_pct,
+            self.micro_winner_mfe_threshold_pct,
             self.soft_time_stop_bars,
             self.hard_time_stop_bars,
-            self.min_soft_profit_pct,
-            self.trailing_stop_distance_pct,
             self.timeframe,
             self._get_timeframe_scale(),
         )
@@ -681,7 +699,11 @@ class HarvesterAgent(AgentTrainingMixin):
     def _get_timeframe_scale(self) -> float:
         """Infer timeframe multiplier for threshold scaling.
 
-        M1: 0.3x (tight), M5: 0.6x, M15: 1.0x (base), H1: 2.0x, D1: 5.0x (wide)
+        All percentage thresholds (TP, SL, trailing activation/distance, breakeven,
+        micro-winner) are multiplied by this factor, making exit logic timeframe-agnostic.
+        M15 (scale=1.0) is the calibration baseline; other timeframes are derived ratios.
+
+        M1: 0.3x  M5: 0.6x  M15: 1.0x (base)  M30: 1.5x  H1: 2.0x  H4: 3.5x  D1: 5.0x
         """
         tf_map = {"M1": 0.3, "M5": 0.6, "M15": 1.0, "M30": 1.5, "H1": 2.0, "H4": 3.5, "D1": 5.0}
         return tf_map.get(self.timeframe, 1.0)
