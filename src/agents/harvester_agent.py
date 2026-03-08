@@ -304,7 +304,8 @@ class HarvesterAgent(AgentTrainingMixin):
         mae: float,
         ticks_held: int,
         entry_price: float,
-        direction: int = 0,  # noqa: ARG002  # NOSONAR
+        current_price: float = 0.0,
+        direction: int = 1,
     ) -> tuple[int, float]:
         """Decide exit action based on market + position state.
 
@@ -314,6 +315,8 @@ class HarvesterAgent(AgentTrainingMixin):
             mae: Maximum adverse excursion (absolute price)
             ticks_held: Number of market data ticks position has been open (~2-3/sec)
             entry_price: Entry price for normalization
+            current_price: Current market price (for unrealized P&L calculation)
+            direction: +1=LONG, -1=SHORT (used for correct sign of unrealized P&L)
 
         Returns:
             (action, confidence)
@@ -362,7 +365,12 @@ class HarvesterAgent(AgentTrainingMixin):
         if ticks_held > self.soft_time_stop_bars and entry_price > 0:
             mfe_pct = (mfe / entry_price) * PCT_SCALE
             mae_pct = (mae / entry_price) * PCT_SCALE
-            current_profit_pct = max(0.0, mfe_pct - mae_pct)
+            # Use actual unrealized P&L (not MFE−MAE range) so the stop fires
+            # against real current profit, not the total price range since entry.
+            if current_price > 0 and direction != 0:
+                current_profit_pct = max(0.0, direction * (current_price - entry_price) / entry_price * PCT_SCALE)
+            else:
+                current_profit_pct = max(0.0, mfe_pct - mae_pct)  # fallback if no price
             friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE
             net_profit_pct = mfe_pct - friction_pct
             if self._check_soft_time_stop(ticks_held, mfe_pct, current_profit_pct, net_profit_pct):
@@ -378,7 +386,7 @@ class HarvesterAgent(AgentTrainingMixin):
                 return self._decide_with_ddqn(full_state)
 
             # Fallback: Simple profit target + stop loss
-            action = self._fallback_strategy(mfe, mae, ticks_held, entry_price)
+            action = self._fallback_strategy(mfe, mae, ticks_held, entry_price, current_price, direction)
             return action, CONFIDENCE_FALLBACK
 
         # Use PyTorch model
@@ -527,7 +535,10 @@ class HarvesterAgent(AgentTrainingMixin):
             return True
         return False
 
-    def _fallback_strategy(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> int:  # noqa: PLR0911
+    def _fallback_strategy(  # noqa: PLR0911
+        self, mfe: float, mae: float, ticks_held: int, entry_price: float,
+        current_price: float = 0.0, direction: int = 1,
+    ) -> int:
         """Fallback exit strategy when no model loaded.
 
         Rules (designed for profit protection on M5):
@@ -558,7 +569,13 @@ class HarvesterAgent(AgentTrainingMixin):
             mae_pct >= self.stop_loss_pct,
         )
 
-        current_profit_pct = max(0.0, mfe_pct - mae_pct)
+        # Compute actual unrealized P&L from current price.
+        # direction * (current_price - entry_price) gives signed P&L regardless of side.
+        # Fall back to MFE−MAE range only when current_price is unavailable.
+        if current_price > 0 and direction != 0:
+            current_profit_pct = max(0.0, direction * (current_price - entry_price) / entry_price * PCT_SCALE)
+        else:
+            current_profit_pct = max(0.0, mfe_pct - mae_pct)  # fallback: use range
         net_profit_pct = mfe_pct - friction_pct
 
         # Check exit conditions in priority order

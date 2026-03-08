@@ -28,7 +28,7 @@ from src.constants import (
     STATE_WINDOW_SIZE,
     TRIGGER_BUFFER_CAPACITY,
 )
-from src.features.regime_detector import RegimeDetector  # Phase 3.4
+from src.features.regime_detector import RegimeDetector, TRENDING_THRESHOLD  # Phase 3.4
 from src.persistence.learned_parameters import LearnedParametersManager
 from src.utils.experience_buffer import RegimeSampling
 from src.utils.mfe_mae import MFEMAECalculator
@@ -313,9 +313,14 @@ class DualPolicy:
         if self.path_geometry:
             feasibility = self.path_geometry.last.get("feasibility", 1.0)
 
-        _zeta = max(0.0, min(1.0, self.current_zeta))
-        if _zeta < 1.0:
-            _zeta_scale = 0.5 + 0.5 * _zeta
+        _zeta = self.current_zeta
+        # Apply a regime uncertainty penalty only for NON-TRENDING regimes.
+        # TRENDING (ζ < TRENDING_THRESHOLD=0.7) is the ideal regime for this bot
+        # and must NOT be penalised.  As ζ rises above the trending boundary the
+        # market becomes increasingly transitional/mean-reverting, so feasibility
+        # is reduced linearly from 1.0 at ζ=0.7 down to 0.5 at ζ≥1.7.
+        if _zeta >= TRENDING_THRESHOLD:
+            _zeta_scale = max(0.5, 1.0 - 0.5 * min(1.0, _zeta - TRENDING_THRESHOLD))
             _raw_feas = feasibility
             feasibility = feasibility * _zeta_scale
             LOG.debug(
@@ -410,6 +415,8 @@ class DualPolicy:
             mae=self.mae,
             ticks_held=self.ticks_held,
             entry_price=self.entry_price,
+            current_price=current_price,
+            direction=self.current_position,
         )
 
         if action == 1:  # CLOSE

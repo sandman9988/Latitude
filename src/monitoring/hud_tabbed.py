@@ -161,7 +161,11 @@ def _hud_period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     variance = sum((p - mean_p) ** 2 for p in pnls) / n
     std_p = math.sqrt(variance) if variance > 0 else 0.0
     sharpe = mean_p / std_p if std_p > 0 else 0.0
-    down_var = sum(p ** 2 for p in pnls if p < 0) / n
+    # Sortino: downside deviation uses losses-only count, not all-trade count.
+    # Dividing by n (all trades) instead of len(losses) inflates Sortino by
+    # roughly sqrt(1/win_rate) — e.g. 1.58× at 60% win rate.
+    n_losses = max(1, len(losses))
+    down_var = sum(p ** 2 for p in pnls if p < 0) / n_losses
     sortino = mean_p / math.sqrt(down_var) if down_var > 0 else 0.0
     cum = 0.0
     peak_equity = starting_equity
@@ -2629,9 +2633,10 @@ class TabbedHUD:
         src = f"  {_ANSI_DIM}(source: trade_log.jsonl){_ANSI_RST}" if self._metrics_from_trade_log else ""
         print(f"\n\033[1m📈 PERFORMANCE METRICS\033[0m{_mode_tag}{src}\n")
 
-        # Column headers
+        # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
+        # This is NOT an annualised return-based Sharpe ratio.
         print(
-            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL':>11} {'Sharpe':>7} {'PF':>7} {'MaxDD%':>8}"
+            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL':>11} {'TQR':>7} {'PF':>7} {'MaxDD%':>8}"
         )
         print("  " + "─" * 62)
 
@@ -2778,7 +2783,10 @@ class TabbedHUD:
             f"{_ANSI_DIM}(gross_profit/gross_loss  target ≥1.2){_ANSI_RST}"
         )
         print(f"  Expectancy/trade: {exp_col}{expect:>+8.4f}{_ANSI_RST}")
-        print(f"  Sortino ratio:    {sortino:>7.3f}")
+        print(
+            f"  Sortino ratio:    {sortino:>7.3f}  "
+            f"{_ANSI_DIM}(mean/downside-\u03c3 of trade PnL; losses-only denom){_ANSI_RST}"
+        )
         print(f"  Best / Worst:     {best:>+8.2f} / {worst:>+8.2f}")
         max_cw = lt.get("max_consec_wins", 0)
         max_cl = lt.get("max_consec_losses", 0)
@@ -3084,7 +3092,7 @@ class TabbedHUD:
         elif kurt_gate:
             print(
                 f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE "
-                f"(κ={rs.get('kurtosis', 0):.1f} > 3.0){_ANSI_RST}  "
+                f"(κ={rs.get('kurtosis', 0):.1f} excess > 3.0){_ANSI_RST}  "
                 f"{_ANSI_DIM}bypassed in paper mode{_ANSI_RST}\n"
             )
         else:
@@ -3190,7 +3198,7 @@ class TabbedHUD:
         print(f"    Realized vol:      {vol_col}{vol:>9.3f}%{_ANSI_RST}")
         print(
             f"    Kurtosis:          {kurt_col}{kurtosis:>9.2f}{_ANSI_RST}  "
-            f"{_ANSI_DIM}(>3 = fat tails → wider stops){_ANSI_RST}"
+            f"{_ANSI_DIM}(excess; >0 = fat tails; gate fires at >3){_ANSI_RST}"
         )
         print()
 
@@ -3292,14 +3300,23 @@ class TabbedHUD:
         _depth_levels = rs.get("depth_levels", 0)
         _depth_buffer = rs.get("depth_buffer", 0.0)
         _depth_gate = rs.get("depth_gate_active", False)
-        if _depth_ratio > 0 or _depth_levels > 0:
+        _has_l2 = _depth_levels > 0
+        if _has_l2 or _depth_ratio > 0:
             print()
-            _dr_col = _ANSI_G if _depth_ratio > 0.8 else (_ANSI_Y if _depth_ratio > 0.5 else _ANSI_R)
             _gate_str = f"  {_ANSI_R}[GATE ACTIVE]{_ANSI_RST}" if _depth_gate else ""
-            print(
-                f"    Depth ratio:       {_dr_col}{_depth_ratio:>10.3f}{_ANSI_RST}  "
-                f"{_ANSI_DIM}(bid_depth/ask_depth; 1=balanced){_ANSI_RST}{_gate_str}"
-            )
+            if _has_l2:
+                _dr_col = _ANSI_G if _depth_ratio > 0.8 else (_ANSI_Y if _depth_ratio > 0.5 else _ANSI_R)
+                print(
+                    f"    Depth ratio:       {_dr_col}{_depth_ratio:>10.3f}{_ANSI_RST}  "
+                    f"{_ANSI_DIM}(bid_depth/ask_depth; 1=balanced){_ANSI_RST}{_gate_str}"
+                )
+            else:
+                # depth_ratio defaults to 1.0 when there is no real L2 feed.
+                # Display N/A so it does not look like a balanced live order book.
+                print(
+                    f"    Depth ratio:       {_ANSI_DIM}       N/A{_ANSI_RST}  "
+                    f"{_ANSI_DIM}(no L2 data){_ANSI_RST}{_gate_str}"
+                )
             print(f"    Depth levels:      {_depth_levels:>10}    buffer: {_depth_buffer:.2f}")
 
         bar_len = 40
