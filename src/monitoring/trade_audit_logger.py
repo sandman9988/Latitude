@@ -49,7 +49,7 @@ class TradeAuditLogger:
     in chronological order. Once written, entries cannot be modified.
 
     File format: JSON Lines (one JSON object per line)
-    Location: log/trade_audit.jsonl
+    Location: logs/trade_audit.jsonl
 
     Usage:
         audit = TradeAuditLogger()

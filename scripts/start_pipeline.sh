@@ -9,13 +9,13 @@
 #         instrument in universe.json and supervise them.
 #
 # Usage:
-#   ./start_pipeline.sh                          # default symbols + timeframes
-#   SYMBOLS="XAUUSD" ./start_pipeline.sh         # single symbol
-#   THRESHOLD=1.5 ./start_pipeline.sh            # stricter Z-Omega gate
-#   ./start_pipeline.sh --no-watch               # train only, skip paper launch
+#   ./scripts/start_pipeline.sh                          # default symbols + timeframes
+#   SYMBOLS="XAUUSD" ./scripts/start_pipeline.sh         # single symbol
+#   THRESHOLD=1.5 ./scripts/start_pipeline.sh            # stricter Z-Omega gate
+#   ./scripts/start_pipeline.sh --no-watch               # train only, skip paper launch
 #
 # Override any variable inline:
-#   WORKERS=4 TIMEFRAMES="H1 H4" ./start_pipeline.sh
+#   WORKERS=4 TIMEFRAMES="H1 H4" ./scripts/start_pipeline.sh
 
 set -euo pipefail
 
@@ -39,7 +39,7 @@ for arg in "$@"; do
         --help|-h)
             sed -n '/^# Usage/,/^[^#]/p' "$0" | grep '^#' | sed 's/^# \?//'
             exit 0
-            ;;
+        ;;
     esac
 done
 
@@ -74,14 +74,14 @@ SYM_ARGS=(--symbols $SYMBOLS)
 TF_ARGS=(--timeframes $TIMEFRAMES)
 
 python3 train_offline.py "$HISTORY_DIR" \
-    "${SYM_ARGS[@]}" \
-    "${TF_ARGS[@]}" \
-    --workers "$WORKERS" \
-    --n-epochs "$EPOCHS" \
-    --warm-start \
-    --auto-promote \
-    --paper-threshold "$THRESHOLD" \
-    --retrain-rounds  "$RETRAIN_ROUNDS"
+"${SYM_ARGS[@]}" \
+"${TF_ARGS[@]}" \
+--workers "$WORKERS" \
+--n-epochs "$EPOCHS" \
+--warm-start \
+--auto-promote \
+--paper-threshold "$THRESHOLD" \
+--retrain-rounds  "$RETRAIN_ROUNDS"
 
 echo ""
 echo "[1/2] Offline training complete."

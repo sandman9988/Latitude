@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR" || exit 1
+cd "$SCRIPT_DIR/.." || exit 1
 
 echo "=========================================="
 echo "  Starting Bot in PRODUCTION MODE"
@@ -40,7 +40,7 @@ fi
 # Check if learned parameters exist
 if [ ! -f "data/learned_parameters.json" ]; then
     echo "⚠️  WARNING: No learned parameters found!"
-    echo "   Consider training first: ./start_training.sh"
+    echo "   Consider training first: ./scripts/start_training.sh"
     echo ""
     read -p "Continue anyway with defaults? (y/N): " -n 1 -r
     echo

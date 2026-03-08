@@ -9,7 +9,7 @@ cd "$SCRIPT_DIR" || exit 1
 bash scripts/cleanup_old_logs.sh --days 7 --max-files 50 >> logs/log_cleanup.log 2>&1
 
 # Also clean up very old audit logs (older than 30 days)
-find log/ -name "*.jsonl" -size +100M -mtime +30 -exec truncate -s 0 {} \; 2>/dev/null
+find logs/ -name "*.jsonl" -size +100M -mtime +30 -exec truncate -s 0 {} \; 2>/dev/null
 
 # Rotate large current logs if > 500MB
 for log in logs/bot_console.log logs/hud_output.log; do

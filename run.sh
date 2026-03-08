@@ -672,18 +672,18 @@ live_train_flow() {
 
 monitor_flow() {
     # Run one market-monitor check (same logic called by cron every 30 min)
-    if [[ ! -x "$SCRIPT_DIR/market_monitor.sh" ]]; then
-        chmod +x "$SCRIPT_DIR/market_monitor.sh"
+    if [[ ! -x "$SCRIPT_DIR/scripts/market_monitor.sh" ]]; then
+        chmod +x "$SCRIPT_DIR/scripts/market_monitor.sh"
     fi
-    exec bash "$SCRIPT_DIR/market_monitor.sh" "${FORWARDED_ARGS[@]}"
+    exec bash "$SCRIPT_DIR/scripts/market_monitor.sh" "${FORWARDED_ARGS[@]}"
 }
 
 monitor_setup_flow() {
     # Install (or update) the cron entry for automatic market monitoring
-    if [[ ! -x "$SCRIPT_DIR/setup_market_monitor.sh" ]]; then
-        chmod +x "$SCRIPT_DIR/setup_market_monitor.sh"
+    if [[ ! -x "$SCRIPT_DIR/scripts/setup_market_monitor.sh" ]]; then
+        chmod +x "$SCRIPT_DIR/scripts/setup_market_monitor.sh"
     fi
-    exec bash "$SCRIPT_DIR/setup_market_monitor.sh"
+    exec bash "$SCRIPT_DIR/scripts/setup_market_monitor.sh"
 }
 
 hud_only_flow() {
