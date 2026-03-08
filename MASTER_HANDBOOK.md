@@ -3,11 +3,11 @@
 
 ## For Future Claude Instances
 
-**Last Updated:** 2026-02-20 (commit 295f0fc)  
+**Last Updated:** 2026-03-08 (branch update-1.1-mfe-mae-tracking-v2)  
 **Project:** Dual-Agent Deep Q-Network (DDQN) Reinforcement Learning Trading System  
 **Platform:** cTrader via FIX 4.4 Protocol (Dual Sessions: Quote + Trade)  
-**Implementation:** Python 3.12 (32,517 lines production code + 32,197 lines tests, 128 test files, 2,331 passing)  
-**Status:** Active paper trading XAUUSD M5 — DDQN agents learning live; stats now fully wired into decisions  
+**Implementation:** Python 3.12 (39,713 lines production code + 35,906 lines tests, 141 test files, 2,595 passing)  
+**Status:** Active paper trading XAUUSD M5 — DDQN agents learning live; all stats wired; HUD fully audited  
 **User:** Renier - Expert algorithmic trader
 
 ---
@@ -31,14 +31,16 @@ FIX Trade Session ← Orders ← Risk Checks ← Position Sizing ← Signals
 ```
 
 **Key Files:**
-- `src/core/ctrader_ddqn_paper.py` - Main bot (4,500 lines)
-- `src/agents/trigger_agent.py` - Entry specialist (968 lines)
-- `src/agents/harvester_agent.py` - Exit specialist (1,136 lines)
-- `src/core/ddqn_network.py` - Neural network (481 lines)
-- `src/core/trade_manager.py` - FIX order management (1,435 lines)
-- `src/core/reward_shaper.py` - Reward shaping (823 lines)
-- `src/utils/experience_buffer.py` - PER buffer (725 lines)
-- `src/features/regime_detector.py` - DSP regime detection (434 lines)
+- `src/core/ctrader_ddqn_paper.py` - Main bot (6,354 lines)
+- `src/agents/trigger_agent.py` - Entry specialist (830 lines)
+- `src/agents/harvester_agent.py` - Exit specialist (906 lines)
+- `src/core/ddqn_network.py` - Neural network (360 lines)
+- `src/core/trade_manager.py` - FIX order management (1,560 lines)
+- `src/core/reward_shaper.py` - Reward shaping (818 lines)
+- `src/utils/experience_buffer.py` - PER buffer (816 lines)
+- `src/features/regime_detector.py` - DSP regime detection (438 lines)
+- `src/monitoring/hud_tabbed.py` - Terminal HUD 7-tab UI (3,855 lines)
+- `src/core/broker_execution_model.py` - Asymmetric slippage model (440 lines)
 
 ---
 
@@ -108,13 +110,13 @@ A **fully adaptive, self-learning trading intelligence using Deep Reinforcement 
 - ✅ **Reward Shaping:** 5-dimensional (corrected Feb 2026 — dimension/clip bugs fixed)
 - ✅ **Fallback Strategies:** Multi-factor tri-gate with dynamic confidence (Feb 2026)
 - ✅ **Harvester Min-Hold:** 10-tick minimum before DDQN close allowed (Feb 2026)
-- ⚠️ **One Gap:** BrokerExecutionModel (asymmetric slippage) - implement before live money
+- ✅ **BrokerExecutionModel:** Asymmetric slippage model implemented (`src/core/broker_execution_model.py`, 440 lines)
 - ⚠️ **L2 Feed:** OrderBook connected but no actual L2 data from broker → imbalance always 0
 
 **Deployment Path:**
 1. ✅ Paper trading validation (ongoing — XAUUSD M5 active)
-2. 🔄 DDQN relearning after Feb 2026 reward/IS fixes (~1,300+ steps of corrected experience accumulated)
-3. ⚠️ Add asymmetric slippage model before live (2-3 hours)
+2. 🔄 DDQN relearning after Feb 2026 reward/IS fixes (experience accumulating)
+3. ✅ Asymmetric slippage model implemented (`broker_execution_model.py`)
 4. 📋 Micro position live testing → graduated scaling
 
 **Target Assets:** XAUUSD M5 (active), generalizable to forex, indices, commodities
@@ -392,7 +394,7 @@ Regime Classification:
 | `SymbolSpec.py` | Complete broker abstraction | ✅ IN trade_manager.py (887 lines) |
 | `friction_costs.py` | Spread + slippage + swap + commission | ✅ IMPLEMENTED (295 lines) |
 | `feature_engine.py` | Log-returns, BPS normalization | ✅ IMPLEMENTED (305 lines) |
-| `BrokerExecutionModel.py` | Asymmetric slippage modeling | ❌ NOT IMPLEMENTED (CRITICAL GAP!) |
+| `src/core/broker_execution_model.py` | Asymmetric slippage modeling | ✅ IMPLEMENTED (440 lines) |
 
 ### 4.3 Learned Parameters System
 
@@ -416,7 +418,7 @@ Regime Classification:
 | `docs/DISASTER_RECOVERY_RUNBOOK.md` | Operations playbook | ✅ DOCUMENTED |
 
 **Summary:** All 7 P0 critical gaps addressed. System ready for graduated production deployment.
-**Test Status:** 2,331 passing, 4 skipped (as of 2026-02-20)
+**Test Status:** 2,595 passing, 0 skipped (as of 2026-03-08)
 **Risk Reduction:** 70-80% catastrophic failure → 15-20% (80% reduction in risk)
 
 See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md` for complete details.
@@ -527,15 +529,17 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 | File | Purpose | Status |
 |------|---------|--------|
-| `src/monitoring/hud_tabbed.py` | Terminal HUD — 5 tabs, curses UI | ✅ IMPLEMENTED |
+| `src/monitoring/hud_tabbed.py` | Terminal HUD — 7 tabs, curses UI (3,855 lines) | ✅ IMPLEMENTED |
 | `src/monitoring/startup_selftest.py` | 17-check self-test at startup | ✅ IMPLEMENTED |
 
-**HUD tabs:**
-- **System Health (Overview)** — startup self-test results (17 checks, JSON export), live quote, VaR, risk budget, regime ζ, circuit-breaker status, P&L summary
-- **Training** — per-agent training progress with trend arrows (↑/↓/→), sparklines, velocity, confidence indicators, correct buffer caps (trigger 2k, harvester 10k), loss/reward EMA
-- **Performance** — payoff ratio (avg_win/avg_loss), Sortino, max drawdown, win rate, VaR%, signal synthesis quality, regime distribution tips
-- **Risk/Market** — VPIN-z, kurtosis, depth ratio, imbalance, regime ζ, live VaR, circuit-breaker state with contextual warnings
-- **Decision Log** — rolling decisions with action, confidence, entry reason, decision distribution histogram
+**HUD tabs (7):**
+- **[O] Overview** — startup self-test results (17 checks), live quote, VaR, risk budget, regime ζ, circuit-breaker status, P&L summary
+- **[T] Training** — per-agent training progress with trend arrows (↑/↓/→), sparklines, velocity, buffer caps (trigger 2k, harvester 10k), loss/reward EMA
+- **[P] Performance** — payoff ratio (avg_win/avg_loss), per-mode breakdown (paper vs live), Sortino, max drawdown, win rate, VaR%
+- **[R] Risk/Market** — VPIN-z, kurtosis, depth ratio, imbalance, regime ζ, live VaR, circuit-breaker state
+- **[D] Decision Log** — JSONL entries: `MM-DD HH:MM` timestamps, TrdID column (8-char UUID), session-break separators, decision distribution
+- **[T] Trade History** — paginated trade list with per-row mode badge (P/L), `⚠ MIXED MODE` banner when paper+live co-exist, drill-down detail card
+- **[H] Health** — connectivity, self-test, system metrics panels
 
 **Startup Self-Test (17 checks):**
 Runs at boot; exports pass/fail JSON to `data/startup_selftest.json`. Checks cover: FIX sessions, position reconciliation, VaR estimator, circuit breakers, reward shaper dims, IS weight correctness, min-hold guard, disk persistence, network weight load, feature pipeline, regime detector, order book, trade log, and more.
@@ -575,17 +579,17 @@ Runs at boot; exports pass/fail JSON to `data/startup_selftest.json`. Checks cov
 
 ### 5.1 Overall Progress: ~90% COMPLETE
 
-**Production Code:** 32,517 lines  
-**Test Code:** 32,197 lines, 128 test files, **2,331 passing / 4 skipped**  
-**Documentation:** 20+ comprehensive markdown docs  
-**Status:** Active paper trading (XAUUSD M5); DDQN relearning after Feb 2026 reward/IS fixes
+**Production Code:** 39,713 lines  
+**Test Code:** 35,906 lines, 141 test files, **2,595 passing / 0 skipped**  
+**Documentation:** 30+ comprehensive markdown docs  
+**Status:** Active paper trading (XAUUSD M5); DDQN accumulating corrected experience; all stats wired and HUD fully audited
 
 ### 5.2 Component Status Matrix
 
 | Category | Components | Implemented | % Complete | Status |
 |----------|-----------|-------------|------------|--------|
 | **Core Safety & Defensive Programming** | 10 | 10 | 100% | ✅ |
-| **Broker Abstraction & Costs** | 4 | 3 | 75% | ⚠️ Missing slippage model |
+| **Broker Abstraction & Costs** | 4 | 4 | 100% | ✅ Slippage model implemented |
 | **Neural Network & Learning** | 6 | 6 | 100% | ✅ |
 | **Dual Agent System (Trigger + Harvester)** | 2 | 2 | 100% | ✅ |
 | **Risk Management (VaR, Breakers, Regime)** | 5 | 5 | 100% | ✅ |
@@ -597,20 +601,16 @@ Runs at boot; exports pass/fail JSON to `data/startup_selftest.json`. Checks cov
 | **cTrader/FIX Integration** | 5 | 5 | 100% | ✅ |
 | **Overfitting Detection** | 4 | 4 | 100% | ✅ |
 | **Path Analysis & Geometry** | 3 | 3 | 100% | ✅ |
+| **Broker Execution Model** | 1 | 1 | 100% | ✅ Implemented Mar 2026 |
 | **Monitoring / HUD** | 2 | 2 | 100% | ✅ |
 
-### 5.3 Critical Gap: BrokerExecutionModel
+### 5.3 BrokerExecutionModel — COMPLETE
 
-**What's Missing:** Asymmetric slippage modeling
+**Status:** ✅ Implemented in `src/core/broker_execution_model.py` (440 lines)
 
-**Impact:**
-- Currently using symmetric slippage assumptions
-- Real-world execution shows asymmetric patterns (buys slip more than sells in trending markets)
-- Without this, position sizing may be slightly suboptimal
-
-**Priority:** HIGH - Must implement before live trading with real money
-
-**Estimated Effort:** 150-200 lines, 2-3 hours
+Models asymmetric slippage: buys slip more in up-trends, sells in down-trends.
+Integrates with `friction_costs.py` and the position-sizing pipeline.
+This was previously the only ❌ gap blocking live trading — it is now resolved.
 
 ### 5.4 Feature Library Expansion Opportunity
 
@@ -1514,44 +1514,39 @@ Live Trading (Minimum 3 months at minimal size):
 
 ## 13. NEXT STEPS
 
-### 13.1 Immediate Priorities (as of 2026-02-20)
+### 13.1 Immediate Priorities (as of 2026-03-08)
 
-1. **Allow DDQN to accumulate corrected experience**
-   - Min-hold guard is live (10 ticks/~25 sec)
-   - Reward shaping correct (5 dims, IS weights fixed)
-   - Payoff ratio, ζ gate, and VPIN-z trigger penalty all now active
-   - Allow ~500–1,000 more harvester training steps before assessing Q-value recovery
-   - Watch for `[HARVESTER] CLOSE ticks=N` where N drifts above 10 → learning is working
-   - Watch for `[DUAL_POLICY] ζ=` log lines — confirms feasibility scaling is firing
-   - Watch for `[TRIGGER_REWARD] Toxic:` log lines — confirms VPIN penalty propagating
+1. **Allow DDQN to accumulate corrected experience** *(ongoing)*
+   - Min-hold guard live (10 ticks/~25 sec). Reward shaping correct (5 dims, IS weights fixed)
+   - Payoff ratio, ζ gate, and VPIN-z trigger penalty all active
+   - Watch `[H] Training tab` for harvester ticks_held drifting above 10 → Q-value recovery
+   - Watch `[D] Decision Log` — TrdID column and session breaks now visible for full trace
 
-2. **Implement BrokerExecutionModel** (BEFORE live money)
-   - Asymmetric slippage: buys slip more in up-trends, sells in down-trends
-   - ~150-200 lines, 2-3 hours
-   - Add to friction_costs.py or standalone src/broker/broker_execution_model.py
-
-3. **Investigate L2/Imbalance feed**
+2. **Investigate L2/Imbalance feed** *(medium priority)*
    - OrderBook is connected but `imbalance` is always 0.0
    - VPIN computation may also be zero/noisy
    - Check if broker sends L2 data via FIX MarketDataRequest with MDEntryType=0/1
    - Imbalance = 0 means VPIN veto and tilt features are inactive
 
-4. **Evaluate trigger fallback quality after min-hold fix**
-   - Check if multi-factor fallback (`_fallback_decide`) is generating entries with conf > 0.65
-   - DDQN trigger has ε ≈ 0.52 (still early exploration) — most entries are random EXPLORE
-   - Once ε drops to ~0.2 the fallback filter quality matters more
-   - ζ-scaling now also narrows entry in uncertain regimes; check rejection rate in HUD decision log
+3. **Graduated scaling to micro real-money positions** *(when Q-values converge)*
+   - BrokerExecutionModel ✅ done
+   - Asymmetric slippage now modeled at execution simulation layer
+   - Remaining gate: harvester Q-value recovery confirmed (ticks_held consistently > 15)
+
+4. **Evaluate trigger fallback quality**
+   - Check `_fallback_decide` conf > 0.65 in Decision Log tab
+   - DDQN trigger ε should be dropping; once below ~0.2 fallback filter quality matters more
 
 ### 13.2 Medium-Term Roadmap
 
 ```
-Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
+Now      : Paper trading XAUUSD M5 — DDQN accumulating corrected experience
            • payoff ratio, ζ gate, VPIN-z trigger penalty all live
-           • HUD self-test, 5-tab display, all stats wired
-+2wk     : Assess harvester Q-value convergence — is ticks held drifting up?
-+4wk     : Implement BrokerExecutionModel
-+6wk     : Investigate & fix L2 imbalance feed
-+2mo     : Graduated scaling to micro real-money positions
+           • HUD 7-tab fully audited; decision log traceability fixed
+           • BrokerExecutionModel ✅ implemented
++2wk     : Assess harvester Q-value convergence (ticks_held trending up in HUD?)
++4wk     : Investigate & fix L2 imbalance feed
++6wk     : Graduated scaling to micro real-money positions
 +3mo     : Full production deployment
 ```
 
@@ -1559,11 +1554,10 @@ Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
 
 | Issue | Severity | Notes |
 |-------|----------|-------|
-| BrokerExecutionModel missing | HIGH | Must fix before live money |
-| L2/imbalance always 0 | MEDIUM | VPIN veto/tilt features inactive until fixed |
-| Harvester stale Q-values | LOW | Self-healing via min-hold + corrected rewards |
-| Feature library ~25% complete | LOW | System works; add incrementally |
-| Trigger ε=0.52 (early phase) | INFO | Expected — bot is in early exploration phase |
+| L2/imbalance always 0 | MEDIUM | VPIN veto/tilt features inactive until broker L2 feed wired |
+| Harvester Q-values converging | LOW | Self-healing via min-hold + corrected rewards; monitor ticks_held in HUD |
+| Feature library ~25% complete | LOW | System works; add incrementally per tournament results |
+| `data/decision_log.json` non-atomic | LOW | Secondary bar-close log only; primary audit log is append-only JSONL |
 
 ---
 
@@ -1572,7 +1566,7 @@ Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
 ### What Has Been Built (Chronological)
 
 1. **Foundation + Architecture** — Defensive programming, broker abstraction, DDQN dual-agent design
-2. **Full Python/cTrader implementation** — 32k+ lines, FIX dual sessions, paper trading live
+2. **Full Python/cTrader implementation** — 39k+ lines, FIX dual sessions, paper trading live
 3. **P0 safety gaps** — All 7 resolved: WAL, graduated warmup, anti-gaming, feedback loop, HTTP metrics
 4. **Multi-position support** — Hedged accounts, per-position MFE/MAE, FIX Tag 721
 5. **Critical bug fixes (Feb 2026):**
@@ -1589,17 +1583,28 @@ Now      : Paper trading XAUUSD M5 — DDQN relearning (corrected rewards)
    - Payoff ratio (avg_win/avg_loss) now feeds risk budget adaptation
    - Regime ζ now scales the feasibility gate in `decide_entry`
    - VPIN-z now penalises trigger reward (in addition to existing harvester penalty)
+8. **BrokerExecutionModel (Mar 2026):**
+   - `src/core/broker_execution_model.py` (440 lines) — asymmetric slippage modelling implemented
+   - Final ❌ gap closed; system fully ready for graduated live deployment when Q-values converge
+9. **HUD audit & decision log traceability (Mar 2026):**
+   - Decision log now shows `MM-DD HH:MM` (was time-only); `TrdID` column (8-char UUID) replaces dim PID suffix
+   - Session-break separators inserted in Decision Log tab when session_id changes
+   - `bars_held` in `data/decision_log.json` now wired via `_get_live_bars_held()` (was always null)
+   - `session` field added to every bar_close entry for cross-log correlation
+   - Trade History tab: per-row `M` badge (P=paper/L=live), `⚠ MIXED MODE` banner, mode badge in header
+   - 141 test files, 2,595 passing (was 128 / 2,331)
 
-### Current State (2026-02-20)
+### Current State (2026-03-08)
 
-- **Bot:** Running, PID changes on restart, paper_mode=True, XAUUSD M5
-- **Broker:** Pepperstone demo via FIX 4.4
-- **Trigger:** ε ≈ 0.52, buffer ~760 exp, 1329 training steps
-- **Harvester:** buffer ~790 exp, 1341 training steps (contaminated pre-fix; relearning in progress)
-- **Min hold:** 10 ticks enforced; ticks=10 observed in first post-fix trade
-- **Tests:** 2,331 passed, 4 skipped, 6 warnings
-- **HUD:** 5-tab curses UI live; startup self-test runs at boot; all displayed stats wired into decisions
-- **Decision wiring:** payoff ratio → risk budget; ζ → feasibility gate; VPIN-z → trigger reward (all confirmed wired as of `295f0fc`)
+- **Bot:** Paper trading XAUUSD M5, Pepperstone demo via FIX 4.4
+- **Tests:** 2,595 passed, 0 skipped (141 test files)
+- **Code:** 39,713 production lines, 35,906 test lines
+- **HUD:** 7-tab curses UI live; startup self-test (17 checks); all stats wired into decisions
+- **Decision Log:** `MM-DD HH:MM` timestamps, TrdID column, session breaks, `bars_held` real values
+- **Trade History:** per-row mode badge, MIXED MODE banner when paper+live trades co-exist
+- **BrokerExecutionModel:** ✅ Implemented (`src/core/broker_execution_model.py`, 440 lines)
+- **Decision wiring:** payoff ratio → risk budget; ζ → feasibility gate; VPIN-z → trigger reward
+- **Outstanding:** L2/imbalance feed (always 0); harvester Q-values still converging (monitor ticks_held in HUD)
 
 ### User Preferences
 

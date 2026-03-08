@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** February 22, 2026 (housekeeping audit)  
+**Last Updated:** March 8, 2026 (HUD audit + decision log traceability)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -9,27 +9,69 @@
 
 ## 🎯 Executive Summary
 
-XAUUSD M1 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Full housekeeping audit performed this session — 2 bugs fixed, test suite fully green.
+XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. All stats are now wired into decisions. HUD audited and fully updated. BrokerExecutionModel implemented. Decision log traceability fixed.
 
-**Test Suite:** 2 506 passing, 3 skipped, 0 failures (124 test files, ~50 s)
+**Test Suite:** 2,595 passing, 0 skipped, 0 failures (141 test files, ~70 s)
 
 **Trading Status:**
 - **Symbol:** XAUUSD (Gold Spot)
-- **Timeframe:** M1 (1-minute bars)
+- **Timeframe:** M5 (5-minute bars)
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
 - **Session:** QUOTE + TRADE dual FIX sessions
 
 ---
 
+## 🔧 HUD Audit & Decision Log Traceability (Mar 8, 2026)
+
+### FIX-D1 — Decision log timestamps time-only (HH:MM:SS), no date context
+`_render_jsonl_decision_entries` in `hud_tabbed.py` was slicing `ts_raw[11:19]` which strips the date. Multi-day sessions had every entry showing the same ambiguous time.  
+**Fix:** Changed to `ts_raw[5:16]` → `MM-DD HH:MM`. Column widened from 8→12. Header changed to `Date/Time`.  
+**Impact:** Decision log now unambiguous across day boundaries.
+
+### FIX-D2 — No trade correlation ID visible in Decision Log tab  
+Trade IDs existed in `logs/audit/decisions.jsonl` but were buried as dim `PID:xxx` at the end of each line.  
+**Fix:** Replaced PID suffix with dedicated `TrdID` column showing `trade_id[:8]` (8-char UUID prefix). `--------` dim when no trade is open (correct for NO_ENTRY decisions).  
+**Impact:** Operator can now instantly correlate entry → HOLDs → close by scanning the TrdID column, or `grep` the decisions.jsonl by trade_id.
+
+### FIX-D3 — No visual boundary between bot restart sessions
+Decision log entries from different sessions rendered as one continuous list with no way to see where bot was restarted.  
+**Fix:** Added `_prev_session` tracking; dim `── session <id> ──` separator printed when session_id changes.  
+**Impact:** Bot restart boundaries are immediately visible in Decision Log tab.
+
+### FIX-D4 — `bars_held` always null in data/decision_log.json (100%)
+`_obc_write_decision_log` used `pos_metrics.get("bars_held")` but `DualPolicy.get_position_metrics()` returns `ticks_held`, never `bars_held`.  
+**Fix:** Changed to `self._get_live_bars_held() if self.cur_pos != 0 else 0` — uses the path-recorder counter.  
+**Impact:** `bars_held` is now populated with real values in every bar-close entry.
+
+### FIX-D5 — No session_id in data/decision_log.json entries
+Bar-close entries in `data/decision_log.json` had no session field, making it impossible to correlate with `logs/audit/decisions.jsonl` after a restart.  
+**Fix:** Added `"session": getattr(self.decision_log, "session_id", None)` to the log_entry dict.  
+**Impact:** Bar-close entries now linkable to the rich JSONL audit log by session.
+
+### FIX-D6 — Trade History tab had no live/paper separation  
+Trade list showed no indication of whether each trade was paper or live. When both modes are present in `trade_log.jsonl`, metrics were silently mixed.  
+**Fix:**  
+- Header now shows mode badge: `📄 PAPER`, `💰 LIVE`, or `⚠ MIXED`  
+- Each trade row has an `M` column: `P` (yellow) for paper, `L` (green) for live  
+- Prominent `⚠ MIXED MODE` banner when paper + live trades co-exist, directing to `[P]` Performance tab  
+**Impact:** Operator can distinguish real vs simulated trades at a glance without drilling into detail.
+
+---
+
+## 🔧 BrokerExecutionModel Implementation (Mar 2026)
+
+`src/core/broker_execution_model.py` (440 lines) implements asymmetric slippage modelling.
+
+**What it does:** Buys slip more in up-trending markets; sells slip more in down-trending markets. The model learns actual broker asymmetry from observed execution data and feeds adjusted costs into the position-sizing pipeline via `friction_costs.py`.
+
+**Why it matters:** This was the last `❌` gap listed in the handbook before grad-scaling to live money. It is now `✅`. The system is fully production-capable pending harvester Q-value convergence.
+
+---
+
 ## 🔧 Housekeeping Fixes (Feb 22, 2026 session)
 
 ### FIX-1 — QuickFIX namespace-package type-annotation crash (MEDIUM)
-`src/core/trade_manager_integration.py` imported `quickfix` successfully (installed as an empty namespace package) but `quickfix.Message` didn't exist, so the type annotations `msg: fix.Message` raised `AttributeError` at class-body evaluation time.  
-**Fix:** Added `from __future__ import annotations` to defer annotation evaluation, making the annotations strings-only at import time.  
-**Impact:** Was causing 9 test failures across `tests/integration/test_pnl_calculation.py` (7 tests) and `tests/test_depth_gate.py` (collection error). All now pass.
-
-### FIX-2 — Universe registry stage-demotion bug (MEDIUM)
 `_register_universe()` in `train_offline.py` would demote a `LIVE` (or `MICRO`) instrument back to `PAPER` whenever a new training run produced a higher `z_omega` score.  
 **Root Cause:** The condition `if not already_paper or better_score` branched into the update block and hard-coded `"stage": "PAPER"` even when `current_stage` was `LIVE`.  
 **Fix:** Preserve the existing stage when the instrument is already at `PAPER` or above; only set `"PAPER"` when promoting from below.  

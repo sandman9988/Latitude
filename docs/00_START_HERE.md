@@ -1,6 +1,6 @@
 # Start Here: cTrader Adaptive Trading Bot Documentation Index
 
-**Last Updated:** February 22, 2026  
+**Last Updated:** March 8, 2026  
 
 This page is the recommended entry point for the documentation set.
 

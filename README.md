@@ -1,6 +1,6 @@
 # cTrader DDQN Trading Bot
 
-A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network (DDQN) reinforcement learning with a dual-agent architecture (TriggerAgent + HarvesterAgent) to trade XAUUSD (Gold) on M1 timeframes.
+A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network (DDQN) reinforcement learning with a dual-agent architecture (TriggerAgent + HarvesterAgent) to trade XAUUSD (Gold) on M5 timeframes.
 
 ## 🚀 Quick Start
 
@@ -21,12 +21,12 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 
 **System Status & Recent Changes:**
 
-- 📄 [**CURRENT_STATE.md**](docs/CURRENT_STATE.md) - Latest fixes, parameters, and system health (updated Feb 22, 2026)
+- 📄 [**CURRENT_STATE.md**](docs/CURRENT_STATE.md) - Latest fixes, parameters, and system health (updated Mar 8, 2026)
 - 📁 [**INDEX.md**](docs/INDEX.md) - Complete navigation index for all documentation files
 
 **Core Documentation:**
 
-- 📖 [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Authoritative system design and architecture (1108 lines)
+- 📖 [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Authoritative system design and architecture
 - 🚀 [docs/00_START_HERE.md](docs/00_START_HERE.md) - Documentation entry point with organized guides
 - 🏗 [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM_ARCHITECTURE.md) - Technical architecture
 
@@ -35,7 +35,7 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 ## Features
 
 - **Dual FIX Sessions**: Separate QUOTE and TRADE sessions for market data and order execution
-- **M15 Bar Building**: Constructs 15-minute candlestick bars from best bid/ask prices
+- **M5 Bar Building**: Constructs 5-minute candlestick bars from best bid/ask prices
 - **DDQN Policy**: Optional deep reinforcement learning model for trading decisions
 - **Fallback Strategy**: Simple moving average crossover strategy when no model is loaded
 - **Position Management**: Automatic position tracking and target-based order execution
