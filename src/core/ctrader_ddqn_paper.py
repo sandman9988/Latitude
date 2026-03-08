@@ -4901,10 +4901,10 @@ class CTraderFixApp(fix.Application):
                 pos_metrics = self.policy.get_position_metrics()
             log_entry = {
                 "timestamp": t.isoformat() if hasattr(t, "isoformat") else str(t),
+                "session": getattr(self.decision_log, "session_id", None),
                 "trading_mode": "paper" if self.paper_mode else "live",
                 "event": "bar_close",
                 "trade_id": decision.get("bar_trade_id"),
-
                 "position_ids": self._broker_pids() or None,
                 "close_pending": decision.get("close_pending", False),
                 "details": {
@@ -4922,7 +4922,8 @@ class CTraderFixApp(fix.Application):
                     "exit_conf": decision.get("exit_conf"),
                     "mfe": pos_metrics.get("mfe"),
                     "mae": pos_metrics.get("mae"),
-                    "bars_held": pos_metrics.get("bars_held"),
+                    # bars_held: use live path-recorder count (pos_metrics only has ticks_held)
+                    "bars_held": self._get_live_bars_held() if self.cur_pos != 0 else 0,
                     "entry_price": pos_metrics.get("entry_price"),
                     "circuit_breaker": (
                         self.circuit_breakers.is_any_tripped()

@@ -2875,9 +2875,14 @@ class TabbedHUD:
         )
 
     def _render_jsonl_decision_entries(self, entries: list) -> None:
-        """Render the rich JSONL decision log entries."""
+        """Render the rich JSONL decision log entries.
+
+        Columns: Date+Time | Mode | Agent | Decision | Conf | Rnwy$ | VPIN-z | Price | TradeID
+        Session breaks are inserted when the session_id changes.
+        """
         header = (
-            f"  {'Time':<8} {'Mode':<6} {'Agent':<10} {'Decision':<10} {'Conf':>6} {'Rnwy$':>6} {'VPIN-z':>7} {'Price':>10}"
+            f"  {'Date/Time':<12} {'Mode':<6} {'Agent':<10} {'Decision':<14} "
+            f"{'Conf':>6} {'Rnwy$':>6} {'VPIN-z':>7} {'Price':>10}  {'TrdID':<9}"
         )
         _counts: dict[str, int] = {}
         for _e in entries:
@@ -2886,14 +2891,24 @@ class TabbedHUD:
         _dist = "  ".join(f"{k}:{v}" for k, v in sorted(_counts.items()))
         print(f"  Distribution (last {len(entries)}): {_dist}\n")
         print(header)
-        print("  " + "─" * 70)
+        print("  " + "─" * 80)
+        _prev_session: str | None = None
         for entry in entries:
+            # ── Session break header ───────────────────────────────────────
+            _sess = entry.get("session", "")
+            if _sess and _sess != _prev_session:
+                _prev_session = _sess
+                print(f"  {_ANSI_DIM}── session {_sess} ──{_ANSI_RST}")
+
+            # ── Timestamp: MM-DD HH:MM (date preserved across multi-day logs) ──
             ts_raw = entry.get("timestamp", "?")
             try:
-                ts_str = ts_raw[11:19] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw
+                # ISO 2026-03-08T15:30:00+00:00 → slice [5:16] = 03-08 15:30
+                ts_str = ts_raw[5:16] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw[:11]
             except Exception:
-                ts_str = str(ts_raw)[:8]
-            # Trading mode badge
+                ts_str = str(ts_raw)[:11]
+
+            # ── Mode badge ─────────────────────────────────────────────────
             _mode = entry.get("trading_mode", "")
             if _mode == "paper":
                 mode_str = f"{_ANSI_Y}📄PPR{_ANSI_RST}"
@@ -2901,8 +2916,9 @@ class TabbedHUD:
                 mode_str = f"{_ANSI_G}💰LIV{_ANSI_RST}"
             else:
                 mode_str = f"{_ANSI_DIM}  ?  {_ANSI_RST}"
+
             agent = entry.get("agent", "?")[:9]
-            decision = entry.get("decision", "?")[:9]
+            decision = entry.get("decision", "?")[:13]
             conf = entry.get("confidence", 0.0)
             ctx = entry.get("context", {})
             reasoning = entry.get("reasoning", {})
@@ -2910,12 +2926,14 @@ class TabbedHUD:
             vpin_z = ctx.get("vpin_z", 0.0)
             runway_pct = reasoning.get("predicted_runway", 0.0)
             runway_usd = runway_pct * price if price > 0 else runway_pct
-            # Broker position ticket IDs (written by bot when position is open)
-            pids = entry.get("position_id") or entry.get("position_ids")
-            pid_str = f" PID:{','.join(str(p) for p in pids)}" if pids else ""
+
+            # ── Trade correlation ID (links entry→HOLDs→close for one trade) ──
+            trade_id = entry.get("trade_id", "")
+            tid_str = trade_id[:8] if trade_id else f"{_ANSI_DIM}--------{_ANSI_RST}"
+
             if decision.upper() in ("BUY", "LONG", "ENTER"):
                 color = _ANSI_G
-            elif decision.upper() in ("SELL", "SHORT", "EXIT", "CLOSE"):
+            elif decision.upper() in ("SELL", "SHORT", "EXIT", "CLOSE", "CLOSE_PENDING"):
                 color = _ANSI_R
             elif decision.upper() == "HOLD":
                 color = _ANSI_Y
@@ -2928,11 +2946,12 @@ class TabbedHUD:
             )
             dec = self._price_decimals(price)
             print(
-                f"  {ts_str:<8} {mode_str} {agent:<10} {color}{decision:<10}{_ANSI_RST} "
-                f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} {price:>10.{dec}f}"
-                f"{_ANSI_DIM}{pid_str}{_ANSI_RST}"
+                f"  {ts_str:<12} {mode_str} {agent:<10} "
+                f"{color}{decision:<14}{_ANSI_RST} "
+                f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} "
+                f"{price:>10.{dec}f}  {tid_str}"
             )
-        print("  " + "─" * 70)
+        print("  " + "─" * 80)
 
     def _render_legacy_decision_entries(self, entries: list) -> None:
         """Render legacy JSON-format decision log entries."""
