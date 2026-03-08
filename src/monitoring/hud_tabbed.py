@@ -3576,11 +3576,25 @@ class TabbedHUD:
         losses    = lm.get("losing_trades", 0)
         wr        = lm.get("win_rate", 0.0) * 100
         pg_str    = f"Pg {self._trades_page + 1}/{max_page + 1}"
-        print(f"\n\033[1m[T] TRADE HISTORY\033[0m  [{total} trades]  {pg_str}")
+        _tl_mode  = getattr(self, "_trade_log_mode", "")
+        if _tl_mode == "mixed":
+            _mode_hdr = f"  {_ANSI_Y}⚠ MIXED{_ANSI_RST}"
+        elif _tl_mode == "live":
+            _mode_hdr = f"  {_ANSI_G}💰 LIVE{_ANSI_RST}"
+        else:
+            _mode_hdr = f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}"
+        print(f"\n\033[1m[T] TRADE HISTORY\033[0m  [{total} trades]  {pg_str}{_mode_hdr}")
 
         if self._trades_detail:
             self._render_trade_detail(self._trades_detail_trade)
             return
+
+        # Mixed-mode banner — operator must know metrics are contaminated
+        if _tl_mode == "mixed":
+            print(
+                f"  {_ANSI_Y}⚠  MIXED MODE — paper and live trades combined. "
+                f"Metrics span both modes. See [P] Performance tab for breakdown.{_ANSI_RST}"
+            )
 
         # Summary bar
         _pnl_c = _ANSI_G if total_pnl >= 0 else _ANSI_R
@@ -3590,7 +3604,7 @@ class TabbedHUD:
             f"({_ANSI_G if wr >= 50 else _ANSI_R}{wr:.1f}%{_ANSI_RST} win rate)"
         )
 
-        # Column header
+        # Column header — M = mode badge (P=paper / L=live)
         _C_ID   = 5
         _C_DATE = 14
         _C_DIR  = 5
@@ -3603,7 +3617,7 @@ class TabbedHUD:
         _C_BRS  = 4
         _C_RSN  = 16
         _hdr_row = (
-            f"  {'#':<{_C_ID}} {'Date/Time':<{_C_DATE}} {'Dir':<{_C_DIR}} "
+            f"  {'#':<{_C_ID}} M {'Date/Time':<{_C_DATE}} {'Dir':<{_C_DIR}} "
             f"{'Sym':<{_C_SYM}} {'Entry':>{_C_ENT}} {'Exit':>{_C_EXT}} "
             f"{'PnL':>{_C_PNL}} {'MFE':>{_C_MFE}} {'MAE':>{_C_MAE}} "
             f"{'Brs':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
@@ -3637,8 +3651,17 @@ class TabbedHUD:
             _ep_s = f"{_entry:.{_dec}f}"[-_C_ENT:]
             _xp_s = f"{_exit:.{_dec}f}"[-_C_EXT:]
 
+            # Mode badge — single char, always renders 1 column wide
+            _tmode = _t.get("trading_mode", "")
+            if _tmode == "paper":
+                _mb = f"{_ANSI_Y}P{_ANSI_RST}"
+            elif _tmode == "live":
+                _mb = f"{_ANSI_G}L{_ANSI_RST}"
+            else:
+                _mb = f"{_ANSI_DIM}?{_ANSI_RST}"
+
             _row = (
-                f"  {str(_tid):<{_C_ID}} {_date_str:<{_C_DATE}} "
+                f"  {str(_tid):<{_C_ID}} {_mb} {_date_str:<{_C_DATE}} "
                 f"{_dc}{_dir:<{_C_DIR}}{_ANSI_RST} "
                 f"{_sym:<{_C_SYM}} {_ep_s:>{_C_ENT}} {_xp_s:>{_C_EXT}} "
                 f"{_pc}{_pnl:>+{_C_PNL}.2f}{_ANSI_RST} "
