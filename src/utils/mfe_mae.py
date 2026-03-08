@@ -116,9 +116,12 @@ class MFEMAECalculator:
             self.worst_loss = pnl
             self.mae = abs(pnl)
 
-        # Winner-to-Loser: live re-evaluation (clears when price recovers)
+        # Winner-to-Loser: live re-evaluation (clears when price recovers above entry).
+        # Counts pnl == 0 (breakeven) as a reversal: if the trade was ever
+        # profitable (best_profit > 0) and closes at exactly entry price, the
+        # profit was fully eroded, which is a true winner-to-loser event.
         if self.best_profit > 0:
-            self.winner_to_loser = pnl < 0
+            self.winner_to_loser = pnl <= 0
 
     # ── convenience ────────────────────────────────────────────────────────
 

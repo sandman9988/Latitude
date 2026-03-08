@@ -890,9 +890,24 @@ class TabbedHUD:
         self._trade_log_mode = next(iter(_modes)) if len(_modes) == 1 else "mixed" if _modes else ""
 
         daily, weekly, monthly = _classify_trades_by_period(trades)
-        self.daily_metrics = _hud_period_metrics(daily, starting_equity)
-        self.weekly_metrics = _hud_period_metrics(weekly, starting_equity)
-        self.monthly_metrics = _hud_period_metrics(monthly, starting_equity)
+
+        # For period MaxDD to be meaningful it must be anchored to the account
+        # equity at the START of each period, not at bot launch.  Trades
+        # classified into a period are a subset of the global trade list; the
+        # equity at period-start equals launch_equity + PnL of all trades that
+        # completed BEFORE that period window.
+        # id() is used to match the exact dict objects returned by
+        # _classify_trades_by_period (same objects as in `trades`).
+        _daily_ids   = set(map(id, daily))
+        _weekly_ids  = set(map(id, weekly))
+        _monthly_ids = set(map(id, monthly))
+        _pre_daily_equity   = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _daily_ids)
+        _pre_weekly_equity  = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _weekly_ids)
+        _pre_monthly_equity = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _monthly_ids)
+
+        self.daily_metrics   = _hud_period_metrics(daily,   _pre_daily_equity)
+        self.weekly_metrics  = _hud_period_metrics(weekly,  _pre_weekly_equity)
+        self.monthly_metrics = _hud_period_metrics(monthly, _pre_monthly_equity)
         self.lifetime_metrics = _hud_period_metrics(trades, starting_equity)
 
         # Augment lifetime_metrics with timing data derived from trade timestamps.
@@ -3335,6 +3350,7 @@ class TabbedHUD:
         risk_final_qty = rs.get("risk_final_qty", 0.0)
         vol_cap = rs.get("vol_cap", 0.0)
         vol_ref = rs.get("vol_reference", 0.0)
+        realized_vol = rs.get("realized_vol", 0.0)
 
         qty_color = _ANSI_G if risk_final_qty == risk_req_qty else _ANSI_Y
 
@@ -3350,7 +3366,18 @@ class TabbedHUD:
         if capped:
             print(f"    {_ANSI_Y}⚡ Qty capped — vol or depth constraint active{_ANSI_RST}")
         print(f"    Vol cap:           {vol_cap * 100:>9.2f}%  {_ANSI_DIM}(max position vol allowed){_ANSI_RST}")
-        print(f"    Vol reference:     {vol_ref * 100:>9.3f}%  {_ANSI_DIM}(baseline for cap calc){_ANSI_RST}")
+        # vol_reference is a fixed config value used as the baseline for the
+        # VaR vol multiplier (vol_mult = realized/reference).  Show the ratio
+        # so it's clear how far the current market vol is from the reference.
+        if vol_ref > 0 and realized_vol > 0:
+            _vol_ratio = realized_vol / vol_ref
+            _vr_col = _ANSI_Y if abs(_vol_ratio - 1.0) > 0.5 else _ANSI_G
+            print(
+                f"    Vol reference:     {vol_ref * 100:>9.3f}%  "
+                f"{_ANSI_DIM}(fixed baseline; {_vr_col}×{_vol_ratio:.2f} vs realized{_ANSI_DIM}){_ANSI_RST}"
+            )
+        else:
+            print(f"    Vol reference:     {vol_ref * 100:>9.3f}%  {_ANSI_DIM}(fixed baseline for vol cap){_ANSI_RST}")
 
     def _render_order_book_ladder(self, bids: list, asks: list, depth_bid: float, depth_ask: float, dec: int) -> None:
         """Render the L2 order-book price ladder (5 rows, aligned columns).
@@ -3422,7 +3449,9 @@ class TabbedHUD:
         if rs_regime == "MEAN_REVERTING" and not toxic:
             signals.append(f"{_ANSI_Y}⚡ Mean-reverting — shorter hold, tighter target{_ANSI_RST}")
         if rs_runway < RUNWAY_SHORT_THRESHOLD:
-            signals.append(f"{_ANSI_Y}⚡ Short runway ({rs_runway:.2f}) — harvester may exit early{_ANSI_RST}")
+            # rs_runway is the path geometry vol-headwind score (1/(1+50σ)).
+            # Low value = high realized vol, not a harvester-specific runway prediction.
+            signals.append(f"{_ANSI_Y}⚡ Rough path conditions (runway={rs_runway:.2f}) — high vol, widen stops{_ANSI_RST}")
         if not signals:
             signals.append(f"{_ANSI_DIM}— No strong signals; model discretion applies{_ANSI_RST}")
         for s in signals:
