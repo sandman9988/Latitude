@@ -387,11 +387,20 @@ class TabbedHUD:
         if self.thread:
             self.thread.join(timeout=2)
 
+    def _read_raw(self) -> str:
+        """Read exactly one byte directly from the stdin fd, bypassing Python's BufferedReader.
+
+        Using os.read() instead of sys.stdin.read(1) prevents Python's internal buffer from
+        consuming multiple bytes (e.g. \x1bk) in a single OS read and hiding the second byte
+        from subsequent select.select() calls on the underlying fd.
+        """
+        return os.read(sys.stdin.fileno(), 1).decode("latin-1")
+
     def _handle_escape_sequence(self, seq1: str) -> None:
         """Handle CSI / Alt-key escape sequences following the ESC byte."""
         if seq1 == "[":  # CSI sequence (e.g. Shift+Tab = \x1b[Z)
-            if select.select([sys.stdin], [], [], 0.01)[0]:
-                seq2 = sys.stdin.read(1)
+            if select.select([sys.stdin.fileno()], [], [], 0.05)[0]:
+                seq2 = self._read_raw()
                 if seq2 == "Z":  # Shift+Tab
                     idx = self.TAB_ORDER.index(self.current_tab)
                     self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
@@ -401,16 +410,16 @@ class TabbedHUD:
     def _check_input(self):
         """Check for keyboard input (non-blocking)"""
         try:
-            if select.select([sys.stdin], [], [], 0)[0]:
-                key = sys.stdin.read(1)
+            if select.select([sys.stdin.fileno()], [], [], 0)[0]:
+                key = self._read_raw()
                 if key in self.TABS:
                     self.current_tab = self.TABS[key]
                 elif key == "\t":  # Tab key to cycle forward
                     idx = self.TAB_ORDER.index(self.current_tab)
                     self.current_tab = self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)]
                 elif key == "\x1b":  # Escape sequence: Shift+Tab or Alt+<key>
-                    if select.select([sys.stdin], [], [], 0.05)[0]:
-                        seq1 = sys.stdin.read(1)
+                    if select.select([sys.stdin.fileno()], [], [], 0.05)[0]:
+                        seq1 = self._read_raw()
                         self._handle_escape_sequence(seq1)
                 elif key.lower() == "q" or key in {"\x18", "\x11"}:  # 'q' or Ctrl+X (\x18) or Ctrl+Q (\x11)
                     self.running = False
@@ -1197,9 +1206,9 @@ class TabbedHUD:
 
             print(f"\n{DIM}Resetting will allow the bot to resume trading immediately.{RST}")
             print(f"{DIM}Only reset if you understand why the breaker tripped and the condition is resolved.{RST}\n")
-            print(YLW + "Type RESET and press Enter to reset all tripped breakers, or press Enter to abort:" + RST)
+            print(YLW + "Type 'reset' and press Enter to reset all tripped breakers, or press Enter to abort:" + RST)
             confirm = input("> ").strip()
-            if confirm == "RESET":
+            if confirm.upper() == "RESET":
                 _reset_path = self.data_dir / "circuit_breaker_reset.json"
                 with open(_reset_path, "w") as _f:
                     json.dump(
@@ -1722,6 +1731,14 @@ class TabbedHUD:
         if trig_added > 0:
             print(f"    Added:  {trig_added:,} total experiences")
         print(f"    ε:      {self._rt_eps_bar(trig_eps)}")
+        # Regime-aware epsilon factor: 1.0 = normal decay, <1.0 = slower (exploring more)
+        _regime_f = ts.get("trigger_epsilon_regime_factor", 1.0)
+        _rf_col = _ANSI_G if _regime_f >= 0.9 else (_ANSI_Y if _regime_f >= 0.7 else _ANSI_B)
+        print(f"    ε ζ:    {_rf_col}{_regime_f:.2f}{_ANSI_RST}  {_ANSI_DIM}(decay factor — 1.0 normal, <1 slower){_ANSI_RST}")
+        # Adaptive tau (target network update rate)
+        _trig_tau = ts.get("trigger_tau", 0.005)
+        _tau_col = _ANSI_G if _trig_tau > 0.003 else (_ANSI_Y if _trig_tau > 0.001 else _ANSI_R)
+        print(f"    τ:      {_tau_col}{_trig_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
         _tl_str = (
             f"{trig_loss:.6f}" if trig_loss > 0
             else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
@@ -1773,6 +1790,10 @@ class TabbedHUD:
         if harv_added > 0:
             print(f"    Added:  {harv_added:,} total experiences")
         print(f"    β IS:   {self._rt_beta_bar(harv_beta)}")
+        # Adaptive tau (target network update rate)
+        _harv_tau = ts.get("harvester_tau", 0.005)
+        _htau_col = _ANSI_G if _harv_tau > 0.003 else (_ANSI_Y if _harv_tau > 0.001 else _ANSI_R)
+        print(f"    τ:      {_htau_col}{_harv_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
         _hl_str = (
             f"{harv_loss:.6f}" if harv_loss > 0
             else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
@@ -1789,7 +1810,10 @@ class TabbedHUD:
         else:
             _cc = _ANSI_R
         print(f"    Conf:   {_cc}{harv_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
-        print(f"    Hold:   {harv_min_hold} ticks min")
+        # Regime-aware hold duration
+        _hold_mult = ts.get("harvester_regime_hold_mult", 1.0)
+        _hm_col = _ANSI_G if _hold_mult > 1.0 else (_ANSI_Y if _hold_mult >= 0.9 else _ANSI_R)
+        print(f"    Hold:   {harv_min_hold} ticks min  {_hm_col}×{_hold_mult:.2f}{_ANSI_RST}  {_ANSI_DIM}(regime mult — >1 trend run, <1 quick exit){_ANSI_RST}")
         print()
 
     def _render_live_arena_and_health(
@@ -2513,9 +2537,11 @@ class TabbedHUD:
 
         print(
             f"  ε={_eps_col}{_eps:.4f} {_eps_lbl}{_ANSI_RST}  steps={_trig_steps:,}  loss={_loss_str(_trig_loss)}"
+            f"  τ={self.training_stats.get('trigger_tau', 0.005):.5f}"
         )
         print(
             f"  β={_beta_col}{_beta:.4f} {_beta_lbl}{_ANSI_RST}  steps={_harv_steps:,}  loss={_loss_str(_harv_loss)}"
+            f"  τ={self.training_stats.get('harvester_tau', 0.005):.5f}"
         )
 
     def _spread_bps(self) -> float:
@@ -2653,7 +2679,7 @@ class TabbedHUD:
         # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
         # This is NOT an annualised return-based Sharpe ratio.
         print(
-            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL':>11} {'TQR':>7} {'PF':>7} {'MaxDD%':>8}"
+            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'TQR':>7} {'PF':>7} {'MaxDD%':>8}"
         )
         print("  " + "─" * 62)
 
@@ -2687,7 +2713,7 @@ class TabbedHUD:
         if len(self.per_symbol_metrics) > 1:
             print("\n  \033[1mPER SYMBOL\033[0m")
             print(
-                f"  {'Symbol':<10} {'Trades':>7} {'Win%':>7} {'PnL':>11} {'PF':>7} {'MaxDD%':>8}"
+                f"  {'Symbol':<10} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'PF':>7} {'MaxDD%':>8}"
             )
             print("  " + "─" * 55)
             for _sym in sorted(self.per_symbol_metrics):
@@ -2741,7 +2767,7 @@ class TabbedHUD:
 
         print("\n  \033[1mMODE BREAKDOWN\033[0m")
         print(
-            f"  {'Mode':<8} {'Trades':>7} {'Win%':>7} {'PnL':>11}"
+            f"  {'Mode':<8} {'Trades':>7} {'Win%':>7} {'PnL $':>11}"
         )
         print("  " + "\u2500" * 37)
         for label, trades, color in [
@@ -2794,17 +2820,17 @@ class TabbedHUD:
             f"  Payoff ratio:     {pay_col}{payoff:>7.2f}x{_ANSI_RST}  "
             f"{_ANSI_DIM}(avg_win/|avg_loss|  target ≥1.5){_ANSI_RST}"
         )
-        print(f"  Avg W / Avg L:    {avg_win:>+8.2f} / {avg_loss:>+8.2f}")
+        print(f"  Avg W / Avg L:    ${avg_win:>+8.2f} / ${avg_loss:>+8.2f}")
         print(
             f"  Profit factor:    {pf_col}{profit_f:>7.2f} {_ANSI_RST} "
             f"{_ANSI_DIM}(gross_profit/gross_loss  target ≥1.2){_ANSI_RST}"
         )
-        print(f"  Expectancy/trade: {exp_col}{expect:>+8.4f}{_ANSI_RST}")
+        print(f"  Expectancy/trade: {exp_col}${expect:>+8.4f}{_ANSI_RST}")
         print(
             f"  Sortino ratio:    {sortino:>7.3f}  "
             f"{_ANSI_DIM}(mean/downside-\u03c3 of trade PnL; losses-only denom){_ANSI_RST}"
         )
-        print(f"  Best / Worst:     {best:>+8.2f} / {worst:>+8.2f}")
+        print(f"  Best / Worst:     ${best:>+8.2f} / ${worst:>+8.2f}")
         max_cw = lt.get("max_consec_wins", 0)
         max_cl = lt.get("max_consec_losses", 0)
         cw_col = _ANSI_G if max_cw >= 3 else _ANSI_Y
@@ -3094,6 +3120,7 @@ class TabbedHUD:
         self._render_risk_circuit_breaker(rs)
         self._render_risk_tail(rs)
         self._render_risk_regime(rs)
+        self._render_risk_reward_weights(rs)
         self._render_risk_path_geometry(rs)
         self._render_risk_position_sizing(rs)
 
@@ -3264,6 +3291,28 @@ class TabbedHUD:
         print(f"    ζ: [{_ANSI_G}TREND{_ANSI_RST}│{_ANSI_B}TRANS{_ANSI_RST}│{_ANSI_Y}M-REV{_ANSI_RST}]  {_gauge}")
         print(f"       {_ANSI_DIM}0.1{'':>10}0.7{'':>15}1.3{'':>12}2.0{_ANSI_RST}")
         print(f"    Updates:           {updates:>10d}{_ANSI_DIM}{_next_tag}{_ANSI_RST}")
+        print()
+
+    def _render_risk_reward_weights(self, rs: dict) -> None:
+        """Render adaptive reward component weights."""
+        weights = rs.get("reward_weights", {})
+        if not weights:
+            return
+        print("  \033[1m🎚️  REWARD WEIGHTS\033[0m  " + f"{_ANSI_DIM}(adaptive, bounded 0.2–2.0){_ANSI_RST}")
+        _gauge_w = 20
+        for name, val in weights.items():
+            # Visual bar: 0.2 (min) to 2.0 (max), default 1.0
+            frac = max(0.0, min(1.0, (val - 0.2) / 1.8))
+            filled = int(_gauge_w * frac)
+            bar = "█" * filled + "░" * (_gauge_w - filled)
+            # Color: green near 1.0, yellow when drifted, red when at bounds
+            if 0.8 <= val <= 1.2:
+                col = _ANSI_G
+            elif 0.5 <= val <= 1.5:
+                col = _ANSI_Y
+            else:
+                col = _ANSI_R
+            print(f"    {name:<16s} {col}{val:>5.2f}{_ANSI_RST}  [{bar}]")
         print()
 
     def _render_risk_path_geometry(self, rs: dict) -> None:
@@ -3669,7 +3718,7 @@ class TabbedHUD:
         _hdr_row = (
             f"  {'#':<{_C_ID}} M {'Date/Time':<{_C_DATE}} {'Dir':<{_C_DIR}} "
             f"{'Sym':<{_C_SYM}} {'Entry':>{_C_ENT}} {'Exit':>{_C_EXT}} "
-            f"{'PnL':>{_C_PNL}} {'MFE':>{_C_MFE}} {'MAE':>{_C_MAE}} "
+            f"{'PnL $':>{_C_PNL}} {'MFE▵':>{_C_MFE}} {'MAE▵':>{_C_MAE}} "
             f"{'Brs':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
         )
         _sep = "  " + "-" * min(W - 4, max(len(_hdr_row) - 2, 50))
@@ -3785,8 +3834,8 @@ class TabbedHUD:
         print()
         _result = f"  {_ANSI_G}[+] WIN{_ANSI_RST}" if _pnl > 0 else f"  {_ANSI_R}[-] LOSS{_ANSI_RST}"
         print(f"  {'PnL:':<16} {_pc}{_pnl:+.4f} USD{_ANSI_RST}{_result}")
-        print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f}{_ANSI_RST}  (max favourable excursion)")
-        print(f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f}{_ANSI_RST}  (max adverse excursion){_ratio_str}")
+        print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f} pts{_ANSI_RST}  (max favourable price excursion)")
+        print(f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f} pts{_ANSI_RST}  (max adverse price excursion){_ratio_str}")
         print(f"  {'Close reason:':<16} {_rsn}")
         if _w2l:
             print(f"  {_ANSI_Y}[!] Winner-to-Loser: trade reversed into a loss after reaching MFE{_ANSI_RST}")

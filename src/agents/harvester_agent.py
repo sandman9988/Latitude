@@ -26,7 +26,7 @@ import os
 
 import numpy as np
 
-from src.agents.agent_training_mixin import AgentTrainingMixin, softmax
+from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence, softmax
 from src.constants import (
     BREAKEVEN_TRIGGER_PCT,
     CAPTURE_DECAY_MIN_MFE_PCT,
@@ -242,8 +242,7 @@ class HarvesterAgent(AgentTrainingMixin):
         q_values = self.ddqn.predict(flat_state).flatten()  # flatten (1,N) → (N,)
         action = int(np.argmax(q_values))
 
-        probs = self._softmax(q_values)
-        confidence = float(probs[action])
+        confidence = compute_confidence(q_values, self.training_steps)
 
         LOG.debug(
             "[HARVESTER] DDQN decision: Q=%s, action=%d (%s), conf=%.3f",
@@ -280,9 +279,8 @@ class HarvesterAgent(AgentTrainingMixin):
             # Action selection (greedy)
             action = int(q_values.argmax())
 
-            # Confidence from softmax probabilities
-            probs = self._softmax(q_values)
-            confidence = float(probs[action])
+            # Confidence from blended softmax + advantage
+            confidence = compute_confidence(q_values, self.training_steps)
 
             LOG.debug(
                 "[HARVESTER] Q-values: %s, Action: %d (%s), Conf: %.3f, MFE: %.4f, MAE: %.4f, Bars: %d",
@@ -306,6 +304,7 @@ class HarvesterAgent(AgentTrainingMixin):
         entry_price: float,
         current_price: float = 0.0,
         direction: int = 1,
+        zeta: float = 0.5,
     ) -> tuple[int, float]:
         """Decide exit action based on market + position state.
 
@@ -317,6 +316,7 @@ class HarvesterAgent(AgentTrainingMixin):
             entry_price: Entry price for normalization
             current_price: Current market price (for unrealized P&L calculation)
             direction: +1=LONG, -1=SHORT (used for correct sign of unrealized P&L)
+            zeta: Regime damping ratio (lower = trending, allows longer holds)
 
         Returns:
             (action, confidence)
@@ -352,17 +352,30 @@ class HarvesterAgent(AgentTrainingMixin):
             )
             return 0, 0.0  # HOLD
 
+        # Regime-aware time stop scaling: in strong trends (ζ < 0.5) allow
+        # positions to run longer; in choppy/mean-reverting (ζ > 0.7) exit
+        # faster to protect profits.
+        self._last_zeta = zeta  # Store for stats exposure
+        if zeta < 0.5:
+            regime_hold_mult = 1.5
+        elif zeta < 0.7:
+            regime_hold_mult = 1.0
+        else:
+            regime_hold_mult = max(0.7, 1.0 - 0.3 * min(1.0, zeta - 0.7))
+        effective_hard_stop = int(self.hard_time_stop_bars * regime_hold_mult)
+        effective_soft_stop = int(self.soft_time_stop_bars * regime_hold_mult)
+
         # Hard time stop: safety valve that overrides DDQN/model decisions.
         # Prevents degenerate Q-functions from holding positions indefinitely.
-        if ticks_held > self.hard_time_stop_bars:
+        if ticks_held > effective_hard_stop:
             LOG.warning(
-                "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d → CLOSE",
-                ticks_held, self.hard_time_stop_bars,
+                "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d (ζ=%.2f, mult=%.2f) → CLOSE",
+                ticks_held, effective_hard_stop, zeta, regime_hold_mult,
             )
             return 1, 1.0  # CLOSE with full confidence
 
         # Soft time stop: exit when holding too long with diminished or positive profits.
-        if ticks_held > self.soft_time_stop_bars and entry_price > 0:
+        if ticks_held > effective_soft_stop and entry_price > 0:
             mfe_pct = (mfe / entry_price) * PCT_SCALE
             mae_pct = (mae / entry_price) * PCT_SCALE
             # Use actual unrealized P&L (not MFE−MAE range) so the stop fires
@@ -375,8 +388,8 @@ class HarvesterAgent(AgentTrainingMixin):
             net_profit_pct = mfe_pct - friction_pct
             if self._check_soft_time_stop(ticks_held, mfe_pct, current_profit_pct, net_profit_pct):
                 LOG.info(
-                    "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d → CLOSE",
-                    ticks_held, self.soft_time_stop_bars,
+                    "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d (ζ=%.2f, mult=%.2f) → CLOSE",
+                    ticks_held, effective_soft_stop, zeta, regime_hold_mult,
                 )
                 return 1, 0.9  # CLOSE with high confidence
 
@@ -824,7 +837,18 @@ class HarvesterAgent(AgentTrainingMixin):
 
     def _extra_training_stats(self) -> dict:
         """Harvester-specific stats appended by the mixin."""
-        return {"min_hold_ticks": self.min_hold_ticks}
+        zeta = getattr(self, '_last_zeta', 0.5)
+        if zeta < 0.5:
+            regime_hold_mult = 1.5
+        elif zeta < 0.7:
+            regime_hold_mult = 1.0
+        else:
+            regime_hold_mult = max(0.7, 1.0 - 0.3 * min(1.0, zeta - 0.7))
+        return {
+            "min_hold_ticks": self.min_hold_ticks,
+            "regime_hold_mult": round(regime_hold_mult, 2),
+            "current_zeta": zeta,
+        }
 
 
 # ============================================================================

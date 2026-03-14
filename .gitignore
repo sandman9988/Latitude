@@ -59,3 +59,4 @@ REORGANIZE_PROJECT.py
 scripts/requirements.txt
 scripts/.env
 scripts/.env.example
+.env.openapi

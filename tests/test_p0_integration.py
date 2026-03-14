@@ -1,19 +1,10 @@
 """
 P0 Safety Infrastructure Integration Tests
 
-Tests the integration of all P0 components:
+Tests the integration of active P0 components:
 - JournaledPersistence
 - RewardIntegrityMonitor
-- FeedbackLoopBreaker
-- ColdStartManager
 - ProductionMonitor
-
-Scenarios:
-1. Full lifecycle: Observation → Paper → Micro → Production
-2. Crash and recovery with journal replay
-3. Feedback loop detection and intervention
-4. Reward gaming detection
-5. Monitoring and alerting
 """
 
 import json
@@ -26,79 +17,9 @@ rng = np.random.default_rng(42)
 
 import pytest
 
-from src.core.cold_start_manager import ColdStartManager, WarmupPhase
-from src.core.feedback_loop_breaker import FeedbackLoopBreaker
 from src.persistence.journaled_persistence import Journal
 from src.monitoring.production_monitor import ProductionMonitor
 from src.core.reward_integrity_monitor import RewardIntegrityMonitor
-
-
-class TestFullWarmupLifecycle:
-    """Test complete warmup from observation to production."""
-
-    def test_observation_to_production(self):
-        """Test full graduated warmup progression."""
-        # Setup with short thresholds for testing
-        mgr = ColdStartManager(
-            observation_min_bars=10,
-            paper_min_bars=20,
-            paper_min_sharpe=0.3,
-            paper_min_win_rate=0.5,
-            micro_min_bars=30,
-            micro_min_sharpe=0.4,
-            micro_min_win_rate=0.5,
-            state_file=Path(tempfile.mktemp(suffix=".json")),
-        )
-
-        # Phase 1: Observation
-        assert mgr.current_phase == WarmupPhase.OBSERVATION
-        assert not mgr.can_trade()
-
-        for _ in range(15):
-            mgr.update(new_bar=True)
-
-        next_phase = mgr.check_graduation()
-        assert next_phase == WarmupPhase.PAPER_TRADING
-        mgr.graduate(next_phase)
-
-        # Phase 2: Paper Trading
-        assert mgr.current_phase == WarmupPhase.PAPER_TRADING
-        assert mgr.can_trade()
-        assert mgr.is_paper_only()
-
-        # Simulate profitable trades (deterministic)
-        rng = np.random.default_rng(42)  # For reproducibility
-        for i in range(30):
-            mgr.update(new_bar=True)
-            if i % 2 == 0:
-                pnl = abs(rng.standard_normal()) + 0.6  # Always profitable
-                mgr.update(trade_completed={"pnl": pnl, "is_paper": True})
-
-        next_phase = mgr.check_graduation()
-        assert next_phase == WarmupPhase.MICRO_POSITIONS
-        mgr.graduate(next_phase)
-
-        # Phase 3: Micro Positions
-        assert mgr.current_phase == WarmupPhase.MICRO_POSITIONS
-        assert mgr.get_position_size_multiplier() == pytest.approx(0.001)
-
-        # Simulate more profitable trades (deterministic)
-        for i in range(40):
-            mgr.update(new_bar=True)
-            if i % 2 == 0:
-                pnl = abs(rng.standard_normal()) + 0.5  # Always profitable
-                mgr.update(trade_completed={"pnl": pnl, "is_paper": False})
-
-        next_phase = mgr.check_graduation()
-        assert next_phase == WarmupPhase.PRODUCTION
-        mgr.graduate(next_phase)
-
-        # Phase 4: Production
-        assert mgr.current_phase == WarmupPhase.PRODUCTION
-        assert mgr.get_position_size_multiplier() == pytest.approx(1.0)
-
-        # Cleanup
-        mgr.state_file.unlink(missing_ok=True)
 
 
 class TestCrashRecovery:
@@ -191,54 +112,6 @@ class TestCrashRecovery:
         journal_file.unlink(missing_ok=True)
         for f in journal_file.parent.glob("*.checkpoint"):
             f.unlink(missing_ok=True)
-
-
-class TestFeedbackLoopDetection:
-    """Test feedback loop detection and intervention."""
-
-    def test_no_trade_loop_intervention(self):
-        """Test detection and intervention for no-trade loop."""
-        breaker = FeedbackLoopBreaker(
-            no_trade_window_bars=50,
-            intervention_cooldown_bars=10,
-        )
-
-        # Simulate no trades with high volatility
-        for i in range(60):
-            signal = breaker.update(
-                bars_since_last_trade=i,
-                current_volatility=0.01,  # High vol
-                circuit_breakers_tripped=False,
-            )
-
-            if signal and signal.loop_type == "no_trades":
-                # Loop detected, apply intervention
-                intervention = breaker.apply_intervention(signal)
-
-                assert intervention["action"] in ["increase_exploration", "inject_synthetic_experiences"]
-                assert "params" in intervention
-                break
-        else:
-            pytest.fail("No-trade loop not detected")
-
-    def test_circuit_breaker_stuck_intervention(self):
-        """Test stuck circuit breaker detection."""
-        breaker = FeedbackLoopBreaker(circuit_breaker_stuck_bars=30)
-
-        # Simulate stuck circuit breaker
-        for i in range(40):
-            signal = breaker.update(
-                bars_since_last_trade=10,
-                current_volatility=0.005,
-                circuit_breakers_tripped=True,  # Stuck
-            )
-
-            if signal and signal.loop_type == "circuit_breaker":
-                intervention = breaker.apply_intervention(signal)
-                assert intervention["action"] == "reset_circuit_breakers"
-                break
-        else:
-            pytest.fail("Circuit breaker loop not detected")
 
 
 class TestRewardGamingDetection:
@@ -353,119 +226,6 @@ class TestMonitoringAndAlerting:
 
         # Cleanup
         temp_file.unlink(missing_ok=True)
-
-
-class TestIntegratedScenario:
-    """Test all components working together."""
-
-    def test_full_system_integration(self):
-        """
-        Simulate a complete trading session with all safety components.
-
-        Scenario:
-        1. Bot starts in OBSERVATION
-        2. Graduates to PAPER_TRADING
-        3. Trades are logged to journal
-        4. Rewards monitored for integrity
-        5. Metrics collected
-        6. Feedback loop detection active
-        """
-        # Setup all components
-        temp_dir = Path(tempfile.mkdtemp())
-
-        journal = Journal(journal_path=str(temp_dir / "state.journal"))
-        cold_start = ColdStartManager(
-            observation_min_bars=5,
-            paper_min_bars=10,
-            paper_min_sharpe=0.2,
-            paper_min_win_rate=0.45,
-            state_file=temp_dir / "cold_start.json",
-        )
-        reward_monitor = RewardIntegrityMonitor()  # No state_file parameter
-        loop_breaker = FeedbackLoopBreaker(
-            no_trade_window_bars=20,
-            state_file=temp_dir / "loops.json",
-        )
-        monitor = ProductionMonitor(
-            metrics_file=temp_dir / "metrics.json",
-            http_enabled=False,
-        )
-
-        # Simulate trading session
-        bars_since_trade = 0
-        total_pnl = 0.0
-        trades = []
-
-        for bar in range(50):
-            # Update cold start
-            cold_start.update(new_bar=True)
-            next_phase = cold_start.check_graduation()
-            if next_phase:
-                cold_start.graduate(next_phase)
-
-            # Simulate trade decision
-            if cold_start.can_trade() and bar % 5 == 0:
-                # Execute trade
-                pnl = rng.standard_normal() * 5 + 2  # Slightly profitable bias
-                reward = pnl * 0.1
-
-                # Log to journal
-                journal.log_trade_open("EURUSD", "LONG", 0.01, 1.1000)
-                journal.log_trade_close(
-                    order_id="EURUSD",
-                    exit_price=1.1000 + pnl / 1000,  # Approximate price
-                    pnl=pnl,
-                    mfe=max(0, pnl) + abs(rng.standard_normal()),  # Max favorable excursion
-                    mae=min(0, pnl) - abs(rng.standard_normal()),  # Max adverse excursion
-                    winner_to_loser=pnl > 0,
-                )
-
-                # Monitor rewards
-                reward_monitor.add_trade(reward, pnl, reward_components={"main": reward})
-
-                # Update cold start
-                cold_start.update(trade_completed={"pnl": pnl, "is_paper": cold_start.is_paper_only()})
-
-                total_pnl += pnl
-                trades.append(pnl)
-                bars_since_trade = 0
-            else:
-                bars_since_trade += 1
-
-            # Check feedback loops
-            _loop_signal = loop_breaker.update(
-                bars_since_last_trade=bars_since_trade,
-                current_volatility=0.01,
-                circuit_breakers_tripped=False,
-            )
-
-            # Update monitoring
-            monitor.update_metrics(
-                realized_pnl_total=total_pnl,
-                trades_total=len(trades),
-                win_rate=sum(1 for t in trades if t > 0) / max(len(trades), 1),
-                last_trade_mins_ago=bars_since_trade,
-            )
-
-        # Verify system state
-        assert len(trades) > 0, "Should have executed trades"
-        assert cold_start.current_phase != WarmupPhase.OBSERVATION, "Should have progressed past observation"
-
-        # Check journal has entries
-        operations = journal.replay_from_checkpoint()
-        assert len(operations) > 0, "Journal should have operations"
-
-        # Check reward integrity
-        integrity = reward_monitor.check_integrity()
-        assert "correlation" in integrity or "status" in integrity  # May have insufficient data
-
-        # Check metrics file exists
-        assert monitor.metrics_file.exists()
-
-        # Cleanup
-        import shutil
-
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

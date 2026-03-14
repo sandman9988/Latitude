@@ -20,23 +20,40 @@ def _feed_prices(det: RegimeDetector, prices: list[float]):
 
 
 def _trending_prices(n: int = 60, *, seed: int = 42) -> list[float]:
-    """Generate uptrending prices with strong momentum."""
+    """Generate prices with positively-autocorrelated returns (VR > 1).
+
+    Uses an AR(1) process on returns with positive coefficient so that
+    consecutive returns tend to persist → variance ratio > 1 → TRENDING.
+    """
     rng = np.random.default_rng(seed)
     price = 100_000.0
     prices = []
+    prev_ret = 0.0
     for _ in range(n):
-        price += 10.0 + rng.normal(0, 2.0)  # strong drift, low noise
+        ret = 0.6 * prev_ret + rng.normal(0, 10.0)
+        price += ret
+        price = max(price, 1.0)
         prices.append(price)
+        prev_ret = ret
     return prices
 
 
 def _mean_reverting_prices(n: int = 60, *, seed: int = 42) -> list[float]:
-    """Generate mean-reverting oscillating prices."""
+    """Generate prices with negatively-autocorrelated returns (VR < 1).
+
+    Uses an AR(1) process on returns with negative coefficient so that
+    consecutive returns tend to flip sign → variance ratio < 1 → MEAN_REVERTING.
+    """
     rng = np.random.default_rng(seed)
-    base = 100_000.0
+    price = 100_000.0
     prices = []
-    for i in range(n):
-        prices.append(base + 20.0 * np.sin(i * 0.3) + rng.normal(0, 2.0))
+    prev_ret = 0.0
+    for _ in range(n):
+        ret = -0.6 * prev_ret + rng.normal(0, 10.0)
+        price += ret
+        price = max(price, 1.0)
+        prices.append(price)
+        prev_ret = ret
     return prices
 
 
@@ -117,16 +134,12 @@ class TestRegimeClassification:
     def test_trending_market(self):
         d = RegimeDetector(window_size=50, update_interval=5)
         regime, zeta = _feed_prices(d, _trending_prices(60))
-        # Strong uptrend should produce TRENDING or TRANSITIONAL
-        assert regime in ("TRENDING", "TRANSITIONAL")
+        assert regime == "TRENDING"
 
     def test_mean_reverting_market(self):
         d = RegimeDetector(window_size=50, update_interval=5)
         regime, zeta = _feed_prices(d, _mean_reverting_prices(80))
-        # Regime detector produces a classification — just verify it's not UNKNOWN
-        # (exact regime depends on noise seed and variance-ratio sensitivity)
-        assert regime != "UNKNOWN"
-        assert d.current_zeta > 0
+        assert regime == "MEAN_REVERTING"
 
     def test_random_walk_transitional(self):
         d = RegimeDetector(window_size=50, update_interval=5)

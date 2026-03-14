@@ -468,7 +468,7 @@ def select_best(results: list[dict]) -> dict[str, dict]:
 
 
 def copy_best_weights(best: dict[str, dict], dest_dir: Path) -> None:
-    """Copy winning weight files to dest_dir/{symbol}_{agent}.npz."""
+    """Copy winning weight files to dest_dir/{symbol}_{agent}_offline.pt."""
     dest_dir.mkdir(parents=True, exist_ok=True)
     for _sym, r in best.items():
         paths_str = r.get("weights_path", "")
@@ -478,7 +478,7 @@ def copy_best_weights(best: dict[str, dict], dest_dir: Path) -> None:
             src = Path(src_path)
             if not src.exists():
                 continue
-            # Rename: XAUUSD_M5_trigger_offline.npz → best/XAUUSD_trigger.npz
+            # Rename: XAUUSD_M5_trigger_offline.pt → best/XAUUSD_trigger_offline.pt
             name = src.name
             # Strip the _M<N>_ part for the "best" canonical name
             canonical = re.sub(r"_M\d+_", "_", name)

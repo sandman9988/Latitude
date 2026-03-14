@@ -103,6 +103,18 @@ class RewardShaper:
         # Counterfactual analysis (optimal vs actual exit)
         self.counterfactual = CounterfactualAnalyzer()
 
+        # Adaptive component weights: stored in LearnedParametersManager so
+        # they persist and self-calibrate.  Bounded to [0.2, 2.0] so no
+        # component can be zeroed out or dominate entirely.
+        self._weight_names = [
+            ("reward_weight_capture", WEIGHT_CAPTURE),
+            ("reward_weight_wtl", WEIGHT_WTL),
+            ("reward_weight_opportunity", WEIGHT_OPPORTUNITY),
+            ("reward_weight_activity", WEIGHT_ACTIVITY),
+            ("reward_weight_counterfactual", WEIGHT_COUNTERFACTUAL),
+            ("reward_weight_ensemble", WEIGHT_ENSEMBLE),
+        ]
+
         # Statistics for monitoring
         self.total_rewards_calculated = 0
         self.component_stats = {
@@ -113,6 +125,13 @@ class RewardShaper:
             "counterfactual": {"sum": 0.0, "count": 0},
             "ensemble": {"sum": 0.0, "count": 0},  # NEW: Ensemble disagreement bonus
         }
+
+    def _get_weight(self, param_name: str, default: float) -> float:
+        """Get adaptive weight, bounded to [0.2, 2.0]."""
+        raw = self._get_param(param_name, default)
+        if raw is None:
+            return default
+        return max(0.2, min(2.0, float(raw)))
 
     def _get_param(self, name: str, default: float | None = None) -> float:
         return self.param_manager.get(self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default)
@@ -301,14 +320,13 @@ class RewardShaper:
             self.component_stats["ensemble"]["sum"] += r_ensemble
             self.component_stats["ensemble"]["count"] += 1
 
-        # Weighted total (6 components now)
-        # Component multipliers handle the adaptation
-        weight_capture = WEIGHT_CAPTURE
-        weight_wtl = WEIGHT_WTL
-        weight_opportunity = WEIGHT_OPPORTUNITY  # Reduced weight for missed opportunities
-        weight_activity = WEIGHT_ACTIVITY  # Activity exploration bonus
-        weight_counterfactual = WEIGHT_COUNTERFACTUAL  # Exit timing adjustment
-        weight_ensemble = WEIGHT_ENSEMBLE  # NEW: Ensemble disagreement bonus
+        # Weighted total (6 components with adaptive weights)
+        weight_capture = self._get_weight("reward_weight_capture", WEIGHT_CAPTURE)
+        weight_wtl = self._get_weight("reward_weight_wtl", WEIGHT_WTL)
+        weight_opportunity = self._get_weight("reward_weight_opportunity", WEIGHT_OPPORTUNITY)
+        weight_activity = self._get_weight("reward_weight_activity", WEIGHT_ACTIVITY)
+        weight_counterfactual = self._get_weight("reward_weight_counterfactual", WEIGHT_COUNTERFACTUAL)
+        weight_ensemble = self._get_weight("reward_weight_ensemble", WEIGHT_ENSEMBLE)
 
         total_reward = (
             weight_capture * r_capture
@@ -392,18 +410,46 @@ class RewardShaper:
 
     def adapt_weights(self, performance_delta: float):
         """
-        Adjust reward component weights based on performance feedback.
+        Adjust reward component weights based on trade outcome feedback.
 
-        NOTE: Removed adaptive weights. Per handbook principle: component-level
-        multipliers (capture_multiplier, wtl_penalty_multiplier, etc.) provide
-        the necessary tuning. Fixed weights keep the balance stable while the
-        multipliers adapt to improve performance.
+        Uses component-outcome correlation: if a component's recent average
+        reward correlates with positive trade outcomes (performance_delta > 0),
+        that component's weight is nudged up.  Conversely, components whose
+        signals correlate with losses get nudged down.
+
+        Weights are bounded to [0.2, 2.0] via _get_weight() so no component
+        can be eliminated or dominate entirely.
 
         Args:
-            performance_delta: Change in performance metric (unused now)
+            performance_delta: Trade outcome proxy (positive = profitable trade,
+                negative = losing trade). Typically exit_pnl or capture_ratio.
         """
-        # Weights are now fixed at principled defaults (1.0, 1.0, 0.5)
-        # Adaptation happens via the component multipliers in LearnedParametersManager
+        if not self.param_manager:
+            return
+
+        alpha = 0.02  # Very slow adaptation to prevent whiplash
+        direction = 1.0 if performance_delta > 0 else -1.0
+
+        for param_name, default in self._weight_names:
+            component_key = param_name.replace("reward_weight_", "")
+            stats = self.component_stats.get(component_key, {})
+            count = stats.get("count", 0)
+            if count == 0:
+                continue
+
+            # Component's recent average: positive avg on a winning trade
+            # means this component correctly identified a good trade.
+            avg = stats["sum"] / count
+            # Nudge: strengthen components aligned with outcome,
+            # weaken those anti-aligned.
+            gradient = alpha * direction * (1.0 if avg * direction > 0 else -0.5)
+
+            current = self._get_weight(param_name, default)
+            new_val = max(0.2, min(2.0, current + gradient))
+            self.param_manager.set_value(
+                self.symbol, param_name, new_val,
+                timeframe=self.timeframe, broker=self.broker
+            )
 
     def get_statistics(self) -> dict:
         """Return statistics about reward components."""
@@ -415,9 +461,8 @@ class RewardShaper:
                 "opportunity_multiplier": self._get_param("opportunity_multiplier"),
             },
             "weights": {
-                "capture": WEIGHT_CAPTURE,  # Fixed weights
-                "wtl": WEIGHT_WTL,
-                "opportunity": WEIGHT_OPPORTUNITY,
+                name.replace("reward_weight_", ""): self._get_weight(name, default)
+                for name, default in self._weight_names
             },
         }
 
@@ -450,7 +495,7 @@ class RewardShaper:
    WTL Penalty Multiplier:   {stats['parameters']['wtl_penalty_multiplier']:.2f}
    Opportunity Multiplier:   {stats['parameters']['opportunity_multiplier']:.2f}
 
-🎚️  COMPONENT WEIGHTS (Fixed)
+🎚️  COMPONENT WEIGHTS (Adaptive)
    Capture Efficiency:       {stats['weights']['capture']:.1f}
    WTL Penalty:              {stats['weights']['wtl']:.1f}
    Opportunity Cost:         {stats['weights']['opportunity']:.1f}

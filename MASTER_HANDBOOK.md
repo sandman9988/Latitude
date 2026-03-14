@@ -410,15 +410,15 @@ Regime Classification:
 |-----------|---------|--------|
 | `journaled_persistence.py` | Write-Ahead Log for crash recovery | ✅ IMPLEMENTED (416 lines) |
 | `reward_integrity_monitor.py` | Anti-gaming detection | ✅ IMPLEMENTED (413 lines) |
-| `feedback_loop_breaker.py` | Detect/prevent feedback loops | ✅ IMPLEMENTED (345 lines) |
-| `cold_start_manager.py` | Graduated warmup protocol | ✅ IMPLEMENTED (471 lines) |
+| `feedback_loop_breaker.py` | Detect/prevent feedback loops | ❌ REMOVED (dead code, Mar 2026) |
+| `cold_start_manager.py` | Graduated warmup protocol | ❌ REMOVED (dead code, Mar 2026) |
 | `production_monitor.py` | Real-time metrics + HTTP API | ✅ IMPLEMENTED (318 lines) |
 | `tests/test_reward_calculations.py` | Unit tests for reward functions | ✅ IMPLEMENTED (480 lines, 15 tests) |
 | `tests/test_p0_integration.py` | Integration tests for P0 safety | ✅ IMPLEMENTED (464 lines, 11 tests) |
 | `docs/DISASTER_RECOVERY_RUNBOOK.md` | Operations playbook | ✅ DOCUMENTED |
 
 **Summary:** All 7 P0 critical gaps addressed. System ready for graduated production deployment.
-**Test Status:** 2,595 passing, 0 skipped (as of 2026-03-08)
+**Test Status:** 2,195 passing, 0 skipped (as of 2026-03-14)
 **Risk Reduction:** 70-80% catastrophic failure → 15-20% (80% reduction in risk)
 
 See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md` for complete details.
@@ -430,7 +430,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 | `src/agents/trigger_agent.py` | Entry specialist (Trigger Agent) | ✅ IMPLEMENTED (968 lines) |
 | `src/agents/harvester_agent.py` | Exit specialist (Harvester Agent) | ✅ IMPLEMENTED (1,136 lines) |
 | `src/core/ddqn_network.py` | Double DQN with PyTorch | ✅ IMPLEMENTED (481 lines) |
-| `src/core/agent_arena.py` | Competitive allocation, consensus | ✅ IMPLEMENTED |
+| `src/core/agent_arena.py` | Competitive allocation, consensus | ❌ REMOVED (dead code, Mar 2026) |
 | `src/utils/sum_tree.py` | Efficient PER sampling O(log n) | ✅ IMPLEMENTED |
 | `src/utils/experience_buffer.py` | Prioritized Experience Replay + IS weights | ✅ IMPLEMENTED (725 lines) |
 
@@ -463,10 +463,10 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 | File | Purpose | Status (Python) |
 |------|---------|--------|
-| `generalization_monitor.py` | Train-live gap, distribution shift | ✅ IMPLEMENTED (334 lines) |
+| `generalization_monitor.py` | Train-live gap, distribution shift | ❌ REMOVED (dead code, Mar 2026) |
 | `adaptive_regularization.py` | Dynamic L2, dropout, LR adjustment | ✅ IMPLEMENTED (329 lines) |
-| `early_stopping.py` | Checkpoint/restore on degradation | ✅ IMPLEMENTED (193 lines) |
-| `ensemble_tracker.py` | Agent disagreement tracking | ✅ IMPLEMENTED (214 lines) |
+| `early_stopping.py` | Checkpoint/restore on degradation | ❌ REMOVED (dead code, Mar 2026) |
+| `ensemble_tracker.py` | Agent disagreement tracking | ❌ REMOVED (dead code, Mar 2026) |
 
 ### 4.8 Reward Shaping
 
@@ -482,8 +482,8 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 | File | Purpose | Status (Python) |
 |------|---------|--------|
 | `event_time_features.py` | Event-relative time features | ✅ IMPLEMENTED (185 lines) |
-| `time_features.py` | Session-aware time encoding | ✅ IMPLEMENTED (146 lines) |
-| `feature_tournament.py` | Survival tournament for selection | ✅ IMPLEMENTED (305 lines) |
+| `time_features.py` | Session-aware time encoding | ❌ REMOVED (superseded by event_time_features.py) |
+| `feature_tournament.py` | Survival tournament for selection | ❌ REMOVED (dead code, Mar 2026) |
 | `feature_engine.py` | Feature calculation + normalization | ✅ IMPLEMENTED (305 lines) |
 | Traditional features library | 50 classic TA indicators | 🔄 ~12/50 IMPLEMENTED |
 | Physics features library | 50 physics-based measurements | 🔄 ~8/50 IMPLEMENTED |
@@ -513,9 +513,9 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 
 | File | Purpose | Status (Python) |
 |------|---------|--------|
-| `feedback_loop_breaker.py` | Escape from degraded states | ✅ IMPLEMENTED (345 lines) |
+| `feedback_loop_breaker.py` | Escape from degraded states | ❌ REMOVED (dead code, Mar 2026) |
 | `journaled_persistence.py` | Write-ahead log for crash recovery | ✅ IMPLEMENTED (416 lines) |
-| `cold_start_manager.py` | Graduated warm-up protocol | ✅ IMPLEMENTED (471 lines) |
+| `cold_start_manager.py` | Graduated warm-up protocol | ❌ REMOVED (dead code, Mar 2026) |
 | `learned_parameters.py` | Parameter staleness tracking | ✅ IMPLEMENTED (387 lines) |
 | `src/features/regime_detector.py` | Regime change detection | ✅ IMPLEMENTED (434 lines) |
 | `reward_integrity_monitor.py` | Detect reward hacking | ✅ IMPLEMENTED (413 lines) |

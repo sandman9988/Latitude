@@ -180,6 +180,28 @@ class TestGhostPositionReconciliation:
         integ.position_tickets = {}
         assert integ.has_any_open_positions() is False
 
+    def test_remove_ticket_by_net_sentinel_reverse_lookup(self):
+        """_NET_ close sentinel should remove the actual broker ticket via reverse lookup."""
+        integ = _make_integration()
+        integ.position_tickets = {"PAPER_123": "pos_id_1"}
+        # Simulate what _close_hedged_position does with a _NET_1 sentinel
+        integ._remove_position_ticket("_NET_1", "pos_id_1")
+        assert len(integ.position_tickets) == 0
+
+    def test_remove_ticket_direct_match(self):
+        """Direct ticket match should still work as before."""
+        integ = _make_integration()
+        integ.position_tickets = {"PAPER_123": "pos_id_1"}
+        integ._remove_position_ticket("PAPER_123")
+        assert len(integ.position_tickets) == 0
+
+    def test_remove_ticket_no_match_no_error(self):
+        """Non-matching ticket with no position_id should not raise."""
+        integ = _make_integration()
+        integ.position_tickets = {"PAPER_123": "pos_id_1"}
+        integ._remove_position_ticket("NONEXISTENT")
+        assert len(integ.position_tickets) == 1  # unchanged
+
 
 # ---------------------------------------------------------------------------
 # Initialization

@@ -1,6 +1,11 @@
 """
 RiskManager - Central Risk Coordinator & Portfolio Controller
 
+WARNING: This module is NOT currently used by the main bot.
+The production bot (ctrader_ddqn_paper.py) uses CircuitBreakerManager,
+VaREstimator, and FrictionCalculator directly for risk management.
+This module was developed as a future integration layer.
+
 The "risk brain" of the trading system. Coordinates all risk management:
 - Capital allocation via VaR-based position sizing
 - Circuit breaker updates and control

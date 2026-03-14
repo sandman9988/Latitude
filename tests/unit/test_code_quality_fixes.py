@@ -100,27 +100,6 @@ class TestSumTreeBatchSizeGuard:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ParameterStaleness division guard
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestParameterStalenessGuard:
-    def test_empty_regime_history_returns_none(self):
-        from src.core.parameter_staleness import ParameterStalenessDetector
-        det = ParameterStalenessDetector.__new__(ParameterStalenessDetector)
-        det.regime_stability_bars = 50
-        det.bars_for_baseline = 5
-        # Fill snapshots with mocks that have a regime attribute
-        from collections import deque
-        mock_snap = MagicMock()
-        mock_snap.regime = "normal"
-        det.snapshots = deque([mock_snap] * 10)
-        det.regime_history = deque()  # empty!
-
-        result = det._check_regime_shift()
-        assert result is None  # Should not crash
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # FrictionCosts silent except → logged
 # ══════════════════════════════════════════════════════════════════════════════
 

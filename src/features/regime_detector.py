@@ -38,7 +38,7 @@ MIN_RETURNS_TWO_PERIOD: int = 2
 VARIANCE_EPSILON: float = 1e-12
 VR_CLAMP_MIN: float = 0.1
 VR_CLAMP_MAX: float = 5.0
-ZETA_MAP_MULTIPLIER: float = 0.6
+ZETA_MAP_MULTIPLIER: float = 2.0
 ZETA_CLAMP_MIN: float = 0.1
 ZETA_CLAMP_MAX: float = 2.0
 RUNWAY_MULT_TRENDING: float = 1.3
@@ -365,18 +365,20 @@ def _test_regime_detector():  # noqa: PLR0915
     detector = RegimeDetector(window_size=50, update_interval=5)
     rng = np.random.default_rng(42)
 
-    # Test 1: Trending market (uptrend with momentum)
-    print("Test 1: TRENDING market (strong uptrend)")
+    # Test 1: Trending market — returns with positive autocorrelation
+    #   AR(1) returns with positive coefficient → VR > 1 → TRENDING
+    print("Test 1: TRENDING market (momentum in returns)")
     print("-" * 60)
     price = 100000.0
     prices_list = []
+    prev_ret = 0.0
     for _i in range(60):
-        # Uptrend with persistence (positive autocorrelation)
-        drift = 10.0  # Upward drift
-        noise = rng.normal(0, 20.0)  # Realistic noise
-        price = price + drift + noise
+        ret = 0.6 * prev_ret + rng.normal(0, 10.0)  # persistent returns
+        price += ret
+        price = max(price, 1.0)
         prices_list.append(price)
         _, _ = detector.add_price(price)
+        prev_ret = ret
 
     info = detector.get_regime_info()
     print(f"Regime: {info['regime']}")
@@ -385,17 +387,19 @@ def _test_regime_detector():  # noqa: PLR0915
     print(f"Trigger adjustment: {info['trigger_adjustment']:+.4f}")
     print()
 
-    # Test 2: Mean-reverting market (oscillates around mean)
-    print("Test 2: MEAN-REVERTING market (oscillation)")
+    # Test 2: Mean-reverting market — returns with negative autocorrelation
+    #   AR(1) returns with negative coefficient → VR < 1 → MEAN_REVERTING
+    print("Test 2: MEAN-REVERTING market (choppy returns)")
     print("-" * 60)
     detector2 = RegimeDetector(window_size=50, update_interval=5)
     base_price = 100000.0
-    for i in range(60):
-        # Mean-reverting oscillation (negative autocorrelation)
-        oscillation = 20.0 * np.sin(i * 0.3)  # Sine wave
-        noise = rng.normal(0, 5.0)
-        price = base_price + oscillation + noise
-        _, _ = detector2.add_price(price)
+    prev_ret = 0.0
+    for _i in range(60):
+        ret = -0.6 * prev_ret + rng.normal(0, 10.0)  # reverting returns
+        base_price += ret
+        base_price = max(base_price, 1.0)
+        _, _ = detector2.add_price(base_price)
+        prev_ret = ret
 
     info2 = detector2.get_regime_info()
     print(f"Regime: {info2['regime']}")

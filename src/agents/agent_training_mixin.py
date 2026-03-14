@@ -28,6 +28,66 @@ def softmax(x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
     return exp_x / exp_x.sum()
 
 
+# ── Confidence computation constants ─────────────────────────────────────────
+_TEMP_MAX: float = 1.0        # Starting softmax temperature (exploration)
+_TEMP_MIN: float = 0.5        # Minimum temperature (exploitation)
+_TEMP_DECAY_STEPS: int = 5000 # Steps to fully decay temperature
+_ADV_SCALE: float = 3.0       # Sigmoid scaling for advantage-based confidence
+_SOFTMAX_WEIGHT: float = 0.5  # Blend weight for softmax vs advantage confidence
+
+
+def adaptive_temperature(training_steps: int) -> float:
+    """Compute softmax temperature that decays with training progress.
+
+    Early in training (few steps): higher temperature → uniform probabilities,
+    encourages exploration and doesn't produce misleading high-confidence signals.
+
+    Later in training (many steps): lower temperature → sharper probabilities,
+    reflects genuine Q-value differentiation from learning.
+
+    Returns temperature in [_TEMP_MIN, _TEMP_MAX].
+    """
+    progress = min(1.0, training_steps / _TEMP_DECAY_STEPS)
+    return _TEMP_MAX - (_TEMP_MAX - _TEMP_MIN) * progress
+
+
+def advantage_confidence(q_values: np.ndarray) -> float:
+    """Compute confidence from Q-value advantage (best minus second-best).
+
+    For a 3-action softmax, even modest Q-value advantages produce low softmax
+    probabilities. The advantage measure directly captures how strongly the
+    network prefers one action, mapped to [0, 1] via sigmoid.
+
+    This is more discriminative than softmax for multi-action spaces:
+    - Q=[0, 0.3, 0] → softmax max = 0.40, advantage_conf = 0.71
+    - Q=[0, 0.5, 0] → softmax max = 0.47, advantage_conf = 0.82
+    - Q=[0, 0, 0]   → softmax max = 0.33, advantage_conf = 0.50
+    """
+    if len(q_values) < 2:
+        return 0.5
+    sorted_q = np.sort(q_values)[::-1]
+    advantage = sorted_q[0] - sorted_q[1]
+    return float(1.0 / (1.0 + np.exp(-_ADV_SCALE * advantage)))
+
+
+def compute_confidence(q_values: np.ndarray, training_steps: int) -> float:
+    """Compute blended confidence from Q-values using adaptive temperature + advantage.
+
+    Combines two complementary signals:
+    1. Softmax probability (with adaptive temperature) — distribution-aware
+    2. Advantage-based confidence — directly measures action preference strength
+
+    The blend produces confidence > 0.5 when the network has a genuine preference,
+    even with modest Q-value spreads typical of early-to-mid training.
+    """
+    temp = adaptive_temperature(training_steps)
+    probs = softmax(q_values, temperature=temp)
+    action = int(np.argmax(q_values))
+    softmax_conf = float(probs[action])
+    adv_conf = advantage_confidence(q_values)
+    return _SOFTMAX_WEIGHT * softmax_conf + (1.0 - _SOFTMAX_WEIGHT) * adv_conf
+
+
 class AgentTrainingMixin:
     """Mixin that supplies shared DDQN training helpers.
 

@@ -298,6 +298,7 @@ class DualPolicy:
             expected_gain=expected_gain,  # Phase 2: Economics
             expected_loss=expected_loss,
             friction_cost=friction_cost,  # Phase 2: Actual broker friction (commission + swap + spread + slippage)
+            zeta=self.current_zeta,  # Regime ζ for adaptive epsilon scheduling
         )
 
         self._record_predicted_runway(action, confidence, predicted_runway)
@@ -417,6 +418,7 @@ class DualPolicy:
             entry_price=self.entry_price,
             current_price=current_price,
             direction=self.current_position,
+            zeta=self.current_zeta,  # Regime ζ for adaptive hold duration
         )
 
         if action == 1:  # CLOSE
@@ -749,6 +751,8 @@ class DualPolicy:
             buffer = getattr(agent, "buffer", None)
             if getattr(agent, "enable_training", False) and buffer and hasattr(buffer, "set_current_regime"):
                 buffer.set_current_regime(self.current_regime_enum)
+                if hasattr(buffer, "set_current_zeta"):
+                    buffer.set_current_zeta(self.current_zeta)
 
     # -------------------------------------------------------------------------
     # Online Learning Methods
@@ -837,9 +841,36 @@ class DualPolicy:
             self.harvester.buffer.size if self.harvester.buffer else -1,
         )
 
+    # Maximum gradient steps per training call (multi-step accelerates convergence)
+    _MAX_STEPS_PER_TRAIN: int = 4
+
+    def _agent_multi_step(self, agent) -> dict | None:
+        """Run up to _MAX_STEPS_PER_TRAIN gradient steps on one agent.
+
+        Returns the metrics from the last successful step, or None.
+        """
+        buf = getattr(agent, "buffer", None)
+        if buf is None:
+            return agent.train_step()
+
+        batch_size = getattr(agent, "batch_size", 64)
+        n_entries = buf.tree.n_entries
+        # Number of non-overlapping batches available, capped at _MAX_STEPS_PER_TRAIN
+        n_steps = min(self._MAX_STEPS_PER_TRAIN, max(1, n_entries // batch_size))
+
+        last_metrics = None
+        for _ in range(n_steps):
+            m = agent.train_step()
+            if m is not None:
+                last_metrics = m
+        return last_metrics
+
     def train_step(self, adaptive_reg=None) -> dict:
         """
-        Execute one training step on both agents.
+        Execute multi-step training on both agents.
+
+        Runs up to _MAX_STEPS_PER_TRAIN gradient steps per agent per call,
+        accelerating Q-value convergence and improving confidence scores.
 
         Args:
             adaptive_reg: Optional AdaptiveRegularization instance for L2/dropout adjustment
@@ -857,12 +888,12 @@ class DualPolicy:
         if reg_params:
             metrics["adaptive_reg"] = reg_params
 
-        # Train TriggerAgent
-        trigger_metrics = self.trigger.train_step()
+        # Multi-step train TriggerAgent
+        trigger_metrics = self._agent_multi_step(self.trigger)
         metrics["trigger"] = trigger_metrics
 
-        # Train HarvesterAgent
-        harvester_metrics = self.harvester.train_step()
+        # Multi-step train HarvesterAgent
+        harvester_metrics = self._agent_multi_step(self.harvester)
         metrics["harvester"] = harvester_metrics
 
         # Log training summary
@@ -917,8 +948,8 @@ class DualPolicy:
         success = True
 
         # 1. Save DDQN weights
-        success &= self._save_agent_weights(self.trigger, "trigger", f"{checkpoint_dir}/trigger_ddqn_weights.npz")
-        success &= self._save_agent_weights(self.harvester, "harvester", f"{checkpoint_dir}/harvester_ddqn_weights.npz")
+        success &= self._save_agent_weights(self.trigger, "trigger", f"{checkpoint_dir}/trigger_ddqn_weights.pt")
+        success &= self._save_agent_weights(self.harvester, "harvester", f"{checkpoint_dir}/harvester_ddqn_weights.pt")
 
         # 2. Save experience buffers
         if self.trigger.buffer is not None and not self.trigger.buffer.save(f"{checkpoint_dir}/trigger_buffer"):
@@ -971,20 +1002,20 @@ class DualPolicy:
     def _ckpt_load_weights(self, cp) -> bool:
         """Load DDQN weights for trigger and harvester. Returns True if any loaded."""
         loaded = False
-        trigger_weights = cp / "trigger_ddqn_weights.npz"
-        if trigger_weights.exists() and self.trigger.ddqn is not None:
+        for agent_name, agent in [("trigger", self.trigger), ("harvester", self.harvester)]:
+            if agent.ddqn is None:
+                continue
+            # Try .pt first (current format), fall back to .npz (legacy)
+            pt_path = cp / f"{agent_name}_ddqn_weights.pt"
+            npz_path = cp / f"{agent_name}_ddqn_weights.npz"
+            weight_path = pt_path if pt_path.exists() else npz_path if npz_path.exists() else None
+            if weight_path is None:
+                continue
             try:
-                self.trigger.ddqn.load_weights(str(trigger_weights))
+                agent.ddqn.load_weights(str(weight_path))
                 loaded = True
             except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to load trigger weights: %s", e)
-        harvester_weights = cp / "harvester_ddqn_weights.npz"
-        if harvester_weights.exists() and self.harvester.ddqn is not None:
-            try:
-                self.harvester.ddqn.load_weights(str(harvester_weights))
-                loaded = True
-            except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to load harvester weights: %s", e)
+                LOG.error("[CHECKPOINT] Failed to load %s weights: %s", agent_name, e)
         return loaded
 
     def _ckpt_load_buffers(self, cp) -> bool:

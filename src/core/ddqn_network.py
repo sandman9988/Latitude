@@ -162,6 +162,13 @@ class DDQNNetwork:
         self.training_steps: int = 0
         self.total_grad_norm: float = 0.0
 
+        # Loss-adaptive tau: track loss EMA and volatility to scale τ dynamically.
+        # When loss is volatile (early training), slow τ stabilises the target.
+        # When loss is stable (converged), faster τ tracks the online net better.
+        self._loss_ema: float = 0.0
+        self._loss_var_ema: float = 0.0
+        self._adaptive_tau_min: float = 0.1  # floor: never drop below 10% of base τ
+
         LOG.info(
             "[DDQN] Initialized: state_dim=%d, actions=%d, hidden=[%d,%d],"
             " lr=%.4f, tau=%.4f, device=%s",
@@ -245,12 +252,14 @@ class DDQNNetwork:
         self.total_grad_norm = float(total_norm)
         self.optimizer.step()
 
-        # Soft update target
+        # Soft update target with adaptive tau
+        self._update_loss_tracking(float(loss))
         self._soft_update_target()
         self.online.eval()
         self.training_steps += 1
 
         td_np = td_errors_t.cpu().numpy()
+        adaptive_tau = self._adaptive_tau()
         return {
             "loss":          float(loss),
             "l2_loss":       0.0,          # absorbed into Adam weight_decay
@@ -260,18 +269,45 @@ class DDQNNetwork:
             "max_td_error":  float(np.max(np.abs(td_np))),
             "grad_norm":     self.total_grad_norm,
             "td_errors":     td_np,
+            "adaptive_tau":  adaptive_tau,
         }
 
     # ── target network ─────────────────────────────────────────────────────
 
+    def _update_loss_tracking(self, loss: float):
+        """Update EMA of loss and loss variance for adaptive tau."""
+        alpha = 0.05
+        self._loss_ema = (1 - alpha) * self._loss_ema + alpha * loss
+        deviation = abs(loss - self._loss_ema)
+        self._loss_var_ema = (1 - alpha) * self._loss_var_ema + alpha * deviation
+
+    def _adaptive_tau(self) -> float:
+        """Compute tau scaled by loss stability.
+
+        Returns base tau when loss is stable; reduces tau (slower target
+        updates) when loss is volatile.
+        """
+        # Normalise volatility relative to loss magnitude to get a scale-free ratio
+        if self._loss_ema > 1e-8:
+            cv = self._loss_var_ema / self._loss_ema  # coefficient of variation
+        else:
+            cv = 0.0
+        # Scale: cv=0 → factor=1.0 (full tau), cv=1+ → factor clamps at min
+        factor = max(self._adaptive_tau_min, 1.0 - cv)
+        return self.tau * factor
+
     def _soft_update_target(self):
-        """θ_target ← τ·θ_online + (1−τ)·θ_target"""
+        """θ_target ← τ·θ_online + (1−τ)·θ_target
+
+        Uses adaptive tau that scales inversely with loss volatility.
+        """
+        adaptive_tau = self._adaptive_tau()
         with torch.no_grad():
             for p_on, p_tgt in zip(
                 self.online.parameters(), self.target.parameters(), strict=False
             ):
-                p_tgt.data.mul_(1.0 - self.tau)
-                p_tgt.data.add_(self.tau * p_on.data)
+                p_tgt.data.mul_(1.0 - adaptive_tau)
+                p_tgt.data.add_(adaptive_tau * p_on.data)
 
     def hard_update_target(self):
         """Copy online → target (τ = 1)."""

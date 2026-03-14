@@ -1120,7 +1120,28 @@ class TradeManager:
         )
 
     def _handle_fill(self, order: Order):
-        """Handle ExecType=F (Fill) - Order filled (full or partial)"""
+        """Handle ExecType=F (Fill) - Order filled (full or partial)
+
+        Includes duplicate-fill guard: if a paper fill already processed this
+        order (clord_id removed from pending_orders and order already FILLED),
+        skip the duplicate broker fill to prevent double position / ghost hedging.
+        """
+        # ── Duplicate-fill guard ──────────────────────────────────────────
+        # Paper fill marks the order FILLED and removes it from pending_orders.
+        # If a broker fill arrives later for the same order, skip it.
+        with self._lock:
+            already_paper_filled = (
+                order.clord_id not in self.pending_orders
+                and order.status == OrderStatus.FILLED
+                and getattr(order, "position_ticket", "").startswith("PAPER_")
+            )
+        if already_paper_filled:
+            LOG.warning(
+                "[TRADEMGR] Ignoring duplicate broker fill for already paper-filled order %s",
+                order.clord_id,
+            )
+            return
+
         if order.status == OrderStatus.FILLED:
             order.filled_at = utc_now()
             LOG.info(

@@ -28,7 +28,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from src.agents.agent_training_mixin import AgentTrainingMixin, softmax
+from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence, softmax
 from src.constants import (
     GAMMA,
     GRAD_CLIP_NORM,
@@ -293,8 +293,7 @@ class TriggerAgent(AgentTrainingMixin):
             flat_state = state.reshape(1, -1).astype(np.float64)
             q_values = self.ddqn.predict(flat_state).flatten()
             action = int(np.argmax(q_values))
-            probs = self._softmax(q_values)
-            confidence = float(probs[action])
+            confidence = compute_confidence(q_values, self.training_steps)
             gross_runway = self._q_to_runway(float(q_values[action]))
             predicted_runway = max(0.0, gross_runway - friction_cost)
             LOG.debug(
@@ -324,6 +323,7 @@ class TriggerAgent(AgentTrainingMixin):
         expected_gain: float = 0.002,  # Phase 2: Expected gain (G)
         expected_loss: float = 0.001,  # Phase 2: Expected loss (L)
         friction_cost: float = 0.0002,  # Phase 2: Friction costs (K) - spread + slippage
+        zeta: float = 0.5,  # Regime damping ratio for adaptive epsilon
     ) -> tuple[int, float, float]:
         """
         Decide entry action based on current market state.
@@ -336,6 +336,7 @@ class TriggerAgent(AgentTrainingMixin):
             expected_gain: Expected gain (G) for economics threshold
             expected_loss: Expected loss (L) for economics threshold
             friction_cost: Friction costs (K) - spread, slippage, commissions
+            zeta: Regime damping ratio from RegimeDetector (lower = trending)
 
         Returns:
             (action, confidence, predicted_runway)
@@ -344,6 +345,7 @@ class TriggerAgent(AgentTrainingMixin):
             - predicted_runway: Expected MFE as percentage (e.g., 0.002 = 0.2% of entry price)
         """
         self.bars_since_trade += 1
+        self._current_zeta = zeta  # Store for regime-aware epsilon decay
 
         # Always record the state we see — needed for experience replay
         # regardless of which gate or decision path fires.
@@ -407,8 +409,7 @@ class TriggerAgent(AgentTrainingMixin):
             t = torch.from_numpy(state).unsqueeze(0).float()
             q_values = model(t).squeeze(0).numpy()
             action = int(q_values.argmax())
-            probs = self._softmax(q_values)
-            raw_prob = float(probs[action])
+            raw_prob = compute_confidence(q_values, self.training_steps)
             calibrated_prob = self._platt_calibrate(raw_prob)
 
             if self._confidence_gate_blocked(calibrated_prob):
@@ -467,8 +468,23 @@ class TriggerAgent(AgentTrainingMixin):
         return True
 
     def _decay_epsilon(self):
-        """Decay epsilon for exploration schedule."""
-        self.epsilon = max(self.epsilon_end, self.epsilon * self.epsilon_decay)
+        """Decay epsilon with regime-aware scheduling.
+
+        In trending regimes (ζ < 0.7) the learned policy is most reliable,
+        so decay proceeds at the normal rate.  In uncertain/mean-reverting
+        regimes (ζ ≥ 0.7) the policy is less reliable and more exploration
+        is beneficial — decay is slowed proportionally to ζ.
+        """
+        zeta = getattr(self, '_current_zeta', 0.5)
+        # regime_factor: 1.0 in trending, ramps to 0.5 as ζ rises above 0.7
+        if zeta < 0.7:
+            regime_factor = 1.0
+        else:
+            regime_factor = max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
+        # Slow the per-step decay: effective_decay approaches 1.0 (no decay)
+        # when regime_factor is small (uncertain regime).
+        effective_decay = 1.0 - (1.0 - self.epsilon_decay) * regime_factor
+        self.epsilon = max(self.epsilon_end, self.epsilon * effective_decay)
 
     def _fallback_decide(
         self, state: np.ndarray, regime_threshold_adj: float = 0.0
@@ -773,7 +789,18 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _extra_training_stats(self) -> dict:
         """Trigger-specific stats appended by the mixin."""
-        return {"epsilon": self.epsilon}
+        zeta = getattr(self, '_current_zeta', 0.5)
+        # Compute the same regime factor used in _decay_epsilon()
+        if zeta < 0.7:
+            regime_factor = 1.0
+        else:
+            regime_factor = max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
+        return {
+            "epsilon": self.epsilon,
+            "epsilon_end": self.epsilon_end,
+            "current_zeta": zeta,
+            "epsilon_regime_factor": regime_factor,
+        }
 
 
 # ============================================================================

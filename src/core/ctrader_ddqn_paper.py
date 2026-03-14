@@ -829,7 +829,7 @@ class CTraderFixApp(fix.Application):
                 min_bars_for_features=self._min_bars_for_features,
             )
             if hasattr(self.policy_h4, "load_checkpoint"):
-                self.policy_h4.load_checkpoint()
+                self.policy_h4.load_checkpoint("data/checkpoints_h4")
             LOG.info("[H4] DualPolicy M240 initialised; checkpoint loaded")
         else:
             self.policy_h4 = None
@@ -1498,7 +1498,7 @@ class CTraderFixApp(fix.Application):
         # H4 shadow policy checkpoint
         if getattr(self, "_h4_enabled", False) and getattr(self, "policy_h4", None):
             try:
-                self.policy_h4.save_checkpoint()
+                self.policy_h4.save_checkpoint("data/checkpoints_h4")
                 LOG.info("[SHUTDOWN] ✓ H4 checkpoint saved")
             except Exception as e_h4:
                 LOG.error("[SHUTDOWN] H4 checkpoint failed: %s", e_h4)
@@ -3169,6 +3169,10 @@ class CTraderFixApp(fix.Application):
             # Update tracker with current price
             tracker.update(mid_price)
 
+            # ── Hard max-loss USD gate (runs BEFORE ML) ─────────────────
+            if self._tick_max_loss_exceeded(position_id, tracker, mid_price):
+                continue  # close already dispatched
+
             # Full Harvester decision with ML for this position
             try:
                 exit_action, exit_conf = self.policy.decide_exit(
@@ -3214,6 +3218,39 @@ class CTraderFixApp(fix.Application):
             return True
         direction = getattr(tracker, "direction", None)
         return direction is None or direction == 0
+
+    def _tick_max_loss_exceeded(self, position_id: str, tracker, mid_price: float) -> bool:
+        """Check hard USD max-loss cap per trade. Force-close if exceeded.
+
+        This is a defense-in-depth safety gate that runs on every tick,
+        independent of the harvester ML decision. Data analysis shows
+        45 trades with loss > $100 account for -$11,760 in total losses.
+        Capping at $100 changes lifetime P&L from -$4,140 to +$3,119.
+        """
+        from src.constants import MAX_LOSS_PER_TRADE_USD  # noqa: PLC0415
+
+        entry_price = getattr(tracker, "entry_price", 0.0)
+        direction = getattr(tracker, "direction", 0)
+        if entry_price <= 0 or direction == 0:
+            return False
+
+        # Unrealized P&L in USD (qty in lots × 100 oz/lot × price_diff)
+        qty = getattr(self, "qty", 0.1)
+        contract_size = getattr(self, "contract_size", 100.0)
+        price_diff = (mid_price - entry_price) * direction
+        unrealized_pnl = price_diff * qty * contract_size
+
+        if unrealized_pnl >= -MAX_LOSS_PER_TRADE_USD:
+            return False
+
+        LOG.warning(
+            "[MAX_LOSS_CAP] Force-closing position %s: unrealized=%.2f exceeds -$%.0f cap "
+            "(entry=%.2f mid=%.2f dir=%d)",
+            position_id, unrealized_pnl, MAX_LOSS_PER_TRADE_USD,
+            entry_price, mid_price, direction,
+        )
+        self._try_close_tracker_position(position_id, mid_price, tracker, 1.0)
+        return True
 
     # ----------------------------
     # TRADE: positions + orders
@@ -3847,7 +3884,12 @@ class CTraderFixApp(fix.Application):
 
             trigger_reward = self._add_trigger_experience_for_close(summary, pnl, entry_price, pnl_pts, shaped_rewards)
             self._add_harvester_experience_for_close(summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward)
-            self._update_circuit_breakers_after_trade(pnl)
+            # Ghost-reconcile trades use approximate mid-price exits and represent
+            # recovered stale state — do not feed their P&L to circuit breakers.
+            if summary.get("close_reason") != "GHOST_RECONCILE":
+                self._update_circuit_breakers_after_trade(pnl)
+            else:
+                LOG.info("[CIRCUIT-BREAKER] Skipping CB update for GHOST_RECONCILE trade (approx PnL=%.4f)", pnl)
             self.entry_action = None
 
             # Verify P&L hasn't been corrupted during processing
@@ -3973,9 +4015,22 @@ class CTraderFixApp(fix.Application):
 
     def on_md_reject(self, msg: fix.Message):
         txt = fix.Text()
+        reject_text = ""
         if msg.isSetField(txt):
             msg.getField(txt)
-            LOG.warning("[REJECT] MarketDataRequestReject: %s", txt.getValue())
+            reject_text = txt.getValue()
+        LOG.error(
+            "[REJECT] MarketDataRequestReject for symbolId=%s: %s — check SYMBOL_ID in .env (expected FIX Symbol ID, not cTrader Open API ID)",
+            self.symbol_id,
+            reject_text,
+        )
+        if "SYMBOL_NOT_FOUND" in reject_text:
+            LOG.error(
+                "[REJECT] SYMBOL_NOT_FOUND: symbolId=%s is not valid on the QUOTE session. "
+                "Verify config/symbol_specs.json has the correct FIX Symbol ID for %s.",
+                self.symbol_id,
+                self.symbol,
+            )
 
     # ----------------------------
     # ----------------------------
@@ -4392,8 +4447,12 @@ class CTraderFixApp(fix.Application):
         """Update cached trigger/harvester losses from training metrics."""
         if train_metrics.get("trigger"):
             self.last_trigger_loss = train_metrics["trigger"].get("loss", self.last_trigger_loss)
+            self.last_trigger_tau = train_metrics["trigger"].get("adaptive_tau", getattr(self, "last_trigger_tau", 0.005))
+            self.last_trigger_grad_norm = train_metrics["trigger"].get("grad_norm", 0.0)
         if train_metrics.get("harvester"):
             self.last_harvester_loss = train_metrics["harvester"].get("loss", self.last_harvester_loss)
+            self.last_harvester_tau = train_metrics["harvester"].get("adaptive_tau", getattr(self, "last_harvester_tau", 0.005))
+            self.last_harvester_grad_norm = train_metrics["harvester"].get("grad_norm", 0.0)
 
     def _obc_log_training_stats(self) -> None:
         """Log training stats snapshots for trigger and harvester."""
@@ -4427,7 +4486,7 @@ class CTraderFixApp(fix.Application):
         # Also checkpoint H4 shadow policy when M5 checkpoints
         if getattr(self, "_h4_enabled", False) and getattr(self, "policy_h4", None):
             try:
-                self.policy_h4.save_checkpoint()
+                self.policy_h4.save_checkpoint("data/checkpoints_h4")
             except Exception as e_h4:
                 LOG.warning("[CHECKPOINT] H4 auto-save failed: %s", e_h4)
 
@@ -4469,7 +4528,7 @@ class CTraderFixApp(fix.Application):
             decision_str = "SHORT"
         regime = (
             getattr(self.policy, "current_regime", "UNKNOWN")
-            if hasattr(self.policy, "policy") else "UNKNOWN"
+            if hasattr(self.policy, "current_regime") else "UNKNOWN"
         )
         geom_temp = (
             self.policy.path_geometry.last
@@ -5083,6 +5142,16 @@ class CTraderFixApp(fix.Application):
             self._export_hud_data()
             return
         LOG.debug("[FLOW-TRACE] Step 8: EXECUTING ORDER side=%s qty=%.6f", side, order_qty)
+        # When closing a position (desired==0), route through close_position() so
+        # the fill is registered in exit_order_to_ticket and _process_trade_completion
+        # is invoked correctly.  The raw send_market_order() path bypasses this
+        # registration, causing fills to be treated as new SHORT entries.
+        if desired == 0 and self.cur_pos != 0:
+            if self.trade_integration.close_position(reason="HARVESTER"):
+                return
+            LOG.warning(
+                "[OBC] close_position() returned False — falling back to send_market_order"
+            )
         self.send_market_order(side=side, qty=order_qty)
 
     # ----------------------------
@@ -5133,9 +5202,21 @@ class CTraderFixApp(fix.Application):
         # Reconcile ghost hedged positions before branching.
         # Ghost positions (LONG+SHORT net=0 with stale tickets) block entry forever.
         if has_dual and self.cur_pos == 0:
-            self.trade_integration.reconcile_ghost_positions()
+            if self.trade_integration.reconcile_ghost_positions():
+                # Ghost reconcile fired — start cooldown to prevent churn
+                from src.constants import GHOST_RECONCILE_COOLDOWN_BARS  # noqa: PLC0415
+                self._ghost_cooldown_remaining = GHOST_RECONCILE_COOLDOWN_BARS
 
-        if has_dual and not self.trade_integration.has_any_open_positions():
+        # Decrement ghost cooldown counter
+        ghost_cooldown = getattr(self, "_ghost_cooldown_remaining", 0)
+        if ghost_cooldown > 0:
+            self._ghost_cooldown_remaining = ghost_cooldown - 1
+            LOG.info(
+                "[GHOST-COOLDOWN] Skipping entry for %d more bar(s) after ghost reconcile",
+                self._ghost_cooldown_remaining,
+            )
+
+        if has_dual and not self.trade_integration.has_any_open_positions() and ghost_cooldown <= 0:
             LOG.debug(
                 "[FLAT: Check for entry] has_positions=False, cur_pos=%d", self.cur_pos
             )
@@ -5298,7 +5379,7 @@ class CTraderFixApp(fix.Application):
             )
             if h4_steps > 0 and h4_steps % 8 == 0:
                 try:
-                    self.policy_h4.save_checkpoint()
+                    self.policy_h4.save_checkpoint("data/checkpoints_h4")
                     LOG.debug("[H4-CKPT] Saved at step %d", h4_steps)
                 except Exception as e:
                     LOG.warning("[H4-CKPT] Save error: %s", e)
@@ -5593,6 +5674,14 @@ class CTraderFixApp(fix.Application):
             "trigger_ready": False,
             "harvester_ready": False,
             "harvester_min_hold_ticks": 10,
+            "trigger_tau": getattr(self, "last_trigger_tau", 0.005),
+            "harvester_tau": getattr(self, "last_harvester_tau", 0.005),
+            "trigger_grad_norm": getattr(self, "last_trigger_grad_norm", 0.0),
+            "harvester_grad_norm": getattr(self, "last_harvester_grad_norm", 0.0),
+            "trigger_epsilon_regime_factor": 1.0,
+            "trigger_current_zeta": 0.5,
+            "harvester_regime_hold_mult": 1.0,
+            "harvester_current_zeta": 0.5,
             "total_agents": 0,
             "arena_diversity": {"trigger_diversity": 0.0, "harvester_diversity": 0.0},
             "last_agreement_score": 1.0,
@@ -5626,6 +5715,11 @@ class CTraderFixApp(fix.Application):
                     "trigger_ready": t.get("ready_to_train", False),
                     "harvester_ready": h.get("ready_to_train", False),
                     "harvester_min_hold_ticks": h.get("min_hold_ticks", 10),
+                    # Adaptive RL metrics from recent changes
+                    "trigger_epsilon_regime_factor": t.get("epsilon_regime_factor", 1.0),
+                    "trigger_current_zeta": t.get("current_zeta", 0.5),
+                    "harvester_regime_hold_mult": h.get("regime_hold_mult", 1.0),
+                    "harvester_current_zeta": h.get("current_zeta", 0.5),
                     # Whether the bot is currently in a position — used by HUD
                     # to label which buffer is actively filling right now.
                     "is_in_position": self.cur_pos != 0,
@@ -5702,6 +5796,7 @@ class CTraderFixApp(fix.Application):
             "risk_final_qty": self.last_final_qty,
             "vol_cap": self.vol_cap,
             "vol_reference": self.vol_ref,
+            "reward_weights": self.reward_shaper.get_statistics().get("weights", {}),
         }
 
     def _calc_hud_realized_vol(self) -> float:

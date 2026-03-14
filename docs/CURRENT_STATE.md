@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** March 8, 2026 (HUD audit + decision log traceability)  
+**Last Updated:** March 14, 2026 (alignment + profitability + dead code cleanup)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -9,9 +9,10 @@
 
 ## 🎯 Executive Summary
 
-XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. All stats are now wired into decisions. HUD audited and fully updated. BrokerExecutionModel implemented. Decision log traceability fixed.
+XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format). Dead code removed. Profitability tail-risk fixes applied.
 
-**Test Suite:** 2,595 passing, 0 skipped, 0 failures (141 test files, ~70 s)
+**Test Suite:** 2,195 passing, 0 skipped, 0 failures (~30 s)  
+**Production Lines:** ~35,700 (down from ~40,200 after dead code removal)
 
 **Trading Status:**
 - **Symbol:** XAUUSD (Gold Spot)
@@ -19,6 +20,68 @@ XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
 - **Session:** QUOTE + TRADE dual FIX sessions
+
+---
+
+## 🔧 Offline/Paper/Live Alignment (Mar 14, 2026)
+
+### Problem
+Offline-trained weights were incompatible with paper/live trading:
+- **Offline**: 7 features (base only) → `net.0.weight` shape `[128, 448]`
+- **Online (paper/live)**: 18 features (7 base + 5 geometry + 6 event) → `net.0.weight` shape `[128, 1152]`
+
+Root cause: `OfflineTrainer` created `DualPolicy` with `enable_event_features=False` and no `path_geometry`.
+
+### Fix
+- `offline_trainer.py`: Now creates `PathGeometry()` and `EventTimeFeatureEngine()`, passes them to `DualPolicy` with `enable_event_features=True`
+- `_Simulator` computes event-time features from bar timestamps (UTC-aware datetime in `bar[0]`)
+- Event features and geometry features are now passed to `decide_entry()` / `decide_exit()` in offline mode
+- Weight format unified to `.pt` everywhere (previously saved as `.npz` suffix but actual format was `.pt`)
+- `_ckpt_load_weights()` tries `.pt` first, falls back to `.npz` for backward compatibility
+
+### Result
+All three modes now produce identical feature dimensions: 18 trigger features, 21 harvester features.
+Offline-trained weights directly loadable in paper/live without shape mismatch.
+
+---
+
+## 🔧 Profitability Tail-Risk Fixes (Mar 13, 2026)
+
+Trade log analysis of 1,149 trades revealed:
+- 137 ghost reconcile trades (all `bars_held=0`), many as LONG+SHORT pairs on same bar
+- 45 trades with loss > $100 accounted for -$11,760 in total losses
+- With $100 max-loss cap: P&L shifts from -$4,140 to +$3,119
+
+### FIX-P1 — Hard per-trade loss cap ($100 USD)
+Added `MAX_LOSS_PER_TRADE_USD = 100.0` in `constants.py` and `_tick_max_loss_exceeded()` in `ctrader_ddqn_paper.py`. Checked on every tick before ML harvester evaluation.
+
+### FIX-P2 — Duplicate fill guard
+Paper fill (2s timeout) AND broker fill could process the same order. Added guard in `trade_manager.py` `_handle_fill()` — skips broker fill when paper fill already processed.
+
+### FIX-P3 — Ghost reconcile cooldown
+Added `GHOST_RECONCILE_COOLDOWN_BARS = 3` in `constants.py`. After ghost position reconciliation, entry is blocked for 3 bars to prevent the same race condition from re-entering immediately.
+
+---
+
+## 🔧 Dead Code Removal (Mar 13, 2026)
+
+Removed 10 unused modules (~4,700 lines) and their ~2,500 lines of tests:
+
+| Deleted Module | Lines | Reason |
+|----------------|-------|--------|
+| `agent_arena.py` | 578 | Multi-agent ensemble never activated; DualPolicy is the architecture |
+| `cold_start_manager.py` | 599 | Graduated warmup superseded by DISABLE_GATES + epsilon schedule |
+| `early_stopping.py` | 141 | Never wired into training loop |
+| `ensemble_tracker.py` | 570 | Tracked agent disagreement for unused arena |
+| `feedback_loop_breaker.py` | 506 | Never called from production code |
+| `generalization_monitor.py` | 303 | Train-live gap monitoring never connected |
+| `parameter_staleness.py` | 613 | Superseded by LearnedParametersManager |
+| `feature_tournament.py` | 305 | Feature selection framework unused |
+| `time_features.py` | 440 | Superseded by event_time_features.py |
+| `risk_aware_sac_manager.py` | 516 | SAC (Soft Actor-Critic) never implemented |
+
+### FIX-R1 — Regime detector ZETA_MAP_MULTIPLIER
+`ZETA_MAP_MULTIPLIER` was 0.6 (should be 2.0), causing regime to be stuck in TRANSITIONAL. Fixed in `regime_detector.py`.
 
 ---
 
@@ -305,21 +368,18 @@ $ ls -lh logs/ctrader/ | tail -3
 
 ## ⚠️ Known Issues
 
-### 1. Excessive Exploration (Medium Priority)
-- **85% random actions** - Appropriate for training but slow
-- **Mitigation:** Expected at 831 training steps, part of ε-greedy schedule
-- **Action:** Monitor until ε < 0.5 (~1,400 steps), consider faster decay if needed
+### 1. L2/Imbalance Feed (Medium Priority)
+- `imbalance` always 0.0 — FIX MarketDataRequest may not request MDEntryType=0/1
+- **Impact:** 1 of 7 base features always zero; model can still learn around it
+- **Action:** Check FIX config for L2 data subscription
 
-### 2. Forced Entry Frequency (Low Priority)
-- **Every 10 bars** (~10 minutes on M1) regardless of setup
-- **Impact:** Adds noise to training data
-- **Action:** Consider increasing MAX_BARS_INACTIVE to 50-100 after ε < 0.3
+### 2. Harvester Q-value Convergence (Low Priority)
+- Monitor `ticks_held` trending in HUD Training tab
+- **Action:** Observation only; track across sessions
 
-### 3. No Harvester Exploration (By Design)
-- Harvester always exploits (no ε-greedy)
-- **Rationale:** Safety first (prevent random exits of good positions)
-- **Tradeoff:** May limit exit strategy discovery
-- **Action:** Monitor capture ratios, could add conservative exploration later
+### 3. `data/decision_log.json` Non-Atomic (Low Priority)
+- Secondary bar-close log written with `open(path, "w")` rather than atomic persistence
+- **Impact:** Cosmetic only; primary audit log (`logs/audit/decisions.jsonl`) is append-only and safe
 
 ---
 

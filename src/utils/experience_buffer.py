@@ -128,6 +128,7 @@ class Experience:
     timestamp: float  # Unix timestamp (for staleness)
     regime: int  # RegimeSampling enum value
     priority: float  # TD-error magnitude (updated during training)
+    zeta: float = 1.0  # Regime damping ratio at time of experience (for continuous boost)
 
 
 class ExperienceBuffer:
@@ -193,6 +194,7 @@ class ExperienceBuffer:
 
         # Current regime (for regime-aware weighting)
         self.current_regime: RegimeSampling = RegimeSampling.UNKNOWN
+        self.current_zeta: float = 1.0  # Current damping ratio for continuous boost
 
         # Stats
         self.total_added = 0
@@ -218,6 +220,14 @@ class ExperienceBuffer:
         """
         self.current_regime = RegimeSampling(regime)
         LOG.debug("Current regime updated: %s", self.current_regime.name)
+
+    def set_current_zeta(self, zeta: float):
+        """Update current damping ratio for continuous regime boost.
+
+        Args:
+            zeta: Damping ratio from RegimeDetector (lower = trending)
+        """
+        self.current_zeta = zeta
 
     def _calculate_staleness_weight(self, timestamp: float) -> float:
         """Calculate staleness decay weight.
@@ -247,6 +257,7 @@ class ExperienceBuffer:
         next_state: np.ndarray,
         done: bool,
         regime: int = RegimeSampling.UNKNOWN,
+        zeta: float | None = None,
     ):
         """Add experience to buffer.
 
@@ -257,6 +268,7 @@ class ExperienceBuffer:
             next_state: Next state vector
             done: True if terminal state
             regime: RegimeSampling enum value
+            zeta: Damping ratio at time of experience (uses current_zeta if None)
         """
         # Defensive: Validate inputs
         if not isinstance(state, np.ndarray) or not isinstance(next_state, np.ndarray):
@@ -285,6 +297,7 @@ class ExperienceBuffer:
             timestamp=time.time(),
             regime=RegimeSampling(regime),
             priority=1.0,  # Will be updated during training
+            zeta=zeta if zeta is not None else self.current_zeta,
         )
 
         # Initial priority: max existing priority (ensures new experiences sampled at least once)
@@ -369,7 +382,12 @@ class ExperienceBuffer:
             # inside this loop because doing so alters tree.total(), which
             # invalidates the stratified segment boundaries for later iterations.
             staleness_weight = self._calculate_staleness_weight(exp.timestamp)
-            regime_weight = self.regime_boost if exp.regime == self.current_regime else 1.0
+            # Continuous regime boost: scale by ζ similarity between the
+            # experience and the current market condition.  Experiences from
+            # a similar regime get a stronger boost than those from a very
+            # different regime.
+            zeta_similarity = max(0.0, 1.0 - abs(getattr(exp, 'zeta', self.current_zeta) - self.current_zeta))
+            regime_weight = 1.0 + (self.regime_boost - 1.0) * zeta_similarity
             adjusted_priority = max(priority * staleness_weight * regime_weight, self.epsilon)
             tree_idx = data_idx + self.tree.capacity - 1
             priority_updates.append((tree_idx, adjusted_priority))
@@ -477,6 +495,7 @@ class ExperienceBuffer:
             "total_sampled": self.total_sampled,
             "beta": self.beta,
             "current_regime": RegimeSampling(self.current_regime).name,
+            "current_zeta": self.current_zeta,
             "total_priority": self.tree.total(),
         }
 

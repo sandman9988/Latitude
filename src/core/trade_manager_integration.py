@@ -313,9 +313,22 @@ class TradeManagerIntegration:
 
         position_id_to_remove = None
         tracker_summary = None
+        # Determine if this is a net-close sentinel (no specific broker ticket)
+        _net_close_dir: int | None = None
+        if closed_ticket.startswith("_NET_"):
+            try:
+                _net_close_dir = int(closed_ticket[5:])
+            except ValueError:
+                pass
         with self.app._tracker_lock:
             for pos_id, tracker in self.app.mfe_mae_trackers.items():
-                if getattr(tracker, "position_ticket", None) == closed_ticket:
+                if _net_close_dir is not None:
+                    # Match by direction for net-close orders
+                    if getattr(tracker, "direction", 0) == _net_close_dir:
+                        position_id_to_remove = pos_id
+                        tracker_summary = tracker.get_summary()
+                        break
+                elif getattr(tracker, "position_ticket", None) == closed_ticket:
                     position_id_to_remove = pos_id
                     tracker_summary = tracker.get_summary()
                     break
@@ -391,17 +404,35 @@ class TradeManagerIntegration:
         # Cancel hard SL bracket order before processing exit to prevent double-fill
         self.disable_hard_sl()
         position_id_to_remove, tracker_summary = self._find_and_process_exit_tracker(order, closed_ticket)
-        self._remove_position_ticket(closed_ticket)
+        self._remove_position_ticket(closed_ticket, position_id_to_remove)
         self._sync_position_after_exit()
         if position_id_to_remove:
             self._restore_policy_entry_after_hedge(position_id_to_remove)
         self._process_trade_completion_if_available(tracker_summary, order.avg_price)
         self._persist_state()
 
-    def _remove_position_ticket(self, closed_ticket: str) -> None:
-        """Remove a closed ticket from the ticket map if present."""
+    def _remove_position_ticket(self, closed_ticket: str, position_id: str | None = None) -> None:
+        """Remove a closed ticket from the ticket map if present.
+
+        When closing via _NET_ sentinel, the closed_ticket is a synthetic key
+        that won't match any real broker ticket. In that case, do a reverse
+        lookup using position_id to find and remove the actual broker ticket.
+        """
         if closed_ticket in self.position_tickets:
             del self.position_tickets[closed_ticket]
+            return
+        # Reverse lookup: find broker ticket by position_id
+        if position_id:
+            stale_ticket = next(
+                (tk for tk, pid in self.position_tickets.items() if pid == position_id),
+                None,
+            )
+            if stale_ticket:
+                del self.position_tickets[stale_ticket]
+                LOG.info(
+                    "[INTEGRATION] Removed stale ticket %s (position_id=%s) via reverse lookup",
+                    stale_ticket, position_id,
+                )
 
     def _sync_position_after_exit(self) -> None:
         """Sync app position direction after an exit fill."""
@@ -916,7 +947,15 @@ class TradeManagerIntegration:
             tag_prefix=f"EXIT_{reason}",
         )
         if order:
-            LOG.info("[INTEGRATION] Closing net position: %s %.6f (reason=%s)", exit_side.name, self.app.qty, reason)
+            # Register the exit order so on_order_filled routes fills to
+            # _close_hedged_position instead of _open_hedged_position.
+            # _find_and_process_exit_tracker recognises the "_NET_<dir>" sentinel
+            # and matches the active tracker by direction rather than by ticket.
+            self.exit_order_to_ticket[order.clord_id] = f"_NET_{pos_dir}"
+            LOG.info(
+                "[INTEGRATION] Closing net position: %s %.6f (reason=%s clOrdID=%s)",
+                exit_side.name, self.app.qty, reason, order.clord_id,
+            )
         return order is not None
 
     def exit_position(self) -> bool:

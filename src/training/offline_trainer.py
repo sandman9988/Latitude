@@ -45,6 +45,8 @@ from typing import NamedTuple
 
 import numpy as np
 
+from src.features.event_time_features import EventTimeFeatureEngine
+from src.risk.path_geometry import PathGeometry
 from src.utils.mfe_mae import MFEMAECalculator
 
 LOG = logging.getLogger(__name__)
@@ -142,11 +144,13 @@ class _Simulator:
     Does NOT call train_step — the caller decides when to update.
     """
 
-    def __init__(self, policy, update_policy: bool = True, symbol_digits: int = 2) -> None:
+    def __init__(self, policy, update_policy: bool = True, symbol_digits: int = 2,
+                 event_engine: EventTimeFeatureEngine | None = None) -> None:
         self.policy = policy
         self.update_policy = update_policy  # False during validation pass
         self.bars: deque = deque(maxlen=DEQUE_MAXLEN)
         self._pt: float = 10 ** (-symbol_digits)  # broker points → price-unit multiplier
+        self.event_engine = event_engine  # Compute event-time features from bar timestamps
 
         # Position state
         self.cur_pos: int = 0           # 0 flat, 1 long, -1 short
@@ -180,10 +184,20 @@ class _Simulator:
             self._update_mfe_mae(current_price)
             self._try_exit(bar_idx, current_price)
 
+    def _get_event_features(self) -> dict | None:
+        """Compute event-time features from the latest bar timestamp."""
+        if self.event_engine is None or len(self.bars) == 0:
+            return None
+        bar_time = self.bars[-1][0]
+        if bar_time is None:
+            return None
+        return self.event_engine.calculate_features(bar_time)
+
     def _try_entry(self, bar_idx: int, current_price: float) -> None:
         try:
             action, _, _ = self.policy.decide_entry(
-                self.bars, imbalance=0.0, vpin_z=0.0, depth_ratio=1.0
+                self.bars, imbalance=0.0, vpin_z=0.0, depth_ratio=1.0,
+                event_features=self._get_event_features(),
             )
         except Exception as exc:
             LOG.debug("[SIM] decide_entry failed at bar %d: %s", bar_idx, exc)
@@ -235,6 +249,7 @@ class _Simulator:
                     imbalance=0.0,
                     vpin_z=0.0,
                     depth_ratio=1.0,
+                    event_features=self._get_event_features(),
                 )
             except Exception as exc:
                 LOG.debug("[SIM] decide_exit failed: %s", exc)
@@ -356,7 +371,7 @@ class OfflineTrainer:
                             Each epoch resets epsilon so the policy re-explores
                             with increasingly warm weights.
         warm_start:         If True, load existing per-label checkpoint weights
-                            (``<checkpoint_dir>/<label>_trigger_offline.npz``) before
+                            (``<checkpoint_dir>/<label>_trigger_offline.pt``) before
                             the first epoch so training continues from a prior run.
         epsilon_start:      Epsilon at the beginning of each training epoch
                             (overrides EPSILON_START env var, default 0.4).
@@ -429,7 +444,7 @@ class OfflineTrainer:
         if not self.warm_start:
             return
         for agent_name, agent in [("trigger", policy.trigger), ("harvester", policy.harvester)]:
-            ckpt = self.checkpoint_dir / f"{label}_{agent_name}_offline.npz"
+            ckpt = self.checkpoint_dir / f"{label}_{agent_name}_offline.pt"
             if ckpt.exists() and agent.ddqn is not None:
                 try:
                     agent.ddqn.load_weights(str(ckpt))
@@ -469,13 +484,16 @@ class OfflineTrainer:
         # bleed into each other (each is a spawned process, so this is safe).
         _orig_eps_start, _orig_eps_end, _orig_disable_gates = self._set_offline_env_vars(os)
 
-        # Build policy — training enabled
+        # Build policy — training enabled, with full feature parity to online
+        path_geometry = PathGeometry()
+        self._event_engine = EventTimeFeatureEngine()
         policy = DualPolicy(
             symbol=self.symbol,
             timeframe=f"M{self.timeframe_minutes}",
             window=64,
             enable_training=True,
-            enable_event_features=False,   # event features require live-time context
+            enable_event_features=True,
+            path_geometry=path_geometry,
             timeframe_minutes=self.timeframe_minutes,
             **policy_kwargs,
         )
@@ -567,7 +585,8 @@ class OfflineTrainer:
             )
 
             policy.current_position = 0
-            sim = _Simulator(policy, update_policy=True, symbol_digits=self.symbol_digits)
+            sim = _Simulator(policy, update_policy=True, symbol_digits=self.symbol_digits,
+                             event_engine=self._event_engine)
             epoch_bar_offset = epoch * len(train_bars)
 
             for i, bar in enumerate(train_bars):
@@ -652,7 +671,8 @@ class OfflineTrainer:
     def _run_validation(self, policy, val_bars: list, label: str) -> tuple[float, int]:
         """Run validation pass and return (score, trade_count)."""
         self._prepare_validation_policy(policy)
-        val_sim = _Simulator(policy, update_policy=False, symbol_digits=self.symbol_digits)
+        val_sim = _Simulator(policy, update_policy=False, symbol_digits=self.symbol_digits,
+                             event_engine=self._event_engine)
         for i, bar in enumerate(val_bars):
             val_sim.step(bar, i)
         val_pnl = [t.pnl_pts for t in val_sim.trades]
@@ -671,7 +691,7 @@ class OfflineTrainer:
         for agent_name, agent in [("trigger", policy.trigger), ("harvester", policy.harvester)]:
             if agent.ddqn is None:
                 continue
-            out = self.checkpoint_dir / f"{label}_{agent_name}_offline.npz"
+            out = self.checkpoint_dir / f"{label}_{agent_name}_offline.pt"
             try:
                 agent.ddqn.save_weights(str(out))
                 paths.append(str(out))

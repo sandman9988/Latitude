@@ -78,6 +78,9 @@ HUD_EXPORT_MIN_INTERVAL_S: float = 2.0  # Global rate-limit: skip export if call
 TICK_DRAWDOWN_CHECK_INTERVAL_S: float = 1.0  # Min seconds between tick-level drawdown checks
 
 # ── HARVESTER EXIT THRESHOLDS ─────────────────────────────────────────────────
+# Cold-start defaults only — overridden at runtime by LearnedParametersManager.
+# harvester_agent._get_param() pulls from learned_parameters.json first;
+# these values are used only if the parameter has never been learned.
 # All values are percentages (0.35 = 0.35% of entry price).
 # Adapted at runtime by _init_exit_thresholds() using a timeframe scale factor.
 
@@ -98,3 +101,9 @@ CAPTURE_DECAY_MIN_MFE_PCT: float = 0.10 # Apply capture-decay only above this MF
 
 MICRO_WINNER_MFE_THRESHOLD_PCT: float = 0.05  # Min MFE to activate micro-winner protection
 MICRO_WINNER_GIVEBACK_PCT: float = 0.30       # Exit if giving back > this fraction of MFE
+
+# Hard per-trade max-loss-USD cap — defense-in-depth against tail risk.
+# Data shows 45 trades with loss > $100 account for -$11,760 in total losses.
+# With this cap the system goes from -$4,140 to +$3,119 at $100 cap.
+MAX_LOSS_PER_TRADE_USD: float = 100.0   # Absolute dollar cap per trade
+GHOST_RECONCILE_COOLDOWN_BARS: int = 3  # Bars to skip entry after ghost reconcile
