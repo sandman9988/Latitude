@@ -18,10 +18,17 @@ From C# Skeleton: AdaptiveRL_cTrader_Skeleton_v0_1/Core/PathGeometry.cs
 import logging
 from collections import deque
 
+from src.utils.safe_math import SafeMath
+
 import numpy as np
 
 # Path geometry calculation constants
 MIN_BARS_FOR_GEOMETRY: int = 3  # Need at least 3 bars for derivatives
+
+# Multi-horizon volatility ratio constants
+VOL_RATIO_BLEND_WEIGHT: float = 0.30    # How much vol_ratio adjusts runway (0=ignore, 1=full)
+VOL_RATIO_NEUTRAL: float = 1.0          # Vol ratio at which no adjustment is made
+VOL_RATIO_RUNWAY_SCALE: float = 50.0    # Original C# skeleton constant for 1/(1+scale*sigma)
 
 LOG = logging.getLogger(__name__)
 
@@ -59,13 +66,23 @@ class PathGeometry:
             "feasibility": 0.5,
         }
 
-    def update(self, bars: deque, sigma: float) -> dict[str, float]:
+    def update(
+        self,
+        bars: deque,
+        sigma: float,
+        sigma_long: float = 0.0,
+    ) -> dict[str, float]:
         """
         Calculate path geometry from recent price bars.
 
         Args:
             bars: Deque of (t, o, h, l, c) tuples (at least 3 bars needed)
-            sigma: Current volatility (Rogers-Satchell or realized vol)
+            sigma: Current short-term volatility (Rogers-Satchell or realized vol)
+            sigma_long: Long-term volatility (50-bar). When > 0, the vol ratio
+                        sigma/sigma_long modulates the runway estimate:
+                        ratio > 1 → vol expanding → reduce runway
+                        ratio < 1 → vol contracting → increase runway
+                        When 0, falls back to pure inverse sigma.
 
         Returns:
             Dictionary with keys: efficiency, gamma, jerk, runway, feasibility
@@ -99,18 +116,29 @@ class PathGeometry:
         path_length = abs(c1 - c0) + abs(c2 - c1)
         efficiency = min(1.0, displacement / path_length) if path_length > 0 else 0.0
 
-        # Runway: inverse volatility pressure
+        # Runway: inverse volatility pressure with optional multi-horizon blend
         # High sigma → low runway (harder to move through volatility)
-        # Formula from C# skeleton: 1.0 / (1.0 + 50.0 * sigma)
-        runway = 1.0 / (1.0 + 50.0 * sigma)
+        # Base formula from C# skeleton: 1.0 / (1.0 + 50.0 * sigma)
+        base_runway = 1.0 / (1.0 + VOL_RATIO_RUNWAY_SCALE * sigma)
+
+        if sigma_long > 0:
+            # Vol ratio: short / long.  >1 = expanding vol, <1 = contracting
+            vol_ratio = SafeMath.safe_div(sigma, sigma_long, VOL_RATIO_NEUTRAL)
+            # Adjustment: ratio=1 → 1.0, ratio=2 → 0.7, ratio=0.5 → 1.15
+            # Clamped to [0.5, 1.5] to prevent extreme adjustments.
+            vol_adj = max(0.5, min(1.5,
+                1.0 - VOL_RATIO_BLEND_WEIGHT * (vol_ratio - VOL_RATIO_NEUTRAL)))
+            runway = base_runway * vol_adj
+        else:
+            runway = base_runway
 
         # Rogers-Satchell normalize gamma and jerk
-        gamma_z = gamma / (sigma + 1e-12)
-        jerk_z = jerk / (sigma + 1e-12)
+        gamma_z = SafeMath.safe_div(gamma, sigma, 0.0)
+        jerk_z = SafeMath.safe_div(jerk, sigma, 0.0)
 
         # Feasibility: composite score (from C# skeleton weights)
         # 40% efficiency, 30% smooth jerk, 20% runway, 10% base
-        smooth_jerk = 1.0 - min(1.0, abs(jerk) / (sigma + 1e-9))
+        smooth_jerk = 1.0 - min(1.0, SafeMath.safe_div(abs(jerk), sigma, 0.0))
         feasibility = self._clamp01(0.40 * efficiency + 0.30 * smooth_jerk + 0.20 * runway + 0.10 * 0.5)  # Base score
 
         # Update state

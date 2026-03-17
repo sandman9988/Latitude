@@ -1514,9 +1514,13 @@ Live Trading (Minimum 3 months at minimal size):
 
 ## 13. NEXT STEPS
 
-### 13.1 Immediate Priorities (as of 2026-03-08)
+### 13.1 Immediate Priorities (as of 2026-03-17)
 
-1. **Allow DDQN to accumulate corrected experience** *(ongoing)*
+1. **Re-run offline training with 18-feature pipeline** *(HIGH)*
+   - Weights must be retrained: offline now produces identical 18-dim state as paper/live
+   - Use `python train_offline.py` with the aligned `OfflineTrainer`
+
+2. **Allow DDQN to accumulate corrected experience** *(ongoing)*
    - Min-hold guard live (10 ticks/~25 sec). Reward shaping correct (5 dims, IS weights fixed)
    - Payoff ratio, ζ gate, and VPIN-z trigger penalty all active
    - Watch `[H] Training tab` for harvester ticks_held drifting above 10 → Q-value recovery
@@ -1555,6 +1559,7 @@ Now      : Paper trading XAUUSD M5 — DDQN accumulating corrected experience
 | Issue | Severity | Notes |
 |-------|----------|-------|
 | L2/imbalance always 0 | MEDIUM | VPIN veto/tilt features inactive until broker L2 feed wired |
+| Mode breakdown missing ~999 trades | MEDIUM | Old trades have empty `trading_mode`; use stats epoch to focus on recent |
 | Harvester Q-values converging | LOW | Self-healing via min-hold + corrected rewards; monitor ticks_held in HUD |
 | Feature library ~25% complete | LOW | System works; add incrementally per tournament results |
 | `data/decision_log.json` non-atomic | LOW | Secondary bar-close log only; primary audit log is append-only JSONL |
@@ -1593,18 +1598,30 @@ Now      : Paper trading XAUUSD M5 — DDQN accumulating corrected experience
    - `session` field added to every bar_close entry for cross-log correlation
    - Trade History tab: per-row `M` badge (P=paper/L=live), `⚠ MIXED MODE` banner, mode badge in header
    - 141 test files, 2,595 passing (was 128 / 2,331)
+10. **Pipeline alignment & profitability fixes (Mar 14, 2026):**
+   - Offline/paper/live all use identical 18-feature state (7 base + 5 geometry + 6 event)
+   - Weight format unified to `.pt` everywhere; backward-compatible `.npz` fallback
+   - `MAX_LOSS_PER_TRADE_USD = 100.0` per-trade cap, duplicate fill guard, ghost reconcile cooldown
+   - Dead code removal: 10 unused modules (~4,700 lines) deleted
+11. **HUD stats epoch & new modules (Mar 17, 2026):**
+   - Stats epoch (`[e]` key): configurable cutoff date excludes old trades from Performance metrics
+   - `src/features/hmm_regime.py` (264 lines): HMM-based regime detector
+   - `src/persistence/trade_log_reader.py` (127 lines): centralized trade_log.jsonl reader
+   - `src/utils/metrics_calculator.py` (207 lines): single-source period metrics
+   - 2,221 tests passing
 
-### Current State (2026-03-08)
+### Current State (2026-03-17)
 
 - **Bot:** Paper trading XAUUSD M5, Pepperstone demo via FIX 4.4
-- **Tests:** 2,595 passed, 0 skipped (141 test files)
-- **Code:** 39,713 production lines, 35,906 test lines
-- **HUD:** 7-tab curses UI live; startup self-test (17 checks); all stats wired into decisions
+- **Tests:** 2,221 passed, 0 skipped
+- **Code:** ~41,300 production lines
+- **HUD:** 7-tab curses UI live; startup self-test; stats epoch (`[e]` key) for excluding old trade history from metrics
 - **Decision Log:** `MM-DD HH:MM` timestamps, TrdID column, session breaks, `bars_held` real values
 - **Trade History:** per-row mode badge, MIXED MODE banner when paper+live trades co-exist
 - **BrokerExecutionModel:** ✅ Implemented (`src/core/broker_execution_model.py`, 440 lines)
 - **Decision wiring:** payoff ratio → risk budget; ζ → feasibility gate; VPIN-z → trigger reward
-- **Outstanding:** L2/imbalance feed (always 0); harvester Q-values still converging (monitor ticks_held in HUD)
+- **New modules:** `hmm_regime.py` (HMM regime), `trade_log_reader.py` (centralized reader), `metrics_calculator.py` (single-source metrics)
+- **Outstanding:** L2/imbalance feed (always 0); harvester Q-values still converging; re-run offline training with 18-feature pipeline
 
 ### User Preferences
 

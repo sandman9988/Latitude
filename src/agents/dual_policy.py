@@ -536,6 +536,7 @@ class DualPolicy:
             actual_mfe=self.mfe,
             predicted_runway=self.predicted_runway,
             entry_confidence=entry_confidence,
+            entry_price=self.entry_price,
         )
         self.harvester.update_from_trade(capture_ratio=capture_ratio, was_wtl=was_wtl)
 
@@ -652,8 +653,10 @@ class DualPolicy:
 
         # Add path geometry features if available (5-dim)
         if self.path_geometry:
+            # Compute long-term vol for multi-horizon ratio (50-bar std of returns)
+            sigma_long = float(_dp_rolling_std(ret1, 50)[-1]) if len(ret1) >= 50 else 0.0
             # Update geometry with current bars and volatility
-            geom = self.path_geometry.update(bars, realized_vol)
+            geom = self.path_geometry.update(bars, realized_vol, sigma_long=sigma_long)
 
             # Broadcast geometry features to window length
             eff = np.full(len(c), geom["efficiency"], dtype=np.float64)
@@ -694,8 +697,11 @@ class DualPolicy:
         # Only normalize variable columns; leave constant columns as-is.
         # Clip to ±5σ after z-scoring to contain market-shock spikes without
         # discarding the signal (features beyond ±5σ carry no extra gradient signal).
+        # Note: variable_mask guarantees sd > _FEATURE_VARIANCE_FLOOR, so
+        # division is safe.  SafeMath.safe_div is scalar-only; use numpy ops.
         feats[:, variable_mask] = np.clip(
-            (feats[:, variable_mask] - mu[:, variable_mask]) / (sd[:, variable_mask] + 1e-8),
+            (feats[:, variable_mask] - mu[:, variable_mask])
+            / sd[:, variable_mask],
             -5.0, 5.0,
         )
 

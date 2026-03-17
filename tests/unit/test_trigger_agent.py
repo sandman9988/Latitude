@@ -412,3 +412,94 @@ class TestTriggerTraining:
         assert stats["enabled"] is True
         assert stats["training_steps"] == 0
         assert stats["buffer_size"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# EWMA Runway Calibration (Enhancement A)
+# ---------------------------------------------------------------------------
+
+class TestEWMARunwayCalibration:
+
+    def test_initial_state_uses_static_mapping(self):
+        """Before any trades, _q_to_runway should use static linear mapping."""
+        ta = TriggerAgent(window=64, n_features=7)
+        assert ta._q_to_runway(0.0) == Q_RUNWAY_MIN
+        assert ta._q_to_runway(Q_RUNWAY_MAX_Q) == Q_RUNWAY_MAX
+        mid_q = Q_RUNWAY_MAX_Q / 2.0
+        expected = Q_RUNWAY_MIN + (mid_q / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
+        assert ta._q_to_runway(mid_q) == pytest.approx(expected)
+
+    def test_calibration_updates_after_trade(self):
+        """After enough trades in a bucket, EWMA should be populated."""
+        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
+        ta = TriggerAgent(window=64, n_features=7)
+        # Simulate entries with Q=1.0 (bucket 1: [0.6, 1.2])
+        for i in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta._last_entry_q = 1.0  # Simulate Q at entry
+            ta._q_to_runway(1.0)  # Sets _last_entry_q
+            # Simulate trade close with actual MFE (fractional)
+            ta._update_runway_calibration(0.003)  # 0.3% MFE
+        # Now the calibrated value should be used
+        calibrated = ta._calibrated_runway(1.0)
+        assert calibrated is not None
+        assert calibrated == pytest.approx(0.003, abs=0.001)
+
+    def test_insufficient_samples_returns_none(self):
+        """With fewer samples than threshold, calibration returns None."""
+        ta = TriggerAgent(window=64, n_features=7)
+        ta._last_entry_q = 1.0
+        ta._update_runway_calibration(0.003)
+        assert ta._calibrated_runway(1.0) is None  # Only 1 sample
+
+    def test_ewma_adapts_over_time(self):
+        """EWMA should track changing MFE values."""
+        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES, RUNWAY_CAL_ALPHA
+        ta = TriggerAgent(window=64, n_features=7)
+        # Fill bucket with 0.002 first
+        for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta._last_entry_q = 2.0
+            ta._update_runway_calibration(0.002)
+        val_before = ta._runway_cal_ewma[ta._q_bucket(2.0)]
+        # Now feed higher MFE values
+        for _ in range(5):
+            ta._last_entry_q = 2.0
+            ta._update_runway_calibration(0.004)
+        val_after = ta._runway_cal_ewma[ta._q_bucket(2.0)]
+        assert val_after > val_before  # Should have moved up
+
+    def test_q_bucket_mapping(self):
+        """Q-values should map to correct buckets."""
+        assert TriggerAgent._q_bucket(0.0) == 0
+        assert TriggerAgent._q_bucket(0.5) == 0
+        assert TriggerAgent._q_bucket(0.7) == 1
+        assert TriggerAgent._q_bucket(1.5) == 2
+        assert TriggerAgent._q_bucket(2.1) == 3
+        assert TriggerAgent._q_bucket(2.9) == 4
+        assert TriggerAgent._q_bucket(3.0) == 4  # Edge: maps to last bucket
+
+    def test_update_from_trade_with_entry_price(self):
+        """update_from_trade should convert abs MFE to fractional for calibration."""
+        ta = TriggerAgent(window=64, n_features=7)
+        ta._last_entry_q = 1.5
+        ta._q_to_runway(1.5)  # Sets _last_entry_q
+        # actual_mfe=10.0 at entry_price=5000 → fractional = 0.002
+        ta.update_from_trade(
+            actual_mfe=10.0,
+            predicted_runway=0.002,
+            entry_price=5000.0,
+        )
+        bucket = TriggerAgent._q_bucket(1.5)
+        assert ta._runway_cal_counts[bucket] == 1
+        assert ta._runway_cal_ewma[bucket] == pytest.approx(0.002)
+
+    def test_calibrated_value_clipped_to_bounds(self):
+        """Calibrated runway should be clipped to [Q_RUNWAY_MIN, Q_RUNWAY_MAX]."""
+        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
+        ta = TriggerAgent(window=64, n_features=7)
+        # Feed extreme (very high) MFE
+        for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta._last_entry_q = 0.3
+            ta._update_runway_calibration(0.05)  # Way above Q_RUNWAY_MAX
+        result = ta._q_to_runway(0.3)
+        assert result <= Q_RUNWAY_MAX
+        assert result >= Q_RUNWAY_MIN

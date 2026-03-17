@@ -145,12 +145,18 @@ class _Simulator:
     """
 
     def __init__(self, policy, update_policy: bool = True, symbol_digits: int = 2,
-                 event_engine: EventTimeFeatureEngine | None = None) -> None:
+                 event_engine: EventTimeFeatureEngine | None = None,
+                 reward_clip_harvester: float = REWARD_CLIP,
+                 reward_clip_trigger: float = TRIGGER_REWARD_CLIP,
+                 capture_baseline: float = 0.5) -> None:
         self.policy = policy
         self.update_policy = update_policy  # False during validation pass
         self.bars: deque = deque(maxlen=DEQUE_MAXLEN)
         self._pt: float = 10 ** (-symbol_digits)  # broker points → price-unit multiplier
         self.event_engine = event_engine  # Compute event-time features from bar timestamps
+        self._reward_clip_harvester = reward_clip_harvester
+        self._reward_clip_trigger = reward_clip_trigger
+        self._capture_baseline = capture_baseline
 
         # Position state
         self.cur_pos: int = 0           # 0 flat, 1 long, -1 short
@@ -280,10 +286,11 @@ class _Simulator:
         # Trigger reward: normalised outcome (no prediction accuracy in offline)
         vol_pts = max(self.entry_price * 0.005, 1e-6)  # ~0.5% default vol
         trigger_reward = float(np.clip(pnl_pts / vol_pts / 3.0,
-                                       -TRIGGER_REWARD_CLIP, TRIGGER_REWARD_CLIP))
+                                       -self._reward_clip_trigger, self._reward_clip_trigger))
 
         # Capture reward: fraction of MFE captured, clipped
-        capture_reward = float(np.clip(capture_ratio - 0.5, -REWARD_CLIP, REWARD_CLIP))
+        capture_reward = float(np.clip(capture_ratio - self._capture_baseline,
+                                       -self._reward_clip_harvester, self._reward_clip_harvester))
 
         if self.update_policy and self.entry_state is not None:
             self._add_experiences(trigger_reward=trigger_reward, capture_reward=capture_reward)
@@ -393,6 +400,9 @@ class OfflineTrainer:
         epsilon_start: float = 0.4,
         epsilon_end: float = 0.05,
         symbol_digits: int = 2,
+        reward_clip_harvester: float = REWARD_CLIP,
+        reward_clip_trigger: float = TRIGGER_REWARD_CLIP,
+        capture_baseline: float = 0.5,
     ) -> None:
         self.symbol = symbol
         self.timeframe_minutes = timeframe_minutes
@@ -406,6 +416,9 @@ class OfflineTrainer:
         self.epsilon_start = epsilon_start
         self.epsilon_end = epsilon_end
         self.symbol_digits = symbol_digits
+        self._reward_clip_harvester = reward_clip_harvester
+        self._reward_clip_trigger = reward_clip_trigger
+        self._capture_baseline = capture_baseline
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -586,7 +599,10 @@ class OfflineTrainer:
 
             policy.current_position = 0
             sim = _Simulator(policy, update_policy=True, symbol_digits=self.symbol_digits,
-                             event_engine=self._event_engine)
+                             event_engine=self._event_engine,
+                             reward_clip_harvester=self._reward_clip_harvester,
+                             reward_clip_trigger=self._reward_clip_trigger,
+                             capture_baseline=self._capture_baseline)
             epoch_bar_offset = epoch * len(train_bars)
 
             for i, bar in enumerate(train_bars):
@@ -672,7 +688,10 @@ class OfflineTrainer:
         """Run validation pass and return (score, trade_count)."""
         self._prepare_validation_policy(policy)
         val_sim = _Simulator(policy, update_policy=False, symbol_digits=self.symbol_digits,
-                             event_engine=self._event_engine)
+                             event_engine=self._event_engine,
+                             reward_clip_harvester=self._reward_clip_harvester,
+                             reward_clip_trigger=self._reward_clip_trigger,
+                             capture_baseline=self._capture_baseline)
         for i, bar in enumerate(val_bars):
             val_sim.step(bar, i)
         val_pnl = [t.pnl_pts for t in val_sim.trades]

@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — cTrader DDQN Trading Bot
 
-> Last updated: 2026-03-14
+> Last updated: 2026-03-17
 > Read MASTER_HANDBOOK.md and docs/CURRENT_STATE.md before making structural changes.
 
 ---
@@ -8,7 +8,7 @@
 ## Project Identity
 
 Dual-agent DDQN reinforcement learning trading system connected to cTrader via FIX 4.4 protocol.
-Active paper trading XAUUSD M5, Pepperstone demo. Python 3.12, ~35 700 production lines, 2 195 tests passing.
+Active paper trading XAUUSD M5, Pepperstone demo. Python 3.12, ~41 300 production lines, 2 221 tests passing.
 
 ---
 
@@ -22,21 +22,24 @@ A **Trigger agent** (entry specialist) and **Harvester agent** (exit specialist)
 
 | File                                 | Purpose                                                             |
 | ------------------------------------ | ------------------------------------------------------------------- |
-| `src/core/ctrader_ddqn_paper.py`     | Main bot orchestrator (6 449 lines)                                 |
-| `src/agents/trigger_agent.py`        | Entry DDQN + fallback strategy (857 lines)                          |
-| `src/agents/harvester_agent.py`      | Exit DDQN + min-hold guard (911 lines)                              |
-| `src/agents/dual_policy.py`          | Orchestrates both agents; feasibility × ζ gate (1 184 lines)        |
+| `src/core/ctrader_ddqn_paper.py`     | Main bot orchestrator (6 554 lines)                                 |
+| `src/agents/trigger_agent.py`        | Entry DDQN + fallback strategy (931 lines)                          |
+| `src/agents/harvester_agent.py`      | Exit DDQN + min-hold guard (972 lines)                              |
+| `src/agents/dual_policy.py`          | Orchestrates both agents; feasibility × ζ gate (1 190 lines)        |
 | `src/core/ddqn_network.py`           | Conv1dQNet → temporal_pool_size param (396 lines)                   |
-| `src/core/reward_shaper.py`          | 5-dim asymmetric rewards: [capture, wtl, runway, opportunity, time] |
+| `src/core/reward_shaper.py`          | 6-dim asymmetric rewards (864 lines)                                |
 | `src/utils/experience_buffer.py`     | PER + IS weights (raw-priority IS, post-loop update)                |
+| `src/utils/metrics_calculator.py`    | Single-source period metrics (Sharpe, Sortino, PF, MaxDD)           |
 | `src/features/regime_detector.py`    | DSP pipeline → damping ratio ζ                                      |
-| `src/risk/risk_manager.py`           | VaR-based sizing; payoff-ratio budget adaptation                    |
-| `src/risk/circuit_breakers.py`       | Sortino, Kurtosis, VPIN breakers                                    |
+| `src/features/hmm_regime.py`         | HMM-based regime detector (264 lines)                               |
+| `src/risk/risk_manager.py`           | VaR-based sizing; payoff-ratio budget adaptation (1 521 lines)      |
+| `src/risk/circuit_breakers.py`       | Sortino, Kurtosis, VPIN breakers (870 lines)                        |
 | `src/core/broker_execution_model.py` | Asymmetric slippage model (440 lines)                               |
 | `src/persistence/bot_persistence.py` | Atomic + journaled state persistence                                |
-| `src/monitoring/hud_tabbed.py`       | 7-tab curses HUD (3 954 lines)                                      |
+| `src/persistence/trade_log_reader.py`| Centralized trade_log.jsonl reader (127 lines)                      |
+| `src/monitoring/hud_tabbed.py`       | 7-tab curses HUD (4 090 lines)                                      |
 | `src/monitoring/audit_logger.py`     | `DecisionLogger` → `logs/audit/decisions.jsonl`                     |
-| `src/training/offline_trainer.py`    | Walk-forward DDQN training on historical bars (702 lines)           |
+| `src/training/offline_trainer.py`    | Walk-forward DDQN training on historical bars (721 lines)           |
 | `src/risk/path_geometry.py`          | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
 | `src/features/event_time_features.py`| Session/rollover/week event features (6 broadcast dims)             |
 
@@ -89,15 +92,32 @@ Load via `ddqn_network.load_weights()` which handles both `.pt` and legacy `.npz
 
 ## HUD tab map
 
-| Key | Tab           | Key data                                                           |
-| --- | ------------- | ------------------------------------------------------------------ |
-| O   | Overview      | self-test results, position, account balance, risk status, market  |
-| T   | Training      | per-agent steps/loss/reward with trend arrows + sparklines         |
-| P   | Performance   | period metrics (24h/7d/Mo/All), per-mode breakdown (paper vs live) |
-| R   | Risk/Market   | VaR, circuit breakers, regime ζ, VPIN-z, depth ratio               |
-| D   | Decision Log  | `MM-DD HH:MM` timestamps, TrdID column, session-break separators   |
-| T   | Trade History | paginated list with M badge (P/L), MIXED MODE banner               |
-| H   | Health        | connectivity, self-test detail, system metrics                     |
+| Key | Tab           | Key data                                                             |
+| --- | ------------- | -------------------------------------------------------------------- |
+| 1   | Overview      | fleet status, position, account balance, risk status, market         |
+| 2   | Performance   | period metrics (24h/7d/Mo/All), edge quality, prediction convergence |
+| 3   | Training      | offline jobs, per-agent steps/loss/reward with trend arrows          |
+| 4   | Risk          | VaR, circuit breakers, regime ζ, reward weights, path geometry       |
+| 5   | Market        | spread, L2 ladder, VPIN-z, imbalance, signal synthesis               |
+| 6   | Decision Log  | `MM-DD HH:MM` timestamps, TrdID column, session-break separators    |
+| 7   | Trade History | paginated list with mode badge (P/L), drill-down detail             |
+
+## HUD keyboard shortcuts
+
+| Key       | Action                                                     |
+| --------- | ---------------------------------------------------------- |
+| `1`-`7`   | Switch to tab                                              |
+| `Tab`     | Cycle forward; `Shift+Tab` backward                       |
+| `s`       | Select symbol/timeframe preset                             |
+| `r`       | Review & reset tripped circuit breakers                    |
+| `e`       | Set/clear stats epoch (exclude old trades from metrics)    |
+| `h`       | Help screen                                                |
+| `Alt+K`   | Emergency kill switch (close all + halt)                   |
+| `q`       | Quit HUD (bot keeps running)                               |
+
+### Stats epoch (`[e]` key)
+
+Configurable cutoff date stored in `data/stats_epoch.json`. Trades before the epoch are excluded from all Performance tab metrics (period rows, mode breakdown, trade quality, edge quality) but the raw `trade_log.jsonl` is never modified. Useful for excluding old losing periods that drag down current performance assessment.
 
 ---
 
@@ -118,18 +138,19 @@ Load via `ddqn_network.load_weights()` which handles both `.pt` and legacy `.npz
 - `trade_id` is set at entry, propagated until close; `None` on NO_ENTRY
 - Rich audit log is **append-only** — never truncate `decisions.jsonl`
 
-### Reward shaping (5 dimensions, strictly enforced)
+### Reward shaping (6 dimensions, strictly enforced)
 
 ```python
-# Index  Name          Direction
-#   0    capture       higher better (capture ratio vs MFE)
-#   1    wtl           negative (winner-to-loser penalty)
-#   2    runway        higher better (predicted vs actual runway)
-#   3    opportunity   negative (missed MFE opportunity cost)
-#   4    time          small negative (holding cost)
+# Index  Name              Direction
+#   0    capture           higher better (capture ratio vs MFE)
+#   1    wtl               negative (winner-to-loser penalty)
+#   2    opportunity       negative (missed MFE opportunity cost)
+#   3    activity          positive (exploration bonus when stagnant)
+#   4    counterfactual    signed  (penalty for early exits vs optimal)
+#   5    ensemble          positive (epistemic uncertainty bonus)
 ```
 
-Any change to reward dimensions **must** update: `reward_shaper.py`, `ddqn_network.py` (input size), `trigger_agent.py`, `harvester_agent.py`, `dual_policy.py` — all must agree on exactly 5.
+Any change to reward dimensions **must** update: `reward_shaper.py`, `ddqn_network.py` (input size), `trigger_agent.py`, `harvester_agent.py`, `dual_policy.py` — all must agree on exactly 6.
 
 ### IS weight correction (PER)
 
@@ -139,7 +160,7 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 
 ## Testing requirements
 
-- Run `python -m pytest tests/ -q` before committing — must stay at 2 195 passing
+- Run `python -m pytest tests/ -q` before committing — must stay at 2 221 passing
 - Unit tests in `tests/unit/`, integration tests in `tests/integration/`, validation in `tests/validation/`
 - After modifying reward shaper dims: run `tests/unit/test_reward_calculations.py`
 - After modifying IS weights: run `tests/unit/test_experience_buffer.py`
@@ -147,14 +168,15 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 
 ---
 
-## Current open items (as of 2026-03-14)
+## Current open items (as of 2026-03-17)
 
 | Item                                | Priority | Notes                                                               |
 | ----------------------------------- | -------- | ------------------------------------------------------------------- |
+| Re-run offline training             | HIGH     | Weights must be retrained with 18-feature pipeline                  |
 | L2/imbalance feed                   | MEDIUM   | `imbalance` always 0.0; check FIX MarketDataRequest MDEntryType=0/1 |
+| Mode breakdown missing trades       | MEDIUM   | ~999 trades have missing/empty `trading_mode` field; not shown      |
 | Harvester Q-value convergence       | LOW      | Monitor `ticks_held` trending up in HUD Training tab                |
 | `data/decision_log.json` non-atomic | LOW      | Secondary log only; does not affect correctness                     |
-| Re-run offline training             | HIGH     | Weights must be retrained with 18-feature pipeline                  |
 
 ---
 

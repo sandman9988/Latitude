@@ -133,3 +133,42 @@ class TestClamp01:
 
     def test_above(self):
         assert PathGeometry._clamp01(1.5) == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Multi-horizon vol ratio (Enhancement B)
+# ---------------------------------------------------------------------------
+
+class TestVolRatio:
+    def test_no_sigma_long_falls_back(self):
+        """When sigma_long=0, runway should match the original formula."""
+        pg = PathGeometry()
+        bars = _bars(100.0, 101.0, 102.0)
+        result = pg.update(bars, sigma=0.01, sigma_long=0.0)
+        expected = 1.0 / (1.0 + 50.0 * 0.01)
+        assert result["runway"] == pytest.approx(expected, rel=1e-6)
+
+    def test_expanding_vol_reduces_runway(self):
+        """sigma > sigma_long (expanding vol) should reduce runway."""
+        pg1, pg2 = PathGeometry(), PathGeometry()
+        bars = _bars(100.0, 101.0, 102.0)
+        r_neutral = pg1.update(bars, sigma=0.01, sigma_long=0.01)
+        r_expanding = pg2.update(bars, sigma=0.02, sigma_long=0.01)
+        assert r_expanding["runway"] < r_neutral["runway"]
+
+    def test_contracting_vol_increases_runway(self):
+        """sigma < sigma_long (contracting vol) should increase runway."""
+        pg1, pg2 = PathGeometry(), PathGeometry()
+        bars = _bars(100.0, 101.0, 102.0)
+        r_neutral = pg1.update(bars, sigma=0.01, sigma_long=0.01)
+        r_contracting = pg2.update(bars, sigma=0.005, sigma_long=0.01)
+        assert r_contracting["runway"] > r_neutral["runway"]
+
+    def test_vol_ratio_adjustment_clamped(self):
+        """Extreme vol ratios should be clamped, runway stays in valid range."""
+        pg = PathGeometry()
+        bars = _bars(100.0, 101.0, 102.0)
+        # Extreme ratio: sigma 10x of sigma_long
+        result = pg.update(bars, sigma=0.1, sigma_long=0.01)
+        assert 0.0 < result["runway"] <= 1.0
+        assert 0.0 <= result["feasibility"] <= 1.0

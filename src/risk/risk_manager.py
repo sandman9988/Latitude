@@ -741,7 +741,7 @@ class RiskManager:
             losses_count  = self.total_trades - self.winning_trades
             avg_win  = self.total_wins_pnl  / max(self.winning_trades, 1)
             avg_loss = self.total_losses_pnl / max(losses_count, 1)  # already absolute
-            payoff_ratio = avg_win / max(avg_loss, 1e-9)
+            payoff_ratio = SafeMath.safe_div(avg_win, avg_loss, 0.0)
             self._consider_risk_adaptation(equity, win_rate, payoff_ratio)
 
     def _consider_risk_adaptation(self, equity: float, win_rate: float, payoff_ratio: float = 1.0):
@@ -882,7 +882,7 @@ class RiskManager:
         if n == 1:
             return 1.0
         total_exposure = sum(abs(p) for p in self.active_positions.values())
-        return sum((abs(p) / max(total_exposure, 1e-8)) ** 2 for p in self.active_positions.values())
+        return sum(SafeMath.safe_div(abs(p), total_exposure, 0.0) ** 2 for p in self.active_positions.values())
 
     @staticmethod
     def _get_regime_multiplier(regime: RegimeType) -> float:

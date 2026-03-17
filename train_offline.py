@@ -218,6 +218,7 @@ def _run_job(  # noqa: PLR0913
 
     from src.training.historical_loader import load_csv, load_jsonl_cache  # noqa: PLC0415
     from src.training.offline_trainer import OfflineTrainer  # noqa: PLC0415
+    from src.persistence.learned_parameters import LearnedParametersManager  # noqa: PLC0415
 
     label = f"{symbol}_M{timeframe_minutes}"
     logger.info("[WORKER] Starting %s from %s", label, bars_file)
@@ -236,6 +237,11 @@ def _run_job(  # noqa: PLR0913
             "weights_path": "", "error": str(exc),
         }
 
+    # Load reward-shaping params from learned_parameters.json (auto-backfills defaults)
+    _pm = LearnedParametersManager()
+    _tf_lbl = _tf_label(timeframe_minutes)
+    _lp = lambda name, default: float(_pm.get(symbol, name, timeframe=_tf_lbl, default=default))
+
     trainer = OfflineTrainer(
         symbol=symbol,
         timeframe_minutes=timeframe_minutes,
@@ -248,6 +254,9 @@ def _run_job(  # noqa: PLR0913
         epsilon_start=epsilon_start,
         epsilon_end=epsilon_end,
         symbol_digits=symbol_digits,
+        reward_clip_harvester=_lp("reward_clip_harvester", 2.0),
+        reward_clip_trigger=_lp("reward_clip_trigger", 0.5),
+        capture_baseline=_lp("capture_baseline", 0.5),
     )
     result = trainer.run()
     return {

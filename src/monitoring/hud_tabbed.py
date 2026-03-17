@@ -24,6 +24,7 @@ import os
 import select
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -38,6 +39,7 @@ from src.constants import (
     KURTOSIS_ALERT_THRESHOLD,
     TRIGGER_BUFFER_CAPACITY,
 )
+from src.persistence.trade_log_reader import CachedTradeLogReader, read_all_trades
 
 LOG = logging.getLogger(__name__)
 
@@ -143,62 +145,12 @@ _QTY_FLOOR: float = 1e-9               # guard division in qty-usage ratio
 _IMBALANCE_DIRECTION_HINT: float = 0.1  # |imbalance| > 0.1 used for directional hint
 
 
+from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
+
+
 def _hud_period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     """Compute period performance metrics from a list of trade dicts."""
-    if not pts:
-        return {}
-    pnls = [t.get("pnl", 0.0) for t in pts]
-    wins = [p for p in pnls if p > 0]
-    losses = [p for p in pnls if p < 0]
-    n = len(pnls)
-    total_pnl = sum(pnls)
-    win_rate = len(wins) / n
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = sum(losses) / len(losses) if losses else 0.0
-    profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
-    expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
-    mean_p = total_pnl / n
-    variance = sum((p - mean_p) ** 2 for p in pnls) / n
-    std_p = math.sqrt(variance) if variance > 0 else 0.0
-    sharpe = mean_p / std_p if std_p > 0 else 0.0
-    # Sortino: downside deviation uses losses-only count, not all-trade count.
-    # Dividing by n (all trades) instead of len(losses) inflates Sortino by
-    # roughly sqrt(1/win_rate) — e.g. 1.58× at 60% win rate.
-    n_losses = max(1, len(losses))
-    down_var = sum(p ** 2 for p in pnls if p < 0) / n_losses
-    sortino = mean_p / math.sqrt(down_var) if down_var > 0 else 0.0
-    cum = 0.0
-    peak_equity = starting_equity
-    max_dd_pct = 0.0
-    for p in pnls:
-        cum += p
-        equity = starting_equity + cum
-        peak_equity = max(peak_equity, equity)
-        if peak_equity > 0:
-            dd_pct = (peak_equity - equity) / peak_equity * 100.0
-            max_dd_pct = max(max_dd_pct, dd_pct)
-    max_cw = max_cl = cw = cl = 0
-    w2l_count = sum(1 for t in pts if isinstance(t, dict) and t.get("winner_to_loser"))
-    for p in pnls:
-        if p > 0:
-            cw += 1
-            cl = 0
-        else:
-            cl += 1
-            cw = 0
-        max_cw = max(max_cw, cw)
-        max_cl = max(max_cl, cl)
-    return {
-        "total_trades": n, "win_rate": win_rate, "total_pnl": total_pnl,
-        "sharpe_ratio": sharpe, "sortino_ratio": sortino,
-        "omega_ratio": min(profit_factor, 99.0), "max_drawdown": max_dd_pct,
-        "best_trade": max(pnls), "worst_trade": min(pnls), "avg_trade": mean_p,
-        "profit_factor": min(profit_factor, 99.0), "expectancy": expectancy,
-        "avg_win": avg_win, "avg_loss": avg_loss,
-        "max_consec_wins": max_cw, "max_consec_losses": max_cl,
-        "winner_to_loser_count": w2l_count,
-        "recent_pnl_sequence": pnls,
-    }
+    return _period_metrics_calc(pts, starting_equity=starting_equity)
 
 
 def _hud_parse_dt(s: str):
@@ -356,6 +308,70 @@ class TabbedHUD:
         self._trades_detail_trade: dict = {}
         self._all_trades: list = []          # newest-first sorted
         self._all_trades_loaded_at: float = 0.0
+        self._trade_log_reader = CachedTradeLogReader(Path("data/trade_log.jsonl"))
+
+        # Stats epoch: trades before this timestamp are excluded from metrics
+        self._stats_epoch: datetime | None = None
+        self._stats_epoch_excluded: int = 0       # count of excluded trades
+        self._stats_epoch_excluded_pnl: float = 0.0  # PnL of excluded trades
+        self._load_stats_epoch()
+
+    # ── Stats epoch persistence ─────────────────────────────────────────
+
+    def _load_stats_epoch(self) -> None:
+        """Load stats_epoch from data/stats_epoch.json."""
+        _path = self.data_dir / "stats_epoch.json"
+        if _path.exists():
+            try:
+                with open(_path, encoding="utf-8") as f:
+                    _data = json.load(f)
+                _raw = _data.get("epoch")
+                if _raw:
+                    self._stats_epoch = _hud_parse_dt(_raw)
+                else:
+                    self._stats_epoch = None
+            except Exception:
+                LOG.debug("[HUD] Failed to load stats_epoch.json", exc_info=True)
+
+    def _save_stats_epoch(self, epoch: datetime | None) -> None:
+        """Atomically write stats_epoch to data/stats_epoch.json."""
+        self._stats_epoch = epoch
+        _path = self.data_dir / "stats_epoch.json"
+        _data = {
+            "epoch": epoch.isoformat() if epoch else None,
+            "set_at": datetime.now(UTC).isoformat(),
+        }
+        _tmp_fd, _tmp_path = tempfile.mkstemp(
+            dir=str(_path.parent), prefix=".stats_epoch_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(_tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(_data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(_tmp_path, _path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(_tmp_path)
+            raise
+
+    def _filter_trades_by_epoch(self, trades: list) -> list:
+        """Return trades on or after the stats epoch. Updates excluded counters."""
+        if not self._stats_epoch:
+            self._stats_epoch_excluded = 0
+            self._stats_epoch_excluded_pnl = 0.0
+            return trades
+        included: list = []
+        excluded_pnl = 0.0
+        for t in trades:
+            dt = _hud_parse_dt(t.get("exit_time") or t.get("entry_time") or "")
+            if dt and dt < self._stats_epoch:
+                excluded_pnl += t.get("pnl", 0.0)
+            else:
+                included.append(t)
+        self._stats_epoch_excluded = len(trades) - len(included)
+        self._stats_epoch_excluded_pnl = excluded_pnl
+        return included
 
     def _term_width(self) -> int:
         """Return current terminal column count (fallback 80)."""
@@ -427,6 +443,8 @@ class TabbedHUD:
                     self._handle_symbol_selection()
                 elif key.lower() == "r":
                     self._handle_cb_reset()
+                elif key.lower() == "e":
+                    self._handle_stats_epoch()
                 elif key.lower() == "h":
                     self._show_help()
                 elif key.lower() == "n":
@@ -567,10 +585,10 @@ class TabbedHUD:
                     _uni_raw["instruments"] = _instruments
                     _uni_path.write_text(json.dumps(_uni_raw, indent=2))
                 except Exception:
-                    pass
+                    LOG.debug("[HUD] Failed to write cleaned universe.json", exc_info=True)
             self.universe_stats = _instruments
         except Exception:
-            pass
+            LOG.debug("[HUD] Failed to load universe.json", exc_info=True)
 
     def _load_risk_and_orderbook(self) -> None:
         """Load risk_metrics.json then overwrite with fresher order_book.json fields."""
@@ -618,7 +636,7 @@ class TabbedHUD:
             ms["next_bar_close_utc"] = ob.get("next_bar_close_utc")
             ms["timeframe_minutes"] = ob.get("timeframe_minutes")
         except Exception:
-            pass
+            LOG.debug("[HUD] Failed to load risk/orderbook data", exc_info=True)
 
     def _refresh_data(self):
         """Refresh all data from bot exports"""
@@ -643,7 +661,7 @@ class TabbedHUD:
                     if _bal_val is not None:
                         self.bot_config["real_account_balance"] = float(_bal_val)
                 except Exception:
-                    pass
+                    LOG.debug("[HUD] Failed to load account_balance.json", exc_info=True)
 
         # Aggregate position files from all running bots (each writes a per-symbol file).
         # Display the first non-FLAT position found; fall back to singleton file if none.
@@ -664,7 +682,7 @@ class TabbedHUD:
                     self._active_pos_file = _pf
                     break
             except Exception:
-                pass
+                LOG.debug("[HUD] Failed to load position file %s", _pf, exc_info=True)
         if not self.position:
             self._load_json("current_position.json", "position")  # legacy fallback
         # Identify which bot owns the active (non-FLAT) position for per-bot file loading
@@ -697,7 +715,7 @@ class TabbedHUD:
                 _d = json.loads(_pf.read_text())
                 _prog[(_d["symbol"], _d["timeframe_minutes"])] = _d
             except Exception:
-                pass
+                LOG.debug("[HUD] Failed to load offline progress %s", _pf, exc_info=True)
         self.offline_job_progress = _prog
 
         # trade_log is the authoritative source — always recompute
@@ -747,7 +765,7 @@ class TabbedHUD:
                 with open(st_file) as f:
                     self.self_test_results = json.load(f).get("results", [])
             except Exception:
-                pass
+                LOG.debug("[HUD] Failed to load self_test.json", exc_info=True)
 
         # H4 shadow training stats (written by _export_h4_training_stats)
         _h4_sym = self.active_sym or self.bot_config.get("symbol", "")
@@ -758,7 +776,7 @@ class TabbedHUD:
                 try:
                     self.training_stats_h4 = json.loads(_h4_ts_path.read_text())
                 except Exception:
-                    pass
+                    LOG.debug("[HUD] Failed to load H4 training stats", exc_info=True)
 
         # Re-apply order_book.json on top of any per-bot risk-file override.
         # The per-bot risk_metrics_SYM_MTF.json is written at bar-close (every N minutes)
@@ -784,7 +802,7 @@ class TabbedHUD:
                 _ms["has_real_sizes"]   = _ob.get("has_real_sizes",   False)
                 _ms["qfi_update_count"] = _ob.get("qfi_update_count", 0)
             except Exception:
-                pass
+                LOG.debug("[HUD] Failed to load order_book.json overlay", exc_info=True)
 
         # All-bots fleet panel: load every paper_stats_*.json + matching position file
         _all_bots: list[dict] = []
@@ -797,7 +815,7 @@ class TabbedHUD:
                 _ps["_position"] = json.loads(_pos_f.read_text()) if _pos_f.exists() else {}
                 _all_bots.append(_ps)
             except Exception:
-                pass
+                LOG.debug("[HUD] Failed to load paper_stats %s", _psf, exc_info=True)
         self.all_bots_stats = _all_bots
         # Trade history — cache-loaded (5s) for trades tab
         self._load_all_trades_cached()
@@ -839,11 +857,13 @@ class TabbedHUD:
 
         Always re-classifies trades by the rolling time windows (daily/weekly/
         monthly) because those windows advance with wall-clock time even when
-        the file itself hasn't changed.  Parsing 999 JSONL lines is <1 ms.
+        the file itself hasn't changed.  File is only re-parsed when mtime
+        changes, avoiding redundant I/O on every 1 Hz refresh cycle.
         """
-        trade_file = Path("data/trade_log.jsonl")
-        if not trade_file.exists():
+        trades = self._trade_log_reader.trades
+        if not trades:
             return
+
         # Resolve starting_equity: universe.json entries are authoritative (they
         # reflect the real account size); bot_config.json is shared across bots
         # and may carry a stale or default value from whichever bot wrote last.
@@ -857,17 +877,6 @@ class TabbedHUD:
             or self.bot_config.get("starting_equity", 10_000.0)
         )
         starting_equity = float(_uni_eq)
-        try:
-            trades = []
-            with open(trade_file, encoding="utf-8") as f:
-                for raw_line in f:
-                    stripped = raw_line.strip()
-                    if stripped:
-                        trades.append(json.loads(stripped))
-        except Exception:
-            return
-        if not trades:
-            return
 
         # DATA QUALITY CHECK: Log warnings for data integrity issues
         _null_entry_time = sum(1 for t in trades if t.get("entry_time") is None)
@@ -875,12 +884,12 @@ class TabbedHUD:
         _recalc_trades = sum(1 for t in trades if t.get("pnl_recalculated"))
 
         if _null_entry_time > 0:
-            LOG.warning(
+            LOG.debug(
                 "[DATA-QUALITY] %d/%d trades have NULL entry_time (will be excluded from duration calc)",
                 _null_entry_time, len(trades)
             )
         if _missing_quantity > 0:
-            LOG.warning(
+            LOG.debug(
                 "[DATA-QUALITY] %d/%d trades missing 'quantity' field (HUD cannot display position sizing)",
                 _missing_quantity, len(trades)
             )
@@ -888,7 +897,7 @@ class TabbedHUD:
             _original_pnl = sum(t.get("pnl_original", 0) for t in trades if "pnl_original" in t)
             _current_pnl = sum(t.get("pnl", 0) for t in trades)
             _variance = abs(_current_pnl - _original_pnl)
-            LOG.warning(
+            LOG.debug(
                 "[DATA-QUALITY] %d/%d trades recalculated. Original PnL: $%.2f, Current: $%.2f, Variance: $%.2f",
                 _recalc_trades, len(trades), _original_pnl, _current_pnl, _variance
             )
@@ -897,6 +906,9 @@ class TabbedHUD:
         _modes = {t.get("trading_mode", "") for t in trades}
         _modes.discard("")
         self._trade_log_mode = next(iter(_modes)) if len(_modes) == 1 else "mixed" if _modes else ""
+
+        # Apply stats epoch filter — exclude old trades from all metrics
+        trades = self._filter_trades_by_epoch(trades)
 
         daily, weekly, monthly = _classify_trades_by_period(trades)
 
@@ -1039,6 +1051,7 @@ class TabbedHUD:
             print("  [q] / Ctrl+Q / Ctrl+X  - Quit HUD")
             print("  [Alt+K]       - Emergency kill switch (close all positions + halt trading)")
             print("  [r]           - Review tripped circuit breakers and reset if OK")
+            print("  [e]           - Set/clear stats epoch (exclude old trades from metrics)")
 
             print("\n\033[1m📋 TRADE HISTORY TAB KEYS\033[0m\n")
             print("  [j] / [k]     - Move selection down / up")
@@ -1113,15 +1126,24 @@ class TabbedHUD:
             confirm = input("> ").strip()
             if confirm == "KILL":
                 ks_path = self.data_dir / "kill_switch.json"
-                with open(ks_path, "w") as f:
-                    json.dump(
-                        {
-                            "active": True,
-                            "reason": "MANUAL_HUD_KILL",
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        },
-                        f,
-                    )
+                _ks_data = {
+                    "active": True,
+                    "reason": "MANUAL_HUD_KILL",
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+                _tmp_fd, _tmp_path = tempfile.mkstemp(
+                    dir=str(ks_path.parent), prefix=".kill_switch_", suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(_tmp_fd, "w", encoding="utf-8") as f:
+                        json.dump(_ks_data, f)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(_tmp_path, ks_path)
+                except BaseException:
+                    with contextlib.suppress(OSError):
+                        os.unlink(_tmp_path)
+                    raise
                 print("\n" + RED + "✓ KILL SWITCH ACTIVATED — bot will close all positions within 5 seconds" + RST)
                 self._set_notification("🚨 KILL SWITCH ACTIVATED — closing all positions", ttl=120)
                 input("\nPress Enter to return to HUD...")
@@ -1187,7 +1209,7 @@ class TabbedHUD:
                         print(f"    Tripped:   {_trip_ts[:19]}")
                         try:
                             _trip_dt = datetime.fromisoformat(_trip_ts)
-                            _elapsed = (datetime.now() - _trip_dt).total_seconds() / 60.0
+                            _elapsed = (datetime.now(UTC) - _trip_dt).total_seconds() / 60.0
                             _remaining = max(0, _cd_mins - _elapsed)
                             if _remaining > 0:
                                 print(f"    Cooldown:  {_remaining:.0f}m remaining (auto-reset after {_cd_mins}m)")
@@ -1210,14 +1232,23 @@ class TabbedHUD:
             confirm = input("> ").strip()
             if confirm.upper() == "RESET":
                 _reset_path = self.data_dir / "circuit_breaker_reset.json"
-                with open(_reset_path, "w") as _f:
-                    json.dump(
-                        {
-                            "reset": True,
-                            "timestamp": datetime.now(UTC).isoformat(),
-                        },
-                        _f,
-                    )
+                _reset_data = {
+                    "reset": True,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+                _tmp_fd, _tmp_path = tempfile.mkstemp(
+                    dir=str(_reset_path.parent), prefix=".cb_reset_", suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(_tmp_fd, "w", encoding="utf-8") as _f:
+                        json.dump(_reset_data, _f)
+                        _f.flush()
+                        os.fsync(_f.fileno())
+                    os.replace(_tmp_path, _reset_path)
+                except BaseException:
+                    with contextlib.suppress(OSError):
+                        os.unlink(_tmp_path)
+                    raise
                 print(f"\n{GRN}✓ Reset request sent — bot will reset breakers within ~5 seconds{RST}")
                 self._set_notification("🔄 Circuit breaker reset requested", ttl=30)
                 input("\nPress Enter to return to HUD...")
@@ -1226,6 +1257,78 @@ class TabbedHUD:
                 time.sleep(1)
         except Exception as e:
             print(f"Error: {e}")
+            with contextlib.suppress(Exception):
+                input("Press Enter to continue...")
+        finally:
+            self._enable_raw_mode()
+
+    def _handle_stats_epoch(self) -> None:
+        """[e] key: Set or clear the stats epoch to exclude old trades from metrics."""
+        self._disable_raw_mode()
+        try:
+            os.system("clear" if os.name != "nt" else "cls")
+            YLW = _ANSI_Y
+            GRN = _ANSI_G
+            DIM = _ANSI_DIM
+            RST = _ANSI_RST
+
+            print(YLW + "╔" + "═" * 60 + "╗")
+            print("║" + " " * 14 + "📅 STATS EPOCH MANAGER" + " " * 22 + "║")
+            print("╚" + "═" * 60 + "╝" + RST + "\n")
+
+            if self._stats_epoch:
+                _epoch_str = self._stats_epoch.strftime("%Y-%m-%d %H:%M UTC")
+                print(f"  Current epoch: {GRN}{_epoch_str}{RST}")
+                print(f"  Excluded:      {self._stats_epoch_excluded} trades, "
+                      f"${self._stats_epoch_excluded_pnl:+.2f} PnL\n")
+            else:
+                print(f"  Current epoch: {DIM}None (all trades included){RST}\n")
+
+            print("  Options:")
+            print(f"    {YLW}1{RST}  Set epoch to NOW (fresh start from this moment)")
+            print(f"    {YLW}2{RST}  Set epoch to start of today")
+            print(f"    {YLW}3{RST}  Set epoch to 7 days ago")
+            print(f"    {YLW}4{RST}  Set epoch to 30 days ago")
+            print(f"    {YLW}5{RST}  Enter a custom date (YYYY-MM-DD)")
+            print(f"    {YLW}c{RST}  Clear epoch (show all trades)")
+            print(f"    {DIM}Enter{RST}  Cancel\n")
+            choice = input("Selection: ").strip().lower()
+
+            _now = datetime.now(UTC)
+            _new_epoch: datetime | None = None
+            if choice == "1":
+                _new_epoch = _now
+            elif choice == "2":
+                _new_epoch = _now.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif choice == "3":
+                _new_epoch = _now - timedelta(days=7)
+            elif choice == "4":
+                _new_epoch = _now - timedelta(days=30)
+            elif choice == "5":
+                _date_str = input("Enter date (YYYY-MM-DD): ").strip()
+                _parsed = _hud_parse_dt(_date_str + "T00:00:00+00:00")
+                if _parsed:
+                    _new_epoch = _parsed
+                else:
+                    print(f"\n  {_ANSI_R}Invalid date format.{RST}")
+                    input("Press Enter to return to HUD...")
+                    return
+            elif choice == "c":
+                self._save_stats_epoch(None)
+                self._set_notification("Stats epoch cleared — all trades included", ttl=6)
+                # Force metrics recompute
+                self._trade_log_reader._last_mtime = 0.0
+                return
+            else:
+                return
+
+            self._save_stats_epoch(_new_epoch)
+            _label = _new_epoch.strftime("%Y-%m-%d %H:%M UTC") if _new_epoch else "cleared"
+            self._set_notification(f"Stats epoch set to {_label}", ttl=6)
+            # Force metrics recompute on next refresh
+            self._trade_log_reader._last_mtime = 0.0
+        except Exception as exc:
+            print(f"\nError: {exc}")
             with contextlib.suppress(Exception):
                 input("Press Enter to continue...")
         finally:
@@ -1337,10 +1440,10 @@ class TabbedHUD:
     def _set_notification(self, message: str, ttl: int = 5):
         """Display a temporary status message in the footer"""
         self.notification = message
-        self.notification_expiry = datetime.now() + timedelta(seconds=ttl)
+        self.notification_expiry = datetime.now(UTC) + timedelta(seconds=ttl)
 
     def _current_notification(self) -> str:
-        if self.notification and datetime.now() < self.notification_expiry:
+        if self.notification and datetime.now(UTC) < self.notification_expiry:
             return self.notification
         return ""
 
@@ -2676,6 +2779,18 @@ class TabbedHUD:
         src = f"  {_ANSI_DIM}(source: trade_log.jsonl){_ANSI_RST}" if self._metrics_from_trade_log else ""
         print(f"\n\033[1m📈 PERFORMANCE METRICS\033[0m{_mode_tag}{src}\n")
 
+        # Stats epoch banner
+        if self._stats_epoch:
+            _epoch_str = self._stats_epoch.strftime("%Y-%m-%d %H:%M")
+            _exc_n = self._stats_epoch_excluded
+            _exc_pnl = self._stats_epoch_excluded_pnl
+            _pnl_c = self._pnl_color(_exc_pnl)
+            print(
+                f"  {_ANSI_DIM}📅 Stats epoch: {_epoch_str} UTC  "
+                f"({_exc_n} older trades excluded, {_pnl_c}{_exc_pnl:+.2f}{_ANSI_RST}{_ANSI_DIM} PnL)  "
+                f"[e] to change{_ANSI_RST}\n"
+            )
+
         # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
         # This is NOT an annualised return-based Sharpe ratio.
         print(
@@ -2693,7 +2808,7 @@ class TabbedHUD:
             wr = metrics.get("win_rate", 0) * 100
             pnl = metrics.get("total_pnl", 0)
             sharpe = metrics.get("sharpe_ratio", 0)
-            pf = metrics.get("profit_factor", metrics.get("omega_ratio", 0))  # profit factor (capped at 99)
+            pf = metrics.get("profit_factor", 0)  # profit factor (capped at 99)
             maxdd = metrics.get("max_drawdown", 0.0)  # already a % of peak equity
 
             pnl_color = self._pnl_color(pnl)
@@ -2740,26 +2855,15 @@ class TabbedHUD:
         self._render_trade_timing(self.lifetime_metrics, pm)
 
     def _render_mode_breakdown(self) -> None:
-        """Show paper vs live trade breakdown when trade_log.jsonl has both modes."""
-        trade_file = Path("data/trade_log.jsonl")
-        if not trade_file.exists():
+        """Show paper vs live trade breakdown using cached per-symbol metrics."""
+        # Reuse trades already parsed by _compute_metrics_from_trade_log()
+        # via _load_all_trades_cached() to avoid double-parsing the file.
+        self._load_all_trades_cached()
+        trades = self._filter_trades_by_epoch(self._all_trades)
+        if not trades:
             return
-        try:
-            paper_trades: list[dict] = []
-            live_trades: list[dict] = []
-            with open(trade_file, encoding="utf-8") as f:
-                for raw_line in f:
-                    stripped = raw_line.strip()
-                    if not stripped:
-                        continue
-                    t = json.loads(stripped)
-                    mode = t.get("trading_mode", "")
-                    if mode == "paper":
-                        paper_trades.append(t)
-                    elif mode == "live":
-                        live_trades.append(t)
-        except Exception:
-            return
+        paper_trades = [t for t in trades if t.get("trading_mode") == "paper"]
+        live_trades = [t for t in trades if t.get("trading_mode") == "live"]
 
         # Only show breakdown when there is something to display
         if not paper_trades and not live_trades:
@@ -2850,6 +2954,48 @@ class TabbedHUD:
                 f"{_ANSI_DIM}(had profit but reversed to loss){_ANSI_RST}"
             )
 
+        # Edge quality metrics: how well the model finds and captures opportunities
+        print(f"\n\033[1m🔬 EDGE QUALITY\033[0m  {_ANSI_DIM}(model tuning signals){_ANSI_RST}\n")
+        _avg_mfe = lt.get("avg_mfe", 0.0)
+        _avg_mae = lt.get("avg_mae", 0.0)
+        _cap_ratio = lt.get("avg_capture_ratio", 0.0)
+        _avg_bars = lt.get("avg_bars_held", 0.0)
+        _conf_w = lt.get("avg_conf_win", 0.0)
+        _conf_l = lt.get("avg_conf_loss", 0.0)
+
+        # Capture ratio: fraction of MFE captured (target ≥0.60)
+        if _cap_ratio >= 0.60:
+            _cap_col = _ANSI_G
+        elif _cap_ratio >= 0.40:
+            _cap_col = _ANSI_Y
+        else:
+            _cap_col = _ANSI_R
+        print(
+            f"  Capture ratio:    {_cap_col}{_cap_ratio:>7.1%}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(exit_pnl/MFE; ≥60% = good harvesting){_ANSI_RST}"
+        )
+        # MFE/MAE: raw edge — MFE should exceed MAE
+        _edge = _avg_mfe - _avg_mae if _avg_mfe > 0 else 0.0
+        _edge_col = _ANSI_G if _edge > 0 else _ANSI_R
+        print(
+            f"  Avg MFE / MAE:    ${_avg_mfe:>+8.2f} / ${_avg_mae:>8.2f}  "
+            f"{_edge_col}edge: ${_edge:>+.2f}{_ANSI_RST}"
+        )
+        # Avg bars held
+        print(
+            f"  Avg bars held:    {_avg_bars:>7.1f}  "
+            f"{_ANSI_DIM}(entry-to-exit bar count){_ANSI_RST}"
+        )
+        # Confidence calibration: avg entry confidence on wins vs losses
+        if _conf_w > 0 or _conf_l > 0:
+            _cal_gap = _conf_w - _conf_l
+            _cal_col = _ANSI_G if _cal_gap > 0.05 else (_ANSI_Y if _cal_gap > 0 else _ANSI_R)
+            print(
+                f"  Entry conf W/L:   {_conf_w:>7.3f} / {_conf_l:>7.3f}  "
+                f"{_cal_col}gap: {_cal_gap:>+.3f}{_ANSI_RST}  "
+                f"{_ANSI_DIM}(+ve = calibrated){_ANSI_RST}"
+            )
+
     def _render_trade_timing(self, lt: dict, pm: dict) -> None:
         """Render trade timing (from trade_log) and prediction convergence (from runtime)."""
         # avg_trade_duration and last_trade are added by _compute_metrics_from_trade_log;
@@ -2928,12 +3074,12 @@ class TabbedHUD:
     def _render_jsonl_decision_entries(self, entries: list) -> None:
         """Render the rich JSONL decision log entries.
 
-        Columns: Date+Time | Mode | Agent | Decision | Conf | Rnwy$ | VPIN-z | Price | TradeID
+        Columns: Date+Time | Mode | Agent | Decision | Conf | Feas | VPIN-z | Price | TradeID
         Session breaks are inserted when the session_id changes.
         """
         header = (
             f"  {'Date/Time':<12} {'Mode':<6} {'Agent':<10} {'Decision':<14} "
-            f"{'Conf':>6} {'Rnwy$':>6} {'VPIN-z':>7} {'Price':>10}  {'TrdID':<9}"
+            f"{'Conf':>6} {'Feas':>6} {'VPIN-z':>7} {'Price':>10}  {'TrdID':<9}"
         )
         _counts: dict[str, int] = {}
         for _e in entries:
@@ -2975,8 +3121,7 @@ class TabbedHUD:
             reasoning = entry.get("reasoning", {})
             price = ctx.get("price", 0.0)
             vpin_z = ctx.get("vpin_z", 0.0)
-            runway_pct = reasoning.get("predicted_runway", 0.0)
-            runway_usd = runway_pct * price if price > 0 else runway_pct
+            feasibility = reasoning.get("feasibility", 0.0)
 
             # ── Trade correlation ID (links entry→HOLDs→close for one trade) ──
             trade_id = entry.get("trade_id", "")
@@ -2999,7 +3144,7 @@ class TabbedHUD:
             print(
                 f"  {ts_str:<12} {mode_str} {agent:<10} "
                 f"{color}{decision:<14}{_ANSI_RST} "
-                f"{conf:>6.3f} {runway_usd:>6.2f} {vpin_z:>+6.2f}{vpin_flag} "
+                f"{conf:>6.3f} {feasibility:>6.2f} {vpin_z:>+6.2f}{vpin_flag} "
                 f"{price:>10.{dec}f}  {tid_str}"
             )
         print("  " + "─" * 80)
@@ -3190,7 +3335,7 @@ class TabbedHUD:
                 if _trip_ts:
                     try:
                         _trip_dt = datetime.fromisoformat(_trip_ts)
-                        _elapsed = (datetime.now() - _trip_dt).total_seconds() / 60.0
+                        _elapsed = (datetime.now(UTC) - _trip_dt).total_seconds() / 60.0
                         _remaining = max(0, _cd_mins - _elapsed)
                         if _remaining > 0:
                             _detail += f"  {_ANSI_DIM}cooldown: {_remaining:.0f}m left{_ANSI_RST}"
@@ -3593,7 +3738,7 @@ class TabbedHUD:
 
         # Controls — two lines when narrow, one line when wide
         _trades_hint = "  [j/k] Select  [n/p] Page  [d] Detail  [b] Back" if self.current_tab == "trades" else ""
-        ctrl_wide  = f"  [1-7] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB  |  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_trades_hint}"
+        ctrl_wide  = f"  [1-7] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB  |  [e] Epoch  |  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_trades_hint}"
         ctrl_line1 = "  [1-7] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB"
         ctrl_line2 = f"  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_trades_hint}"
         if len(ctrl_wide) <= W:
@@ -3631,23 +3776,7 @@ class TabbedHUD:
         _now = time.time()
         if _now - self._all_trades_loaded_at < 5.0:
             return
-        trade_file = Path("data/trade_log.jsonl")
-        if not trade_file.exists():
-            self._all_trades = []
-            self._all_trades_loaded_at = _now
-            return
-        trades: list = []
-        try:
-            with open(trade_file, encoding="utf-8") as _f:
-                for _raw in _f:
-                    _s = _raw.strip()
-                    if _s:
-                        try:
-                            trades.append(json.loads(_s))
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+        trades = read_all_trades(Path("data/trade_log.jsonl"))
         # Sort newest → oldest by exit_time, fallback to entry_time then trade_id
         def _skey(t: dict) -> tuple:
             return (t.get("exit_time") or t.get("entry_time") or "", t.get("trade_id", 0))
@@ -3928,6 +4057,13 @@ def main():
     """Run tabbed HUD"""
     if not _acquire_pidfile():
         sys.exit(1)
+
+    # Redirect all logging to file so warnings don't flash on the TUI
+    logging.basicConfig(
+        filename="logs/hud.log",
+        level=logging.WARNING,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
 
     print("Starting Tabbed HUD...")
     print("Reading from: data/*.json")

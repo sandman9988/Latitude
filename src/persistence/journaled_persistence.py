@@ -278,7 +278,7 @@ class Journal:
             self.journal_file.close()
 
             # Rename with timestamp
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             archive_path = self.journal_path.with_suffix(f".{ts}.log")
             self.journal_path.rename(archive_path)
 

@@ -16,6 +16,7 @@
 #   export CTRADER_QTY="0.10"
 #   python3 ctrader_ddqn_paper.py
 
+import contextlib
 import datetime as dt
 import json
 import logging
@@ -25,11 +26,12 @@ import random
 import signal
 import socket
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -143,6 +145,7 @@ from src.monitoring.performance_tracker import PerformanceTracker
 from src.monitoring.production_monitor import ProductionMonitor
 from src.monitoring.trade_exporter import TradeExporter
 from src.persistence.learned_parameters import LearnedParametersManager
+from src.persistence.trade_log_reader import read_all_trades, read_recent_trades
 from src.risk.circuit_breakers import CircuitBreakerManager
 from src.risk.emergency_close import create_emergency_closer
 from src.risk.friction_costs import FrictionCalculator
@@ -151,6 +154,7 @@ from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator, po
 from src.training.bar_experience_cache import BarExperienceCache
 from src.utils.non_repaint_guards import NonRepaintBarAccess
 from src.utils.ring_buffer import RollingStats
+from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
 
 # Handbook components - Phase 1
 from src.utils.safe_math import SafeMath
@@ -198,6 +202,25 @@ MIN_BARS_FOR_REGIME_SEED: int = 10      # minimum bars before seeding regime det
 MIN_BARS_FOR_PATH_GEOMETRY: int = 3     # minimum bars before path-geometry update
 _IMBALANCE_BLEND_FLOOR: float = 1e-6   # zero-guard for real-vs-QFI imbalance blend
 MIN_TRADE_HISTORY_EXPLORATION: int = 20
+
+# H4 shadow training constants
+H4_CHECKPOINT_DIR: str = "data/checkpoints_h4"
+H4_TRAIN_INTERVAL_BARS: int = 2           # train every N H4 bars (~8 hours)
+H4_MIN_BUFFER_SIZE: int = 32              # min experiences before training
+H4_MFE_EPSILON: float = 1e-8              # zero-guard for MFE capture ratio
+
+# Preseed buffer constants
+MIN_CLOSES_FOR_VOL: int = 2               # min closes to compute rolling vol
+MIN_MARKET_STATES_HARVESTER: int = 5      # min states for harvester preseed
+PRESEED_STOP_PCT: float = 0.3             # simulated stop-loss (0.3% of entry)
+PRESEED_TARGET_PCT: float = 0.2           # simulated profit target (0.2%)
+
+# Account / balance constants
+BALANCE_STALE_AGE_SECS: int = 1800        # 30 min — ignore older balance data
+BALANCE_CHANGE_THRESHOLD: float = 0.01    # min USD change to log balance update
+
+# Trade log file name (de-duplicated literal)
+TRADE_LOG_FILENAME: str = "trade_log.jsonl"
 
 # Action constants imported from src.constants (ACTION_NO_ENTRY, ACTION_LONG, ACTION_SHORT)
 
@@ -592,8 +615,19 @@ class PathRecorder:
         filename = trades_dir / f"trade_{trade_record['trade_id']:04d}_{trade_record['direction'].lower()}.json"
 
         try:
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump(trade_record, f, indent=2)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(filename.parent), prefix=f".{filename.name}_", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(trade_record, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, filename)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+                raise
             LOG.info("[PATH] Saved to %s", filename)
         except Exception as e:
             LOG.error("[PATH] Failed to save: %s", e)
@@ -829,12 +863,12 @@ class CTraderFixApp(fix.Application):
                 min_bars_for_features=self._min_bars_for_features,
             )
             if hasattr(self.policy_h4, "load_checkpoint"):
-                self.policy_h4.load_checkpoint("data/checkpoints_h4")
+                self.policy_h4.load_checkpoint(H4_CHECKPOINT_DIR)
             LOG.info("[H4] DualPolicy M240 initialised; checkpoint loaded")
         else:
             self.policy_h4 = None
         # Shadow position state for H4 (no real orders)
-        self._h4_shadow_pos: int = 0        # 0=flat, +1=long, -1=short
+        self._h4_shadow_pos: int = 0        # flat=0, long=+1, short=-1
         self._h4_entry_price: float = 0.0
         self._h4_entry_conf: float = 0.5
         self._h4_entry_time = None
@@ -864,6 +898,7 @@ class CTraderFixApp(fix.Application):
         )  # FIXED: was {self.default_position_id: self.mfe_mae_tracker}
         self.path_recorders: dict[str, PathRecorder] = {}  # FIXED: was {self.default_position_id: self.path_recorder}
         self._tracker_lock = threading.Lock()  # Protects mfe_mae_trackers & path_recorders across FIX callbacks
+        self._market_data_lock = threading.Lock()  # Protects best_bid/best_ask across FIX sessions
         self.performance = PerformanceTracker()
         self.prod_monitor = ProductionMonitor(
             metrics_file=Path("data/production_metrics.json"),
@@ -1369,8 +1404,12 @@ class CTraderFixApp(fix.Application):
         """Read kill switch payload if the file exists."""
         if not self._kill_switch_path.exists():
             return None
-        with open(self._kill_switch_path) as _ksf:
-            return json.load(_ksf)
+        try:
+            with open(self._kill_switch_path) as _ksf:
+                return json.load(_ksf)
+        except (json.JSONDecodeError, ValueError) as exc:
+            LOG.error("[KILL-SWITCH] Corrupted payload file: %s", exc)
+            return None
 
     def _execute_kill_switch(self, payload: dict) -> None:
         """Trip breakers, close positions, and persist kill state."""
@@ -1498,7 +1537,7 @@ class CTraderFixApp(fix.Application):
         # H4 shadow policy checkpoint
         if getattr(self, "_h4_enabled", False) and getattr(self, "policy_h4", None):
             try:
-                self.policy_h4.save_checkpoint("data/checkpoints_h4")
+                self.policy_h4.save_checkpoint(H4_CHECKPOINT_DIR)
                 LOG.info("[SHUTDOWN] ✓ H4 checkpoint saved")
             except Exception as e_h4:
                 LOG.error("[SHUTDOWN] H4 checkpoint failed: %s", e_h4)
@@ -1602,28 +1641,7 @@ class CTraderFixApp(fix.Application):
     @staticmethod
     def _load_recent_trades(trade_log_path, max_lines: int = 50) -> list[dict]:
         """Read up to *max_lines* completed trade records from the JSONL log tail."""
-        import pathlib  # noqa: PLC0415
-
-        path = pathlib.Path(trade_log_path)
-        if not path.exists():
-            return []
-        with open(path, "rb") as fh:
-            fh.seek(0, 2)
-            if fh.tell() == 0:
-                return []
-            buf_size = min(fh.tell(), 64 * 1024)
-            fh.seek(-buf_size, 2)
-            raw = fh.read(buf_size).decode("utf-8", errors="replace")
-        lines = [ln for ln in raw.splitlines() if ln.strip()][-max_lines:]
-        trades = []
-        for line in lines:
-            try:
-                rec = json.loads(line)
-                if rec.get("exit_time") and rec.get("entry_time"):
-                    trades.append(rec)
-            except json.JSONDecodeError:
-                continue
-        return trades
+        return read_recent_trades(trade_log_path, max_lines=max_lines)
 
     @staticmethod
     def _apply_trade_timing(obj, trades: list[dict]) -> None:
@@ -1660,7 +1678,7 @@ class CTraderFixApp(fix.Application):
         """
         try:
             trades = self._load_recent_trades(
-                Path(self.hud_data_dir) / "trade_log.jsonl"
+                Path(self.hud_data_dir) / TRADE_LOG_FILENAME
             )
             if not trades:
                 return
@@ -2249,10 +2267,11 @@ class CTraderFixApp(fix.Application):
     def _update_best_prices(self) -> None:
         """Sync best_bid/best_ask from order book and update friction spread."""
         best_bid, best_ask = self.order_book.best_bid_ask()
-        if best_bid is not None:
-            self.best_bid = float(best_bid)
-        if best_ask is not None:
-            self.best_ask = float(best_ask)
+        with self._market_data_lock:
+            if best_bid is not None:
+                self.best_bid = float(best_bid)
+            if best_ask is not None:
+                self.best_ask = float(best_ask)
         if best_bid is not None and best_ask is not None:
             self.friction_calculator.update_spread(self.best_bid, self.best_ask)
 
@@ -2282,8 +2301,10 @@ class CTraderFixApp(fix.Application):
             elif entry_type == "1":
                 self.order_book.update_level("ASK", price_f, size)
 
-        self._bid_refresh_count += len(self.order_book.bids)
-        self._ask_refresh_count += len(self.order_book.asks)
+        # NOTE: Do NOT add snapshot-level counts to QFI counters here.
+        # Snapshots contain equal bid/ask level counts, washing QFI to ~0.
+        # Only incremental updates (in _apply_md_new_or_change) should
+        # contribute to QFI so it reflects real order-flow asymmetry.
         self._update_best_prices()
 
         if not self._ob_diag_logged and (self.order_book.bids or self.order_book.asks):
@@ -2429,9 +2450,12 @@ class CTraderFixApp(fix.Application):
 
         best_bid, best_ask = self.order_book.best_bid_ask()
         if best_bid is not None and best_ask is not None:
-            self.best_bid, self.best_ask = float(best_bid), float(best_ask)
+            with self._market_data_lock:
+                self.best_bid, self.best_ask = float(best_bid), float(best_ask)
             self.friction_calculator.update_spread(self.best_bid, self.best_ask)
 
+        self._check_max_loss_all_positions()
+        self._evaluate_harvester_on_tick_throttled()
         self._export_order_book()
         self.try_bar_update()
 
@@ -2485,12 +2509,14 @@ class CTraderFixApp(fix.Application):
             series.mark_bar_opened()
 
     def try_bar_update(self):
-        LOG.debug(f"[DIAG] try_bar_update called. best_bid={self.best_bid}, best_ask={self.best_ask}")
-        if self.best_bid is None or self.best_ask is None:
+        with self._market_data_lock:
+            _bid, _ask = self.best_bid, self.best_ask
+        LOG.debug(f"[DIAG] try_bar_update called. best_bid={_bid}, best_ask={_ask}")
+        if _bid is None or _ask is None:
             LOG.debug("[BAR] Skipping bar update: best_bid or best_ask is None")
             return
 
-        mid = (self.best_bid + self.best_ask) / 2.0
+        mid = (_bid + _ask) / 2.0
         LOG.debug(f"[DIAG] Calculated mid={mid}")
         self.current_bar_tick_count += 1
         self._update_vpin(mid)
@@ -2543,9 +2569,11 @@ class CTraderFixApp(fix.Application):
         if now - self._last_ob_export_time < min_interval:
             return
         try:
+            with self._market_data_lock:
+                _bid, _ask = self.best_bid, self.best_ask
             spread = (
-                float(self.best_ask) - float(self.best_bid)
-                if self.best_bid and self.best_ask
+                float(_ask) - float(_bid)
+                if _bid and _ask
                 else 0.0
             )
             vpin_s = getattr(self, "last_vpin_stats", {"vpin": 0.0, "zscore": 0.0})
@@ -2565,8 +2593,7 @@ class CTraderFixApp(fix.Application):
                 "next_bar_close_utc": self.builder.next_bar_close_utc(),
                 "timeframe_minutes": self.timeframe_minutes,
             }
-            with open(self.hud_data_dir / "order_book.json", "w", encoding="utf-8") as fh:
-                json.dump(ob, fh)
+            self._atomic_write_json(self.hud_data_dir / "order_book.json", ob, indent=0)
 
             self._write_current_position_snapshot()
 
@@ -2599,9 +2626,11 @@ class CTraderFixApp(fix.Application):
         if self.cur_pos == 0:
             self._write_flat_position_snapshot()
             return
-        if not (self.best_bid and self.best_ask):
+        with self._market_data_lock:
+            _bid, _ask = self.best_bid, self.best_ask
+        if not (_bid and _ask):
             return
-        live_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
+        live_price = (float(_bid) + float(_ask)) / 2.0
         live_tracker = self._get_live_tracker()
         if not (live_tracker and live_tracker.entry_price):
             return
@@ -2630,8 +2659,7 @@ class CTraderFixApp(fix.Application):
             "tracker_key": _tracker_key,
         }
         _pos_file = f"current_position_{self.symbol}_M{self.timeframe_minutes}.json"
-        with open(self.hud_data_dir / _pos_file, "w", encoding="utf-8") as fh:
-            json.dump(pos_data, fh)
+        self._atomic_write_json(self.hud_data_dir / _pos_file, pos_data, indent=0)
 
     def _write_flat_position_snapshot(self) -> None:
         """Write a FLAT snapshot so the HUD clears immediately after a close."""
@@ -2647,8 +2675,7 @@ class CTraderFixApp(fix.Application):
             "bars_held": 0,
         }
         _pos_file = f"current_position_{self.symbol}_M{self.timeframe_minutes}.json"
-        with open(self.hud_data_dir / _pos_file, "w", encoding="utf-8") as fh:
-            json.dump(flat_data, fh)
+        self._atomic_write_json(self.hud_data_dir / _pos_file, flat_data, indent=0)
 
     def _get_live_tracker(self):
         """Fetch the latest MFE/MAE tracker for the active position."""
@@ -2692,13 +2719,31 @@ class CTraderFixApp(fix.Application):
         # Final fallback: compute from persisted entry_time
         entry_t = getattr(self, "trade_entry_time", None)
         if entry_t is not None and self.timeframe_minutes > 0:
-            import datetime as _dt  # noqa: PLC0415
-            now = _dt.datetime.now(_dt.UTC)
+            now = dt.datetime.now(dt.UTC)
             if entry_t.tzinfo is None:
-                entry_t = entry_t.replace(tzinfo=_dt.UTC)
+                entry_t = entry_t.replace(tzinfo=dt.UTC)
             elapsed_secs = max(0.0, (now - entry_t).total_seconds())
             return max(0, int(elapsed_secs / (self.timeframe_minutes * 60)))
         return 0
+
+    # ── Atomic JSON helper ──────────────────────────────────────────────
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: dict, indent: int = 2) -> None:
+        """Write *data* to *path* atomically via tempfile + os.replace."""
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(path.parent), prefix=f".{path.name}_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=indent, allow_nan=False, default=str)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_path, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
     # ── Bar cache persistence ──────────────────────────────────────────────
 
@@ -2714,8 +2759,19 @@ class CTraderFixApp(fix.Application):
                 [b[0].isoformat(), b[1], b[2], b[3], b[4]]
                 for b in list(self.bars)[-max_bars:]
             ]
-            with open(cache_path, "w", encoding="utf-8") as fh:
-                json.dump({"timeframe_minutes": self.timeframe_minutes, "bars": rows}, fh)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(cache_path.parent), prefix=".bars_cache_", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                    json.dump({"timeframe_minutes": self.timeframe_minutes, "bars": rows}, fh)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp_path, cache_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+                raise
         except Exception as e:
             LOG.warning("[BARS] Could not save bars cache: %s", e)
 
@@ -2795,9 +2851,9 @@ class CTraderFixApp(fix.Application):
         """
         start = max(0, bar_idx - window)
         closes = [b[4] for b in bar_list[start:bar_idx + 1]]
-        if len(closes) < 2:
+        if len(closes) < MIN_CLOSES_FOR_VOL:
             return 0.005  # fallback before enough history
-        returns = [abs(closes[i] / max(closes[i - 1], 1e-8) - 1.0) for i in range(1, len(closes))]
+        returns = [abs(SafeMath.safe_div(closes[i], closes[i - 1], 1.0) - 1.0) for i in range(1, len(closes))]
         vol = float(np.std(returns)) if len(returns) > 1 else 0.005
         return max(vol, 0.0005)  # floor: prevents /0 explosions on flat markets
 
@@ -2871,14 +2927,11 @@ class CTraderFixApp(fix.Application):
                 # Forward-looking reward: next-bar return normalised by actual vol
                 cur_close = bar_list[bar_idx][4]
                 nxt_close = bar_list[bar_idx + 1][4]
-                ret = (nxt_close - cur_close) / max(cur_close, 1.0)
+                ret = SafeMath.safe_div(nxt_close - cur_close, cur_close, 0.0)
                 reward = float(np.clip(ret / vol, -1.0, 1.0))
                 action = 1
                 # Use the next bar's state as next_state when possible
-                if i + 1 < len(states):
-                    next_state = states[i + 1][0]
-                else:
-                    next_state = state
+                next_state = states[i + 1][0] if i + 1 < len(states) else state
             else:
                 action = 0
                 reward = 0.0
@@ -2949,9 +3002,10 @@ class CTraderFixApp(fix.Application):
                 if ms is not None and ms.size > 0:
                     market_states.append((idx, ms.copy()))
             except Exception:
+                LOG.debug("[PRESEED] Failed to process harvester bar %d", idx, exc_info=True)
                 continue
 
-        if len(market_states) < 5:
+        if len(market_states) < MIN_MARKET_STATES_HARVESTER:
             LOG.info("[PRESEED] Not enough market states (%d) for harvester", len(market_states))
             return
 
@@ -2983,7 +3037,7 @@ class CTraderFixApp(fix.Application):
                 future_ms_pos = ms_pos + hold_step
                 if future_ms_pos >= len(market_states):
                     break
-                future_bar_idx, future_market_state = market_states[future_ms_pos]
+                future_bar_idx, _ = market_states[future_ms_pos]
                 future_close = bar_list[future_bar_idx][4]
 
                 # Update running MFE / MAE for this simulated LONG
@@ -3026,15 +3080,16 @@ class CTraderFixApp(fix.Application):
                 # Simple stop / target to create realistic close signals
                 mae_pct = (mae / entry_price) * 100.0
                 mfe_pct = (mfe / entry_price) * 100.0
-                stop_hit = mae_pct > 0.3   # 0.3% stop loss
-                target_hit = mfe_pct > 0.2  # 0.2% profit target
+                stop_hit = mae_pct > PRESEED_STOP_PCT
+                target_hit = mfe_pct > PRESEED_TARGET_PCT
                 force_close = stop_hit or target_hit
 
                 if is_last or force_close:
                     # CLOSE experience
                     # Reward based on capture ratio: positive if profitable
                     capture = pnl / entry_price * 100.0
-                    reward = float(np.clip(capture / 0.3, -1.0, 1.0))
+                    _cnf = self._lp_get("capture_norm_factor", 0.3)
+                    reward = float(np.clip(SafeMath.safe_div(capture, _cnf, 0.0), -1.0, 1.0))
                     self.policy.add_harvester_experience(
                         state=state, action=1, reward=reward,
                         next_state=next_state.copy(), done=True,
@@ -3044,8 +3099,8 @@ class CTraderFixApp(fix.Application):
                 else:
                     # HOLD experience
                     # Small reward for MFE growth, penalty for MAE growth
-                    mfe_delta = (mfe - prev_mfe) / max(entry_price, 1.0) * 100.0
-                    mae_delta = (mae - prev_mae) / max(entry_price, 1.0) * 100.0
+                    mfe_delta = SafeMath.safe_div(mfe - prev_mfe, entry_price, 0.0) * 100.0
+                    mae_delta = SafeMath.safe_div(mae - prev_mae, entry_price, 0.0) * 100.0
                     time_decay = -0.01 * (hold_step / 10.0)
                     reward = float(np.clip(
                         mfe_delta * 0.3 - mae_delta * 0.4 + time_decay,
@@ -3218,6 +3273,41 @@ class CTraderFixApp(fix.Application):
             return True
         direction = getattr(tracker, "direction", None)
         return direction is None or direction == 0
+
+    def _check_max_loss_all_positions(self) -> None:
+        """Fast max-loss scan across all tracked positions on every tick.
+
+        This is the PRIMARY enforcement of MAX_LOSS_PER_TRADE_USD.
+        It runs on every incremental market data update (every tick),
+        independent of ML inference or bar-close timing.
+        """
+        if self.best_bid is None or self.best_ask is None:
+            return
+        if not hasattr(self, "mfe_mae_trackers") or not self.mfe_mae_trackers:
+            return
+        if not hasattr(self, "_pending_closes"):
+            self._pending_closes = set()
+
+        mid_price = (self.best_bid + self.best_ask) / 2.0
+
+        with self._tracker_lock:
+            tracker_snapshot = list(self.mfe_mae_trackers.items())
+
+        for position_id, tracker in tracker_snapshot:
+            if position_id in self._pending_closes:
+                continue
+            # Update tracker with latest price
+            tracker.update(mid_price)
+            self._tick_max_loss_exceeded(position_id, tracker, mid_price)
+
+    def _evaluate_harvester_on_tick_throttled(self) -> None:
+        """Run full harvester ML evaluation on incremental ticks, throttled to every 2s."""
+        now = time.time()
+        last = getattr(self, "_last_harvester_tick_eval", 0.0)
+        if now - last < 2.0:
+            return
+        self._last_harvester_tick_eval = now
+        self._evaluate_harvester_on_tick()
 
     def _tick_max_loss_exceeded(self, position_id: str, tracker, mid_price: float) -> bool:
         """Check hard USD max-loss cap per trade. Force-close if exceeded.
@@ -3482,8 +3572,10 @@ class CTraderFixApp(fix.Application):
             LOG.error("[TRADE] Invalid position quantity: %s. Using 0.", e)
 
         net = long_qty - short_qty
+        # Cache cur_pos once to avoid race: FIX callbacks could change
+        # position direction between successive reads of the property.
         old_pos = self.cur_pos
-        LOG.info("[TRADE] PositionReport net=%0.6f -> cur_pos=%s (via TradeManager)", net, self.cur_pos)
+        LOG.info("[TRADE] PositionReport net=%0.6f -> cur_pos=%s (via TradeManager)", net, old_pos)
 
         avg_price = 0.0
         _active_tracker = self._get_active_tracker()
@@ -3492,7 +3584,8 @@ class CTraderFixApp(fix.Application):
 
         self.transaction_log.log_position_update(position_id=f"{self.symbol_id}_net", net_qty=net, avg_price=avg_price)
 
-        if old_pos != 0 and self.cur_pos == 0:
+        new_pos = self.cur_pos
+        if old_pos != 0 and new_pos == 0:
             self._handle_position_closed(_active_tracker)
 
     def on_collateral_report(self, msg: fix.Message):
@@ -3571,7 +3664,7 @@ class CTraderFixApp(fix.Application):
             # Staleness guard: ignore if fetched_at_unix > 30 min ago
             fetched_at = data.get("fetched_at_unix", 0)
             age_s = time.time() - fetched_at
-            if age_s > 1800:  # 30 min
+            if age_s > BALANCE_STALE_AGE_SECS:
                 LOG.debug("[ACCOUNT] Open API balance file stale (%.0fs old) — ignored", age_s)
                 return
 
@@ -3585,7 +3678,7 @@ class CTraderFixApp(fix.Application):
                 session_pnl = 0.0
             self.starting_equity = balance - session_pnl
 
-            if old_balance is None or abs(balance - (old_balance or 0)) > 0.01:
+            if old_balance is None or abs(balance - (old_balance or 0)) > BALANCE_CHANGE_THRESHOLD:
                 LOG.info(
                     "[ACCOUNT] ✓ Open API balance: %.2f  (recalibrated starting_equity=%.2f)",
                     balance,
@@ -3738,9 +3831,9 @@ class CTraderFixApp(fix.Application):
         _entry_vpin = getattr(self, "entry_vpin_z", 0.0)
         regime_adj = 0.0
         if _entry_var > self.vol_cap:
-            regime_adj -= 0.3 * min(_entry_var / (self.vol_cap + 1e-8), 2.0)
+            regime_adj -= 0.3 * min(SafeMath.safe_div(_entry_var, self.vol_cap, 0.0), 2.0)
         if self.vpin_z_threshold > 0 and _entry_vpin > self.vpin_z_threshold:
-            regime_adj -= 0.2 * min(_entry_vpin / (self.vpin_z_threshold + 1e-8), 2.0)
+            regime_adj -= 0.2 * min(SafeMath.safe_div(_entry_vpin, self.vpin_z_threshold, 0.0), 2.0)
         capture_reward = float(np.clip(shaped_rewards.get("total_reward", 0.0) + regime_adj, -2.0, 2.0))
         LOG.debug("[CLOSE_REWARD] raw=%.4f regime_adj=%.4f", shaped_rewards.get("total_reward", 0.0), regime_adj)
         next_state = getattr(getattr(self.policy, "harvester", None), "last_state", None)
@@ -3905,6 +3998,12 @@ class CTraderFixApp(fix.Application):
                 LOG.warning("[BUG_DETECTION] Restored P&L to checkpoint value: %.4f", pnl)
 
             # Save trade record
+            _trade_qty = self._get_live_qty()
+            # Convert MFE/MAE from price points to dollars (same units as pnl)
+            _mfe_dollars = summary.get("mfe", 0.0) * _trade_qty * self.contract_size
+            _mae_dollars = summary.get("mae", 0.0) * _trade_qty * self.contract_size
+            # bars_held: use live path recorder (summary doesn't include it)
+            _bars_held = self._get_live_bars_held()
             trade_record = {
                 "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
                 "ticket": summary.get("ticket", ""),
@@ -3912,16 +4011,17 @@ class CTraderFixApp(fix.Application):
                 "symbol": self.symbol,
                 "trading_mode": "paper" if self.paper_mode else "live",
                 "direction": summary.get("direction", "UNKNOWN"),
+                "quantity": _trade_qty,
                 "entry_price": entry_price,
                 "exit_price": exit_price,
                 "entry_time": self.trade_entry_time.isoformat() if self.trade_entry_time else None,
                 "exit_time": exit_time.isoformat(),
                 "pnl": pnl,
-                "mfe": summary.get("mfe", 0.0),
-                "mae": summary.get("mae", 0.0),
+                "mfe": _mfe_dollars,
+                "mae": _mae_dollars,
                 "winner_to_loser": summary.get("winner_to_loser", False),
                 "close_reason": summary.get("close_reason", ""),
-                "bars_held": summary.get("bars_held", 0),
+                "bars_held": _bars_held,
             }
             LOG.info(
                 "[TRADE_RECORD] Saving: ticket=%s pos_id=%s trade_id=%s pnl=%.4f close_reason=%s",
@@ -4065,7 +4165,7 @@ class CTraderFixApp(fix.Application):
         realized_vol = position.realized_vol if position.realized_vol > 0 else 0.01
 
         # Current capture ratio: how much of MFE are we capturing?
-        capture_ratio = unrealized_pnl / (current_mfe + 1e-8) if current_mfe > 0 else 0.0
+        capture_ratio = SafeMath.safe_div(unrealized_pnl, current_mfe, 0.0) if current_mfe > 0 else 0.0
 
         # Component 1: Capture quality reward [0, 0.4]
         # Higher is better - capturing more of the MFE
@@ -4078,14 +4178,14 @@ class CTraderFixApp(fix.Application):
         ref_price = max(position.entry_price, 1.0)
         mfe_delta = current_mfe - prev_mfe
         mfe_delta_frac = mfe_delta / ref_price          # price-pt → fractional return
-        norm_mfe_delta = mfe_delta_frac / (realized_vol + 1e-8)   # in σ units
+        norm_mfe_delta = SafeMath.safe_div(mfe_delta_frac, realized_vol, 0.0)   # in σ units
         mfe_growth = np.clip(norm_mfe_delta * 0.3, -0.3, 0.3)
 
         # Component 3: MAE penalty [-0.4, 0]
         # Penalize adverse moves
         mae_delta = current_mae - prev_mae
         mae_delta_frac = mae_delta / ref_price
-        norm_mae_delta = mae_delta_frac / (realized_vol + 1e-8)   # in σ units
+        norm_mae_delta = SafeMath.safe_div(mae_delta_frac, realized_vol, 0.0)   # in σ units
         mae_penalty = -np.clip(norm_mae_delta * 0.4, 0.0, 0.4)
 
         # Component 4: Time decay [-0.2, 0]
@@ -4102,7 +4202,7 @@ class CTraderFixApp(fix.Application):
         opportunity_cost = 0.0
         if current_mfe > 0:
             distance_from_peak = np.clip(
-                (current_mfe - unrealized_pnl) / (current_mfe + 1e-8),
+                SafeMath.safe_div(current_mfe - unrealized_pnl, current_mfe, 0.0),
                 0.0, 2.0,
             )
             opportunity_cost = -distance_from_peak * 0.3  # Max -0.6, softened by later clip
@@ -4205,7 +4305,7 @@ class CTraderFixApp(fix.Application):
         _vpin_thresh = float(getattr(self, "vpin_z_threshold", 2.5))
         toxic_penalty = 0.0
         if entry_vpin_z > _vpin_thresh * 0.75:
-            _excess = (entry_vpin_z - _vpin_thresh * 0.75) / max(_vpin_thresh, 1.0)
+            _excess = SafeMath.safe_div(entry_vpin_z - _vpin_thresh * 0.75, _vpin_thresh, 0.0)
             toxic_penalty = -0.15 * min(_excess, 2.0)  # max -0.30
 
         # Combine components
@@ -4323,6 +4423,16 @@ class CTraderFixApp(fix.Application):
         if self.trade_integration and self.trade_integration.trade_manager:
             self.trade_integration.trade_manager.check_all_position_request_timeouts()
 
+        # Auto-reset circuit breakers whose cooldown has elapsed.
+        # This MUST run every bar — not only after trade closes — otherwise
+        # tripped breakers block entries, no trades close, and the cooldown
+        # reset never fires (deadlock).
+        if self.circuit_breakers.is_any_tripped():
+            self.circuit_breakers.reset_if_cooldown_elapsed()
+            if not self.circuit_breakers.is_any_tripped():
+                LOG.info("[CIRCUIT-BREAKER] Auto-reset: all breakers cleared after cooldown")
+                self.circuit_breakers.save_state()
+
     def _obc_update_bar_metrics(self, c: float, bar: tuple) -> None:
         """Update VaR estimator and path recorders."""
         self._obc_update_var_estimator(c)
@@ -4371,7 +4481,7 @@ class CTraderFixApp(fix.Application):
             mid = (self.best_bid + self.best_ask) / 2.0
             spread = self.best_ask - self.best_bid
             if mid > 0:
-                imbalance = (self.best_bid - mid) / (spread + 1e-10)
+                imbalance = SafeMath.safe_div(self.best_bid - mid, spread, 0.0)
                 imbalance = max(-1.0, min(1.0, imbalance))
         _qfi_total = self._bid_refresh_count + self._ask_refresh_count
         _qfi = (
@@ -4486,7 +4596,7 @@ class CTraderFixApp(fix.Application):
         # Also checkpoint H4 shadow policy when M5 checkpoints
         if getattr(self, "_h4_enabled", False) and getattr(self, "policy_h4", None):
             try:
-                self.policy_h4.save_checkpoint("data/checkpoints_h4")
+                self.policy_h4.save_checkpoint(H4_CHECKPOINT_DIR)
             except Exception as e_h4:
                 LOG.warning("[CHECKPOINT] H4 auto-save failed: %s", e_h4)
 
@@ -4830,18 +4940,44 @@ class CTraderFixApp(fix.Application):
         if _already_closing:
             LOG.debug("[BAR] Tick harvester already issued close — skipping bar-level exit check")
             return 0, 0.0, True
+
+        # ── Defense-in-depth: max-loss check at bar close ────────────
+        # The primary check runs on every tick in _check_max_loss_all_positions,
+        # but if that was missed (e.g. restart), catch it here.
+        if self._obc_max_loss_force_close(price):
+            return 1, 1.0, False
+
         exit_action, exit_conf = self.policy.decide_exit(
             self.bars, current_price=price, imbalance=imbalance,
             vpin_z=vpin_zscore, depth_ratio=depth_ratio, event_features=event_features,
         )
         return exit_action, exit_conf, False
 
+    def _obc_max_loss_force_close(self, price: float) -> bool:
+        """Check max-loss cap across all tracked positions at bar close.
+
+        Returns True if any position exceeded the cap (close dispatched).
+        """
+        from src.constants import MAX_LOSS_PER_TRADE_USD  # noqa: PLC0415
+
+        if not hasattr(self, "mfe_mae_trackers") or not self.mfe_mae_trackers:
+            return False
+        if not hasattr(self, "_pending_closes"):
+            self._pending_closes = set()
+
+        with self._tracker_lock:
+            tracker_snapshot = list(self.mfe_mae_trackers.items())
+
+        for position_id, tracker in tracker_snapshot:
+            if position_id in self._pending_closes:
+                continue
+            if self._tick_max_loss_exceeded(position_id, tracker, price):
+                return True
+        return False
+
     def _obc_get_tracker_metrics(self, price: float) -> dict:
         """Collect tracker metrics for harvester logging."""
-        _active_tracker = (
-            next(iter(self.mfe_mae_trackers.values()), self.mfe_mae_tracker)
-            if self.mfe_mae_trackers else self.mfe_mae_tracker
-        )
+        _active_tracker = self._get_active_tracker()
         pos_metrics = _active_tracker.get_summary()
         entry_price = _active_tracker.entry_price or 0.0
         mfe = _active_tracker.mfe
@@ -4874,6 +5010,17 @@ class CTraderFixApp(fix.Application):
         if hasattr(self, "mfe_mae_trackers") and self.mfe_mae_trackers:
             return [k for k in self.mfe_mae_trackers if k != "default"]
         return []
+
+    @staticmethod
+    def _sanitize_for_json(obj: Any) -> Any:
+        """Replace NaN/inf floats with None so json.dump(allow_nan=False) succeeds."""
+        if isinstance(obj, dict):
+            return {k: CTraderFixApp._sanitize_for_json(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [CTraderFixApp._sanitize_for_json(v) for v in obj]
+        if isinstance(obj, float) and not math.isfinite(obj):
+            return None
+        return obj
 
     def _obc_log_harvester_decision(
         self,
@@ -4948,7 +5095,7 @@ class CTraderFixApp(fix.Application):
                 try:
                     with open(log_path, encoding="utf-8") as f:
                         log_entries = json.load(f)
-                except (json.JSONDecodeError, ValueError) as je:
+                except ValueError as je:
                     LOG.warning("[DECISION_LOG] Corrupt file — rotating: %s", je)
                     corrupt = log_path.with_suffix(".json.broken")
                     log_path.rename(corrupt)
@@ -4990,11 +5137,23 @@ class CTraderFixApp(fix.Application):
                     ),
                 },
             }
-            log_entries.append(log_entry)
+            log_entries.append(self._sanitize_for_json(log_entry))
             if len(log_entries) > MAX_LOG_ENTRIES:
                 log_entries = log_entries[-MAX_LOG_ENTRIES:]
-            with open(log_path, "w", encoding="utf-8") as f:
-                json.dump(log_entries, f, indent=2)
+            # Atomic write: temp file + rename to avoid corrupt partial writes.
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=str(log_path.parent), prefix=".decision_log_", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    json.dump(log_entries, f, indent=2, allow_nan=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, log_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+                raise
             LOG.info("[DECISION_LOG] Wrote entry for %s (total: %d)", t, len(log_entries))
         except Exception as e:
             LOG.error("[DECISION_LOG] Failed to write: %s", e, exc_info=True)
@@ -5201,8 +5360,7 @@ class CTraderFixApp(fix.Application):
 
         # Reconcile ghost hedged positions before branching.
         # Ghost positions (LONG+SHORT net=0 with stale tickets) block entry forever.
-        if has_dual and self.cur_pos == 0:
-            if self.trade_integration.reconcile_ghost_positions():
+        if has_dual and self.cur_pos == 0 and self.trade_integration.reconcile_ghost_positions():
                 # Ghost reconcile fired — start cooldown to prevent churn
                 from src.constants import GHOST_RECONCILE_COOLDOWN_BARS  # noqa: PLC0415
                 self._ghost_cooldown_remaining = GHOST_RECONCILE_COOLDOWN_BARS
@@ -5341,9 +5499,9 @@ class CTraderFixApp(fix.Application):
                     mfe = self.policy_h4.mfe
                     pnl_pct = (c - ep) / ep * self._h4_shadow_pos if ep > 0 else 0.0
                     capture_ratio = (
-                        pnl_pct / max(mfe, 1e-8) if mfe > 1e-8 else 0.0
+                        SafeMath.safe_div(pnl_pct, mfe, 0.0) if mfe > H4_MFE_EPSILON else 0.0
                     )
-                    was_wtl = bool(mfe > 1e-8 and pnl_pct < 0)
+                    was_wtl = bool(mfe > H4_MFE_EPSILON and pnl_pct < 0)
                     self.policy_h4.on_exit(c, capture_ratio, was_wtl, self._h4_entry_conf)
                     LOG.info(
                         "[H4-SHADOW] Exit @ %.2f pnl_pct=%.4f cap=%.2f wtl=%s%s",
@@ -5358,10 +5516,10 @@ class CTraderFixApp(fix.Application):
 
             # ── Periodic training (every 2 H4 bars ≈ 8 hours) ────────────
             self._h4_bars_since_training += 1
-            if self._h4_bars_since_training >= 2 and hasattr(self.policy_h4, "train_step"):
+            if self._h4_bars_since_training >= H4_TRAIN_INTERVAL_BARS and hasattr(self.policy_h4, "train_step"):
                 t_size = getattr(self.policy_h4.trigger, "buffer_size", 0)
                 h_size = getattr(self.policy_h4.harvester, "buffer_size", 0)
-                if t_size >= 32 or h_size >= 32:
+                if t_size >= H4_MIN_BUFFER_SIZE or h_size >= H4_MIN_BUFFER_SIZE:
                     try:
                         self.policy_h4.train_step()
                         LOG.debug("[H4-TRAIN] step done T=%d H=%d", t_size, h_size)
@@ -5379,7 +5537,7 @@ class CTraderFixApp(fix.Application):
             )
             if h4_steps > 0 and h4_steps % 8 == 0:
                 try:
-                    self.policy_h4.save_checkpoint("data/checkpoints_h4")
+                    self.policy_h4.save_checkpoint(H4_CHECKPOINT_DIR)
                     LOG.debug("[H4-CKPT] Saved at step %d", h4_steps)
                 except Exception as e:
                     LOG.warning("[H4-CKPT] Save error: %s", e)
@@ -5401,8 +5559,7 @@ class CTraderFixApp(fix.Application):
             stats["timeframe"] = "M240"
             out = self.hud_data_dir / f"training_stats_{self.symbol}_M240.json"
             with open(out, "w", encoding="utf-8") as f:
-                import json as _json
-                _json.dump(stats, f, indent=2)
+                json.dump(stats, f, indent=2)
         except Exception as e:
             LOG.debug("[H4-EXPORT] Stats export error: %s", e)
 
@@ -5455,13 +5612,15 @@ class CTraderFixApp(fix.Application):
     def _resolve_mid_price_and_spread(self) -> tuple[float, float]:
         """Return (mid_price, spread_bps) for execution sizing."""
         last_close = self.bars[-1][4] if self.bars else 0.0
-        if self.best_bid and self.best_ask:
-            mid_price = (float(self.best_bid) + float(self.best_ask)) / 2.0
+        with self._market_data_lock:
+            _bid, _ask = self.best_bid, self.best_ask
+        if _bid and _ask:
+            mid_price = (float(_bid) + float(_ask)) / 2.0
         else:
             mid_price = last_close
         spread_bps = 0.0
-        if self.best_bid and self.best_ask and mid_price > 0:
-            spread_bps = ((float(self.best_ask) - float(self.best_bid)) / mid_price) * 10000.0
+        if _bid and _ask and mid_price > 0:
+            spread_bps = ((float(_ask) - float(_bid)) / mid_price) * 10000.0
         return float(mid_price), float(spread_bps)
 
     def _map_execution_side(self, side: str) -> OrderSide:
@@ -5926,36 +6085,40 @@ class CTraderFixApp(fix.Application):
                     self.hud_data_dir
                     / f"paper_stats_{self.symbol}_M{self.timeframe_minutes}.json"
                 )
-                with open(_stats_path, "w", encoding="utf-8") as _f:
-                    json.dump(_paper_stats, _f, indent=2)
+                self._atomic_write_json(_stats_path, self._sanitize_for_json(_paper_stats))
             current_price = self._get_hud_current_price()
             position_data = self._build_hud_position_data(current_price)
             _pos_file = f"current_position_{self.symbol}_M{self.timeframe_minutes}.json"
-            with open(self.hud_data_dir / _pos_file, "w", encoding="utf-8") as f:
-                json.dump(position_data, f, indent=2)
+            self._atomic_write_json(self.hud_data_dir / _pos_file, self._sanitize_for_json(position_data))
             performance_snapshot = self._build_performance_snapshot(metrics)
-            with open(self.hud_data_dir / "performance_snapshot.json", "w", encoding="utf-8") as f:
-                json.dump(performance_snapshot, f, indent=2)
-            with open(self.hud_data_dir / "training_stats.json", "w", encoding="utf-8") as f:
-                json.dump(training_stats, f, indent=2)
+            self._atomic_write_json(
+                self.hud_data_dir / "performance_snapshot.json",
+                self._sanitize_for_json(performance_snapshot),
+            )
+            self._atomic_write_json(
+                self.hud_data_dir / "training_stats.json",
+                self._sanitize_for_json(training_stats),
+            )
             # Per-bot training stats — lets multi-bot HUD show the correct bot's stats
             _bot_train = self.hud_data_dir / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json"
-            with open(_bot_train, "w", encoding="utf-8") as f:
-                json.dump(training_stats, f, indent=2)
+            self._atomic_write_json(_bot_train, self._sanitize_for_json(training_stats))
             risk_metrics = self._build_hud_risk_metrics()
-            with open(self.hud_data_dir / "risk_metrics.json", "w", encoding="utf-8") as f:
-                json.dump(risk_metrics, f, indent=2)
+            self._atomic_write_json(
+                self.hud_data_dir / "risk_metrics.json",
+                self._sanitize_for_json(risk_metrics),
+            )
             # Per-bot risk metrics — correct VaR/vol/regime for the active position's symbol
             _bot_risk = self.hud_data_dir / f"risk_metrics_{self.symbol}_M{self.timeframe_minutes}.json"
-            with open(_bot_risk, "w", encoding="utf-8") as f:
-                json.dump(risk_metrics, f, indent=2)
+            self._atomic_write_json(_bot_risk, self._sanitize_for_json(risk_metrics))
         except Exception as e:
             LOG.error("[HUD] Failed to export data: %s", str(e))
 
     def _get_hud_current_price(self) -> float:
         """Resolve the current price for HUD exports."""
-        if self.best_bid and self.best_ask:
-            return (float(self.best_bid) + float(self.best_ask)) / 2.0
+        with self._market_data_lock:
+            _bid, _ask = self.best_bid, self.best_ask
+        if _bid and _ask:
+            return (float(_bid) + float(_ask)) / 2.0
         if self.bars:
             return float(self.bars[-1][4])
         return 0.0
@@ -5974,75 +6137,17 @@ class CTraderFixApp(fix.Application):
         from self.performance are intentionally NOT used here because they reset
         on every bot restart and would show zeros after a reconnect.
         """
-        import math as _math
-        from datetime import datetime as _dt
-        from datetime import timedelta as _td
 
         def _period_metrics(pts: list) -> dict:
-            if not pts:
-                return {"total_trades": 0, "win_rate": 0.0, "total_pnl": 0.0,
-                        "sharpe_ratio": 0.0, "sortino_ratio": 0.0, "max_drawdown": 0.0,
-                        "avg_win": 0.0, "avg_loss": 0.0, "profit_factor": 0.0,
-                        "expectancy": 0.0, "best_trade": 0.0, "worst_trade": 0.0,
-                        "max_consec_wins": 0, "max_consec_losses": 0}
-            pnls = [t.get("pnl", 0.0) for t in pts]
-            wins = [p for p in pnls if p > 0]
-            losses = [p for p in pnls if p < 0]
-            n = len(pnls)
-            total_pnl = sum(pnls)
-            win_rate = len(wins) / n
-            avg_win = sum(wins) / len(wins) if wins else 0.0
-            avg_loss = sum(losses) / len(losses) if losses else 0.0
-            pf = sum(wins) / abs(sum(losses)) if losses else float("inf")
-            expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
-            mean_p = total_pnl / n
-            variance = sum((p - mean_p) ** 2 for p in pnls) / n
-            std_p = _math.sqrt(variance) if variance > 0 else 0.0
-            sharpe = mean_p / std_p if std_p > 0 else 0.0
-            down_var = sum(p ** 2 for p in pnls if p < 0) / n
-            sortino = mean_p / _math.sqrt(down_var) if down_var > 0 else 0.0
-            eq = float(self.starting_equity)
-            peak = eq
-            max_dd = 0.0
-            for p in pnls:
-                eq += p
-                peak = max(peak, eq)
-                if peak > 0:
-                    max_dd = max(max_dd, (peak - eq) / peak * 100.0)
-            max_cw = max_cl = cw = cl = 0
-            for p in pnls:
-                if p > 0:
-                    cw += 1
-                    cl = 0
-                else:
-                    cl += 1
-                    cw = 0
-                max_cw = max(max_cw, cw)
-                max_cl = max(max_cl, cl)
-            return {
-                "total_trades": n, "win_rate": win_rate, "total_pnl": total_pnl,
-                "sharpe_ratio": sharpe, "sortino_ratio": sortino,
-                "max_drawdown": max_dd, "avg_win": avg_win, "avg_loss": avg_loss,
-                "profit_factor": min(pf, 99.0), "expectancy": expectancy,
-                "best_trade": max(pnls), "worst_trade": min(pnls),
-                "max_consec_wins": max_cw, "max_consec_losses": max_cl,
-            }
+            return _period_metrics_calc(pts, starting_equity=float(self.starting_equity))
 
         # Load trade log
-        trade_file = Path("data") / "trade_log.jsonl"
-        all_trades: list = []
-        try:
-            with open(trade_file, encoding="utf-8") as _f:
-                for _line in _f:
-                    _s = _line.strip()
-                    if _s:
-                        all_trades.append(json.loads(_s))
-        except Exception:
-            pass
+        trade_file = Path("data") / TRADE_LOG_FILENAME
+        all_trades = read_all_trades(trade_file)
 
-        now = _dt.now(dt.UTC)
-        cutoff_24h  = now - _td(hours=24)
-        cutoff_7d   = now - _td(days=7)
+        now = datetime.now(dt.UTC)
+        cutoff_24h  = now - timedelta(hours=24)
+        cutoff_7d   = now - timedelta(days=7)
         month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
         daily: list = []
@@ -6051,7 +6156,7 @@ class CTraderFixApp(fix.Application):
         for t in all_trades:
             raw = t.get("entry_time", "")
             try:
-                tdt = _dt.fromisoformat(raw.replace("Z", "+00:00"))
+                tdt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
                 if tdt.tzinfo is None:
                     tdt = tdt.replace(tzinfo=dt.UTC)
             except Exception:
@@ -6163,7 +6268,7 @@ class CTraderFixApp(fix.Application):
 
         trade_id = trade_record.get("trade_id", int(time.time()))
         backup_file = backup_dir / f"trade_{trade_id}_backup.json"
-        primary_file = Path("data") / "trade_log.jsonl"
+        primary_file = Path("data") / TRADE_LOG_FILENAME
 
         try:
             # First write to backup location

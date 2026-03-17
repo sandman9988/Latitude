@@ -41,6 +41,7 @@ from src.constants import (
 from src.core.ddqn_network import DDQNNetwork
 from src.persistence.learned_parameters import LearnedParametersManager
 from src.utils.experience_buffer import ExperienceBuffer
+from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)
 
@@ -62,6 +63,12 @@ Q_RUNWAY_MAX = 0.0050
 Q_RUNWAY_MAX_Q = 3.0
 FALLBACK_VOL_SCALE_QUIET: float = 0.70  # Runway scale during below-average volatility
 FALLBACK_VOL_SCALE_HOT: float = 1.50    # Runway scale during above-average volatility
+
+# ── EWMA runway calibration constants ──────────────────────────────────
+RUNWAY_CAL_N_BUCKETS: int = 5            # Q-value buckets for calibration
+RUNWAY_CAL_Q_EDGES: list[float] = [0.0, 0.6, 1.2, 1.8, 2.4, 3.0]  # Bucket boundaries
+RUNWAY_CAL_ALPHA: float = 0.15           # EWMA smoothing factor (higher = faster adaptation)
+RUNWAY_CAL_MIN_SAMPLES: int = 3          # Minimum samples before using calibrated value
 
 
 class _EconomicsGateParams(NamedTuple):
@@ -191,6 +198,14 @@ class TriggerAgent(AgentTrainingMixin):
                 env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55
             )
 
+        # ── EWMA runway calibration ──────────────────────────────────────────
+        # Tracks actual MFE outcomes per Q-value bucket so _q_to_runway()
+        # adapts from empirical data rather than a static linear mapping.
+        # Each bucket stores: (ewma_mfe, sample_count)
+        self._runway_cal_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_cal_counts: list[int] = [0] * RUNWAY_CAL_N_BUCKETS
+        self._last_entry_q: float | None = None  # Q-value at most recent entry
+
         # Log consolidated initialization
         mode_str = "TRAINING" if (self.disable_gates or self.paper_mode) else "LIVE"
         training_str = f"online_learn={enable_training}" if enable_training else "no_training"
@@ -278,7 +293,7 @@ class TriggerAgent(AgentTrainingMixin):
         # Forced entry when idle for too many bars
         if self.force_exploration and self.bars_since_trade >= self.max_bars_inactive:
             action = random.choice([1, 2])
-            LOG.info("[TRIGGER] FORCED ENTRY after %d bars flat: action=%d", self.bars_since_trade, action)
+            LOG.debug("[TRIGGER] FORCED ENTRY after %d bars flat: action=%d", self.bars_since_trade, action)
             self.bars_since_trade = 0
             self.last_action = action
             return action, 0.5, PREDICTED_RUNWAY_FALLBACK
@@ -446,7 +461,7 @@ class TriggerAgent(AgentTrainingMixin):
         return True
 
     def _calc_breakeven_prob(self, expected_gain: float, expected_loss: float, friction_cost: float) -> float:
-        return (expected_loss + friction_cost) / (expected_gain + expected_loss + 1e-9)
+        return SafeMath.safe_div(expected_loss + friction_cost, expected_gain + expected_loss, 0.0)
 
     def _economics_gate_blocked(
         self,
@@ -674,37 +689,96 @@ class TriggerAgent(AgentTrainingMixin):
 
         NOTE: This returns GROSS runway. Caller must subtract friction_cost to get NET runway.
 
-        Heuristic mapping (as percentage of entry price):
-        - Q ≤ 0: 0.0010 (0.10%, minimal runway)
-        - Q = 1: 0.0020 (0.20%, moderate runway)
-        - Q = 2: 0.0030 (0.30%, good runway)
-        - Q ≥ 3: 0.0050 (0.50%, excellent runway)
+        Uses EWMA-calibrated mapping when sufficient samples exist for the
+        Q-value bucket; otherwise falls back to the static linear heuristic.
 
         Example: For entry at $4600, 0.20% runway = $9.20 expected MFE
         """
+        # Record Q for post-trade EWMA update
+        self._last_entry_q = q_value
+
+        clamped_q = max(0.0, min(Q_RUNWAY_MAX_Q, q_value))
+
+        # Try calibrated value first
+        cal_runway = self._calibrated_runway(clamped_q)
+        if cal_runway is not None:
+            return float(np.clip(cal_runway, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
+
+        # Fallback: static linear interpolation
         if q_value <= 0:
-            return Q_RUNWAY_MIN  # 0.10% minimum
+            return Q_RUNWAY_MIN
         if q_value >= Q_RUNWAY_MAX_Q:
-            return Q_RUNWAY_MAX  # 0.50% maximum
-        # Linear interpolation: Q in [0, 3] → Runway in [0.001, 0.005]
+            return Q_RUNWAY_MAX
         return Q_RUNWAY_MIN + (q_value / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
 
-    def update_from_trade(self, actual_mfe: float, predicted_runway: float, entry_confidence: float = 0.5):
+    def _calibrated_runway(self, q_value: float) -> float | None:
+        """Return EWMA-calibrated runway for *q_value*, or None if insufficient data."""
+        bucket = self._q_bucket(q_value)
+        if self._runway_cal_counts[bucket] < RUNWAY_CAL_MIN_SAMPLES:
+            return None
+        return self._runway_cal_ewma[bucket]
+
+    @staticmethod
+    def _q_bucket(q_value: float) -> int:
+        """Map a Q-value to its calibration bucket index."""
+        for i in range(RUNWAY_CAL_N_BUCKETS):
+            if q_value < RUNWAY_CAL_Q_EDGES[i + 1]:
+                return i
+        return RUNWAY_CAL_N_BUCKETS - 1
+
+    def _update_runway_calibration(self, actual_mfe_frac: float) -> None:
+        """Update the EWMA calibration bucket with the observed MFE (fractional)."""
+        q_val = self._last_entry_q
+        if q_val is None:
+            return
+        bucket = self._q_bucket(max(0.0, min(Q_RUNWAY_MAX_Q, q_val)))
+        count = self._runway_cal_counts[bucket]
+        if count == 0:
+            self._runway_cal_ewma[bucket] = actual_mfe_frac
+        else:
+            alpha = RUNWAY_CAL_ALPHA
+            self._runway_cal_ewma[bucket] = (
+                alpha * actual_mfe_frac + (1 - alpha) * self._runway_cal_ewma[bucket]
+            )
+        self._runway_cal_counts[bucket] += 1
+        LOG.debug(
+            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe_frac=%.5f ewma=%.5f n=%d",
+            bucket, q_val, actual_mfe_frac, self._runway_cal_ewma[bucket],
+            self._runway_cal_counts[bucket],
+        )
+        self._last_entry_q = None
+
+    def update_from_trade(
+        self,
+        actual_mfe: float,
+        predicted_runway: float,
+        entry_confidence: float = 0.5,
+        entry_price: float = 0.0,
+    ):
         """
         Update trigger agent based on trade outcome.
 
         Phase 3.5: Online learning updates:
         1. Log prediction error
-        2. Update Platt calibration with actual trade outcome
-        3. Update entry confidence threshold based on prediction accuracy
-        4. Update confidence_floor via LearnedParameters
+        2. Update EWMA runway calibration with actual MFE
+        3. Update Platt calibration with actual trade outcome
+        4. Update entry confidence threshold based on prediction accuracy
+        5. Update confidence_floor via LearnedParameters
 
         Args:
-            actual_mfe: Actual MFE achieved during trade
-            predicted_runway: What trigger predicted
+            actual_mfe: Actual MFE achieved during trade (absolute price points)
+            predicted_runway: What trigger predicted (fractional)
+            entry_confidence: Calibrated probability at entry
+            entry_price: Entry price for MFE→fractional conversion
         """
         if predicted_runway <= 0:
             return
+
+        # EWMA runway calibration: convert absolute MFE to fractional
+        if entry_price > 0 and actual_mfe >= 0:
+            actual_mfe_frac = actual_mfe / entry_price
+            self._update_runway_calibration(actual_mfe_frac)
+
         utilization = self._log_runway_error(actual_mfe, predicted_runway)
         outcome = self._trade_outcome(actual_mfe, predicted_runway)
         self._update_platt_from_trade(entry_confidence, outcome)

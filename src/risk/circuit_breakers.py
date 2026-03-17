@@ -17,7 +17,7 @@ import logging
 import time as _time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
@@ -69,7 +69,7 @@ class BreakerState:
     def trip(self, reason: str, value: float, threshold: float):
         """Trip the breaker"""
         self.is_tripped = True
-        self.trip_time = datetime.now()
+        self.trip_time = datetime.now(UTC)
         self.trip_reason = reason
         self.trip_value = value
         self.threshold = threshold
@@ -91,7 +91,7 @@ class BreakerState:
         if not self.is_tripped or self.trip_time is None:
             return True
 
-        elapsed = datetime.now() - self.trip_time
+        elapsed = datetime.now(UTC) - self.trip_time
         return elapsed >= timedelta(minutes=self.cooldown_minutes)
 
 
@@ -850,7 +850,7 @@ if __name__ == "__main__":
     print(f"Breaker tripped: {cooldown_state.is_tripped}")
 
     # Simulate cooldown elapsed
-    fake_past = datetime.now() - timedelta(hours=4)
+    fake_past = datetime.now(UTC) - timedelta(hours=4)
     cooldown_state.trip_time = fake_past
 
     print(f"Cooldown can reset: {cooldown_state.can_reset()}")

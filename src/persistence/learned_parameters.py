@@ -556,6 +556,39 @@ class LearnedParametersManager:
                 "momentum": 0.9,
                 "description": "MA-diff fallback strategy base threshold (learned per instrument)",
             },
+            # ── Reward-shaping parameters (replaces hardcoded constants) ────────
+            "reward_clip_harvester": {
+                "default": 2.0,
+                "min": 0.5,
+                "max": 5.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "Capture-reward clip bound for harvester agent",
+            },
+            "reward_clip_trigger": {
+                "default": 0.5,
+                "min": 0.1,
+                "max": 2.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "PnL-reward clip bound for trigger agent",
+            },
+            "capture_baseline": {
+                "default": 0.5,
+                "min": 0.0,
+                "max": 1.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "Capture-ratio baseline subtracted before clipping (offline trainer)",
+            },
+            "capture_norm_factor": {
+                "default": 0.3,
+                "min": 0.05,
+                "max": 1.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "Capture normalisation divisor for preseed harvester reward",
+            },
         }
 
     def get_instrument(self, symbol: str, timeframe: str = "M1", broker: str = "default") -> InstrumentParameters:

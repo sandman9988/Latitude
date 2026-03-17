@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** March 14, 2026 (alignment + profitability + dead code cleanup)  
+**Last Updated:** March 17, 2026 (stats epoch, HUD enhancements, new modules)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -9,10 +9,10 @@
 
 ## 🎯 Executive Summary
 
-XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format). Dead code removed. Profitability tail-risk fixes applied.
+XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format). Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics.
 
-**Test Suite:** 2,195 passing, 0 skipped, 0 failures (~30 s)  
-**Production Lines:** ~35,700 (down from ~40,200 after dead code removal)
+**Test Suite:** 2,221 passing, 0 skipped, 0 failures (~35 s)  
+**Production Lines:** ~41,300
 
 **Trading Status:**
 - **Symbol:** XAUUSD (Gold Spot)
@@ -20,6 +20,27 @@ XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
 - **Session:** QUOTE + TRADE dual FIX sessions
+
+---
+
+## 🔧 HUD Enhancements & Stats Epoch (Mar 17, 2026)
+
+### Stats Epoch Feature (`[e]` key)
+New interactive HUD key opens the Stats Epoch Manager — a configurable cutoff date that excludes old trades from all Performance tab metrics (period rows, mode breakdown, trade quality, edge quality). Persisted atomically in `data/stats_epoch.json`.
+
+Options: set to NOW, start of today, 7d/30d ago, custom date (YYYY-MM-DD), or clear.
+
+**Why:** The "All" row in Performance was permanently dragged down by ~1,000 old losing trades ($-4,483). With epoch set, metrics reflect only recent performance while raw `trade_log.jsonl` is preserved intact.
+
+### New Modules Added
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `src/features/hmm_regime.py` | 264 | HMM-based regime detector (complement to DSP ζ) |
+| `src/persistence/trade_log_reader.py` | 127 | Centralized trade_log.jsonl reader (replaces 6+ copies) |
+| `src/utils/metrics_calculator.py` | 207 | Single-source period metrics calculation |
+
+### Mode Breakdown Issue Identified
+~999 trades in `trade_log.jsonl` have missing/empty `trading_mode` field. These fall through both "Paper" and "Live" mode breakdown filters. The stats epoch feature lets operators focus on recent correctly-tagged trades.
 
 ---
 

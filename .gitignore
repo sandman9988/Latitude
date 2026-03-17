@@ -17,6 +17,7 @@ ENV/
 *.log
 *.out
 logs/
+log/
 
 # Data & Exports
 data/

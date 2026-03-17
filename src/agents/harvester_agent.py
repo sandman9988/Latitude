@@ -229,6 +229,55 @@ class HarvesterAgent(AgentTrainingMixin):
 
         return False, None
 
+    def _check_protective_stops(  # noqa: PLR0913
+        self,
+        mfe: float,
+        mae: float,
+        entry_price: float,
+        current_price: float,
+        direction: int,
+    ) -> tuple[int, float] | None:
+        """Run profit-protection checks that override DDQN/model decisions.
+
+        These checks apply regardless of whether DDQN, torch, or fallback is
+        active.  They prevent the #1 profitability problem: winners bleeding
+        out into losers because an under-trained Q-network says HOLD.
+
+        Returns:
+            (action, confidence) if a protective stop fires, else None.
+        """
+        if entry_price is None or entry_price <= 0:
+            return None
+
+        mfe_pct = (mfe / entry_price) * PCT_SCALE
+        friction_pct = self.get_friction_cost_pct(entry_price) * PCT_SCALE
+
+        # Compute actual unrealized P&L percentage
+        if current_price > 0 and direction != 0:
+            current_profit_pct = max(
+                0.0,
+                direction * (current_price - entry_price) / entry_price * PCT_SCALE,
+            )
+        else:
+            mae_pct = (mae / entry_price) * PCT_SCALE
+            current_profit_pct = max(0.0, mfe_pct - mae_pct)
+
+        # Priority order mirrors _fallback_strategy
+        if self._check_trailing_stop(mfe_pct, current_profit_pct):
+            LOG.info("[HARVESTER] Protective trailing stop → CLOSE")
+            return 1, 0.95
+        if self._check_breakeven_stop(mfe_pct, current_profit_pct, friction_pct):
+            LOG.info("[HARVESTER] Protective breakeven stop → CLOSE")
+            return 1, 0.90
+        if self._check_capture_decay(mfe_pct, current_profit_pct):
+            LOG.info("[HARVESTER] Protective capture decay → CLOSE")
+            return 1, 0.85
+        if self._check_micro_winner_exit(mfe_pct, current_profit_pct):
+            LOG.info("[HARVESTER] Protective micro-winner exit → CLOSE")
+            return 1, 0.80
+
+        return None
+
     def _decide_with_ddqn(self, full_state: np.ndarray) -> tuple[int, float]:
         """Make decision using DDQN network.
 
@@ -392,6 +441,18 @@ class HarvesterAgent(AgentTrainingMixin):
                     ticks_held, effective_soft_stop, zeta, regime_hold_mult,
                 )
                 return 1, 0.9  # CLOSE with high confidence
+
+        # ── Protective stops: defense-in-depth overrides ───────────────
+        # These run BEFORE the DDQN/model decision so that trailing stops,
+        # breakeven stops, capture decay, and micro-winner protection work
+        # regardless of which decision path (DDQN, torch, or fallback) is
+        # active.  Without this, a poorly-trained DDQN can hold winners
+        # until they reverse into losers — the #1 profitability problem.
+        protective_exit = self._check_protective_stops(
+            mfe, mae, entry_price, current_price, direction,
+        )
+        if protective_exit is not None:
+            return protective_exit
 
         if not self.use_torch:
             # Use DDQN network if available and trained, else fallback

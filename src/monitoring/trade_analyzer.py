@@ -5,9 +5,12 @@ Analyzes CSV exports from TradeExporter with detailed metrics and visualizations
 """
 
 import argparse
+import contextlib
 import json
+import os
 import sys
-from datetime import datetime
+import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -66,7 +69,8 @@ class TradeAnalyzer:
         # Calculate running max and drawdown
         self.df["running_max"] = self.df["cumulative_pnl"].cummax()
         self.df["drawdown"] = self.df["cumulative_pnl"] - self.df["running_max"]
-        self.df["drawdown_pct"] = (self.df["drawdown"] / (self.df["running_max"] + 1e-8)) * 100
+        self.df["drawdown_pct"] = (self.df["drawdown"] / self.df["running_max"].replace(0, np.nan)) * 100
+        self.df["drawdown_pct"] = self.df["drawdown_pct"].fillna(0.0)
 
     def get_summary_stats(self) -> dict:
         """Get comprehensive summary statistics."""
@@ -124,13 +128,15 @@ class TradeAnalyzer:
     def _calc_risk_metrics(self) -> dict:
         returns = self.df["pnl"].values
         if len(returns) > 1:
-            sharpe = (returns.mean() / (returns.std() + 1e-8)) * np.sqrt(252)
+            _std = returns.std()
+            sharpe = (returns.mean() / _std) * np.sqrt(252) if _std > 0 else 0.0
         else:
             sharpe = 0
 
         downside_returns = returns[returns < 0]
         if len(downside_returns) > 1:
-            sortino = (returns.mean() / (downside_returns.std() + 1e-8)) * np.sqrt(252)
+            _down_std = downside_returns.std()
+            sortino = (returns.mean() / _down_std) * np.sqrt(252) if _down_std > 0 else 0.0
         else:
             sortino = 0
 
@@ -263,13 +269,13 @@ class TradeAnalyzer:
     def export_analysis(self, output_path: str = None) -> str:
         """Export comprehensive analysis to JSON."""
         if output_path is None:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             output_path = f"analysis_{timestamp}.json"
 
         analysis = {
             "metadata": {
                 "source_file": str(self.csv_path),
-                "analysis_date": datetime.now().isoformat(),
+                "analysis_date": datetime.now(UTC).isoformat(),
                 "total_trades": len(self.df),
             },
             "summary": self.get_summary_stats(),
@@ -284,8 +290,21 @@ class TradeAnalyzer:
         # Convert numpy/pandas types to Python native for JSON serialization
         analysis = self._convert_types(analysis)
 
-        with open(output_path, "w") as f:
-            json.dump(analysis, f, indent=2, default=str)
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(out.parent), prefix=f".{out.name}_", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(analysis, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, out)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
         return output_path
 

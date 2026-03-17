@@ -19,6 +19,7 @@ import math
 
 from src.monitoring.activity_monitor import ActivityMonitor, CounterfactualAnalyzer
 from src.persistence.learned_parameters import LearnedParametersManager
+from src.utils.safe_math import SafeMath
 
 TARGET_CAPTURE_RATIO: float = 0.7
 WTL_THRESHOLD: float = 1.0  # Relative: penalize WTL on any scale
@@ -206,7 +207,7 @@ class RewardShaper:
             return 0.0
 
         # Normalize MFE by baseline
-        mfe_normalized = mfe / max(baseline_mfe, 1.0)
+        mfe_normalized = SafeMath.safe_div(mfe, baseline_mfe, 0.0)
 
         # Calculate how much profit was given back
         giveback_ratio = (mfe - exit_pnl) / mfe
@@ -251,7 +252,7 @@ class RewardShaper:
             return 0.0
 
         # Normalize opportunity by baseline
-        opportunity_normalized = potential_mfe / max(baseline_mfe, 1.0)
+        opportunity_normalized = SafeMath.safe_div(potential_mfe, baseline_mfe, 0.0)
 
         # Penalty scaled by signal strength and weight
         penalty = -opportunity_normalized * signal_strength * opportunity_mult * OPPORTUNITY_SCALE
