@@ -248,6 +248,7 @@ class DecisionLogger:
         circuit_breakers_ok: bool = True,
         trade_id: str | None = None,
         position_id: list[str] | None = None,
+        q_spread: float = 0.0,
     ):
         """Log TriggerAgent decision with full context."""
         self.log_decision(
@@ -265,6 +266,7 @@ class DecisionLogger:
                 "predicted_runway": predicted_runway,
                 "feasibility": feasibility,
                 "circuit_breakers_ok": circuit_breakers_ok,
+                "q_spread": q_spread,
             },
             trade_id=trade_id,
             position_id=position_id,
@@ -284,6 +286,7 @@ class DecisionLogger:
         trade_id: str | None = None,
         in_position: bool = True,
         position_id: list[str] | None = None,
+        q_spread: float = 0.0,
     ):
         """Log HarvesterAgent decision with position context.
 
@@ -313,6 +316,7 @@ class DecisionLogger:
                 "mae": mae,
                 "ticks_held": ticks_held,
                 "capture_ratio": capture_ratio,
+                "q_spread": q_spread,
             },
             trade_id=trade_id,
             position_id=position_id,

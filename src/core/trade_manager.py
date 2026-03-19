@@ -907,12 +907,16 @@ class TradeManager:
             LOG.error("[PAPER] Failed to get price for paper fill: %s", e)
             return
 
-        if bid <= 0 or ask <= 0:
-            LOG.error("[PAPER] Invalid prices for paper fill: bid=%.5f ask=%.5f", bid, ask)
-            return
-
-        # BUY fills at ASK, SELL fills at BID
+        # BUY fills at ASK, SELL fills at BID — only validate the price
+        # actually needed for this side.  Previously both were required,
+        # which blocked valid SELL fills when ask had not been initialised.
         fill_price = ask if side == Side.BUY else bid
+        if fill_price <= 0:
+            LOG.error(
+                "[PAPER] Invalid fill price for %s: bid=%.5f ask=%.5f",
+                side.name, bid, ask,
+            )
+            return
 
         with self._lock:
             # Generate paper ticket ID

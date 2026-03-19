@@ -206,6 +206,7 @@ def _run_job(  # noqa: PLR0913
     epsilon_start: float = 0.4,
     epsilon_end: float = 0.05,
     symbol_digits: int = 2,
+    penalty_scale: float = 1.0,
 ) -> dict[str, Any]:
     """
     Child-process entry point.  Returns a dict (not a TrainResult) so it
@@ -257,6 +258,7 @@ def _run_job(  # noqa: PLR0913
         reward_clip_harvester=_lp("reward_clip_harvester", 2.0),
         reward_clip_trigger=_lp("reward_clip_trigger", 0.5),
         capture_baseline=_lp("capture_baseline", 0.5),
+        penalty_scale=penalty_scale,
     )
     result = trainer.run()
     return {
@@ -548,6 +550,8 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Epsilon at the start of each training epoch (default: 0.4)")
     p.add_argument("--epsilon-end",   type=float, default=0.05, metavar="E",
                    help="Epsilon floor / val epsilon (default: 0.05)")
+    p.add_argument("--penalty-scale", type=float, default=1.0, metavar="S",
+                   help="Scale factor for WTL/timing penalties (0.0=no penalty, 1.0=full, default: 1.0)")
     p.add_argument("--dry-run",       action="store_true",
                    help="Discover jobs and print plan without training")
     # Universe / paper-trading promotion
@@ -611,6 +615,7 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
                 args.epsilon_start,
                 args.epsilon_end,
                 _load_symbol_digits(j.symbol),
+                args.penalty_scale,
             ): j
             for j in jobs
         }

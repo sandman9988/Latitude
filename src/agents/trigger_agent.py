@@ -182,6 +182,8 @@ class TriggerAgent(AgentTrainingMixin):
         self.platt_a = 1.0  # Slope parameter (learned online)
         self.platt_b = 0.0  # Intercept parameter (learned online)
         self.platt_lr = 0.01  # Learning rate for Platt updates
+        self._last_raw_confidence: float = 0.5  # Pre-Platt confidence (for gradient update)
+        self._last_q_spread: float = 0.0  # Q-value advantage (best - second-best)
 
         # Phase 2: Gating strategy
         # Training mode: NO GATES - pure exploration, learn through rewards
@@ -309,6 +311,8 @@ class TriggerAgent(AgentTrainingMixin):
             q_values = self.ddqn.predict(flat_state).flatten()
             action = int(np.argmax(q_values))
             confidence = compute_confidence(q_values, self.training_steps)
+            sorted_q = np.sort(q_values)[::-1]
+            self._last_q_spread = float(sorted_q[0] - sorted_q[1]) if len(sorted_q) >= 2 else 0.0
             gross_runway = self._q_to_runway(float(q_values[action]))
             predicted_runway = max(0.0, gross_runway - friction_cost)
             LOG.debug(
@@ -425,6 +429,10 @@ class TriggerAgent(AgentTrainingMixin):
             q_values = model(t).squeeze(0).numpy()
             action = int(q_values.argmax())
             raw_prob = compute_confidence(q_values, self.training_steps)
+            self._last_raw_confidence = raw_prob
+            sorted_q = q_values.copy()
+            sorted_q.sort()
+            self._last_q_spread = float(sorted_q[-1] - sorted_q[-2]) if len(sorted_q) >= 2 else 0.0
             calibrated_prob = self._platt_calibrate(raw_prob)
 
             if self._confidence_gate_blocked(calibrated_prob):
@@ -651,35 +659,43 @@ class TriggerAgent(AgentTrainingMixin):
 
         return float(calibrated_prob)
 
-    def update_platt_params(self, predicted_prob: float, actual_outcome: float):
+    def update_platt_params(self, predicted_prob: float, actual_outcome: float, raw_prob: float | None = None):
         """
         Online update of Platt calibration parameters.
 
         Phase 2: Gradient descent on log-loss to improve calibration.
+        Uses proper gradients: dL/da = (p-y)*logit(raw), dL/db = (p-y).
 
         Args:
             predicted_prob: Predicted probability (calibrated)
             actual_outcome: Actual outcome (1.0 for success, 0.0 for failure)
+            raw_prob: Pre-Platt probability (needed for correct a-gradient)
         """
         if not self.enable_training:
             return
 
         # Clip probabilities for numerical stability
         p = np.clip(predicted_prob, 1e-9, 1 - 1e-9)
-
-        # Gradient of log-loss with respect to Platt parameters
-        # d(loss)/dA and d(loss)/dB
         error = p - actual_outcome
 
-        # Update Platt parameters (simple gradient descent)
-        self.platt_a -= self.platt_lr * error
-        self.platt_b -= self.platt_lr * error * 0.1  # Smaller update for intercept
+        # Proper Platt gradient: dL/da needs logit of the raw score
+        if raw_prob is not None:
+            raw_clipped = np.clip(raw_prob, 1e-9, 1 - 1e-9)
+            raw_logit = float(np.log(raw_clipped / (1 - raw_clipped)))
+        else:
+            raw_logit = 1.0  # Fallback: degenerate to old behaviour
+
+        # dL/da = (p - y) * logit(raw_prob)
+        self.platt_a -= self.platt_lr * error * raw_logit
+        # dL/db = (p - y)
+        self.platt_b -= self.platt_lr * error
 
         LOG.debug(
-            "[TRIGGER|PLATT] Updated: A=%.4f, B=%.4f (p_pred=%.3f, outcome=%.1f)",
+            "[TRIGGER|PLATT] Updated: A=%.4f, B=%.4f (p_pred=%.3f, raw=%.3f, outcome=%.1f)",
             self.platt_a,
             self.platt_b,
             predicted_prob,
+            raw_prob if raw_prob is not None else -1.0,
             actual_outcome,
         )
 
@@ -748,12 +764,38 @@ class TriggerAgent(AgentTrainingMixin):
         )
         self._last_entry_q = None
 
+    def get_calibration_state(self) -> dict:
+        """Export runway calibration + Platt params for checkpoint persistence."""
+        return {
+            "runway_cal_ewma": list(self._runway_cal_ewma),
+            "runway_cal_counts": list(self._runway_cal_counts),
+            "platt_a": self.platt_a,
+            "platt_b": self.platt_b,
+        }
+
+    def load_calibration_state(self, state: dict) -> bool:
+        """Restore runway calibration + Platt params from checkpoint."""
+        ewma = state.get("runway_cal_ewma")
+        counts = state.get("runway_cal_counts")
+        if ewma and counts and len(ewma) == RUNWAY_CAL_N_BUCKETS and len(counts) == RUNWAY_CAL_N_BUCKETS:
+            self._runway_cal_ewma = [float(v) for v in ewma]
+            self._runway_cal_counts = [int(c) for c in counts]
+            total = sum(self._runway_cal_counts)
+            LOG.info("[TRIGGER] Restored runway calibration: %d total samples across %d buckets",
+                     total, sum(1 for c in self._runway_cal_counts if c > 0))
+        if "platt_a" in state:
+            self.platt_a = float(state["platt_a"])
+            self.platt_b = float(state.get("platt_b", 0.0))
+            LOG.info("[TRIGGER] Restored Platt params: a=%.4f b=%.4f", self.platt_a, self.platt_b)
+        return True
+
     def update_from_trade(
         self,
         actual_mfe: float,
         predicted_runway: float,
         entry_confidence: float = 0.5,
         entry_price: float = 0.0,
+        raw_confidence: float | None = None,
     ):
         """
         Update trigger agent based on trade outcome.
@@ -770,6 +812,7 @@ class TriggerAgent(AgentTrainingMixin):
             predicted_runway: What trigger predicted (fractional)
             entry_confidence: Calibrated probability at entry
             entry_price: Entry price for MFE→fractional conversion
+            raw_confidence: Pre-Platt probability (for correct gradient)
         """
         if predicted_runway <= 0:
             return
@@ -781,7 +824,7 @@ class TriggerAgent(AgentTrainingMixin):
 
         utilization = self._log_runway_error(actual_mfe, predicted_runway)
         outcome = self._trade_outcome(actual_mfe, predicted_runway)
-        self._update_platt_from_trade(entry_confidence, outcome)
+        self._update_platt_from_trade(entry_confidence, outcome, raw_confidence=raw_confidence)
         self._update_confidence_from_trade(utilization)
 
     def _log_runway_error(self, actual_mfe: float, predicted_runway: float) -> float:
@@ -801,12 +844,12 @@ class TriggerAgent(AgentTrainingMixin):
         trade_success = actual_mfe >= (predicted_runway * 0.5)
         return 1.0 if trade_success else 0.0
 
-    def _update_platt_from_trade(self, entry_confidence: float, outcome: float) -> None:
+    def _update_platt_from_trade(self, entry_confidence: float, outcome: float, raw_confidence: float | None = None) -> None:
         """Update Platt calibration parameters from trade outcome."""
         if not (self.enable_training and hasattr(self, "platt_a")):
             return
         predicted_prob = float(entry_confidence)
-        self.update_platt_params(predicted_prob, outcome)
+        self.update_platt_params(predicted_prob, outcome, raw_prob=raw_confidence)
 
     def _update_confidence_from_trade(self, utilization: float) -> None:
         """Update confidence_floor and related parameters using utilization."""

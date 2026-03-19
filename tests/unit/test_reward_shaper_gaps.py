@@ -99,10 +99,10 @@ class TestHarvesterRewardKeyErrors:
         # Make _get_param raise KeyError for capture_multiplier
         original_get_param = shaper._get_param
 
-        def mock_get_param(name):
+        def mock_get_param(name, *args, **kwargs):
             if name == "capture_multiplier":
                 raise KeyError(name)
-            return original_get_param(name)
+            return original_get_param(name, *args, **kwargs)
 
         shaper._get_param = mock_get_param
 
@@ -115,8 +115,9 @@ class TestHarvesterRewardKeyErrors:
             bars_from_mfe_to_exit=2,
         )
 
-        # With fallback capture_mult=2.0: (80/100 - 0.7) * 2.0 = 0.2
-        assert result["capture_efficiency"] == pytest.approx(0.2)
+        # With fallback capture_mult=2.0, magnitude_scale=min(100/10,2)=2.0:
+        # (80/100 - 0.7) * 2.0 * 2.0 = 0.4
+        assert result["capture_efficiency"] == pytest.approx(0.4)
         assert "harvester_reward" in result
 
     def test_wtl_multiplier_keyerror_fallback(self, shaper):
@@ -124,10 +125,10 @@ class TestHarvesterRewardKeyErrors:
         should use WTL_MULT_DEFAULT=3.0."""
         original_get_param = shaper._get_param
 
-        def mock_get_param(name):
+        def mock_get_param(name, *args, **kwargs):
             if name == "wtl_multiplier":
                 raise KeyError(name)
-            return original_get_param(name)
+            return original_get_param(name, *args, **kwargs)
 
         shaper._get_param = mock_get_param
 
@@ -146,7 +147,7 @@ class TestHarvesterRewardKeyErrors:
     def test_both_fallbacks_together(self, shaper):
         """Both capture_multiplier and wtl_multiplier KeyError at once."""
 
-        def mock_get_param(name):
+        def mock_get_param(name, *args, **kwargs):
             raise KeyError(name)
 
         shaper._get_param = mock_get_param
@@ -154,18 +155,18 @@ class TestHarvesterRewardKeyErrors:
         result = shaper.calculate_harvester_reward(
             exit_pnl=50.0,
             mfe=100.0,
-            mae=20.0,
+            mae=50.0,
             was_wtl=True,
             bars_held=20,
             bars_from_mfe_to_exit=5,
         )
 
-        # capture: (50/100 - 0.7) * 2.0 = -0.4
-        assert result["capture_efficiency"] == pytest.approx(-0.4)
+        # capture: (50/100 - 0.7) * 2.0 * 2.0 = -0.8 (magnitude_scale=2.0, baseline fallback=10.0)
+        assert result["capture_efficiency"] == pytest.approx(-0.8)
         # wtl: -3.0 * clamp(1 - 50/100, 0.5, 2.0) = -3.0 * 0.5 = -1.5
         assert result["wtl_penalty"] == pytest.approx(-1.5)
-        # timing: -1.5 * (5/20) = -0.375
-        assert result["timing_penalty"] == pytest.approx(-0.375)
+        # timing: mae=50/mfe=100=0.5 > 0.3 → -1.0 * (0.5 - 0.3) = -0.2
+        assert result["timing_penalty"] == pytest.approx(-0.2)
 
 
 # ---------------------------------------------------------------------------
@@ -246,8 +247,8 @@ class TestHarvesterRewardQuality:
         )
         assert result["quality"] == "POOR"
 
-    def test_zero_mfe_neutral(self, shaper):
-        """mfe=0 → capture_ratio=0, r_capture=0."""
+    def test_zero_mfe_penalty(self, shaper):
+        """mfe=0 → r_capture=ZERO_MFE_PENALTY (not neutral)."""
         result = shaper.calculate_harvester_reward(
             exit_pnl=0.0,
             mfe=0.0,
@@ -255,22 +256,22 @@ class TestHarvesterRewardQuality:
             was_wtl=False,
             bars_held=10,
         )
-        assert result["capture_efficiency"] == pytest.approx(0.0)
+        assert result["capture_efficiency"] < 0
         assert result["capture_ratio"] == pytest.approx(0.0)
 
     def test_timing_penalty_applied(self, shaper):
-        """bars_from_mfe > 0 → timing penalty calculated."""
+        """High MAE relative to MFE → undeveloped-MFE penalty."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
             exit_pnl=80.0,
             mfe=100.0,
-            mae=5.0,
+            mae=60.0,
             was_wtl=False,
             bars_held=20,
             bars_from_mfe_to_exit=10,
         )
-        # timing = -1.5 * (10/20) = -0.75
-        assert result["timing_penalty"] == pytest.approx(-0.75)
+        # drawdown_ratio = 60/100 = 0.6 > 0.3 → penalty = -1.0 * (0.6-0.3) = -0.3
+        assert result["timing_penalty"] == pytest.approx(-0.3)
 
     def test_timing_zero_when_no_bars(self, shaper):
         """bars_held=0 or bars_from_mfe=0 → no timing penalty."""

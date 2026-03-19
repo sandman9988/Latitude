@@ -517,7 +517,8 @@ class DualPolicy:
             self.ticks_held,
         )
 
-    def on_exit(self, exit_price: float, capture_ratio: float, was_wtl: bool, entry_confidence: float = 0.5):
+    def on_exit(self, exit_price: float, capture_ratio: float, was_wtl: bool,
+                entry_confidence: float = 0.5, raw_confidence: float | None = None):
         """
         Called when position is closed.
 
@@ -526,6 +527,7 @@ class DualPolicy:
             capture_ratio: exit_pnl / MFE
             was_wtl: Was this a winner-to-loser trade?
             entry_confidence: Calibrated trigger confidence recorded at entry (for Platt update)
+            raw_confidence: Pre-Platt probability (for correct Platt gradient)
         """
         # Store MFE percentage for harvester's SL learning
         if self.entry_price > 0:
@@ -537,6 +539,7 @@ class DualPolicy:
             predicted_runway=self.predicted_runway,
             entry_confidence=entry_confidence,
             entry_price=self.entry_price,
+            raw_confidence=raw_confidence,
         )
         self.harvester.update_from_trade(capture_ratio=capture_ratio, was_wtl=was_wtl)
 
@@ -964,7 +967,7 @@ class DualPolicy:
         if self.harvester.buffer is not None and not self.harvester.buffer.save(f"{checkpoint_dir}/harvester_buffer"):
             success = False
 
-        # 3. Save training metadata (epsilon, steps, etc.)
+        # 3. Save training metadata (epsilon, steps, calibration, etc.)
         metadata = {
             "trigger_training_steps": self.trigger.training_steps,
             "trigger_epsilon": self.trigger.epsilon,
@@ -973,6 +976,9 @@ class DualPolicy:
             "trigger_platt_a": getattr(self.trigger, "platt_a", 1.0),
             "trigger_platt_b": getattr(self.trigger, "platt_b", 0.0),
         }
+        # Persist runway calibration buckets (survive restarts)
+        if hasattr(self.trigger, "get_calibration_state"):
+            metadata["trigger_calibration"] = self.trigger.get_calibration_state()
         try:
             from src.utils.safe_utils import save_json_atomic  # noqa: PLC0415
 
@@ -1057,6 +1063,10 @@ class DualPolicy:
             if hasattr(self.trigger, "platt_a"):
                 self.trigger.platt_a = metadata.get("trigger_platt_a", 1.0)
                 self.trigger.platt_b = metadata.get("trigger_platt_b", 0.0)
+            # Restore runway calibration buckets
+            cal_state = metadata.get("trigger_calibration")
+            if cal_state and hasattr(self.trigger, "load_calibration_state"):
+                self.trigger.load_calibration_state(cal_state)
             LOG.info("[CHECKPOINT] Restored metadata: %s", metadata)
             return True
         except Exception as e:

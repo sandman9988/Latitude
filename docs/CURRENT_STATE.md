@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** March 17, 2026 (stats epoch, HUD enhancements, new modules)  
+**Last Updated:** March 19, 2026 (defense-in-depth audit, paper fill fix, circuit breaker reset, offline trainer alignment)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -9,7 +9,7 @@
 
 ## 🎯 Executive Summary
 
-XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format). Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics.
+XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format, same RewardShaper). Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics. Defense-in-depth audit complete — max-loss enforcement hardened, paper fill bug fixed, circuit breaker reset fixed.
 
 **Test Suite:** 2,221 passing, 0 skipped, 0 failures (~35 s)  
 **Production Lines:** ~41,300
@@ -20,6 +20,108 @@ XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
 - **Session:** QUOTE + TRADE dual FIX sessions
+
+---
+
+## �️ Defense-in-Depth Audit & Critical Fixes (Mar 19, 2026)
+
+Comprehensive safety audit of all critical financial code paths. Identified ~15 issues across criticality levels, implemented fixes for the 6 most critical ones.
+
+### FIX-DID1 — Max-loss skipped pending-close positions (CRITICAL)
+`_check_max_loss_all_positions()` and `_obc_max_loss_force_close()` had `if position_id in self._pending_closes: continue` — positions with a pending close attempt were **completely exempt from max-loss checks**. With the 120s staleness timeout, a position could bleed $100+ unchecked.
+
+**Fix:** Removed the skip. Max-loss now fires on every tick for ALL positions regardless of pending-close status. `_tick_max_loss_exceeded()` rewritten with smart rate-limiting: always evaluates loss, returns True if exceeded, but only submits close order if not already in `_pending_closes` (avoids order spam).
+
+### FIX-DID2 — Bar-close defense ran after pending-close bypass (CRITICAL)
+`_obc_get_exit_action()` checked pending-close early return BEFORE the max-loss bar-close check. If a position was pending-close, bar-close max-loss enforcement was entirely skipped.
+
+**Fix:** Moved max-loss bar-close check to run BEFORE pending-close early return.
+
+### FIX-DID3 — Harvester ML exception left position unprotected (HIGH)
+When the harvester ML model threw an exception (e.g., tensor shape mismatch after weight reload), the `except` handler logged but took no action — leaving the position completely unprotected until the next tick.
+
+**Fix:** Exception handler now escalates to `self._tick_max_loss_exceeded()` as fallback. If position is over max-loss, it gets closed even when ML fails.
+
+### FIX-DID4 — Pending-close staleness timeout too long (MEDIUM)
+Staleness sweep for `_pending_closes` was 120 seconds. A stuck paper fill attempt blocked all close attempts for 2 minutes.
+
+**Fix:** Reduced to 30 seconds. Added `_pending_close_times` dict for precise per-entry tracking. Timestamp recorded in `_try_close_tracker_position()`, cleaned in `trade_manager_integration.py` on successful close.
+
+### Paper Fill Price Validation Bug (CRITICAL — fixed Mar 18)
+`_simulate_paper_fill()` in `trade_manager.py` line ~909 checked `if bid <= 0 or ask <= 0:` — this rejected SELL fills when ask=0.0 (uninitialised) even though SELL only needs bid price. Combined with `_pending_closes` keeping the position_id permanently, this blocked ALL future close attempts for that position.
+
+**Fix:** Only validate the price needed for the fill side: `fill_price = ask if side == Side.BUY else bid; if fill_price <= 0:`
+
+### Circuit Breaker Reset Bug (HIGH — fixed Mar 19)
+`reset_all()` in `CircuitBreakerManager` only cleared `BreakerState` flags (`is_tripped`, `trip_time`, etc.) but NOT underlying data (return deques, consecutive_losses counter, current_drawdown). Drawdown breaker re-tripped on every tick immediately after reset.
+
+**Fix:** `reset_all()` now clears all data windows: empties return deques, zeros consecutive losses, resets drawdown peak to current equity, resets size_multiplier to 1.0.
+
+**Files Modified:** `ctrader_ddqn_paper.py` (6 locations), `trade_manager.py`, `trade_manager_integration.py`, `circuit_breakers.py`  
+**All 2,221 tests passing.**
+
+---
+
+## 🔧 Offline Trainer RewardShaper Integration & Retraining (Mar 18, 2026)
+
+### Problem
+Offline trainer used primitive inline rewards (`+1.0` for win, `-1.0` for loss, `-0.5 × bars_held`) instead of the canonical `RewardShaper`. None of the following were applied during offline training:
+- WTL penalty (winner-to-loser detection)
+- MAE/MFE timing (result-based drawdown ratio)
+- Session quality multiplier (London/NY overlap)
+- Zero-MFE penalty (-0.3)
+- Magnitude scaling (MFE-proportional capture reward)
+
+### Fix
+Wired `RewardShaper` into `_Simulator` class in `offline_trainer.py`:
+- Added `_compute_trigger_reward()` method that calls `shape_reward()` with proper MAE/MFE/vol context
+- Added `_rs_volatility()` for rolling realized vol estimate from bar closes
+- Captures `_predicted_runway` from trigger's last decision for reward context
+- Added `penalty_scale` parameter throughout the stack: `_Simulator.__init__`, `OfflineTrainer.__init__`, `_run_job()`, CLI parser (`--penalty-scale`), `_execute_pool()`
+
+### Training Results
+
+| Run | Type | ZΩ | Trades | Steps | Duration |
+|-----|------|----|--------|-------|----------|
+| Mar 17 (old rewards) | baseline | 1.0096 | 12,573 | 92,547 | ~112 min |
+| Mar 18 warm-start | 1 epoch | 0.9662 | 3,990 | 30,849 | ~40 min |
+| Mar 18 fresh | 3 epochs | 0.8480 | 12,148 | 92,547 | ~109 min |
+| Mar 18 fresh+penalty | 5 epochs, ps=0.5 | 0.8669 | 21,089 | 154,245 | ~182 min |
+
+ZΩ still below 1.0 — stricter reward shaping has exposed marginal trades. Further retraining may be needed, but operational bug fixes (paper fill, max-loss bypass) likely have more impact on live performance.
+
+**Files Modified:** `offline_trainer.py`, `train_offline.py`  
+**All 2,221 tests passing.**
+
+---
+
+## �🔧 Result-Based Reward Shaping & Path Geometry Fixes (Mar 18, 2026)
+
+### Reward Shaping Overhaul — Bar-Based → Result-Based
+Bar-based timing penalties don't scale across timeframes (M5 → H1 → H4). Replaced with result-based metrics that are timeframe-agnostic.
+
+| Change | Before | After |
+|--------|--------|-------|
+| **Timing penalty** | `-1.5 × (bars_from_mfe / bars_held)` | MAE/MFE drawdown ratio: fires when `mae/mfe > 0.3`, penalty = `-1.0 × (ratio - 0.3)` |
+| **Zero-MFE** | Neutral (`r_capture = 0.0`) | Penalty (`r_capture = -0.3`) — zero MFE means the entry was poor |
+| **Magnitude scaling** | Flat reward regardless of MFE size | `min(mfe / baseline_mfe, 2.0)` with floor 0.3 — bigger MFE = bigger reward |
+| **Session quality** | Not considered | London/NY overlap × 1.3, London/NY solo × 1.15, off-peak × 0.85 |
+| **Harvester reward path** | Used generic `total_reward` | Wired specialized `calculate_harvester_reward()` with full params (mae, exit_time) |
+
+### Counterfactual Direction Bug Fix
+`activity_monitor.py`: `optimal_pnl = direction * mfe` → `optimal_pnl = abs(mfe)`. MFE is already direction-agnostic; the old code returned negative optimal PnL for shorts, making the counterfactual reward backwards.
+
+### Path Geometry Double-Update Bug Fix (HIGH)
+`ctrader_ddqn_paper.py` called `path_geometry.update()` both in `_get_path_geometry_snapshot()` (HUD refresh) and in `DualPolicy.decide_entry()`. This corrupted jerk (double application per bar). **Fix:** HUD snapshot now reads cached `path_geometry.last` instead of calling `update()`.
+
+### First-Call Jerk Init Bug Fix
+`path_geometry.py`: On first call, `_prev_gamma=0.0` produced bogus jerk. Added `_initialized` guard — jerk returns 0.0 on first call.
+
+### Decision Log Sort Order
+Decision Log tab (HUD tab 6) now displays newest entries first.
+
+**Files Modified:** `reward_shaper.py`, `activity_monitor.py`, `ctrader_ddqn_paper.py`, `path_geometry.py`, `hud_tabbed.py`, + 3 test files  
+**All 2,221 tests passing.**
 
 ---
 
@@ -308,6 +410,46 @@ MAX_BARS_INACTIVE=10
 DDQN_ONLINE_LEARNING=1
 ```
 
+---
+
+## 🗺️ Paper → Live Roadmap
+
+**Current phase:** Paper trading — focus on reliable profitability before going live.
+
+### Architecture readiness for side-by-side paper + live
+
+The architecture supports running paper and live instances simultaneously with targeted changes. This is the plan for when paper trading is reliably profitable.
+
+| Component | Ready? | What's needed |
+|---|---|---|
+| FIX config paths | ✅ Yes | `CTRADER_CFG_QUOTE` / `CTRADER_CFG_TRADE` env vars already configurable |
+| FIX credentials | ✅ Yes | Per-env `CTRADER_USERNAME` / `CTRADER_PASSWORD_*` |
+| Checkpoint dir | ✅ Yes | `save_checkpoint(checkpoint_dir=...)` already parameterized |
+| DDQN weight files | ✅ Yes | `save_weights()` / `load_weights()` accept any path |
+| `data/` directory | ❌ Hardcoded | `hud_data_dir = Path("data")` — needs `BOT_DATA_DIR` env var |
+| Learned params path | ⚠️ Partial | Constructor accepts path, but bot doesn't plumb it through |
+| Trade log write path | ❌ Hardcoded | Filename constant in bot, `hud_data_dir` hardcoded |
+| FIX `SenderCompID` | ❌ Shared | Live needs its own cTrader account + separate `.cfg` files |
+| `run_universe.py` | ⚠️ Multi-instrument only | Needs extension for paper+live of same instrument |
+
+### Champion/Challenger weight promotion (weekend workflow)
+
+1. Friday market close → both bots stop
+2. Validation gate: paper Sharpe > live Sharpe over trailing N trades, minimum trade count, no circuit breaker trips
+3. If paper passes → copy `.pt` weights from paper checkpoint dir to live checkpoint dir
+4. Sunday → both bots restart
+
+### Implementation plan (when ready)
+
+| # | Change | Effort |
+|---|---|---|
+| 1 | Parameterize `hud_data_dir` via `BOT_DATA_DIR` env var | Small |
+| 2 | Mode-suffix trade log and decision log filenames | Small |
+| 3 | Plumb `LearnedParametersManager` path through bot constructor | Trivial |
+| 4 | Create `config/live_quote.cfg` + `config/live_trade.cfg` templates | Small |
+| 5 | `scripts/promote_weights.py` — validation + atomic copy | Medium |
+| 6 | Extend `run_universe.py` for paper+live of same instrument | Medium |
+
 ### Expected Log Output (Next Restart)
 ```
 [HARVESTER] Exit plan: TP=0.85% SL=0.12% soft=200 bars hard=400 bars 
@@ -394,11 +536,19 @@ $ ls -lh logs/ctrader/ | tail -3
 - **Impact:** 1 of 7 base features always zero; model can still learn around it
 - **Action:** Check FIX config for L2 data subscription
 
-### 2. Harvester Q-value Convergence (Low Priority)
+### 2. Offline Training ZΩ < 1.0 (Medium Priority)
+- Best ZΩ = 0.8669 with penalty_scale=0.5. Stricter rewards expose marginal trades.
+- **Action:** Consider further retraining with penalty_scale=0.3 or more epochs. Operational bug fixes may improve live performance more than weight tuning.
+
+### 3. Mode Breakdown Missing Trades (Medium Priority)
+- ~999 trades in `trade_log.jsonl` have missing/empty `trading_mode` field
+- **Impact:** Not shown in mode breakdown; stats epoch feature lets operators focus on recent correctly-tagged trades
+
+### 4. Harvester Q-value Convergence (Low Priority)
 - Monitor `ticks_held` trending in HUD Training tab
 - **Action:** Observation only; track across sessions
 
-### 3. `data/decision_log.json` Non-Atomic (Low Priority)
+### 5. `data/decision_log.json` Non-Atomic (Low Priority)
 - Secondary bar-close log written with `open(path, "w")` rather than atomic persistence
 - **Impact:** Cosmetic only; primary audit log (`logs/audit/decisions.jsonl`) is append-only and safe
 

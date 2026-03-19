@@ -306,7 +306,9 @@ class CounterfactualAnalyzer:
         actual_pnl = direction * (exit_price - entry_price)
 
         # Calculate optimal profit (if exited at MFE)
-        optimal_pnl = direction * mfe
+        # MFE is already direction-agnostic (always positive when favorable),
+        # so use abs() — do NOT multiply by direction for shorts.
+        optimal_pnl = abs(mfe)
 
         # Missed opportunity
         missed_pnl = optimal_pnl - actual_pnl

@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — cTrader DDQN Trading Bot
 
-> Last updated: 2026-03-17
+> Last updated: 2026-03-19
 > Read MASTER_HANDBOOK.md and docs/CURRENT_STATE.md before making structural changes.
 
 ---
@@ -20,28 +20,28 @@ A **Trigger agent** (entry specialist) and **Harvester agent** (exit specialist)
 
 ## Key source files
 
-| File                                 | Purpose                                                             |
-| ------------------------------------ | ------------------------------------------------------------------- |
-| `src/core/ctrader_ddqn_paper.py`     | Main bot orchestrator (6 554 lines)                                 |
-| `src/agents/trigger_agent.py`        | Entry DDQN + fallback strategy (931 lines)                          |
-| `src/agents/harvester_agent.py`      | Exit DDQN + min-hold guard (972 lines)                              |
-| `src/agents/dual_policy.py`          | Orchestrates both agents; feasibility × ζ gate (1 190 lines)        |
-| `src/core/ddqn_network.py`           | Conv1dQNet → temporal_pool_size param (396 lines)                   |
-| `src/core/reward_shaper.py`          | 6-dim asymmetric rewards (864 lines)                                |
-| `src/utils/experience_buffer.py`     | PER + IS weights (raw-priority IS, post-loop update)                |
-| `src/utils/metrics_calculator.py`    | Single-source period metrics (Sharpe, Sortino, PF, MaxDD)           |
-| `src/features/regime_detector.py`    | DSP pipeline → damping ratio ζ                                      |
-| `src/features/hmm_regime.py`         | HMM-based regime detector (264 lines)                               |
-| `src/risk/risk_manager.py`           | VaR-based sizing; payoff-ratio budget adaptation (1 521 lines)      |
-| `src/risk/circuit_breakers.py`       | Sortino, Kurtosis, VPIN breakers (870 lines)                        |
-| `src/core/broker_execution_model.py` | Asymmetric slippage model (440 lines)                               |
-| `src/persistence/bot_persistence.py` | Atomic + journaled state persistence                                |
-| `src/persistence/trade_log_reader.py`| Centralized trade_log.jsonl reader (127 lines)                      |
-| `src/monitoring/hud_tabbed.py`       | 7-tab curses HUD (4 090 lines)                                      |
-| `src/monitoring/audit_logger.py`     | `DecisionLogger` → `logs/audit/decisions.jsonl`                     |
-| `src/training/offline_trainer.py`    | Walk-forward DDQN training on historical bars (721 lines)           |
-| `src/risk/path_geometry.py`          | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
-| `src/features/event_time_features.py`| Session/rollover/week event features (6 broadcast dims)             |
+| File                                  | Purpose                                                                 |
+| ------------------------------------- | ----------------------------------------------------------------------- |
+| `src/core/ctrader_ddqn_paper.py`      | Main bot orchestrator (6 554 lines)                                     |
+| `src/agents/trigger_agent.py`         | Entry DDQN + fallback strategy (931 lines)                              |
+| `src/agents/harvester_agent.py`       | Exit DDQN + min-hold guard (972 lines)                                  |
+| `src/agents/dual_policy.py`           | Orchestrates both agents; feasibility × ζ gate (1 190 lines)            |
+| `src/core/ddqn_network.py`            | Conv1dQNet → temporal_pool_size param (396 lines)                       |
+| `src/core/reward_shaper.py`           | 6-dim asymmetric rewards; result-based timing (890 lines)               |
+| `src/utils/experience_buffer.py`      | PER + IS weights (raw-priority IS, post-loop update)                    |
+| `src/utils/metrics_calculator.py`     | Single-source period metrics (Sharpe, Sortino, PF, MaxDD)               |
+| `src/features/regime_detector.py`     | DSP pipeline → damping ratio ζ                                          |
+| `src/features/hmm_regime.py`          | HMM-based regime detector (264 lines)                                   |
+| `src/risk/risk_manager.py`            | VaR-based sizing; payoff-ratio budget adaptation (1 521 lines)          |
+| `src/risk/circuit_breakers.py`        | Sortino, Kurtosis, VPIN breakers (870 lines)                            |
+| `src/core/broker_execution_model.py`  | Asymmetric slippage model (440 lines)                                   |
+| `src/persistence/bot_persistence.py`  | Atomic + journaled state persistence                                    |
+| `src/persistence/trade_log_reader.py` | Centralized trade_log.jsonl reader (127 lines)                          |
+| `src/monitoring/hud_tabbed.py`        | 7-tab curses HUD (4 090 lines)                                          |
+| `src/monitoring/audit_logger.py`      | `DecisionLogger` → `logs/audit/decisions.jsonl`                         |
+| `src/training/offline_trainer.py`     | Walk-forward DDQN training on historical bars (721 lines)               |
+| `src/risk/path_geometry.py`           | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
+| `src/features/event_time_features.py` | Session/rollover/week event features (6 broadcast dims)                 |
 
 ---
 
@@ -49,13 +49,13 @@ A **Trigger agent** (entry specialist) and **Harvester agent** (exit specialist)
 
 All three modes now use identical feature dimensions:
 
-| Group    | Count | Features                                                     |
-| -------- | ----- | ------------------------------------------------------------ |
-| Base     | 7     | ret1, ret5, ma_diff, vol, imbalance, vpin_z, depth_ratio     |
-| Geometry | 5     | efficiency, gamma, jerk, runway, feasibility (PathGeometry)   |
-| Event    | 6     | london/ny/tokyo_active, overlap, rollover_proximity, week_progress |
-| **Trigger total** | **18** | base + geometry + event                              |
-| **Harvester total** | **21** | trigger features + MFE + MAE + bars_held           |
+| Group               | Count  | Features                                                           |
+| ------------------- | ------ | ------------------------------------------------------------------ |
+| Base                | 7      | ret1, ret5, ma_diff, vol, imbalance, vpin_z, depth_ratio           |
+| Geometry            | 5      | efficiency, gamma, jerk, runway, feasibility (PathGeometry)        |
+| Event               | 6      | london/ny/tokyo_active, overlap, rollover_proximity, week_progress |
+| **Trigger total**   | **18** | base + geometry + event                                            |
+| **Harvester total** | **21** | trigger features + MFE + MAE + bars_held                           |
 
 Offline trainer extracts event features from bar timestamps; geometry from bar closes + realized vol.
 
@@ -99,21 +99,21 @@ Load via `ddqn_network.load_weights()` which handles both `.pt` and legacy `.npz
 | 3   | Training      | offline jobs, per-agent steps/loss/reward with trend arrows          |
 | 4   | Risk          | VaR, circuit breakers, regime ζ, reward weights, path geometry       |
 | 5   | Market        | spread, L2 ladder, VPIN-z, imbalance, signal synthesis               |
-| 6   | Decision Log  | `MM-DD HH:MM` timestamps, TrdID column, session-break separators    |
-| 7   | Trade History | paginated list with mode badge (P/L), drill-down detail             |
+| 6   | Decision Log  | `MM-DD HH:MM` timestamps, TrdID column, session-break separators     |
+| 7   | Trade History | paginated list with mode badge (P/L), drill-down detail              |
 
 ## HUD keyboard shortcuts
 
-| Key       | Action                                                     |
-| --------- | ---------------------------------------------------------- |
-| `1`-`7`   | Switch to tab                                              |
-| `Tab`     | Cycle forward; `Shift+Tab` backward                       |
-| `s`       | Select symbol/timeframe preset                             |
-| `r`       | Review & reset tripped circuit breakers                    |
-| `e`       | Set/clear stats epoch (exclude old trades from metrics)    |
-| `h`       | Help screen                                                |
-| `Alt+K`   | Emergency kill switch (close all + halt)                   |
-| `q`       | Quit HUD (bot keeps running)                               |
+| Key     | Action                                                  |
+| ------- | ------------------------------------------------------- |
+| `1`-`7` | Switch to tab                                           |
+| `Tab`   | Cycle forward; `Shift+Tab` backward                     |
+| `s`     | Select symbol/timeframe preset                          |
+| `r`     | Review & reset tripped circuit breakers                 |
+| `e`     | Set/clear stats epoch (exclude old trades from metrics) |
+| `h`     | Help screen                                             |
+| `Alt+K` | Emergency kill switch (close all + halt)                |
+| `q`     | Quit HUD (bot keeps running)                            |
 
 ### Stats epoch (`[e]` key)
 
@@ -142,13 +142,19 @@ Configurable cutoff date stored in `data/stats_epoch.json`. Trades before the ep
 
 ```python
 # Index  Name              Direction
-#   0    capture           higher better (capture ratio vs MFE)
+#   0    capture           higher better (capture ratio vs MFE, magnitude-scaled)
 #   1    wtl               negative (winner-to-loser penalty)
 #   2    opportunity       negative (missed MFE opportunity cost)
 #   3    activity          positive (exploration bonus when stagnant)
-#   4    counterfactual    signed  (penalty for early exits vs optimal)
+#   4    counterfactual    signed  (penalty for early exits vs optimal; uses abs(mfe))
 #   5    ensemble          positive (epistemic uncertainty bonus)
 ```
+
+Timing penalty is **result-based** (MAE/MFE drawdown ratio), NOT bar-based. This scales across timeframes (M5, H1, H4).
+Zero-MFE entries receive a penalty (-0.3), not neutral.
+Capture reward is magnitude-scaled: `min(mfe / baseline_mfe, 2.0)` with floor 0.3.
+Session quality multiplier: London/NY overlap ×1.3, solo session ×1.15, off-peak ×0.85.
+Harvester gets specialized reward via `calculate_harvester_reward()` with mae + exit_time params.
 
 Any change to reward dimensions **must** update: `reward_shaper.py`, `ddqn_network.py` (input size), `trigger_agent.py`, `harvester_agent.py`, `dual_policy.py` — all must agree on exactly 6.
 
@@ -168,11 +174,11 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 
 ---
 
-## Current open items (as of 2026-03-17)
+## Current open items (as of 2026-03-19)
 
 | Item                                | Priority | Notes                                                               |
 | ----------------------------------- | -------- | ------------------------------------------------------------------- |
-| Re-run offline training             | HIGH     | Weights must be retrained with 18-feature pipeline                  |
+| Offline training ZΩ < 1.0           | HIGH     | Best ZΩ=0.867 with penalty_scale=0.5; may need more epochs or ps=0.3 |
 | L2/imbalance feed                   | MEDIUM   | `imbalance` always 0.0; check FIX MarketDataRequest MDEntryType=0/1 |
 | Mode breakdown missing trades       | MEDIUM   | ~999 trades have missing/empty `trading_mode` field; not shown      |
 | Harvester Q-value convergence       | LOW      | Monitor `ticks_held` trending up in HUD Training tab                |
@@ -189,6 +195,20 @@ These were removed as dead code on Mar 13, 2026. Do not recreate or reference th
 
 ---
 
+## Paper → Live roadmap
+
+**Current phase:** Paper trading only — focus on reliable profitability first.
+
+When paper is profitable, the plan is to run paper (challenger) + live (champion) side-by-side with weekend weight promotion. Architecture is ~80% ready:
+
+**Already configurable:** FIX config paths (env vars), credentials (env vars), checkpoint dir (parameter), DDQN weight paths (any path accepted).
+
+**Needs implementation:** Parameterize `hud_data_dir` via `BOT_DATA_DIR` env var, mode-suffix trade/decision logs, plumb `LearnedParametersManager` path, create live FIX configs with separate `SenderCompID`, `scripts/promote_weights.py` with validation gate (paper Sharpe > live), extend `run_universe.py` for paper+live of same instrument.
+
+See `docs/CURRENT_STATE.md` § "Paper → Live Roadmap" for full readiness matrix and implementation plan.
+
+---
+
 ## What NOT to do
 
 - Never hardcode parameters — use `learned_parameters.py` with soft bounds
@@ -197,3 +217,5 @@ These were removed as dead code on Mar 13, 2026. Do not recreate or reference th
 - Never truncate `logs/audit/decisions.jsonl` — it is append-only
 - Do not change reward dimensions without updating all 5 files in the reward pipeline
 - Do not add `LOG.info()` for per-bar diagnostics — use `LOG.debug()`
+- Do not use bar-based timing penalties in rewards — use result-based (MAE/MFE ratio); bar counts don't scale across timeframes
+- Do not call `path_geometry.update()` from HUD or snapshot code — read `.last` to avoid double-update corruption

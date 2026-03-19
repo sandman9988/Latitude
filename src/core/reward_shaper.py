@@ -16,6 +16,7 @@ Uses LearnedParametersManager for DRY compliance.
 """
 
 import math
+from typing import Any
 
 from src.monitoring.activity_monitor import ActivityMonitor, CounterfactualAnalyzer
 from src.persistence.learned_parameters import LearnedParametersManager
@@ -52,6 +53,20 @@ TIMING_PENALTY_SCALE: float = -1.5  # Increased from -0.5 for stronger late-exit
 RUNWAY_EXPECTED_GAIN_MULT: float = 2.0
 RUNWAY_EXPECTED_LOSS_MULT: float = 1.0
 FRICTION_COST_MULT: float = 0.1
+
+# Undeveloped-MFE penalty: rewards based on how much of MFE was realised
+# (timeframe-agnostic — no bar counts).  Fires when MFE existed but most
+# of the move was surrendered (high MAE relative to MFE).
+UNDEVELOPED_MFE_PENALTY_SCALE: float = -1.0  # max penalty at full giveback
+ZERO_MFE_PENALTY: float = -0.3  # flat penalty when MFE ≤ 0
+
+# Session quality multiplier: MFE during high-liquidity sessions is "worth
+# more" because the signal is cleaner and slippage lower.  Pure results
+# weighting — no bar counting.
+SESSION_BONUS_OVERLAP: float = 1.3   # London/NY overlap
+SESSION_BONUS_LONDON: float = 1.15   # London session
+SESSION_BONUS_NY: float = 1.15       # New York session
+SESSION_BONUS_OFFPEAK: float = 0.85  # Asian/overnight
 
 # Runway quality thresholds (for trigger reward calculation)
 RUNWAY_EXCELLENT_MAX: float = 1.2
@@ -116,6 +131,9 @@ class RewardShaper:
             ("reward_weight_ensemble", WEIGHT_ENSEMBLE),
         ]
 
+        # Session quality engine (optional — used to weight MFE value by session)
+        self._event_engine: Any | None = None
+
         # Statistics for monitoring
         self.total_rewards_calculated = 0
         self.component_stats = {
@@ -136,6 +154,43 @@ class RewardShaper:
 
     def _get_param(self, name: str, default: float | None = None) -> float:
         return self.param_manager.get(self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default)
+
+    def set_event_engine(self, engine: Any) -> None:
+        """Inject an EventTimeFeatureEngine for session-aware MFE weighting."""
+        self._event_engine = engine
+
+    def _get_session_quality(self, exit_time: str) -> float:
+        """Return a multiplier reflecting session liquidity quality.
+
+        London/NY overlap → highest quality (cleaner MFE, lower slippage).
+        London or NY solo → above-average.
+        Off-peak (Asian/overnight) → below-average.
+
+        Returns 1.0 when no event engine is available or timestamp is empty.
+        """
+        if not exit_time or self._event_engine is None:
+            return 1.0
+        try:
+            from datetime import datetime, timezone
+
+            if isinstance(exit_time, str):
+                dt = datetime.fromisoformat(exit_time.replace("Z", "+00:00"))
+            else:
+                dt = exit_time
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+            feats = self._event_engine.compute(dt)
+            # feats is a dict with keys like london_active, ny_active, london_ny_overlap...
+            if feats.get("london_ny_overlap", 0.0) > 0.5:
+                return SESSION_BONUS_OVERLAP
+            if feats.get("london_active", 0.0) > 0.5:
+                return SESSION_BONUS_LONDON
+            if feats.get("ny_active", 0.0) > 0.5:
+                return SESSION_BONUS_NY
+            return SESSION_BONUS_OFFPEAK
+        except Exception:
+            return 1.0
 
     def calculate_capture_efficiency_reward(self, exit_pnl: float, mfe: float) -> float:
         """
@@ -594,32 +649,34 @@ class RewardShaper:
         was_wtl: bool = False,
         bars_held: int = 0,
         bars_from_mfe_to_exit: int = 0,
-        mae: float = 0.0,  # noqa: ARG002  # NOSONAR
+        mae: float = 0.0,
+        exit_time: str = "",
     ) -> dict[str, float]:
         """Calculate reward for HarvesterAgent (exit specialist).
 
         Combines:
-        1. Capture efficiency (how much of MFE captured)
-        2. WTL penalty (winner-to-loser prevention)
-        3. Timing penalty (exiting too late after MFE)
+        1. Capture efficiency (how much of MFE captured, magnitude-scaled)
+        2. WTL penalty (winner-to-loser prevention, proportional)
+        3. Undeveloped-MFE penalty (MAE/MFE ratio — result-based, not bar-based)
+        4. Session quality multiplier (London/NY overlap > overnight)
 
-        Formula:
-            r_capture = (exit_pnl / mfe - 0.7) * multiplier
-            r_wtl = -2.0 if WTL else 0.0
-            r_timing = -0.5 * (bars_from_mfe / bars_held)
-            total = r_capture + r_wtl + r_timing
+        All components are timeframe-agnostic: no bar counts in reward signal.
+        bars_held / bars_from_mfe_to_exit accepted for backward compat but
+        not used in reward calculation.
 
         Args:
             exit_pnl: Final P&L at exit
             mfe: Maximum favorable excursion
             was_wtl: Winner-to-loser flag
-            bars_held: Total bars position was held
-            bars_from_mfe_to_exit: Bars between MFE and exit
+            bars_held: (compat) Total bars position was held
+            bars_from_mfe_to_exit: (compat) Bars between MFE and exit
+            mae: Maximum adverse excursion (absolute, positive)
+            exit_time: ISO timestamp of exit (for session quality weighting)
 
         Returns:
             Dict with component rewards and total
         """
-        # 1. Capture efficiency
+        # 1. Capture efficiency (with magnitude scaling)
         if mfe > 0:
             # Clamp ratio to [-5, 5] — same guard as calculate_capture_efficiency_reward.
             # Prevents explosion when mfe is tiny relative to a large adverse pnl.
@@ -630,11 +687,22 @@ class RewardShaper:
                 capture_mult = self._get_param("capture_multiplier")
             except KeyError:
                 capture_mult = CAPTURE_MULT_FALLBACK  # Default
-            r_capture = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult))
+
+            # Magnitude scaling: larger MFE moves relative to baseline get
+            # full reward signal; micro-moves that barely cover spread are
+            # down-weighted.  Timeframe-agnostic: scales with the instrument.
+            try:
+                baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
+            except (KeyError, TypeError):
+                baseline_mfe = max(BASELINE_MFE_SEED, 0.01)
+            magnitude_scale = min(mfe / baseline_mfe, 2.0)  # Cap at 2x
+            magnitude_scale = max(magnitude_scale, 0.3)       # Floor at 0.3 (micro-moves still learn)
+
+            r_capture = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult * magnitude_scale))
         else:
-            # No favorable movement - neutral
+            # No favorable movement — this is a bad entry, penalize
             capture_ratio = 0.0
-            r_capture = 0.0
+            r_capture = ZERO_MFE_PENALTY
 
         # 2. WTL penalty (proportional to profit giveback, not flat)
         try:
@@ -653,15 +721,27 @@ class RewardShaper:
         else:
             r_wtl = 0.0
 
-        # 3. Timing penalty (waited too long after MFE)
-        if bars_held > 0 and bars_from_mfe_to_exit > 0:
-            timing_ratio = bars_from_mfe_to_exit / bars_held
-            r_timing = TIMING_PENALTY_SCALE * timing_ratio  # Max penalty set by scale
-        else:
-            r_timing = 0.0
+        # 3. Undeveloped-MFE penalty (replaces bar-based timing penalty)
+        # Result-based: if MAE is large relative to MFE, the position was
+        # held through an adverse move without protecting the gain.  This is
+        # timeframe-agnostic — 10 bars overnight or 1 bar on NY open, what
+        # matters is the MAE/MFE outcome ratio.
+        r_timing = 0.0
+        if mfe > 0 and mae > 0:
+            # drawdown_ratio: how much adverse move vs favorable move
+            drawdown_ratio = min(mae / mfe, 3.0)  # Cap at 3x
+            # Only penalize when drawdown is significant relative to MFE
+            if drawdown_ratio > 0.3:
+                r_timing = UNDEVELOPED_MFE_PENALTY_SCALE * (drawdown_ratio - 0.3)
+
+        # 4. Session quality weighting (optional)
+        # MFE captured during London/NY overlap is a stronger signal than
+        # the same MFE overnight.  Modulates total reward, not individual
+        # components — keeps the gradient direction intact.
+        session_mult = self._get_session_quality(exit_time)
 
         # Total harvester reward
-        total_reward = r_capture + r_wtl + r_timing
+        total_reward = (r_capture + r_wtl + r_timing) * session_mult
 
         # Quality assessment
         quality = self._harvest_quality(capture_ratio)
@@ -674,6 +754,7 @@ class RewardShaper:
             "capture_ratio": capture_ratio,
             "quality": quality,
             "was_wtl": was_wtl,
+            "session_quality": session_mult,
         }
 
     @staticmethod
@@ -700,6 +781,7 @@ class RewardShaper:
         was_wtl: bool = False,
         bars_held: int = 0,
         bars_from_mfe_to_exit: int = 0,
+        exit_time: str = "",
     ) -> dict[str, float]:
         """
         Calculate rewards for both trigger and harvester agents.
@@ -718,7 +800,8 @@ class RewardShaper:
             actual_mfe, predicted_runway, direction, entry_price
         )
         harvester_result = self.calculate_harvester_reward(
-            exit_pnl, actual_mfe, was_wtl, bars_held, bars_from_mfe_to_exit, mae
+            exit_pnl, actual_mfe, was_wtl, bars_held, bars_from_mfe_to_exit,
+            mae=mae, exit_time=exit_time,
         )
         # Trigger: 40% weight (entry quality)
         # Harvester: 60% weight (exit execution is harder)

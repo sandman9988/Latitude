@@ -177,17 +177,18 @@ class TestHarvesterReward:
         assert r["was_wtl"] is True
 
     def test_timing_penalty(self, shaper):
+        """High MAE relative to MFE should produce an undeveloped-MFE penalty."""
         r = shaper.calculate_harvester_reward(
             exit_pnl=50.0,
             mfe=100.0,
-            mae=10.0,
+            mae=60.0,       # 60% drawdown vs MFE → penalty
             was_wtl=False,
             bars_held=20,
             bars_from_mfe_to_exit=15,
         )
         assert r["timing_penalty"] < 0
 
-    def test_zero_mfe_neutral(self, shaper):
+    def test_zero_mfe_penalty(self, shaper):
         r = shaper.calculate_harvester_reward(
             exit_pnl=0.0,
             mfe=0.0,
@@ -195,7 +196,8 @@ class TestHarvesterReward:
             was_wtl=False,
             bars_held=10,
         )
-        assert r["capture_efficiency"] == pytest.approx(0.0)
+        # Zero MFE is now a penalty (bad entry, no favourable move)
+        assert r["capture_efficiency"] < 0
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from src.core.reward_shaper import RewardShaper
 from src.features.event_time_features import EventTimeFeatureEngine
 from src.risk.path_geometry import PathGeometry
 from src.utils.mfe_mae import MFEMAECalculator
@@ -148,7 +149,10 @@ class _Simulator:
                  event_engine: EventTimeFeatureEngine | None = None,
                  reward_clip_harvester: float = REWARD_CLIP,
                  reward_clip_trigger: float = TRIGGER_REWARD_CLIP,
-                 capture_baseline: float = 0.5) -> None:
+                 capture_baseline: float = 0.5,
+                 symbol: str = "XAUUSD",
+                 timeframe: str = "M5",
+                 penalty_scale: float = 1.0) -> None:
         self.policy = policy
         self.update_policy = update_policy  # False during validation pass
         self.bars: deque = deque(maxlen=DEQUE_MAXLEN)
@@ -157,6 +161,12 @@ class _Simulator:
         self._reward_clip_harvester = reward_clip_harvester
         self._reward_clip_trigger = reward_clip_trigger
         self._capture_baseline = capture_baseline
+
+        # RewardShaper — canonical reward computation aligned with online training
+        self._reward_shaper = RewardShaper(symbol=symbol, timeframe=timeframe)
+        if event_engine is not None:
+            self._reward_shaper.set_event_engine(event_engine)
+        self._penalty_scale = penalty_scale  # soften WTL/timing penalties for curriculum training
 
         # Position state
         self.cur_pos: int = 0           # 0 flat, 1 long, -1 short
@@ -167,6 +177,7 @@ class _Simulator:
         self.ticks_held: int = 0
         self.entry_spread_pts: float = 0.0  # spread at entry bar (broker points)
         self._cur_spread_pts: float = 0.0   # spread at current bar (broker points)
+        self._predicted_runway: float = 0.0  # stored at entry for trigger reward
 
         # State snapshots for experience labelling
         self.entry_state: np.ndarray | None = None
@@ -220,6 +231,7 @@ class _Simulator:
         self.entry_action = action
         self._mfe_calc.start(current_price, direction)
         self.ticks_held = 0
+        self._predicted_runway = getattr(self.policy, "predicted_runway", 0.0)
 
         # Snapshot entry state for trigger experience
         if self.update_policy:
@@ -275,6 +287,63 @@ class _Simulator:
     def mae(self) -> float:
         return self._mfe_calc.mae
 
+    def _rs_volatility(self, window: int = 20) -> float:
+        """Rogers-Satchell volatility from recent bars (matches live bot)."""
+        n = min(len(self.bars), window)
+        if n < 5:
+            return 0.01
+        rs_sum = 0.0
+        for i in range(-n, 0):
+            b = self.bars[i]
+            o, h, l, c = float(b[1]), float(b[2]), float(b[3]), float(b[4])
+            if o <= 0:
+                continue
+            ho = np.log(h / o) if h > 0 and o > 0 else 0.0
+            lo = np.log(l / o) if l > 0 and o > 0 else 0.0
+            hc = np.log(h / c) if h > 0 and c > 0 else 0.0
+            lc = np.log(l / c) if l > 0 and c > 0 else 0.0
+            rs_sum += ho * hc + lo * lc
+        var = max(rs_sum / n, 1e-12)
+        return float(np.sqrt(var))
+
+    def _compute_trigger_reward(self, pnl_pts: float) -> float:
+        """Trigger reward aligned with live bot's _calculate_trigger_reward().
+
+        Components:
+        1. Accuracy: how close predicted_runway was to actual MFE
+        2. Magnitude: prefer identifying larger MFE opportunities
+        3. False-positive penalty: loss despite positive prediction
+
+        All computation in σ-of-price units (instrument-agnostic).
+        VPIN toxic-flow penalty omitted (not available offline).
+        """
+        actual_mfe = self.mfe
+        realized_vol = self._rs_volatility()
+        entry_price = max(self.entry_price, 1.0)
+        vol_pts = max(realized_vol * entry_price, 1e-6)
+        predicted_runway_pts = self._predicted_runway * entry_price
+
+        norm_mfe = actual_mfe / vol_pts
+        norm_predicted = predicted_runway_pts / vol_pts
+
+        # Component 1: Prediction accuracy
+        prediction_error = abs(norm_mfe - norm_predicted)
+        max_error = max(norm_mfe, norm_predicted, 1.0)
+        runway_accuracy = 1.0 - (prediction_error / max_error)
+        accuracy_reward = runway_accuracy * 2.0 - 1.0
+
+        # Component 2: Magnitude bonus (cap at +0.5 for 3σ+ moves)
+        magnitude_bonus = min(norm_mfe / 3.0, 1.0) * 0.5
+
+        # Component 3: False-positive penalty
+        false_positive_penalty = 0.0
+        if self._predicted_runway > 0 and pnl_pts < 0:
+            loss_severity = min(abs(pnl_pts) / vol_pts / 3.0, 1.0)
+            false_positive_penalty = -0.2 - 0.5 * loss_severity
+
+        total = accuracy_reward + magnitude_bonus + false_positive_penalty
+        return float(np.clip(total, -self._reward_clip_trigger, self._reward_clip_trigger))
+
     def _close_position(self, bar_idx: int, exit_price: float) -> None:
         # Deduct round-trip spread cost (entry half-spread + exit half-spread = 1 full spread)
         spread_cost = (self.entry_spread_pts + self._cur_spread_pts) * self._pt
@@ -282,15 +351,34 @@ class _Simulator:
         capture = self.mfe > 0 and pnl_pts > 0
         capture_ratio = (pnl_pts / self.mfe) if self.mfe > _MFE_FLOOR else 0.0
 
-        # Build rewards using the same formula as the live bot
-        # Trigger reward: normalised outcome (no prediction accuracy in offline)
-        vol_pts = max(self.entry_price * 0.005, 1e-6)  # ~0.5% default vol
-        trigger_reward = float(np.clip(pnl_pts / vol_pts / 3.0,
-                                       -self._reward_clip_trigger, self._reward_clip_trigger))
-
-        # Capture reward: fraction of MFE captured, clipped
-        capture_reward = float(np.clip(capture_ratio - self._capture_baseline,
+        # ── Harvester reward via canonical RewardShaper ───────────────────
+        # Aligned with online training: capture efficiency, WTL penalty,
+        # MAE/MFE timing penalty, session quality, zero-MFE penalty.
+        exit_time = ""
+        if len(self.bars) > 0 and self.bars[-1][0] is not None:
+            exit_time = str(self.bars[-1][0])
+        harvester_result = self._reward_shaper.calculate_harvester_reward(
+            exit_pnl=pnl_pts,
+            mfe=self.mfe,
+            was_wtl=not capture,
+            bars_held=self.ticks_held,
+            bars_from_mfe_to_exit=0,
+            mae=self.mae,
+            exit_time=exit_time,
+        )
+        # Curriculum scaling: keep capture efficiency at full strength but
+        # soften penalty components so the agent can explore before being
+        # punished heavily for WTL and poor timing.
+        r_capture_eff = harvester_result.get("capture_efficiency", 0.0)
+        r_wtl = harvester_result.get("wtl_penalty", 0.0) * self._penalty_scale
+        r_timing = harvester_result.get("timing_penalty", 0.0) * self._penalty_scale
+        session_mult = harvester_result.get("session_quality", 1.0)
+        softened_reward = (r_capture_eff + r_wtl + r_timing) * session_mult
+        capture_reward = float(np.clip(softened_reward,
                                        -self._reward_clip_harvester, self._reward_clip_harvester))
+
+        # ── Trigger reward: prediction accuracy (matches live bot) ────────
+        trigger_reward = self._compute_trigger_reward(pnl_pts)
 
         if self.update_policy and self.entry_state is not None:
             self._add_experiences(trigger_reward=trigger_reward, capture_reward=capture_reward)
@@ -320,6 +408,7 @@ class _Simulator:
         self.entry_price = 0.0
         self.entry_state = None
         self.ticks_held = 0
+        self._predicted_runway = 0.0
         self._mfe_calc.reset()
 
     def _add_experiences(self, trigger_reward: float, capture_reward: float) -> None:
@@ -403,6 +492,7 @@ class OfflineTrainer:
         reward_clip_harvester: float = REWARD_CLIP,
         reward_clip_trigger: float = TRIGGER_REWARD_CLIP,
         capture_baseline: float = 0.5,
+        penalty_scale: float = 1.0,
     ) -> None:
         self.symbol = symbol
         self.timeframe_minutes = timeframe_minutes
@@ -419,6 +509,7 @@ class OfflineTrainer:
         self._reward_clip_harvester = reward_clip_harvester
         self._reward_clip_trigger = reward_clip_trigger
         self._capture_baseline = capture_baseline
+        self._penalty_scale = penalty_scale
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -602,7 +693,10 @@ class OfflineTrainer:
                              event_engine=self._event_engine,
                              reward_clip_harvester=self._reward_clip_harvester,
                              reward_clip_trigger=self._reward_clip_trigger,
-                             capture_baseline=self._capture_baseline)
+                             capture_baseline=self._capture_baseline,
+                             symbol=self.symbol,
+                             timeframe=f"M{self.timeframe_minutes}",
+                             penalty_scale=self._penalty_scale)
             epoch_bar_offset = epoch * len(train_bars)
 
             for i, bar in enumerate(train_bars):
@@ -691,7 +785,10 @@ class OfflineTrainer:
                              event_engine=self._event_engine,
                              reward_clip_harvester=self._reward_clip_harvester,
                              reward_clip_trigger=self._reward_clip_trigger,
-                             capture_baseline=self._capture_baseline)
+                             capture_baseline=self._capture_baseline,
+                             symbol=self.symbol,
+                             timeframe=f"M{self.timeframe_minutes}",
+                             penalty_scale=self._penalty_scale)
         for i, bar in enumerate(val_bars):
             val_sim.step(bar, i)
         val_pnl = [t.pnl_pts for t in val_sim.trades]

@@ -589,6 +589,55 @@ class LearnedParametersManager:
                 "momentum": 0.9,
                 "description": "Capture normalisation divisor for preseed harvester reward",
             },
+            # ── Reward component weights (adapted by RewardShaper.adapt_weights) ──
+            "reward_weight_capture": {
+                "default": 1.0,
+                "min": 0.2,
+                "max": 2.0,
+                "learning_rate": 0.02,
+                "momentum": 0.9,
+                "description": "Capture efficiency reward weight",
+            },
+            "reward_weight_wtl": {
+                "default": 1.0,
+                "min": 0.2,
+                "max": 2.0,
+                "learning_rate": 0.02,
+                "momentum": 0.9,
+                "description": "Winner-to-loser penalty weight",
+            },
+            "reward_weight_opportunity": {
+                "default": 0.5,
+                "min": 0.2,
+                "max": 2.0,
+                "learning_rate": 0.02,
+                "momentum": 0.9,
+                "description": "Missed MFE opportunity cost weight",
+            },
+            "reward_weight_activity": {
+                "default": 0.8,
+                "min": 0.2,
+                "max": 2.0,
+                "learning_rate": 0.02,
+                "momentum": 0.9,
+                "description": "Exploration bonus weight when stagnant",
+            },
+            "reward_weight_counterfactual": {
+                "default": 0.6,
+                "min": 0.2,
+                "max": 2.0,
+                "learning_rate": 0.02,
+                "momentum": 0.9,
+                "description": "Penalty for early exits vs optimal weight",
+            },
+            "reward_weight_ensemble": {
+                "default": 0.4,
+                "min": 0.2,
+                "max": 2.0,
+                "learning_rate": 0.02,
+                "momentum": 0.9,
+                "description": "Epistemic uncertainty bonus weight",
+            },
         }
 
     def get_instrument(self, symbol: str, timeframe: str = "M1", broker: str = "default") -> InstrumentParameters:

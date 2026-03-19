@@ -109,7 +109,12 @@ class PathGeometry:
         gamma = r2 - r1
 
         # Jerk: rate of change of acceleration
-        jerk = gamma - self._prev_gamma
+        # On the very first call _prev_gamma is the init sentinel (0.0),
+        # so there is no valid prior to diff against — emit 0.
+        if self._initialized:
+            jerk = gamma - self._prev_gamma
+        else:
+            jerk = 0.0
 
         # Efficiency: displacement / path length over 3 points
         displacement = abs(c2 - c0)

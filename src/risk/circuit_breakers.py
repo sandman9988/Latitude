@@ -555,11 +555,22 @@ class CircuitBreakerManager:
         return [breaker.state for breaker in self.breakers if breaker.state.is_tripped]
 
     def reset_all(self):
-        """Reset all breakers (use with caution)"""
+        """Reset all breakers and clear underlying data so they don't
+        immediately re-trip on the next ``check()`` call."""
         for breaker in self.breakers:
             breaker.state.reset()
-        self.positions_closed_on_trip = False  # Reset flag
-        LOG.info("[CIRCUIT_BREAKER] All breakers reset")
+        # Clear the data windows that caused the trips, otherwise the
+        # next check_all() / tick drawdown check will re-trip instantly.
+        self.sortino_breaker.returns.clear()
+        self.kurtosis_breaker.returns.clear()
+        self.consecutive_losses_breaker.consecutive_losses = 0
+        # Reset drawdown peak to current equity so dd reads 0 %.
+        if self.drawdown_breaker.current_equity > 0:
+            self.drawdown_breaker.peak_equity = self.drawdown_breaker.current_equity
+        self.drawdown_breaker.current_drawdown = 0.0
+        self.drawdown_breaker.size_multiplier = 1.0
+        self.positions_closed_on_trip = False
+        LOG.info("[CIRCUIT_BREAKER] All breakers reset (data windows cleared)")
 
     def reset_if_cooldown_elapsed(self):
         """Auto-reset breakers after cooldown"""

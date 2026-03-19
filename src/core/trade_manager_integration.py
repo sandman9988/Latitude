@@ -184,6 +184,8 @@ class TradeManagerIntegration:
             for pos_id, tracker in ghost_trackers.items():
                 if not getattr(tracker, "entry_price", None):
                     continue
+                if mid_price > 0:
+                    tracker.update(mid_price)  # capture exit price in MFE/MAE
                 ghost_summary = tracker.get_summary()
                 ghost_summary["ticket"] = getattr(tracker, "position_ticket", pos_id) or pos_id
                 ghost_summary["position_id"] = pos_id
@@ -326,10 +328,12 @@ class TradeManagerIntegration:
                     # Match by direction for net-close orders
                     if getattr(tracker, "direction", 0) == _net_close_dir:
                         position_id_to_remove = pos_id
+                        tracker.update(order.avg_price)  # capture exit price in MFE/MAE
                         tracker_summary = tracker.get_summary()
                         break
                 elif getattr(tracker, "position_ticket", None) == closed_ticket:
                     position_id_to_remove = pos_id
+                    tracker.update(order.avg_price)  # capture exit price in MFE/MAE
                     tracker_summary = tracker.get_summary()
                     break
 
@@ -359,6 +363,8 @@ class TradeManagerIntegration:
 
         if hasattr(self.app, "_pending_closes"):
             self.app._pending_closes.discard(position_id_to_remove)
+        if hasattr(self.app, "_pending_close_times"):
+            self.app._pending_close_times.pop(position_id_to_remove, None)
 
         if hasattr(self.app, "path_recorders") and position_id_to_remove in self.app.path_recorders:
             with self.app._tracker_lock:
@@ -369,7 +375,12 @@ class TradeManagerIntegration:
         # Enrich summary with position identifiers for end-to-end traceability
         tracker_summary["ticket"] = closed_ticket
         tracker_summary["position_id"] = position_id_to_remove
-        tracker_summary.setdefault("close_reason", "Signal")
+        # Use granular close_reason from HarvesterAgent if available
+        if "close_reason" not in tracker_summary:
+            _harvester_reason = ""
+            if hasattr(self.app, "policy") and hasattr(self.app.policy, "harvester"):
+                _harvester_reason = getattr(self.app.policy.harvester, "last_close_reason", "")
+            tracker_summary["close_reason"] = _harvester_reason or "Signal"
         LOG.info(
             "[TRADE_RECORD] close: ticket=%s pos_id=%s pnl=%.4f close_reason=%s",
             closed_ticket, position_id_to_remove, pnl, tracker_summary["close_reason"],
@@ -464,7 +475,9 @@ class TradeManagerIntegration:
         with self.app._tracker_lock:
             if position_id not in self.app.mfe_mae_trackers:
                 from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
-                self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
+                self.app.mfe_mae_trackers[position_id] = MFEMAETracker(
+                    position_id, filled_qty=order.filled_qty,
+                )
                 self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
             self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
         self.app.trade_entry_time = order.filled_at

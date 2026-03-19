@@ -106,8 +106,9 @@ class TestHarvesterQuality:
         assert r["wtl_penalty"] < 0
 
     def test_timing_penalty(self, shaper):
+        """High MAE relative to MFE triggers undeveloped-MFE penalty."""
         r = shaper.calculate_harvester_reward(
-            exit_pnl=0.003, mfe=0.004, mae=0.001,
+            exit_pnl=0.003, mfe=0.004, mae=0.003,
             was_wtl=False, bars_held=20, bars_from_mfe_to_exit=10,
         )
         assert r["timing_penalty"] < 0

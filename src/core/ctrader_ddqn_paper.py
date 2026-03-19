@@ -643,10 +643,11 @@ class MFEMAETracker:
     (single source of truth).  This wrapper adds ``position_id`` logging.
     """
 
-    def __init__(self, position_id: str | None = None):
+    def __init__(self, position_id: str | None = None, filled_qty: float = 0.0):
         from src.utils.mfe_mae import MFEMAECalculator  # noqa: PLC0415
 
         self.position_id = position_id
+        self.filled_qty = filled_qty
         self._calc = MFEMAECalculator()
 
     # ── proxied attributes ─────────────────────────────────────────────────
@@ -713,6 +714,7 @@ class MFEMAETracker:
         # Inject position identifiers for end-to-end trade tracking
         summary["position_id"] = self.position_id or ""
         summary["ticket"] = getattr(self, "position_ticket", "") or ""
+        summary["filled_qty"] = self.filled_qty
         return summary
 
     def reset(self):
@@ -1016,6 +1018,7 @@ class CTraderFixApp(fix.Application):
         self.entry_action = None  # Will be deprecated
         self.predicted_runway = 0.0  # FIX 1: Track predicted MFE for backward compatibility
         self.entry_confidence = 0.5  # Calibrated confidence at entry (for Platt update at close)
+        self.entry_raw_confidence = 0.5  # Pre-Platt confidence (for correct Platt gradient)
         self.entry_var = 0.0          # VaR at entry time (for regime-conditioned reward)
         # EMA-averaged confidence for HUD production_metrics export (α=0.1 ≈ 10-trade window)
         self._last_trigger_conf = 0.5
@@ -3151,6 +3154,9 @@ class CTraderFixApp(fix.Application):
     ) -> None:
         """Attempt to close a specific tracked position via trade_integration."""
         self._pending_closes.add(position_id)
+        if not hasattr(self, "_pending_close_times"):
+            self._pending_close_times = {}
+        self._pending_close_times[position_id] = time.time()
         LOG.info(
             "[TICK_EXIT] Harvester CLOSE %s @ %.2f conf=%.2f | entry=%.2f MFE=%.4f MAE=%.4f dir=%d",
             position_id, mid_price, exit_conf,
@@ -3171,10 +3177,11 @@ class CTraderFixApp(fix.Application):
                 mae=getattr(tracker, "mae", 0.0) or 0.0,
                 ticks_held=getattr(tracker, "ticks_held", 0) or 0,
                 unrealized_pnl=unrealized,
-                capture_ratio=getattr(tracker, "capture_ratio", 0.0) or 0.0,
+                capture_ratio=(unrealized / tracker.mfe) if tracker.mfe > 0 else 0.0,
                 trade_id=self.current_trade_id,
                 in_position=True,
                 position_id=[position_id],
+                q_spread=getattr(self.policy.harvester, "_last_q_spread", 0.0),
             )
         if not (hasattr(self, "trade_integration") and hasattr(self.trade_integration, "close_position")):
             return
@@ -3184,6 +3191,8 @@ class CTraderFixApp(fix.Application):
         success = self.trade_integration.close_position(position_id=position_id, reason="TICK_HARVESTER")
         if not success:
             self._pending_closes.discard(position_id)
+            if hasattr(self, "_pending_close_times"):
+                self._pending_close_times.pop(position_id, None)
 
     def _evaluate_harvester_on_tick(self):
         """
@@ -3209,6 +3218,24 @@ class CTraderFixApp(fix.Application):
         # Track positions with pending close orders to prevent duplicates
         if not hasattr(self, "_pending_closes"):
             self._pending_closes = set()
+
+        # ── Staleness sweep: clear pending closes older than 30 s ────
+        # If a paper fill was rejected (e.g. missing ask price), the
+        # position_id stays in _pending_closes forever, blocking all
+        # future close attempts.  Re-allow after a short timeout so
+        # the harvester can retry.  Max-loss checks already ignore
+        # _pending_closes and will always fire regardless.
+        if not hasattr(self, "_pending_close_times"):
+            self._pending_close_times = {}
+        _stale_cutoff = now - 30.0
+        stale_ids = [
+            pid for pid, ts in self._pending_close_times.items()
+            if ts < _stale_cutoff
+        ]
+        for pid in stale_ids:
+            LOG.warning("[TICK_EXIT] Clearing stale pending-close for %s (>120 s)", pid)
+            self._pending_closes.discard(pid)
+            self._pending_close_times.pop(pid, None)
 
         # Snapshot tracker items under lock to avoid dict-changed-during-iteration
         with self._tracker_lock:
@@ -3245,6 +3272,9 @@ class CTraderFixApp(fix.Application):
 
             except Exception as e:
                 LOG.error("[TICK_EXIT] Error evaluating position %s: %s", position_id, e, exc_info=True)
+                # Escalate: if ML inference failed, still enforce max-loss
+                # so the position is never unprotected.
+                self._tick_max_loss_exceeded(position_id, tracker, mid_price)
 
     def _build_harvester_tick_context(self) -> dict:
         """Build the shared market context for tick-level harvester decisions."""
@@ -3294,9 +3324,10 @@ class CTraderFixApp(fix.Application):
             tracker_snapshot = list(self.mfe_mae_trackers.items())
 
         for position_id, tracker in tracker_snapshot:
-            if position_id in self._pending_closes:
-                continue
-            # Update tracker with latest price
+            # NEVER skip max-loss for positions in _pending_closes.
+            # A previous close attempt may have failed silently (e.g.
+            # paper fill rejected due to stale price).  Max-loss is the
+            # last line of defence and must always fire.
             tracker.update(mid_price)
             self._tick_max_loss_exceeded(position_id, tracker, mid_price)
 
@@ -3316,6 +3347,12 @@ class CTraderFixApp(fix.Application):
         independent of the harvester ML decision. Data analysis shows
         45 trades with loss > $100 account for -$11,760 in total losses.
         Capping at $100 changes lifetime P&L from -$4,140 to +$3,119.
+
+        Unlike the harvester, this check is NEVER skipped for positions
+        in ``_pending_closes``.  If a previous close attempt is already
+        in-flight we still return True (loss exceeded) but only re-fire
+        the close order once the staleness timeout has cleared the
+        earlier attempt, or if no attempt is pending.
         """
         from src.constants import MAX_LOSS_PER_TRADE_USD  # noqa: PLC0415
 
@@ -3325,7 +3362,9 @@ class CTraderFixApp(fix.Application):
             return False
 
         # Unrealized P&L in USD (qty in lots × 100 oz/lot × price_diff)
-        qty = getattr(self, "qty", 0.1)
+        # Use the tracker's actual filled_qty (VaR-sized) instead of self.qty
+        # (base lot size) to avoid premature closes on smaller positions.
+        qty = getattr(tracker, "filled_qty", 0.0) or getattr(self, "qty", 0.1)
         contract_size = getattr(self, "contract_size", 100.0)
         price_diff = (mid_price - entry_price) * direction
         unrealized_pnl = price_diff * qty * contract_size
@@ -3333,12 +3372,21 @@ class CTraderFixApp(fix.Application):
         if unrealized_pnl >= -MAX_LOSS_PER_TRADE_USD:
             return False
 
+        # Loss exceeds cap — attempt close if not already pending.
+        # If a previous close is in-flight, don't spam duplicate orders;
+        # the staleness sweep (30 s) will clear it and allow a retry.
+        if position_id in getattr(self, "_pending_closes", set()):
+            return True  # loss exceeded, close already in-flight
+
         LOG.warning(
             "[MAX_LOSS_CAP] Force-closing position %s: unrealized=%.2f exceeds -$%.0f cap "
-            "(entry=%.2f mid=%.2f dir=%d)",
+            "(entry=%.2f mid=%.2f dir=%d qty=%.4f)",
             position_id, unrealized_pnl, MAX_LOSS_PER_TRADE_USD,
-            entry_price, mid_price, direction,
+            entry_price, mid_price, direction, qty,
         )
+        # Set close_reason so the trade isn't logged with the "Signal" fallback
+        if hasattr(self, "policy") and hasattr(self.policy, "harvester"):
+            self.policy.harvester.last_close_reason = "max_loss_cap"
         self._try_close_tracker_position(position_id, mid_price, tracker, 1.0)
         return True
 
@@ -3523,6 +3571,7 @@ class CTraderFixApp(fix.Application):
                 capture_ratio=capture_ratio,
                 was_wtl=was_wtl,
                 entry_confidence=getattr(self, "entry_confidence", 0.5),
+                raw_confidence=getattr(self, "entry_raw_confidence", None),
             )
             LOG.info("[POSITION_CLOSED] Notified DualPolicy of position close (synced to FLAT)")
 
@@ -3815,7 +3864,9 @@ class CTraderFixApp(fix.Application):
         _alpha = 0.1
         self._runway_delta_ema = (1 - _alpha) * self._runway_delta_ema + _alpha * _runway_delta
         self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * (1.0 - min(abs(_runway_delta) / _max_err, 1.0))
-        self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * abs(self.entry_confidence - (1.0 if pnl > 0 else 0.0))
+        # Brier score: (predicted_prob - outcome)^2.  Range [0,1]; 0=perfect, 0.25=no-skill at p=0.5.
+        _brier = (self.entry_confidence - (1.0 if pnl > 0 else 0.0)) ** 2
+        self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * _brier
         self.entry_state = None
         self.predicted_runway = 0.0
         return trigger_reward
@@ -3834,8 +3885,26 @@ class CTraderFixApp(fix.Application):
             regime_adj -= 0.3 * min(SafeMath.safe_div(_entry_var, self.vol_cap, 0.0), 2.0)
         if self.vpin_z_threshold > 0 and _entry_vpin > self.vpin_z_threshold:
             regime_adj -= 0.2 * min(SafeMath.safe_div(_entry_vpin, self.vpin_z_threshold, 0.0), 2.0)
-        capture_reward = float(np.clip(shaped_rewards.get("total_reward", 0.0) + regime_adj, -2.0, 2.0))
-        LOG.debug("[CLOSE_REWARD] raw=%.4f regime_adj=%.4f", shaped_rewards.get("total_reward", 0.0), regime_adj)
+
+        # Use specialized harvester reward (capture + WTL + MFE-development)
+        # instead of the generic 6-component total_reward.
+        from datetime import datetime, timezone
+        _exit_time = summary.get("exit_time", "")
+        if not _exit_time:
+            _exit_time = datetime.now(timezone.utc).isoformat()
+        harvester_result = self.reward_shaper.calculate_harvester_reward(
+            exit_pnl=float(pnl),
+            mfe=float(summary.get("mfe", 0.0)),
+            was_wtl=bool(summary.get("winner_to_loser", False)),
+            bars_held=int(summary.get("bars_held", 0)),
+            bars_from_mfe_to_exit=int(summary.get("bars_from_mfe_to_exit", 0)),
+            mae=float(summary.get("mae", 0.0)),
+            exit_time=str(_exit_time),
+        )
+        raw_reward = harvester_result["harvester_reward"]
+        capture_reward = float(np.clip(raw_reward + regime_adj, -2.0, 2.0))
+        LOG.debug("[CLOSE_REWARD] harvester_raw=%.4f regime_adj=%.4f final=%.4f",
+                  raw_reward, regime_adj, capture_reward)
         next_state = getattr(getattr(self.policy, "harvester", None), "last_state", None)
         if next_state is not None:
             self.policy.add_harvester_experience(
@@ -3946,8 +4015,11 @@ class CTraderFixApp(fix.Application):
             self._last_trade_close_ts = time.time()
             # ─────────────────────────────────────────────────────────────────
 
-            # Calculate P&L using dedicated method (single source of truth)
-            pnl = self._calculate_position_pnl(entry_price, exit_price, direction)
+            # Calculate P&L using dedicated method (single source of truth).
+            # Use the filled_qty recorded at entry so VaR-sized positions get
+            # the correct lot size instead of the default self.qty.
+            _filled_qty = summary.get("filled_qty") or None
+            pnl = self._calculate_position_pnl(entry_price, exit_price, direction, quantity=_filled_qty)
 
             # Checkpoint: Store initial P&L to detect corruption
             _pnl_checkpoint = pnl
@@ -3997,8 +4069,9 @@ class CTraderFixApp(fix.Application):
                 pnl = _pnl_checkpoint
                 LOG.warning("[BUG_DETECTION] Restored P&L to checkpoint value: %.4f", pnl)
 
-            # Save trade record
-            _trade_qty = self._get_live_qty()
+            # Save trade record — use the filled_qty stored on the tracker at entry
+            # so MFE/MAE dollar conversion uses the same qty as P&L calculation.
+            _trade_qty = summary.get("filled_qty") or self._get_live_qty()
             # Convert MFE/MAE from price points to dollars (same units as pnl)
             _mfe_dollars = summary.get("mfe", 0.0) * _trade_qty * self.contract_size
             _mae_dollars = summary.get("mae", 0.0) * _trade_qty * self.contract_size
@@ -4022,6 +4095,9 @@ class CTraderFixApp(fix.Application):
                 "winner_to_loser": summary.get("winner_to_loser", False),
                 "close_reason": summary.get("close_reason", ""),
                 "bars_held": _bars_held,
+                "hold_seconds": (exit_time - self.trade_entry_time).total_seconds() if self.trade_entry_time else 0.0,
+                "predicted_runway": getattr(self, "predicted_runway", 0.0),
+                "entry_confidence": getattr(self, "entry_confidence", 0.5),
             }
             LOG.info(
                 "[TRADE_RECORD] Saving: ticket=%s pos_id=%s trade_id=%s pnl=%.4f close_reason=%s",
@@ -4671,6 +4747,9 @@ class CTraderFixApp(fix.Application):
         )
         self.entry_action = action
         self.entry_confidence = confidence
+        self.entry_raw_confidence = getattr(
+            getattr(self.policy, "trigger", None), "_last_raw_confidence", confidence
+        )
         self._last_trigger_conf = 0.9 * self._last_trigger_conf + 0.1 * confidence
         self.predicted_runway = runway
         self.entry_vpin_z = vpin_zscore
@@ -4776,6 +4855,7 @@ class CTraderFixApp(fix.Application):
             circuit_breakers_ok=not self.circuit_breakers.is_any_tripped(),
             trade_id=_bar_trade_id,
             position_id=self._broker_pids() or None,
+            q_spread=getattr(self.policy.trigger, "_last_q_spread", 0.0),
         )
         self._obc_record_entry_state(action, confidence, runway, vpin_zscore, imbalance)
         self._obc_add_no_entry_experience(action)
@@ -4937,15 +5017,17 @@ class CTraderFixApp(fix.Application):
     ) -> tuple[int, float, bool]:
         """Return (exit_action, exit_conf, already_closing)."""
         _already_closing = hasattr(self, "_pending_closes") and len(self._pending_closes) > 0
+
+        # ── Defense-in-depth: max-loss check at bar close ────────────
+        # This MUST run even when _already_closing, because a previous
+        # close attempt may have failed (paper fill rejected, network
+        # issue).  Max-loss is the last line of defence.
+        if self._obc_max_loss_force_close(price):
+            return 1, 1.0, False
+
         if _already_closing:
             LOG.debug("[BAR] Tick harvester already issued close — skipping bar-level exit check")
             return 0, 0.0, True
-
-        # ── Defense-in-depth: max-loss check at bar close ────────────
-        # The primary check runs on every tick in _check_max_loss_all_positions,
-        # but if that was missed (e.g. restart), catch it here.
-        if self._obc_max_loss_force_close(price):
-            return 1, 1.0, False
 
         exit_action, exit_conf = self.policy.decide_exit(
             self.bars, current_price=price, imbalance=imbalance,
@@ -4969,8 +5051,8 @@ class CTraderFixApp(fix.Application):
             tracker_snapshot = list(self.mfe_mae_trackers.items())
 
         for position_id, tracker in tracker_snapshot:
-            if position_id in self._pending_closes:
-                continue
+            # Max-loss defence must NEVER skip pending-close positions.
+            # The earlier close attempt may have failed silently.
             if self._tick_max_loss_exceeded(position_id, tracker, price):
                 return True
         return False
@@ -5052,6 +5134,7 @@ class CTraderFixApp(fix.Application):
             trade_id=_bar_trade_id,
             in_position=(self.cur_pos != 0),
             position_id=self._broker_pids() or None,
+            q_spread=getattr(self.policy.harvester, "_last_q_spread", 0.0),
         )
         if exit_action == 1:
             self.current_trade_id = None
@@ -5995,10 +6078,13 @@ class CTraderFixApp(fix.Application):
         ):
             self.policy.seed_regime_from_bars(self.bars)
 
-    def _get_path_geometry_snapshot(self, realized_vol: float) -> dict:
-        """Return the current path geometry snapshot for HUD risk metrics."""
-        if len(self.bars) >= MIN_BARS_FOR_PATH_GEOMETRY and realized_vol > 0:
-            return self.path_geometry.update(self.bars, realized_vol)
+    def _get_path_geometry_snapshot(self, realized_vol: float) -> dict:  # noqa: ARG002
+        """Return the current path geometry snapshot for HUD risk metrics.
+
+        Reads the last computed snapshot — does NOT call update() to avoid
+        double-advancing _prev_gamma (the single update per bar is in
+        DualPolicy._build_state).
+        """
         return self.path_geometry.last if hasattr(self.path_geometry, "last") else {}
 
     def _get_depth_snapshot(self, depth_metrics: dict) -> tuple[float, float, float]:

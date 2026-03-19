@@ -146,6 +146,7 @@ class HarvesterAgent(AgentTrainingMixin):
         self.batch_size = DEFAULT_BATCH_SIZE
         self.training_steps = 0
         self.last_state = None  # Track state for experience creation
+        self._last_q_spread: float = 0.0  # Q-value advantage (best - second-best)
 
         # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
         self.ddqn = (
@@ -171,6 +172,9 @@ class HarvesterAgent(AgentTrainingMixin):
             enable_training, buffer_capacity // 1000, self.min_experiences)
 
         self._init_exit_thresholds()
+
+        # Granular close reason for the last exit decision (read by DualPolicy / TradeManager).
+        self.last_close_reason: str = ""
 
         # Minimum hold period: prevents DDQN (which may have stale learned Q-values)
         # from issuing a CLOSE on the very first tick after entry before any MFE develops.
@@ -265,15 +269,19 @@ class HarvesterAgent(AgentTrainingMixin):
         # Priority order mirrors _fallback_strategy
         if self._check_trailing_stop(mfe_pct, current_profit_pct):
             LOG.info("[HARVESTER] Protective trailing stop → CLOSE")
+            self.last_close_reason = "trailing_stop"
             return 1, 0.95
         if self._check_breakeven_stop(mfe_pct, current_profit_pct, friction_pct):
             LOG.info("[HARVESTER] Protective breakeven stop → CLOSE")
+            self.last_close_reason = "breakeven_stop"
             return 1, 0.90
         if self._check_capture_decay(mfe_pct, current_profit_pct):
             LOG.info("[HARVESTER] Protective capture decay → CLOSE")
+            self.last_close_reason = "capture_decay"
             return 1, 0.85
         if self._check_micro_winner_exit(mfe_pct, current_profit_pct):
             LOG.info("[HARVESTER] Protective micro-winner exit → CLOSE")
+            self.last_close_reason = "micro_winner"
             return 1, 0.80
 
         return None
@@ -292,6 +300,8 @@ class HarvesterAgent(AgentTrainingMixin):
         action = int(np.argmax(q_values))
 
         confidence = compute_confidence(q_values, self.training_steps)
+        sorted_q = np.sort(q_values)[::-1]
+        self._last_q_spread = float(sorted_q[0] - sorted_q[1]) if len(sorted_q) >= 2 else 0.0
 
         LOG.debug(
             "[HARVESTER] DDQN decision: Q=%s, action=%d (%s), conf=%.3f",
@@ -330,6 +340,8 @@ class HarvesterAgent(AgentTrainingMixin):
 
             # Confidence from blended softmax + advantage
             confidence = compute_confidence(q_values, self.training_steps)
+            sorted_q = np.sort(q_values.numpy())[::-1]
+            self._last_q_spread = float(sorted_q[0] - sorted_q[1]) if len(sorted_q) >= 2 else 0.0
 
             LOG.debug(
                 "[HARVESTER] Q-values: %s, Action: %d (%s), Conf: %.3f, MFE: %.4f, MAE: %.4f, Bars: %d",
@@ -384,10 +396,12 @@ class HarvesterAgent(AgentTrainingMixin):
         # regardless of which gate fires (emergency stop, min-hold, etc.).
         full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
         self.last_state = full_state.copy()
+        self.last_close_reason = ""  # reset for this decision cycle
 
         # Emergency stop loss check (always executed, not subject to min-hold)
         should_exit, exit_decision = self._check_emergency_stop_loss(mae, entry_price)
         if should_exit:
+            self.last_close_reason = "emergency_stop"
             return exit_decision
 
         # Minimum hold period: only emergency stop may close before this threshold.
@@ -421,6 +435,7 @@ class HarvesterAgent(AgentTrainingMixin):
                 "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d (ζ=%.2f, mult=%.2f) → CLOSE",
                 ticks_held, effective_hard_stop, zeta, regime_hold_mult,
             )
+            self.last_close_reason = "hard_time_stop"
             return 1, 1.0  # CLOSE with full confidence
 
         # Soft time stop: exit when holding too long with diminished or positive profits.
@@ -440,6 +455,7 @@ class HarvesterAgent(AgentTrainingMixin):
                     "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d (ζ=%.2f, mult=%.2f) → CLOSE",
                     ticks_held, effective_soft_stop, zeta, regime_hold_mult,
                 )
+                self.last_close_reason = "soft_time_stop"
                 return 1, 0.9  # CLOSE with high confidence
 
         # ── Protective stops: defense-in-depth overrides ───────────────
@@ -457,14 +473,22 @@ class HarvesterAgent(AgentTrainingMixin):
         if not self.use_torch:
             # Use DDQN network if available and trained, else fallback
             if self.ddqn is not None and self.enable_training and self.training_steps > 0:
-                return self._decide_with_ddqn(full_state)
+                action, confidence = self._decide_with_ddqn(full_state)
+                if action == 1:
+                    self.last_close_reason = "ddqn_model"
+                return action, confidence
 
             # Fallback: Simple profit target + stop loss
             action = self._fallback_strategy(mfe, mae, ticks_held, entry_price, current_price, direction)
+            if action == 1:
+                self.last_close_reason = "fallback"
             return action, CONFIDENCE_FALLBACK
 
         # Use PyTorch model
-        return self._decide_with_torch(market_state, mfe, mae, ticks_held, entry_price)
+        action, confidence = self._decide_with_torch(market_state, mfe, mae, ticks_held, entry_price)
+        if action == 1:
+            self.last_close_reason = "torch_model"
+        return action, confidence
 
     def _build_full_state(
         self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float

@@ -126,8 +126,9 @@ RUNWAY_DELTA_OK_MAX: float = 1.0       # |delta| < 1 pt → perfect (green)
 RUNWAY_DELTA_WARN_MAX: float = 3.0     # |delta| > 3 pts → bad (red)
 RUNWAY_ACCURACY_GOOD: float = 0.70     # accuracy > 0.70 → green
 RUNWAY_ACCURACY_WARN: float = 0.40     # accuracy > 0.40 → yellow
-CONF_CALIB_OK_MAX: float = 0.15        # calibration error < 0.15 → green
-CONF_CALIB_WARN_MAX: float = 0.30      # calibration error < 0.30 → yellow
+# Brier score bands: 0=perfect, 0.25=no-skill (at p=0.5), 1.0=worst
+CONF_CALIB_OK_MAX: float = 0.20        # Brier < 0.20 → green (better than no-skill)
+CONF_CALIB_WARN_MAX: float = 0.30      # Brier < 0.30 → yellow
 PLATT_ADAPTED_DELTA: float = 0.05      # |platt_a − 1.0| or |platt_b| > 0.05 → adapted
 
 # Decision log display
@@ -2945,13 +2946,14 @@ class TabbedHUD:
         )
         # Winner-to-loser: trades where MFE exceeded entry but reversed to a loss
         w2l = lt.get("winner_to_loser_count", 0)
+        w2l_pnl_val = lt.get("winner_to_loser_pnl", 0.0)
         total = lt.get("total_trades", 0)
         if total > 0 and w2l > 0:
             w2l_pct = w2l / total * 100
             w2l_col = _ANSI_R if w2l_pct > 15 else (_ANSI_Y if w2l_pct > 5 else _ANSI_G)
             print(
                 f"  Winner→Loser:     {w2l_col}{w2l:>4} ({w2l_pct:.1f}%){_ANSI_RST}  "
-                f"{_ANSI_DIM}(had profit but reversed to loss){_ANSI_RST}"
+                f"PnL: {_ANSI_R}${w2l_pnl_val:+,.2f}{_ANSI_RST}"
             )
 
         # Edge quality metrics: how well the model finds and captures opportunities
@@ -3061,9 +3063,9 @@ class TabbedHUD:
             f"{_ANSI_DIM}→ 1 = perfect{_ANSI_RST}"
         )
         print(
-            f"  Conf Calibration Error:   "
+            f"  Conf Brier Score:         "
             f"{cc_col}{cc_err:>7.3f}{_ANSI_RST}      "
-            f"{_ANSI_DIM}→ 0 = calibrated{_ANSI_RST}"
+            f"{_ANSI_DIM}→ 0 = perfect  (0.25 = no-skill){_ANSI_RST}"
         )
         print(
             f"  Platt  a={pa_col}{platt_a:.4f}{_ANSI_RST}  "
@@ -3074,33 +3076,76 @@ class TabbedHUD:
     def _render_jsonl_decision_entries(self, entries: list) -> None:
         """Render the rich JSONL decision log entries.
 
-        Columns: Date+Time | Mode | Agent | Decision | Conf | Feas | VPIN-z | Price | TradeID
-        Session breaks are inserted when the session_id changes.
+        Collapses consecutive CLOSE_PENDING rows into a single summary line
+        and surfaces reward-relevant context (regime, runway, capture, PnL).
+
+        Columns:
+          Date+Time | Mode | Agent | Decision | Conf | Detail (varies by decision type)
         """
-        header = (
-            f"  {'Date/Time':<12} {'Mode':<6} {'Agent':<10} {'Decision':<14} "
-            f"{'Conf':>6} {'Feas':>6} {'VPIN-z':>7} {'Price':>10}  {'TrdID':<9}"
-        )
+        # ── Pre-pass: collapse CLOSE_PENDING runs ─────────────────────────
+        collapsed: list[dict | str] = []  # dict = normal entry, str = summary line
+        i = 0
+        while i < len(entries):
+            e = entries[i]
+            if e.get("decision", "").upper() == "CLOSE_PENDING":
+                run_start = i
+                tid = e.get("trade_id", "?")
+                while i < len(entries) and entries[i].get("decision", "").upper() == "CLOSE_PENDING":
+                    i += 1
+                run_len = i - run_start
+                last = entries[i - 1]
+                _rsn = last.get("reasoning", {})
+                _ctx = last.get("context", {})
+                _mfe = _rsn.get("mfe", 0.0)
+                _mae = _rsn.get("mae", 0.0)
+                _upnl = _ctx.get("unrealized_pnl", 0.0)
+                _pnl_c = _ANSI_G if _upnl >= 0 else _ANSI_R
+                collapsed.append(
+                    f"  {_ANSI_DIM}   ... Harvester held {run_len} bars (TrdID:{tid[:8]})  "
+                    f"MFE:{_ANSI_G}+{_mfe:.2f}{_ANSI_DIM}  MAE:{_ANSI_R}-{_mae:.2f}{_ANSI_DIM}  "
+                    f"uPnL:{_pnl_c}{_upnl:+.2f}{_ANSI_DIM}{_ANSI_RST}"
+                )
+            else:
+                collapsed.append(e)
+                i += 1
+
+        # ── Distribution (only non-CLOSE_PENDING decisions) ───────────────
         _counts: dict[str, int] = {}
-        for _e in entries:
-            _d = _e.get("decision", "?").upper()
-            _counts[_d] = _counts.get(_d, 0) + 1
+        _total_entries = 0
+        for item in collapsed:
+            if isinstance(item, dict):
+                _d = item.get("decision", "?").upper()
+                _counts[_d] = _counts.get(_d, 0) + 1
+                _total_entries += 1
         _dist = "  ".join(f"{k}:{v}" for k, v in sorted(_counts.items()))
-        print(f"  Distribution (last {len(entries)}): {_dist}\n")
+        print(f"  Decisions: {_dist}  ({len(entries) - _total_entries} held bars collapsed)\n")
+
+        # ── Header ────────────────────────────────────────────────────────
+        header = (
+            f"  {'Time':<12} {'Mode':<6} {'Agent':<10} {'Decision':<10} "
+            f"{'Conf':>5}  {'Detail'}"
+        )
         print(header)
-        print("  " + "─" * 80)
+        print("  " + "─" * 90)
+
         _prev_session: str | None = None
-        for entry in entries:
+        for item in collapsed:
+            # Collapsed CLOSE_PENDING summary line
+            if isinstance(item, str):
+                print(item)
+                continue
+
+            entry = item
+
             # ── Session break header ───────────────────────────────────────
             _sess = entry.get("session", "")
             if _sess and _sess != _prev_session:
                 _prev_session = _sess
                 print(f"  {_ANSI_DIM}── session {_sess} ──{_ANSI_RST}")
 
-            # ── Timestamp: MM-DD HH:MM (date preserved across multi-day logs) ──
+            # ── Timestamp ──────────────────────────────────────────────────
             ts_raw = entry.get("timestamp", "?")
             try:
-                # ISO 2026-03-08T15:30:00+00:00 → slice [5:16] = 03-08 15:30
                 ts_str = ts_raw[5:16] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw[:11]
             except Exception:
                 ts_str = str(ts_raw)[:11]
@@ -3115,45 +3160,95 @@ class TabbedHUD:
                 mode_str = f"{_ANSI_DIM}  ?  {_ANSI_RST}"
 
             agent = entry.get("agent", "?")[:9]
-            decision = entry.get("decision", "?")[:13]
+            decision = entry.get("decision", "?")
             conf = entry.get("confidence", 0.0)
             ctx = entry.get("context", {})
             reasoning = entry.get("reasoning", {})
-            price = ctx.get("price", 0.0)
-            vpin_z = ctx.get("vpin_z", 0.0)
-            feasibility = reasoning.get("feasibility", 0.0)
 
-            # ── Trade correlation ID (links entry→HOLDs→close for one trade) ──
-            trade_id = entry.get("trade_id", "")
-            tid_str = trade_id[:8] if trade_id else f"{_ANSI_DIM}--------{_ANSI_RST}"
+            # ── Build decision-specific detail string ──────────────────────
+            dec_upper = decision.upper()
+            if dec_upper in ("LONG", "SHORT"):
+                # Entry: show regime, feasibility, predicted_runway, VPIN-z, Q-spread
+                regime = ctx.get("regime", "?")[:5]
+                feas = reasoning.get("feasibility", 0.0)
+                runway = reasoning.get("predicted_runway", 0.0)
+                vpin_z = ctx.get("vpin_z", 0.0)
+                qs = reasoning.get("q_spread", 0.0)
+                tid = entry.get("trade_id", "")[:8]
+                vpin_flag = f"{_ANSI_R}!{_ANSI_RST}" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
+                feas_c = _ANSI_G if feas >= 0.6 else (_ANSI_Y if feas >= 0.3 else _ANSI_R)
+                detail = (
+                    f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} "
+                    f"rwy:{runway:.4f} vz:{vpin_z:+.1f}{vpin_flag} "
+                    f"QΔ:{qs:.3f} [{tid}]"
+                )
+            elif dec_upper == "NO_ENTRY":
+                # Rejected entry: show WHY (feasibility, regime, VPIN-z)
+                regime = ctx.get("regime", "?")[:5]
+                feas = reasoning.get("feasibility", 0.0)
+                vpin_z = ctx.get("vpin_z", 0.0)
+                cb_ok = reasoning.get("circuit_breakers_ok", True)
+                feas_c = _ANSI_R if feas < 0.3 else (_ANSI_Y if feas < 0.6 else _ANSI_G)
+                cb_str = f" {_ANSI_R}CB!{_ANSI_RST}" if not cb_ok else ""
+                detail = (
+                    f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} "
+                    f"vz:{vpin_z:+.1f}{cb_str}"
+                )
+            elif dec_upper == "CLOSE":
+                # Exit: show capture_ratio, MFE, MAE, unrealized PnL, Q-spread
+                cap = reasoning.get("capture_ratio", 0.0)
+                mfe = reasoning.get("mfe", 0.0)
+                mae = reasoning.get("mae", 0.0)
+                upnl = ctx.get("unrealized_pnl", 0.0)
+                qs = reasoning.get("q_spread", 0.0)
+                tid = entry.get("trade_id", "")[:8]
+                cap_c = _ANSI_G if cap >= 0.6 else (_ANSI_Y if cap >= 0.3 else _ANSI_R)
+                pnl_c = _ANSI_G if upnl >= 0 else _ANSI_R
+                detail = (
+                    f"cap:{cap_c}{cap:+.2f}{_ANSI_RST} "
+                    f"MFE:{_ANSI_G}+{mfe:.2f}{_ANSI_RST} "
+                    f"MAE:{_ANSI_R}-{mae:.2f}{_ANSI_RST} "
+                    f"uPnL:{pnl_c}{upnl:+.1f}{_ANSI_RST} Q\u0394:{qs:.3f} [{tid}]"
+                )
+            elif dec_upper == "HOLD":
+                # Hold: show ticks_held, capture_ratio trajectory
+                ticks = reasoning.get("ticks_held", 0)
+                cap = reasoning.get("capture_ratio", 0.0)
+                upnl = ctx.get("unrealized_pnl", 0.0)
+                pnl_c = _ANSI_G if upnl >= 0 else _ANSI_R
+                detail = (
+                    f"bars:{ticks} cap:{cap:+.2f} "
+                    f"uPnL:{pnl_c}{upnl:+.1f}{_ANSI_RST}"
+                )
+            else:
+                price = ctx.get("price", 0.0)
+                detail = f"@ {price:.2f}"
 
-            if decision.upper() in ("BUY", "LONG", "ENTER"):
+            # ── Color by decision type ─────────────────────────────────────
+            if dec_upper in ("BUY", "LONG", "ENTER"):
                 color = _ANSI_G
-            elif decision.upper() in ("SELL", "SHORT", "EXIT", "CLOSE", "CLOSE_PENDING"):
+            elif dec_upper in ("SELL", "SHORT", "EXIT", "CLOSE"):
                 color = _ANSI_R
-            elif decision.upper() == "HOLD":
+            elif dec_upper == "HOLD":
                 color = _ANSI_Y
+            elif dec_upper == "NO_ENTRY":
+                color = _ANSI_DIM
             else:
                 color = _ANSI_RST
-            vpin_flag = (
-                f"{_ANSI_R}⚠{_ANSI_RST}"
-                if abs(vpin_z) > _DEC_LOG_VPIN_WARN
-                else " "
-            )
-            dec = self._price_decimals(price)
+
             print(
                 f"  {ts_str:<12} {mode_str} {agent:<10} "
-                f"{color}{decision:<14}{_ANSI_RST} "
-                f"{conf:>6.3f} {feasibility:>6.2f} {vpin_z:>+6.2f}{vpin_flag} "
-                f"{price:>10.{dec}f}  {tid_str}"
+                f"{color}{dec_upper:<10}{_ANSI_RST} "
+                f"{conf:>5.3f}  {detail}"
             )
-        print("  " + "─" * 80)
+        print("  " + "─" * 90)
 
     def _render_legacy_decision_entries(self, entries: list) -> None:
-        """Render legacy JSON-format decision log entries."""
-        print(f"  Showing {len(entries[-20:])} most recent decisions (legacy format):\n")
+        """Render legacy JSON-format decision log entries — newest first."""
+        recent = list(reversed(entries[-20:]))
+        print(f"  Showing {len(recent)} most recent decisions (legacy format):\n")
         print("  " + "─" * 76)
-        for entry in entries[-20:]:
+        for entry in recent:
             ts = entry.get("timestamp", "?")
             event = entry.get("event", "?")
             # Trading mode badge
@@ -3197,7 +3292,7 @@ class TabbedHUD:
         print(f"\n  Total decisions logged: {len(entries)}")
 
     def _render_decision_log(self):
-        """Render the Decision Log tab (Tab 6)"""
+        """Render the Decision Log tab (Tab 6) — newest entries first."""
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
 
         jsonl_file = Path("logs/audit/decisions.jsonl")
@@ -3206,7 +3301,7 @@ class TabbedHUD:
             try:
                 with open(jsonl_file, encoding="utf-8") as f:
                     lines = f.readlines()
-                for raw_line in lines[-20:]:
+                for raw_line in lines[-100:]:
                     stripped = raw_line.strip()
                     if stripped:
                         entries_jsonl.append(json.loads(stripped))
@@ -3214,6 +3309,8 @@ class TabbedHUD:
                 entries_jsonl = []
 
         if entries_jsonl:
+            # Reverse so newest entries display at top
+            entries_jsonl.reverse()
             self._render_jsonl_decision_entries(entries_jsonl)
             return
 
@@ -3865,7 +3962,10 @@ class TabbedHUD:
             _pnl   = _t.get("pnl", 0.0)
             _mfe   = _t.get("mfe", 0.0)
             _mae   = _t.get("mae", 0.0)
-            _bars  = _t.get("bars_held", 0)
+            _bars  = _t.get("bars_held")
+            if _bars is None:
+                _hs = _t.get("hold_seconds")
+                _bars = max(1, int(_hs / 300)) if _hs and _hs > 0 else 0
             _rsn   = (_t.get("close_reason") or _t.get("exit_reason") or "-")[:_C_RSN]
 
             _ts = _t.get("exit_time") or _t.get("entry_time") or ""
