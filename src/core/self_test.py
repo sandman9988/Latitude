@@ -367,14 +367,14 @@ def _chk_bot_config() -> tuple[Sev, str]:
 
 
 def _chk_platt_sanity() -> tuple[Sev, str]:
-    """Check Platt calibration params from learned_parameters; warn if degenerate."""
-    p = Path("data/learned_parameters.json")
+    """Check Platt calibration params from production_metrics; warn if degenerate."""
+    p = Path("data/production_metrics.json")
     if not p.exists():
-        return Sev.INFO, "no learned params — Platt at defaults (a=1.0 b=0.0)"
+        return Sev.INFO, "no production metrics — Platt at defaults (a=1.0 b=0.0)"
     try:
-        data = json.loads(p.read_text())
-        a = float(data.get("platt_a", 1.0))
-        b = float(data.get("platt_b", 0.0))
+        metrics = json.loads(p.read_text()).get("metrics", {})
+        a = float(metrics.get("platt_a", 1.0))
+        b = float(metrics.get("platt_b", 0.0))
         if not (math.isfinite(a) and math.isfinite(b)):
             return Sev.WARNING, f"non-finite Platt params a={a} b={b} — will reset"
         if abs(a) > _MAX_PLATT_PARAM or abs(b) > _MAX_PLATT_PARAM:

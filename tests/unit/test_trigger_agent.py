@@ -27,6 +27,8 @@ from src.agents.trigger_agent import (
     Q_RUNWAY_MIN,
     Q_RUNWAY_MAX,
     Q_RUNWAY_MAX_Q,
+    RUNWAY_SAFETY_FLOOR,
+    RUNWAY_SAFETY_CEILING,
 )
 
 LOG = logging.getLogger(__name__)
@@ -492,14 +494,65 @@ class TestEWMARunwayCalibration:
         assert ta._runway_cal_counts[bucket] == 1
         assert ta._runway_cal_ewma[bucket] == pytest.approx(0.002)
 
-    def test_calibrated_value_clipped_to_bounds(self):
-        """Calibrated runway should be clipped to [Q_RUNWAY_MIN, Q_RUNWAY_MAX]."""
+    def test_calibrated_value_clipped_to_safety_bounds(self):
+        """Calibrated runway should be clipped to [RUNWAY_SAFETY_FLOOR, RUNWAY_SAFETY_CEILING]."""
         from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
         ta = TriggerAgent(window=64, n_features=7)
-        # Feed extreme (very high) MFE
+        # Feed extreme (very high) MFE — should be clipped to RUNWAY_SAFETY_CEILING
         for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
             ta._last_entry_q = 0.3
-            ta._update_runway_calibration(0.05)  # Way above Q_RUNWAY_MAX
+            ta._update_runway_calibration(0.10)  # 10% — way above safety ceiling
         result = ta._q_to_runway(0.3)
-        assert result <= Q_RUNWAY_MAX
-        assert result >= Q_RUNWAY_MIN
+        assert result <= RUNWAY_SAFETY_CEILING
+        assert result >= RUNWAY_SAFETY_FLOOR
+        # Also verify it can exceed old Q_RUNWAY_MAX when data supports it
+        ta2 = TriggerAgent(window=64, n_features=7)
+        for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta2._last_entry_q = 2.5
+            ta2._update_runway_calibration(0.008)  # 0.8% > old Q_RUNWAY_MAX (0.5%)
+        result2 = ta2._q_to_runway(2.5)
+        assert result2 > Q_RUNWAY_MAX  # RL-learned value exceeds old static ceiling
+        assert result2 == pytest.approx(0.008, abs=0.002)
+
+    def test_calibrated_global_runway(self):
+        """_calibrated_global_runway returns weighted average across calibrated buckets."""
+        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
+        ta = TriggerAgent(window=64, n_features=7)
+        # No data → None
+        assert ta._calibrated_global_runway() is None
+        # Fill bucket 0 with 0.003
+        for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta._last_entry_q = 0.3
+            ta._update_runway_calibration(0.003)
+        # Fill bucket 3 with 0.006
+        for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta._last_entry_q = 2.0
+            ta._update_runway_calibration(0.006)
+        global_avg = ta._calibrated_global_runway()
+        assert global_avg is not None
+        assert 0.003 < global_avg < 0.006  # Weighted average between the two
+
+    def test_mae_ewma_tracked(self):
+        """MAE EWMA should be updated alongside MFE."""
+        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
+        ta = TriggerAgent(window=64, n_features=7)
+        for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta._last_entry_q = 1.0
+            ta._update_runway_calibration(0.003, actual_mae_frac=0.001)
+        bucket = TriggerAgent._q_bucket(1.0)
+        assert ta._runway_cal_mae_ewma[bucket] == pytest.approx(0.001, abs=0.0005)
+
+    def test_fallback_runway_uses_global_calibration(self):
+        """_fallback_runway should use calibrated global average when available."""
+        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES, PREDICTED_RUNWAY_FALLBACK
+        ta = TriggerAgent(window=64, n_features=7)
+        # Before calibration: should use vol-scaled PREDICTED_RUNWAY_FALLBACK
+        cold_val = ta._fallback_runway(0.0)
+        assert cold_val == pytest.approx(PREDICTED_RUNWAY_FALLBACK * 1.1, abs=0.001)
+        # Fill calibration with known values (much higher than fallback)
+        for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+            ta._last_entry_q = 1.0
+            ta._update_runway_calibration(0.008)
+        # Now fallback should use calibrated global average
+        warm_val = ta._fallback_runway(0.0)
+        assert warm_val > cold_val  # Calibrated average (0.008) >> old fallback (0.0015)

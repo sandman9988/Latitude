@@ -344,14 +344,18 @@ class TradeManagerIntegration:
         entry_price = tracker_summary.get("entry_price", 0.0)
         direction = "LONG" if tracker.direction > 0 else "SHORT"
 
+        # Use entry qty from tracker (not exit order qty) for correct PnL
+        entry_qty = tracker_summary.get("filled_qty", 0.0)
+        if entry_qty <= 0:
+            entry_qty = float(order.filled_qty)  # fallback to exit fill
         if hasattr(self.app, "_calculate_position_pnl"):
             pnl = self.app._calculate_position_pnl(
                 entry_price=entry_price, exit_price=order.avg_price,
-                direction=direction, quantity=order.filled_qty,
+                direction=direction, quantity=entry_qty,
             )
         else:
             direction_sign = 1 if tracker.direction > 0 else -1
-            pnl = (order.avg_price - entry_price) * direction_sign * order.filled_qty * self.app.contract_size
+            pnl = (order.avg_price - entry_price) * direction_sign * entry_qty * self.app.contract_size
 
         self.audit.log_position_close(
             position_id=position_id_to_remove, exit_price=order.avg_price,
@@ -912,10 +916,15 @@ class TradeManagerIntegration:
         direction, ticket = self._resolve_close_details(position_id)
         if not ticket:
             return False
+        # Use the tracker's actual filled_qty (VaR-sized) instead of base lot size
+        tracker = self.app.mfe_mae_trackers.get(position_id)
+        close_qty = getattr(tracker, "filled_qty", 0.0) if tracker else 0.0
+        if close_qty <= 0:
+            close_qty = self.app.qty
         exit_side = Side.SELL if direction > 0 else Side.BUY
         order = self.trade_manager.submit_market_order(
             side=exit_side,
-            quantity=self.app.qty,
+            quantity=close_qty,
             tag_prefix=f"EXIT_{reason}",
             position_ticket=ticket,
         )
@@ -925,7 +934,7 @@ class TradeManagerIntegration:
                 "[INTEGRATION] Closing position ticket=%s: %s %.6f @ market (clOrdID=%s reason=%s)",
                 ticket,
                 exit_side.name,
-                self.app.qty,
+                close_qty,
                 order.clord_id,
                 reason,
             )
@@ -954,9 +963,18 @@ class TradeManagerIntegration:
             LOG.warning("[INTEGRATION] No net position to exit")
             return False
         exit_side = Side.SELL if pos_dir > 0 else Side.BUY
+        # Find the active tracker to use its actual filled_qty
+        close_qty = self.app.qty  # fallback
+        if hasattr(self.app, "mfe_mae_trackers"):
+            for tracker in self.app.mfe_mae_trackers.values():
+                if getattr(tracker, "direction", 0) == pos_dir:
+                    _tq = getattr(tracker, "filled_qty", 0.0)
+                    if _tq > 0:
+                        close_qty = _tq
+                    break
         order = self.trade_manager.submit_market_order(
             side=exit_side,
-            quantity=self.app.qty,
+            quantity=close_qty,
             tag_prefix=f"EXIT_{reason}",
         )
         if order:
@@ -967,7 +985,7 @@ class TradeManagerIntegration:
             self.exit_order_to_ticket[order.clord_id] = f"_NET_{pos_dir}"
             LOG.info(
                 "[INTEGRATION] Closing net position: %s %.6f (reason=%s clOrdID=%s)",
-                exit_side.name, self.app.qty, reason, order.clord_id,
+                exit_side.name, close_qty, reason, order.clord_id,
             )
         return order is not None
 
@@ -1211,7 +1229,8 @@ class TradeManagerIntegration:
                 LOG.warning("[RECOVERY] Invalid direction=%s for %s - defaulting to LONG", direction, pos_id)
                 direction = 1
             if pos_id not in self.app.mfe_mae_trackers:
-                self.app.mfe_mae_trackers[pos_id] = tracker_cls(pos_id)
+                recovered_qty = float(tracker_data.get("filled_qty", 0.0) or tracker_data.get("quantity", 0.0) or 0.0)
+                self.app.mfe_mae_trackers[pos_id] = tracker_cls(pos_id, filled_qty=recovered_qty)
             tracker = self.app.mfe_mae_trackers[pos_id]
             tracker.start_tracking(entry_price, direction)
             mfe_val = float(tracker_data.get("mfe", 0.0))
@@ -1236,7 +1255,8 @@ class TradeManagerIntegration:
             position_id = ticket_data["position_id"]
             tracker_is_new = position_id not in self.app.mfe_mae_trackers
             if tracker_is_new:
-                self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id)
+                recovered_qty = float(ticket_data.get("quantity", 0.0) or 0.0)
+                self.app.mfe_mae_trackers[position_id] = MFEMAETracker(position_id, filled_qty=recovered_qty)
             tracker = self.app.mfe_mae_trackers[position_id]
             if tracker_is_new:
                 tracker.start_tracking(ticket_data["entry_price"], ticket_data["direction"])
@@ -1309,7 +1329,7 @@ class TradeManagerIntegration:
         if hasattr(self.app, "mfe_mae_trackers"):
             from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
             if pos_id not in self.app.mfe_mae_trackers:
-                self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id)
+                self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id, filled_qty=self.app.qty)
             self.app.mfe_mae_trackers[pos_id].start_tracking(self.entry_price, self.position_direction)
         tr = self.app.mfe_mae_trackers.get(pos_id) if hasattr(self.app, "mfe_mae_trackers") else None
         mfe = getattr(tr, "mfe", 0.0) if tr else 0.0

@@ -58,6 +58,7 @@ _UTILIZATION_BAD_THRESHOLD: float = 0.3   # utilization below this is a bad entr
 _UTILIZATION_OUTLIER_LOW: float = 0.2     # below this is an outlier (too poor)
 _UTILIZATION_OUTLIER_HIGH: float = 2.0    # above this is an outlier (excessive)
 PREDICTED_RUNWAY_FALLBACK = 0.0015
+# Static bootstrap bounds (used ONLY before calibration has data)
 Q_RUNWAY_MIN = 0.0010
 Q_RUNWAY_MAX = 0.0050
 Q_RUNWAY_MAX_Q = 3.0
@@ -69,6 +70,9 @@ RUNWAY_CAL_N_BUCKETS: int = 5            # Q-value buckets for calibration
 RUNWAY_CAL_Q_EDGES: list[float] = [0.0, 0.6, 1.2, 1.8, 2.4, 3.0]  # Bucket boundaries
 RUNWAY_CAL_ALPHA: float = 0.15           # EWMA smoothing factor (higher = faster adaptation)
 RUNWAY_CAL_MIN_SAMPLES: int = 3          # Minimum samples before using calibrated value
+# Safety bounds: floor at friction-level, ceiling at 5% (huge move — clamp outliers)
+RUNWAY_SAFETY_FLOOR: float = 0.0002     # ~$1 on gold; below this friction dominates
+RUNWAY_SAFETY_CEILING: float = 0.05     # 5% of price; no sane M5 entry expects this
 
 
 class _EconomicsGateParams(NamedTuple):
@@ -203,8 +207,9 @@ class TriggerAgent(AgentTrainingMixin):
         # ── EWMA runway calibration ──────────────────────────────────────────
         # Tracks actual MFE outcomes per Q-value bucket so _q_to_runway()
         # adapts from empirical data rather than a static linear mapping.
-        # Each bucket stores: (ewma_mfe, sample_count)
+        # Each bucket stores: (ewma_mfe, ewma_mae, sample_count)
         self._runway_cal_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_cal_mae_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
         self._runway_cal_counts: list[int] = [0] * RUNWAY_CAL_N_BUCKETS
         self._last_entry_q: float | None = None  # Q-value at most recent entry
 
@@ -290,7 +295,7 @@ class TriggerAgent(AgentTrainingMixin):
             self.last_action = action
             if action == 0:
                 return 0, 0.0, 0.0
-            return action, 0.5, PREDICTED_RUNWAY_FALLBACK
+            return action, 0.5, self._fallback_runway(0.0)
 
         # Forced entry when idle for too many bars
         if self.force_exploration and self.bars_since_trade >= self.max_bars_inactive:
@@ -298,7 +303,7 @@ class TriggerAgent(AgentTrainingMixin):
             LOG.debug("[TRIGGER] FORCED ENTRY after %d bars flat: action=%d", self.bars_since_trade, action)
             self.bars_since_trade = 0
             self.last_action = action
-            return action, 0.5, PREDICTED_RUNWAY_FALLBACK
+            return action, 0.5, self._fallback_runway(0.0)
 
         return None  # Carry on to normal model decision
 
@@ -612,7 +617,23 @@ class TriggerAgent(AgentTrainingMixin):
         return min(confidence, 0.85)
 
     def _fallback_runway(self, vol_z: float) -> float:
-        """Compute volatility-scaled fallback runway."""
+        """Compute fallback runway using calibrated global average when available,
+        otherwise vol-scaled bootstrap constant."""
+        # Use RL-learned global average if we have enough data
+        cal_global = self._calibrated_global_runway()
+        if cal_global is not None:
+            # Scale by volatility regime
+            if vol_z < -1.0:
+                vol_scale = FALLBACK_VOL_SCALE_QUIET
+            elif vol_z > 1.0:
+                vol_scale = FALLBACK_VOL_SCALE_HOT
+            else:
+                vol_scale = FALLBACK_VOL_SCALE_QUIET + (
+                    (FALLBACK_VOL_SCALE_HOT - FALLBACK_VOL_SCALE_QUIET) * (vol_z + 1.0) / 2.0
+                )
+            return float(np.clip(cal_global * vol_scale, RUNWAY_SAFETY_FLOOR, RUNWAY_SAFETY_CEILING))
+
+        # Bootstrap fallback (before any calibration data exists)
         if vol_z < -1.0:
             vol_scale = FALLBACK_VOL_SCALE_QUIET
         elif vol_z > 1.0:
@@ -621,7 +642,7 @@ class TriggerAgent(AgentTrainingMixin):
             vol_scale = FALLBACK_VOL_SCALE_QUIET + (
                 (FALLBACK_VOL_SCALE_HOT - FALLBACK_VOL_SCALE_QUIET) * (vol_z + 1.0) / 2.0
             )
-        return float(np.clip(PREDICTED_RUNWAY_FALLBACK * vol_scale, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
+        return float(np.clip(PREDICTED_RUNWAY_FALLBACK * vol_scale, RUNWAY_SAFETY_FLOOR, RUNWAY_SAFETY_CEILING))
 
     def _fallback_strategy(self, state: np.ndarray, regime_threshold_adj: float = 0.0) -> int:
         """Action-only shim for backward compatibility. Delegates to _fallback_decide()."""
@@ -707,20 +728,21 @@ class TriggerAgent(AgentTrainingMixin):
 
         Uses EWMA-calibrated mapping when sufficient samples exist for the
         Q-value bucket; otherwise falls back to the static linear heuristic.
-
-        Example: For entry at $4600, 0.20% runway = $9.20 expected MFE
+        Calibrated values are NOT clipped to the static [Q_RUNWAY_MIN, Q_RUNWAY_MAX]
+        range — they learn the actual MFE distribution from trade outcomes.
+        Only safety bounds (RUNWAY_SAFETY_FLOOR / RUNWAY_SAFETY_CEILING) apply.
         """
         # Record Q for post-trade EWMA update
         self._last_entry_q = q_value
 
         clamped_q = max(0.0, min(Q_RUNWAY_MAX_Q, q_value))
 
-        # Try calibrated value first
+        # Try calibrated (RL-learned) value first — no artificial ceiling
         cal_runway = self._calibrated_runway(clamped_q)
         if cal_runway is not None:
-            return float(np.clip(cal_runway, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
+            return float(np.clip(cal_runway, RUNWAY_SAFETY_FLOOR, RUNWAY_SAFETY_CEILING))
 
-        # Fallback: static linear interpolation
+        # Fallback: static linear interpolation (bootstrap only)
         if q_value <= 0:
             return Q_RUNWAY_MIN
         if q_value >= Q_RUNWAY_MAX_Q:
@@ -742,32 +764,51 @@ class TriggerAgent(AgentTrainingMixin):
                 return i
         return RUNWAY_CAL_N_BUCKETS - 1
 
-    def _update_runway_calibration(self, actual_mfe_frac: float) -> None:
-        """Update the EWMA calibration bucket with the observed MFE (fractional)."""
+    def _update_runway_calibration(self, actual_mfe_frac: float, actual_mae_frac: float = 0.0) -> None:
+        """Update the EWMA calibration bucket with observed MFE and MAE (fractional)."""
         q_val = self._last_entry_q
         if q_val is None:
             return
         bucket = self._q_bucket(max(0.0, min(Q_RUNWAY_MAX_Q, q_val)))
         count = self._runway_cal_counts[bucket]
+        alpha = RUNWAY_CAL_ALPHA
         if count == 0:
             self._runway_cal_ewma[bucket] = actual_mfe_frac
+            self._runway_cal_mae_ewma[bucket] = actual_mae_frac
         else:
-            alpha = RUNWAY_CAL_ALPHA
             self._runway_cal_ewma[bucket] = (
                 alpha * actual_mfe_frac + (1 - alpha) * self._runway_cal_ewma[bucket]
             )
+            self._runway_cal_mae_ewma[bucket] = (
+                alpha * actual_mae_frac + (1 - alpha) * self._runway_cal_mae_ewma[bucket]
+            )
         self._runway_cal_counts[bucket] += 1
         LOG.debug(
-            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe_frac=%.5f ewma=%.5f n=%d",
-            bucket, q_val, actual_mfe_frac, self._runway_cal_ewma[bucket],
+            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe=%.5f mae=%.5f "
+            "ewma_mfe=%.5f ewma_mae=%.5f n=%d",
+            bucket, q_val, actual_mfe_frac, actual_mae_frac,
+            self._runway_cal_ewma[bucket], self._runway_cal_mae_ewma[bucket],
             self._runway_cal_counts[bucket],
         )
         self._last_entry_q = None
+
+    def _calibrated_global_runway(self) -> float | None:
+        """Return the weighted average EWMA across all calibrated buckets, or None."""
+        total_samples = 0
+        weighted_sum = 0.0
+        for i in range(RUNWAY_CAL_N_BUCKETS):
+            if self._runway_cal_counts[i] >= RUNWAY_CAL_MIN_SAMPLES:
+                weighted_sum += self._runway_cal_ewma[i] * self._runway_cal_counts[i]
+                total_samples += self._runway_cal_counts[i]
+        if total_samples == 0:
+            return None
+        return weighted_sum / total_samples
 
     def get_calibration_state(self) -> dict:
         """Export runway calibration + Platt params for checkpoint persistence."""
         return {
             "runway_cal_ewma": list(self._runway_cal_ewma),
+            "runway_cal_mae_ewma": list(self._runway_cal_mae_ewma),
             "runway_cal_counts": list(self._runway_cal_counts),
             "platt_a": self.platt_a,
             "platt_b": self.platt_b,
@@ -783,6 +824,9 @@ class TriggerAgent(AgentTrainingMixin):
             total = sum(self._runway_cal_counts)
             LOG.info("[TRIGGER] Restored runway calibration: %d total samples across %d buckets",
                      total, sum(1 for c in self._runway_cal_counts if c > 0))
+        mae_ewma = state.get("runway_cal_mae_ewma")
+        if mae_ewma and len(mae_ewma) == RUNWAY_CAL_N_BUCKETS:
+            self._runway_cal_mae_ewma = [float(v) for v in mae_ewma]
         if "platt_a" in state:
             self.platt_a = float(state["platt_a"])
             self.platt_b = float(state.get("platt_b", 0.0))
@@ -796,13 +840,14 @@ class TriggerAgent(AgentTrainingMixin):
         entry_confidence: float = 0.5,
         entry_price: float = 0.0,
         raw_confidence: float | None = None,
+        actual_mae: float = 0.0,
     ):
         """
         Update trigger agent based on trade outcome.
 
         Phase 3.5: Online learning updates:
         1. Log prediction error
-        2. Update EWMA runway calibration with actual MFE
+        2. Update EWMA runway calibration with actual MFE and MAE
         3. Update Platt calibration with actual trade outcome
         4. Update entry confidence threshold based on prediction accuracy
         5. Update confidence_floor via LearnedParameters
@@ -813,14 +858,16 @@ class TriggerAgent(AgentTrainingMixin):
             entry_confidence: Calibrated probability at entry
             entry_price: Entry price for MFE→fractional conversion
             raw_confidence: Pre-Platt probability (for correct gradient)
+            actual_mae: Actual MAE (max adverse excursion) during trade (absolute)
         """
         if predicted_runway <= 0:
             return
 
-        # EWMA runway calibration: convert absolute MFE to fractional
+        # EWMA runway calibration: convert absolute MFE/MAE to fractional
         if entry_price > 0 and actual_mfe >= 0:
             actual_mfe_frac = actual_mfe / entry_price
-            self._update_runway_calibration(actual_mfe_frac)
+            actual_mae_frac = actual_mae / entry_price if actual_mae > 0 else 0.0
+            self._update_runway_calibration(actual_mfe_frac, actual_mae_frac)
 
         utilization = self._log_runway_error(actual_mfe, predicted_runway)
         outcome = self._trade_outcome(actual_mfe, predicted_runway)

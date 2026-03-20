@@ -3364,7 +3364,9 @@ class CTraderFixApp(fix.Application):
         # Unrealized P&L in USD (qty in lots × 100 oz/lot × price_diff)
         # Use the tracker's actual filled_qty (VaR-sized) instead of self.qty
         # (base lot size) to avoid premature closes on smaller positions.
-        qty = getattr(tracker, "filled_qty", 0.0) or getattr(self, "qty", 0.1)
+        qty = getattr(tracker, "filled_qty", 0.0)
+        if qty <= 0:
+            qty = getattr(self, "qty", 0.1)
         contract_size = getattr(self, "contract_size", 100.0)
         price_diff = (mid_price - entry_price) * direction
         unrealized_pnl = price_diff * qty * contract_size
@@ -4018,7 +4020,9 @@ class CTraderFixApp(fix.Application):
             # Calculate P&L using dedicated method (single source of truth).
             # Use the filled_qty recorded at entry so VaR-sized positions get
             # the correct lot size instead of the default self.qty.
-            _filled_qty = summary.get("filled_qty") or None
+            _filled_qty = summary.get("filled_qty")
+            if _filled_qty is None or _filled_qty <= 0:
+                _filled_qty = None  # let _calculate_position_pnl fall back to self.qty
             pnl = self._calculate_position_pnl(entry_price, exit_price, direction, quantity=_filled_qty)
 
             # Checkpoint: Store initial P&L to detect corruption
@@ -4046,6 +4050,9 @@ class CTraderFixApp(fix.Application):
                 shaped_rewards["total_reward"],
                 shaped_rewards["components_active"],
             )
+
+            # Snapshot predicted_runway before online-learning resets it to 0.0
+            _predicted_runway_snapshot = self.predicted_runway
 
             trigger_reward = self._add_trigger_experience_for_close(summary, pnl, entry_price, pnl_pts, shaped_rewards)
             self._add_harvester_experience_for_close(summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward)
@@ -4077,6 +4084,8 @@ class CTraderFixApp(fix.Application):
             _mae_dollars = summary.get("mae", 0.0) * _trade_qty * self.contract_size
             # bars_held: use live path recorder (summary doesn't include it)
             _bars_held = self._get_live_bars_held()
+            # Snapshot entry geometry from DualPolicy (captured at entry time)
+            _entry_geom = getattr(self.policy, "entry_geometry", {}) if hasattr(self, "policy") else {}
             trade_record = {
                 "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
                 "ticket": summary.get("ticket", ""),
@@ -4096,8 +4105,12 @@ class CTraderFixApp(fix.Application):
                 "close_reason": summary.get("close_reason", ""),
                 "bars_held": _bars_held,
                 "hold_seconds": (exit_time - self.trade_entry_time).total_seconds() if self.trade_entry_time else 0.0,
-                "predicted_runway": getattr(self, "predicted_runway", 0.0),
+                "predicted_runway": _predicted_runway_snapshot,
                 "entry_confidence": getattr(self, "entry_confidence", 0.5),
+                "entry_efficiency": _entry_geom.get("efficiency", 0.0),
+                "entry_gamma": _entry_geom.get("gamma", 0.0),
+                "entry_jerk": _entry_geom.get("jerk", 0.0),
+                "entry_feasibility": _entry_geom.get("feasibility", 0.0),
             }
             LOG.info(
                 "[TRADE_RECORD] Saving: ticket=%s pos_id=%s trade_id=%s pnl=%.4f close_reason=%s",

@@ -109,10 +109,17 @@ class PathGeometry:
         gamma = r2 - r1
 
         # Jerk: rate of change of acceleration
-        # On the very first call _prev_gamma is the init sentinel (0.0),
-        # so there is no valid prior to diff against — emit 0.
         if self._initialized:
             jerk = gamma - self._prev_gamma
+        elif len(bars) >= 4:
+            # First call but enough bars — derive prev gamma from bars[-4:-1]
+            c_m1 = bars[-4][4]
+            if c_m1 > 0:
+                r0 = (c0 - c_m1) / c_m1
+                gamma_prev = r1 - r0
+                jerk = gamma - gamma_prev
+            else:
+                jerk = 0.0
         else:
             jerk = 0.0
 

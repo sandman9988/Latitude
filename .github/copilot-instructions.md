@@ -176,13 +176,13 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 
 ## Current open items (as of 2026-03-19)
 
-| Item                                | Priority | Notes                                                               |
-| ----------------------------------- | -------- | ------------------------------------------------------------------- |
+| Item                                | Priority | Notes                                                                |
+| ----------------------------------- | -------- | -------------------------------------------------------------------- |
 | Offline training ZΩ < 1.0           | HIGH     | Best ZΩ=0.867 with penalty_scale=0.5; may need more epochs or ps=0.3 |
-| L2/imbalance feed                   | MEDIUM   | `imbalance` always 0.0; check FIX MarketDataRequest MDEntryType=0/1 |
-| Mode breakdown missing trades       | MEDIUM   | ~999 trades have missing/empty `trading_mode` field; not shown      |
-| Harvester Q-value convergence       | LOW      | Monitor `ticks_held` trending up in HUD Training tab                |
-| `data/decision_log.json` non-atomic | LOW      | Secondary log only; does not affect correctness                     |
+| L2/imbalance feed                   | MEDIUM   | `imbalance` always 0.0; check FIX MarketDataRequest MDEntryType=0/1  |
+| Mode breakdown missing trades       | MEDIUM   | ~999 trades have missing/empty `trading_mode` field; not shown       |
+| Harvester Q-value convergence       | LOW      | Monitor `ticks_held` trending up in HUD Training tab                 |
+| `data/decision_log.json` non-atomic | LOW      | Secondary log only; does not affect correctness                      |
 
 ---
 

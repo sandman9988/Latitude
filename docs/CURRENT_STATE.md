@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** March 19, 2026 (defense-in-depth audit, paper fill fix, circuit breaker reset, offline trainer alignment)  
+**Last Updated:** March 20, 2026 (qty/PnL bug fixes, RL runway predictor, geometry logging, runway-friction gate)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -11,7 +11,7 @@
 
 XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format, same RewardShaper). Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics. Defense-in-depth audit complete — max-loss enforcement hardened, paper fill bug fixed, circuit breaker reset fixed.
 
-**Test Suite:** 2,221 passing, 0 skipped, 0 failures (~35 s)  
+**Test Suite:** 2,224 passing, 0 skipped, 0 failures (~35 s)  
 **Production Lines:** ~41,300
 
 **Trading Status:**
@@ -62,7 +62,79 @@ Staleness sweep for `_pending_closes` was 120 seconds. A stuck paper fill attemp
 
 ---
 
-## 🔧 Offline Trainer RewardShaper Integration & Retraining (Mar 18, 2026)
+## � Quantity/PnL Bug Fixes — 6 Interconnected Bugs (Mar 20, 2026)
+
+Trade log showed `pnl=0.0` and `quantity=0.0` for many trades. Root cause: `filled_qty` was lost at multiple handoff points, causing PnL calculation (`price_diff × qty × contract_size`) to produce zero.
+
+### Bug #1 — `_close_position_by_id()` used `self.app.qty` instead of tracker qty
+Close orders sent with global `self.app.qty` (which may be 0.0 between trades) instead of the tracker's recorded `filled_qty`.
+**Fix:** Use `tracker.filled_qty` with fallback to `self.app.qty`.
+
+### Bug #2 — `_find_and_process_exit_tracker()` used order's filled_qty for PnL
+Used `order.filled_qty` (the exit order fill, which may be 0.0 for paper fills) instead of the tracker's entry quantity.
+**Fix:** Use `tracker_summary["filled_qty"]` for PnL, fall back to `order.filled_qty`.
+
+### Bug #3 — `_process_trade_completion()` falsy trap on filled_qty
+`_filled_qty = summary.get("filled_qty") or None` — if filled_qty was `0.0` (falsy), it became `None`, defeating the qty lookup.
+**Fix:** Explicit `if _filled_qty is None or _filled_qty <= 0:` check.
+
+### Bug #4 — Recovered trackers initialized with `filled_qty=0.0`
+Three recovery paths (`_restore_single_tracker`, `_restore_position_tickets`, `_recover_from_net_position`) created `MFEMAETracker` without passing the recovered quantity.
+**Fix:** All three paths now extract and pass `filled_qty` from persisted data.
+
+### Bug #5 — `_close_net_position()` didn't look up tracker qty
+**Fix:** Looks up tracker's `filled_qty` by direction before sending exit order.
+
+### Bug #6 — `_tick_max_loss_exceeded()` falsy trap on qty
+`qty = getattr(tracker, "filled_qty", 0.0) or getattr(self, "qty", 0.1)` — `0.0` is falsy so it always fell through to `self.qty`.
+**Fix:** Explicit `if qty <= 0:` check.
+
+**Files Modified:** `trade_manager_integration.py` (5 fixes), `ctrader_ddqn_paper.py` (2 fixes)
+
+---
+
+## 🧠 RL Runway Predictor — Remove Hardcoded Ceiling (Mar 20, 2026)
+
+### Problem
+Runway predictions had zero correlation with actual trade MFE. Analysis of 25 trades showed MAE/runway ratios scattered 0.03× to 27× with no pattern. Root cause: `Q_RUNWAY_MAX = 0.0050` (0.5%) hard ceiling clipped all predictions to ≤$23 on gold, but actual MFE averaged $29.81 (~0.64%). The EWMA calibration learned correct values but `np.clip(cal_runway, Q_RUNWAY_MIN, Q_RUNWAY_MAX)` threw them away.
+
+### Fix — RL-learned calibration replaces static ceiling
+- **`Q_RUNWAY_MIN`/`Q_RUNWAY_MAX` demoted to bootstrap constants** — used only before calibration has data
+- **EWMA calibrated values flow through uncapped** — only `RUNWAY_SAFETY_FLOOR = 0.0002` (friction level) and `RUNWAY_SAFETY_CEILING = 0.05` (outlier clamp) apply
+- **MAE tracking added** — `_runway_cal_mae_ewma` tracks adverse excursion per Q-bucket alongside MFE
+- **`_calibrated_global_runway()`** — new method returns weighted average across all populated EWMA buckets
+- **`_fallback_runway()`** upgraded — uses calibrated global average (vol-scaled) when available; only falls back to static constant when cold
+- **Exploration entries** use `_fallback_runway(0.0)` instead of fixed constant
+- **`update_from_trade()`** now receives `actual_mae` from DualPolicy for MAE EWMA learning
+- **Persistence** — `get_calibration_state()`/`load_calibration_state()` handle new `runway_cal_mae_ewma` field (backward-compatible)
+
+**Files Modified:** `trigger_agent.py`, `dual_policy.py`  
+**Tests:** 3 new tests added (global calibration, MAE EWMA, fallback uses calibration). 2,224 passing.
+
+---
+
+## 🚧 Runway-Friction Gate (Mar 20, 2026)
+
+Entries blocked when predicted runway doesn't justify friction costs.
+
+`MIN_RUNWAY_FRICTION_MULTIPLE = 1.5` in `dual_policy.py`. If `predicted_runway < 1.5 × friction_cost`, entry is blocked. TODO: migrate to `LearnedParametersManager` for self-adjustment.
+
+---
+
+## 📊 Geometry Fields Added to Trade Log (Mar 20, 2026)
+
+Path geometry features were computed at entry time but never persisted in `trade_log.jsonl`. All geometry values (efficiency, gamma, jerk, feasibility) were lost after the trade.
+
+**Fix:**
+- `DualPolicy` now snapshots `path_geometry.last` at entry time into `self.entry_geometry`
+- Trade record in `ctrader_ddqn_paper.py` writes 4 new fields: `entry_efficiency`, `entry_gamma`, `entry_jerk`, `entry_feasibility`
+- Snapshot resets on position close and defensive sync
+
+**Files Modified:** `dual_policy.py`, `ctrader_ddqn_paper.py`
+
+---
+
+## �🔧 Offline Trainer RewardShaper Integration & Retraining (Mar 18, 2026)
 
 ### Problem
 Offline trainer used primitive inline rewards (`+1.0` for win, `-1.0` for loss, `-0.5 × bars_held`) instead of the canonical `RewardShaper`. None of the following were applied during offline training:

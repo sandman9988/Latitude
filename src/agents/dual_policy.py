@@ -40,6 +40,12 @@ TEST_ENTRY_PRICE: float = 100000.0
 _FEATURE_VARIANCE_FLOOR: float = 1e-6  # minimum std to treat a feature column as variable
 _MIN_SEED_BARS: int = 3                # minimum bars required to seed the regime detector
 
+# Gate: predicted net runway must be >= this multiple of friction_cost.
+# With 1.5×, a $0.30 friction requires $0.45 net expected MFE to enter.
+# TODO: migrate to LearnedParametersManager with soft bounds [1.0, 3.0]
+#       so it self-adjusts based on realised fill-quality over time.
+MIN_RUNWAY_FRICTION_MULTIPLE: float = 1.5
+
 
 @dataclass
 class DualPolicyConfig:
@@ -206,6 +212,7 @@ class DualPolicy:
         self._mfe_calc = MFEMAECalculator()  # single source of truth
         self.ticks_held = 0  # Number of market data ticks (not bars!)
         self.predicted_runway = 0.0  # From trigger agent
+        self.entry_geometry = {}  # Geometry snapshot at entry time
 
         # Phase 3.4: Regime state
         self.current_regime = "UNKNOWN"
@@ -274,6 +281,7 @@ class DualPolicy:
             self.mae = 0.0
             self.ticks_held = 0
             self.predicted_runway = 0.0
+            self.entry_geometry = {}
 
         self._update_regime_from_bars(bars)
 
@@ -300,6 +308,18 @@ class DualPolicy:
             friction_cost=friction_cost,  # Phase 2: Actual broker friction (commission + swap + spread + slippage)
             zeta=self.current_zeta,  # Regime ζ for adaptive epsilon scheduling
         )
+
+        # Runway-friction gate: block if expected MFE doesn't justify costs
+        if action != 0 and predicted_runway < MIN_RUNWAY_FRICTION_MULTIPLE * friction_cost:
+            LOG.info(
+                "[DUAL_POLICY] BLOCKED by runway-friction gate: "
+                "runway=%.6f < %.1f × friction=%.6f (threshold=%.6f)",
+                predicted_runway, MIN_RUNWAY_FRICTION_MULTIPLE,
+                friction_cost, MIN_RUNWAY_FRICTION_MULTIPLE * friction_cost,
+            )
+            action = 0
+            confidence = 0.0
+            predicted_runway = 0.0
 
         self._record_predicted_runway(action, confidence, predicted_runway)
 
@@ -373,6 +393,12 @@ class DualPolicy:
                 confidence,
                 predicted_runway,
             )
+
+        # Snapshot path geometry at entry time for trade log
+        if action in [1, 2] and self.path_geometry:
+            self.entry_geometry = dict(self.path_geometry.last)
+        elif action in [1, 2]:
+            self.entry_geometry = {}
 
     def decide_exit(  # noqa: PLR0913
         self,
@@ -540,6 +566,7 @@ class DualPolicy:
             entry_confidence=entry_confidence,
             entry_price=self.entry_price,
             raw_confidence=raw_confidence,
+            actual_mae=self.mae,
         )
         self.harvester.update_from_trade(capture_ratio=capture_ratio, was_wtl=was_wtl)
 
@@ -557,6 +584,7 @@ class DualPolicy:
         self._mfe_calc.reset()
         self.ticks_held = 0
         self.predicted_runway = 0.0
+        self.entry_geometry = {}
 
     def _update_mfe_mae(self, current_price: float):
         """Update MFE and MAE based on current price.
