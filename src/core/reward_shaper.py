@@ -57,8 +57,17 @@ FRICTION_COST_MULT: float = 0.1
 # Undeveloped-MFE penalty: rewards based on how much of MFE was realised
 # (timeframe-agnostic — no bar counts).  Fires when MFE existed but most
 # of the move was surrendered (high MAE relative to MFE).
-UNDEVELOPED_MFE_PENALTY_SCALE: float = -1.0  # max penalty at full giveback
+# CUBIC scaling: small drawdowns get a pass, large drawdowns get crushed.
+# Calibrated so penalty ≈ -0.7 at drawdown_ratio=1.0 (MAE == MFE).
+MAE_CUBIC_PENALTY_SCALE: float = -2.0   # cubic coefficient
+MAE_PENALTY_THRESHOLD: float = 0.3      # no penalty below this drawdown ratio
+MAE_PENALTY_CAP: float = -3.0           # maximum penalty (clamp floor)
 ZERO_MFE_PENALTY: float = -0.3  # flat penalty when MFE ≤ 0
+
+# Micro-winner penalty: trades that technically win but capture < 30% of MFE.
+# These have high win rate but terrible efficiency — they waste edge.
+MICRO_WINNER_THRESHOLD: float = 0.3     # capture ratio below this triggers penalty
+MICRO_WINNER_PENALTY_SCALE: float = -2.0  # severity per unit shortfall
 
 # Session quality multiplier: MFE during high-liquidity sessions is "worth
 # more" because the signal is cleaner and slippage lower.  Pure results
@@ -721,18 +730,29 @@ class RewardShaper:
         else:
             r_wtl = 0.0
 
-        # 3. Undeveloped-MFE penalty (replaces bar-based timing penalty)
+        # 3. Undeveloped-MFE penalty — CUBIC scaling
         # Result-based: if MAE is large relative to MFE, the position was
-        # held through an adverse move without protecting the gain.  This is
-        # timeframe-agnostic — 10 bars overnight or 1 bar on NY open, what
-        # matters is the MAE/MFE outcome ratio.
+        # held through an adverse move without protecting the gain.
+        # Cubic: small drawdowns (ratio 0.3–0.6) get a pass; large drawdowns
+        # (ratio > 1.0) get exponentially crushed.  Calibrated so penalty ≈
+        # -0.7 at ratio=1.0 (where MAE equals MFE), matching the old linear
+        # crossover, but diverging sharply above and below.
         r_timing = 0.0
         if mfe > 0 and mae > 0:
-            # drawdown_ratio: how much adverse move vs favorable move
             drawdown_ratio = min(mae / mfe, 3.0)  # Cap at 3x
-            # Only penalize when drawdown is significant relative to MFE
-            if drawdown_ratio > 0.3:
-                r_timing = UNDEVELOPED_MFE_PENALTY_SCALE * (drawdown_ratio - 0.3)
+            if drawdown_ratio > MAE_PENALTY_THRESHOLD:
+                excess = drawdown_ratio - MAE_PENALTY_THRESHOLD
+                r_timing = max(MAE_CUBIC_PENALTY_SCALE * excess ** 3, MAE_PENALTY_CAP)
+
+        # 3b. Micro-winner penalty: technically profitable but captured < 30%
+        # of MFE.  These trades waste edge — high win rate but terrible
+        # efficiency (give back most of the move before exiting).
+        r_micro_winner = 0.0
+        if mfe > 0 and 0.0 <= capture_ratio < MICRO_WINNER_THRESHOLD:
+            # Only fire when MFE was meaningful (not noise)
+            if magnitude_scale > 0.5:
+                shortfall = MICRO_WINNER_THRESHOLD - capture_ratio
+                r_micro_winner = MICRO_WINNER_PENALTY_SCALE * shortfall
 
         # 4. Session quality weighting (optional)
         # MFE captured during London/NY overlap is a stronger signal than
@@ -741,7 +761,7 @@ class RewardShaper:
         session_mult = self._get_session_quality(exit_time)
 
         # Total harvester reward
-        total_reward = (r_capture + r_wtl + r_timing) * session_mult
+        total_reward = (r_capture + r_wtl + r_timing + r_micro_winner) * session_mult
 
         # Quality assessment
         quality = self._harvest_quality(capture_ratio)
@@ -751,6 +771,7 @@ class RewardShaper:
             "capture_efficiency": r_capture,
             "wtl_penalty": r_wtl,
             "timing_penalty": r_timing,
+            "micro_winner_penalty": r_micro_winner,
             "capture_ratio": capture_ratio,
             "quality": quality,
             "was_wtl": was_wtl,

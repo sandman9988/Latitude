@@ -71,7 +71,10 @@ RUNWAY_CAL_Q_EDGES: list[float] = [0.0, 0.6, 1.2, 1.8, 2.4, 3.0]  # Bucket bound
 RUNWAY_CAL_ALPHA: float = 0.15           # EWMA smoothing factor (higher = faster adaptation)
 RUNWAY_CAL_MIN_SAMPLES: int = 3          # Minimum samples before using calibrated value
 # Safety bounds: floor at friction-level, ceiling at 5% (huge move — clamp outliers)
-RUNWAY_SAFETY_FLOOR: float = 0.0002     # ~$1 on gold; below this friction dominates
+# Floor raised from 0.0002 → 0.0004 based on empirical MFE distribution:
+# MFE p25 = 0.000141 (noise level); p50 = 0.000765.  Floor at 0.0004
+# filters out sub-p25 noise while passing the bulk of real opportunities.
+RUNWAY_SAFETY_FLOOR: float = 0.0004     # ~$1.20 on gold; below = noise
 RUNWAY_SAFETY_CEILING: float = 0.05     # 5% of price; no sane M5 entry expects this
 
 
@@ -750,7 +753,11 @@ class TriggerAgent(AgentTrainingMixin):
         return Q_RUNWAY_MIN + (q_value / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
 
     def _calibrated_runway(self, q_value: float) -> float | None:
-        """Return EWMA-calibrated runway for *q_value*, or None if insufficient data."""
+        """Return EWMA-calibrated runway for *q_value*, or None if insufficient data.
+
+        Returns gross MFE EWMA — the runway predicts upside opportunity.
+        MAE is penalized separately via the cubic MAE reward in RewardShaper.
+        """
         bucket = self._q_bucket(q_value)
         if self._runway_cal_counts[bucket] < RUNWAY_CAL_MIN_SAMPLES:
             return None
@@ -803,6 +810,21 @@ class TriggerAgent(AgentTrainingMixin):
         if total_samples == 0:
             return None
         return weighted_sum / total_samples
+
+    def get_expected_mae_ratio(self, q_value: float) -> float | None:
+        """Return expected MAE/MFE ratio for a Q-value bucket, or None if uncalibrated.
+
+        Useful for external quality assessment — callers can decide whether
+        the expected drawdown is acceptable without embedding the logic
+        inside the runway prediction itself.
+        """
+        bucket = self._q_bucket(max(0.0, min(Q_RUNWAY_MAX_Q, q_value)))
+        if self._runway_cal_counts[bucket] < RUNWAY_CAL_MIN_SAMPLES:
+            return None
+        gross = self._runway_cal_ewma[bucket]
+        if gross <= 0:
+            return None
+        return self._runway_cal_mae_ewma[bucket] / gross
 
     def get_calibration_state(self) -> dict:
         """Export runway calibration + Platt params for checkpoint persistence."""

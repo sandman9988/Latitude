@@ -165,8 +165,8 @@ class TestHarvesterRewardKeyErrors:
         assert result["capture_efficiency"] == pytest.approx(-0.8)
         # wtl: -3.0 * clamp(1 - 50/100, 0.5, 2.0) = -3.0 * 0.5 = -1.5
         assert result["wtl_penalty"] == pytest.approx(-1.5)
-        # timing: mae=50/mfe=100=0.5 > 0.3 → -1.0 * (0.5 - 0.3) = -0.2
-        assert result["timing_penalty"] == pytest.approx(-0.2)
+        # timing: mae=50/mfe=100=0.5 > 0.3 → cubic: -2.0 * (0.5-0.3)^3 = -0.016
+        assert result["timing_penalty"] == pytest.approx(-0.016)
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +260,7 @@ class TestHarvesterRewardQuality:
         assert result["capture_ratio"] == pytest.approx(0.0)
 
     def test_timing_penalty_applied(self, shaper):
-        """High MAE relative to MFE → undeveloped-MFE penalty."""
+        """High MAE relative to MFE → cubic undeveloped-MFE penalty."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
             exit_pnl=80.0,
@@ -270,8 +270,9 @@ class TestHarvesterRewardQuality:
             bars_held=20,
             bars_from_mfe_to_exit=10,
         )
-        # drawdown_ratio = 60/100 = 0.6 > 0.3 → penalty = -1.0 * (0.6-0.3) = -0.3
-        assert result["timing_penalty"] == pytest.approx(-0.3)
+        # drawdown_ratio = 60/100 = 0.6 > 0.3
+        # excess = 0.3, cubic: -2.0 * 0.3^3 = -0.054
+        assert result["timing_penalty"] == pytest.approx(-0.054)
 
     def test_timing_zero_when_no_bars(self, shaper):
         """bars_held=0 or bars_from_mfe=0 → no timing penalty."""
