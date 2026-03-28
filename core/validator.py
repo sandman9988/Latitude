@@ -155,7 +155,9 @@ class BrokerSpec:
         Total round-trip friction in account currency:
         spread + round-trip commission + P&L conversion fee.
         """
-        spread_cost = self.spread_pips * self.pip_size * self.tick_value * volume
+        # spread_pips * pip_size = spread in price units
+        # divide by tick_size to get spread in ticks, multiply by tick_value for money
+        spread_cost = self.spread_pips * self.pip_size / self.tick_size * self.tick_value * volume
         commission = self.commission_cost(volume, price) * 2.0  # round-trip
         commission = max(commission, self.min_commission)
         notional = price * volume * self.lot_size if price > 0 else 0.0
@@ -168,8 +170,8 @@ class BrokerSpec:
         swap_type 0=pips, 1=percentage_annual, 2=points
         """
         rate = self.swap_long if is_long else self.swap_short
-        if self.swap_type == 0:  # pips
-            return rate * self.pip_size * self.tick_value * volume
+        if self.swap_type == 0:  # pips → convert to money via tick_value
+            return rate * self.pip_size / self.tick_size * self.tick_value * volume
         elif self.swap_type == 1:  # annual percentage
             notional = price * volume * self.lot_size
             return safe_div(notional * rate, 36500.0)  # daily

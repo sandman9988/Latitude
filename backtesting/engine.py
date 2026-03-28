@@ -198,7 +198,7 @@ class BacktestEngine:
             pyramid_level=signal.pyramid_level,
         )
 
-        friction = self._spec.friction_cost(volume)
+        friction = self._spec.friction_cost(volume, bar.close)
         self._balance -= friction
 
         self._open_trades.append(trade)
@@ -212,10 +212,12 @@ class BacktestEngine:
         if not is_valid_number(exit_price) or exit_price <= 0:
             exit_price = trade.entry_price
 
+        # P&L: price_diff / tick_size * tick_value * volume
+        # tick_value = monetary value of one tick_size move per lot
         if trade.direction == TradeDirection.LONG:
-            pnl = (exit_price - trade.entry_price) * trade.volume / self._spec.pip_size * self._spec.tick_value
+            pnl = (exit_price - trade.entry_price) / self._spec.tick_size * self._spec.tick_value * trade.volume
         else:
-            pnl = (trade.entry_price - exit_price) * trade.volume / self._spec.pip_size * self._spec.tick_value
+            pnl = (trade.entry_price - exit_price) / self._spec.tick_size * self._spec.tick_value * trade.volume
 
         trade.exit_price = exit_price
         trade.exit_bar = bar_index

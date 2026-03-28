@@ -268,8 +268,6 @@ class FractalDimension:
         if ratio <= 0.0:
             return self._value
 
-        fd = safe_div(math.log(2.0), safe_div(1.0, math.log(ratio), fallback=1.0) or 1.0)
-        # Alternative: direct formula
         fd = 1.0 + safe_div(math.log(r1 + r2) - math.log(r_all), math.log(2.0), fallback=0.5)
 
         self._value = clamp(fd, 1.0, 2.0)

@@ -201,6 +201,7 @@ class CTraderConnector:
         self._acct_auth_ok = False
         self._responses: Dict[str, Any] = {}
         self._response_events: Dict[str, threading.Event] = {}
+        self._cancelled_ids: set = set()
         self._msg_counter = 0
         self._lock = threading.Lock()
         self._shutting_down = False
@@ -300,6 +301,7 @@ class CTraderConnector:
         if not event.wait(timeout=timeout_s):
             with self._lock:
                 self._response_events.pop(msg_id, None)
+                self._cancelled_ids.add(msg_id)
             return None
         with self._lock:
             self._response_events.pop(msg_id, None)
@@ -312,7 +314,11 @@ class CTraderConnector:
         alias = self._symbol_aliases.get(name)
         if alias and alias in self._symbol_map:
             return self._symbol_map[alias]
-        stripped = name.rstrip("+").rstrip("-C")
+        stripped = name
+        if stripped.endswith("+"):
+            stripped = stripped[:-1]
+        if stripped.endswith("-C"):
+            stripped = stripped[:-2]
         if stripped in self._symbol_map:
             return self._symbol_map[stripped]
         if name in self._symbol_map:
@@ -372,6 +378,9 @@ class CTraderConnector:
         except Exception:
             payload = raw
         with self._lock:
+            if msg_id in self._cancelled_ids:
+                self._cancelled_ids.discard(msg_id)
+                return
             self._responses[msg_id] = payload
             ev = self._response_events.get(msg_id)
         if ev:

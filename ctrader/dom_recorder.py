@@ -206,14 +206,10 @@ class DOMRecorder:
         if len(snapshots) > self._max_snapshots:
             snapshots.pop(0)
 
-        # Update OBI calculator
+        # Update OBI calculator — bid/ask are sizes at each price level
         self._obi_calculators[symbol].update_from_event(
-            [{
-                "price": l.price,
-                "bid": l.bid_size,
-                "ask": l.ask_size,
-                "size": l.bid_size + l.ask_size,
-            } for l in snapshot.levels],
+            [{"price": l.price, "bid": l.bid_size, "ask": l.ask_size}
+             for l in snapshot.levels],
             timestamp=ts,
             symbol=symbol,
         )

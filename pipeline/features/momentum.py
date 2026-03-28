@@ -150,6 +150,8 @@ class ConnorsRSI:
     """
 
     def __init__(self, rsi_period: int = 3, streak_period: int = 2, rank_period: int = 100) -> None:
+        self._rsi_period = rsi_period
+        self._streak_period = streak_period
         self._rsi = _RSI(rsi_period)
         self._streak_rsi = _RSI(streak_period)
         self._rank_period = max(10, rank_period)
@@ -202,7 +204,7 @@ class ConnorsRSI:
         return self._value
 
     def reset(self) -> None:
-        self.__init__()
+        self.__init__(self._rsi_period, self._streak_period, self._rank_period)
 
 
 # ---------------------------------------------------------------------------

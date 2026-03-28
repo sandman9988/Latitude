@@ -112,6 +112,8 @@ class KAMA:
 
     def __init__(self, period: int = 10, fast_period: int = 2, slow_period: int = 30) -> None:
         self._period = max(1, period)
+        self._fast_period = fast_period
+        self._slow_period = slow_period
         self._fast_sc = safe_div(2.0, fast_period + 1)
         self._slow_sc = safe_div(2.0, slow_period + 1)
         self._kama = 0.0
@@ -157,7 +159,7 @@ class KAMA:
         return self._kama
 
     def reset(self) -> None:
-        self.__init__(self._period)
+        self.__init__(self._period, self._fast_period, self._slow_period)
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +284,8 @@ class ALMA:
 
     def __init__(self, period: int = 14, sigma: float = 6.0, offset: float = 0.85) -> None:
         self._period = max(2, period)
+        self._sigma = sigma
+        self._offset = offset
         self._weights = self._compute_weights(self._period, sigma, offset)
         self._prices: list[float] = []
         self._count = 0
@@ -330,7 +334,7 @@ class ALMA:
         return self._value
 
     def reset(self) -> None:
-        self.__init__(self._period)
+        self.__init__(self._period, self._sigma, self._offset)
 
 
 # ---------------------------------------------------------------------------

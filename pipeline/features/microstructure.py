@@ -160,7 +160,7 @@ class SpreadMonitor:
         avg = self.average_spread
         if avg <= 0:
             return False
-        return self._current_spread > avg * self._spike_multiplier
+        return self._current_spread > avg * self._spike_mult
 
     @property
     def ready(self) -> bool:

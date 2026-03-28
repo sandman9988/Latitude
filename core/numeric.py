@@ -48,11 +48,16 @@ def round_to_step(value: float, step: float) -> float:
     return round(value * factor) / factor
 
 
-def pip_value(tick_size: float, tick_value: float, volume: float) -> float:
-    """Monetary value of one pip move for a given volume."""
+def pip_value(tick_size: float, tick_value: float, volume: float, pip_size: float = 0.0) -> float:
+    """
+    Monetary value of one pip move for a given volume.
+    tick_value = money per tick_size move per lot.
+    pip_size defaults to tick_size when not provided.
+    """
     if tick_size <= 0.0 or not math.isfinite(tick_size):
         return 0.0
-    return non_negative(tick_value * volume)
+    effective_pip = pip_size if pip_size > 0.0 and math.isfinite(pip_size) else tick_size
+    return non_negative(safe_div(effective_pip, tick_size) * tick_value * volume)
 
 
 def normalise_01(value: float, lo: float, hi: float) -> float:

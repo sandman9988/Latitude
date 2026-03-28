@@ -110,28 +110,31 @@ class OrderBookImbalance:
     def update_from_event(self, event_quotes: List[dict], timestamp: float, symbol: str) -> float:
         """
         Update from ProtoOADepthEvent fields.
-        event_quotes: list of {"id": int, "bid": float|None, "ask": float|None, "size": float}
+        event_quotes: list of {"price": float, "bid": float, "ask": float}
+        where bid/ask are the actual sizes at that price level (not multipliers).
+        A level is removed when both bid and ask are zero.
         """
         if self._dom is None:
             self._dom = DOMSnapshot(timestamp=timestamp, symbol=symbol)
 
-        # Apply updates: new quotes overwrite by ID, deleted quotes (size=0) are removed
+        # Key by price rounded to 5 decimal places
         existing = {int(l.price * 100000): l for l in self._dom.levels}
 
         for q in event_quotes:
-            price_key = int(q.get("price", 0) * 100000)
-            size = float(q.get("size", 0) or 0)
+            price = float(q.get("price", 0) or 0)
+            if price <= 0:
+                continue
+            price_key = int(price * 100000)
             bid = float(q.get("bid") or 0)
             ask = float(q.get("ask") or 0)
 
-            if size <= 0:
+            if bid <= 0 and ask <= 0:
                 existing.pop(price_key, None)
             else:
-                price = q.get("price", bid if bid > 0 else ask)
                 existing[price_key] = DOMLevel(
-                    price=float(price),
-                    bid_size=bid * size if bid > 0 else 0.0,
-                    ask_size=ask * size if ask > 0 else 0.0,
+                    price=price,
+                    bid_size=bid,
+                    ask_size=ask,
                 )
 
         self._dom.levels = list(existing.values())

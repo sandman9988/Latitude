@@ -136,11 +136,13 @@ def _load_symbol_precision(conn, symbol_id: int) -> tuple[int, int]:
 
 _TF_TO_PERIOD: Dict[str, int] = {
     "M1": 1, "M5": 5, "M15": 15, "M30": 30,
-    "H1": 60, "H2": 120, "H4": 240, "H8": 480,
+    "H1": 60, "H4": 240, "H12": 720,
     "D1": 1440, "W1": 10080,
 }
+# Note: H2 and H8 are not native cTrader timeframes. Build them via
+# pipeline.resampler.resample(bars, "M30", "H2") after downloading M30.
 
-# cTrader ProtoOATrendbarPeriod enum values
+# cTrader ProtoOATrendbarPeriod enum values (from OpenApiModelMessages.proto)
 _TF_TO_PROTO: Dict[str, int] = {
     "M1": 1, "M2": 2, "M3": 3, "M4": 4, "M5": 5, "M10": 6, "M15": 7,
     "M30": 8, "H1": 9, "H4": 10, "H12": 11, "D1": 12, "W1": 13, "MN1": 14,
@@ -166,7 +168,7 @@ def download_bars(
 
     conn: connected CTraderConnector
     symbol: e.g. "XAUUSD", "DE40", "US500"
-    timeframe: M30, H1, H2, H4 etc.
+    timeframe: M1, M5, M15, M30, H1, H4, H12, D1, W1 (H2/H8 not natively supported; resample from M30)
     days: lookback if start_dt not provided
     """
     try:

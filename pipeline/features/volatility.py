@@ -23,6 +23,7 @@ class ATR:
 
     def __init__(self, period: int = 14, smoother: str = "jma") -> None:
         self._period = max(2, period)
+        self._smoother_name = smoother
         self._smoother: Smoother = make_smoother(smoother, period=period)
         self._prev_close = 0.0
         self._value = 0.0
@@ -55,7 +56,7 @@ class ATR:
         return self._value
 
     def reset(self) -> None:
-        self.__init__(self._period)
+        self.__init__(self._period, self._smoother_name)
 
 
 # ---------------------------------------------------------------------------
