@@ -1,1 +1,1 @@
-from .connector import CTraderConnector, CTraderCredentials
+from .connector import CTraderConnector, CTraderCredentials, LatitudeDnsConfig

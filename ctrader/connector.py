@@ -5,13 +5,14 @@ Based on Kinetra kinetra/connectors/ctrader_connector.py.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import queue
 import socket
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -56,6 +57,82 @@ DEFAULT_SYMBOL_ALIASES: Dict[str, str] = {
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+# ---------------------------------------------------------------------------
+# DNS policy (LATITUDE_DNS_* env vars)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LatitudeDnsConfig:
+    """
+    DNS hardening settings loaded from LATITUDE_DNS_* environment variables.
+    Controls which hostnames/IPs are trusted when resolving endpoint fallbacks.
+    """
+    allow_suffixes: List[str] = field(default_factory=lambda: ["ctraderapi.com", "spotware.com"])
+    min_unique_ips: int = 1
+    block_private: bool = True
+    fail_closed: bool = True
+    resolvers: List[str] = field(default_factory=lambda: ["1.1.1.1", "8.8.8.8"])
+    query_timeout_s: float = 2.0
+    query_lifetime_s: float = 4.0
+
+    @classmethod
+    def from_env(cls) -> "LatitudeDnsConfig":
+        def _get(k: str, default: str = "") -> str:
+            return os.environ.get(k, default).strip()
+
+        suffixes_raw = _get("LATITUDE_DNS_ALLOW_SUFFIXES", "ctraderapi.com,spotware.com")
+        allow_suffixes = [s.strip() for s in suffixes_raw.split(",") if s.strip()]
+
+        resolvers_raw = _get("LATITUDE_DNS_RESOLVERS", "1.1.1.1,8.8.8.8")
+        resolvers = [r.strip() for r in resolvers_raw.split(",") if r.strip()]
+
+        return cls(
+            allow_suffixes=allow_suffixes,
+            min_unique_ips=int(_get("LATITUDE_DNS_MIN_UNIQUE_IPS", "1") or "1"),
+            block_private=_get("LATITUDE_DNS_BLOCK_PRIVATE", "true").lower() == "true",
+            fail_closed=_get("LATITUDE_DNS_FAIL_CLOSED", "true").lower() == "true",
+            resolvers=resolvers,
+            query_timeout_s=float(_get("LATITUDE_DNS_QUERY_TIMEOUT_S", "2.0") or "2.0"),
+            query_lifetime_s=float(_get("LATITUDE_DNS_QUERY_LIFETIME_S", "4.0") or "4.0"),
+        )
+
+    def is_allowed_host(self, hostname: str) -> bool:
+        """True if hostname ends with an allowed suffix (or is a raw IP)."""
+        try:
+            ipaddress.ip_address(hostname)
+            return True  # raw IPs are accepted; IP filtering is done in is_allowed_ip
+        except ValueError:
+            pass
+        h = hostname.lower().lstrip(".")
+        return any(h == s or h.endswith("." + s) for s in self.allow_suffixes)
+
+    def is_allowed_ip(self, ip_str: str) -> bool:
+        """True if IP is not private/loopback (when block_private is on)."""
+        if not self.block_private:
+            return True
+        try:
+            addr = ipaddress.ip_address(ip_str)
+            return not (addr.is_private or addr.is_loopback or addr.is_link_local)
+        except ValueError:
+            return False
+
+    def resolve_host(self, hostname: str) -> List[str]:
+        """
+        Resolve hostname to IPs, applying DNS policy filters.
+        Returns empty list if resolution fails and fail_closed is True.
+        """
+        try:
+            infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            ips = list({info[4][0] for info in infos})
+            if self.block_private:
+                ips = [ip for ip in ips if self.is_allowed_ip(ip)]
+            return ips
+        except OSError:
+            if self.fail_closed:
+                return []
+            return []
 
 
 def _parse_env_file(path: Path) -> Dict[str, str]:
@@ -112,11 +189,16 @@ class CTraderCredentials:
     access_token: str
     account_id: int
     environment: str = "demo"
+    # Optional OAuth2 fields (used by auth helpers; not required for trading)
+    refresh_token: str = ""
+    redirect_uri: str = "http://127.0.0.1:8787/callback"
+    scope: str = "trading"
 
     def __repr__(self) -> str:
         return (
             f"CTraderCredentials(client_id={self.client_id!r}, "
             f"client_secret='***', access_token='***', "
+            f"refresh_token={'***' if self.refresh_token else ''!r}, "
             f"account_id={self.account_id!r}, environment={self.environment!r})"
         )
 
@@ -178,6 +260,9 @@ class CTraderCredentials:
             access_token=access_token,
             account_id=account_id,
             environment=environment,
+            refresh_token=_get("CTRADER_REFRESH_TOKEN"),
+            redirect_uri=_get("CTRADER_REDIRECT_URI") or "http://127.0.0.1:8787/callback",
+            scope=_get("CTRADER_SCOPE") or "trading",
         )
 
 
@@ -235,11 +320,28 @@ class CTraderConnector:
             else EndPoints.PROTOBUF_LIVE_HOST
         )
         port = EndPoints.PROTOBUF_PORT
+
+        # Read endpoint config from env
         alt_raw = os.environ.get("CTRADER_ALT_ENDPOINTS", "")
         alt_hosts = [h.strip() for h in alt_raw.split(",") if h.strip()]
-        candidates = _expand_endpoint_candidates([host] + alt_hosts)
+        probe_timeout = float(os.environ.get("CTRADER_ENDPOINT_PROBE_TIMEOUT_S", "2.0") or "2.0")
+        include_resolved = os.environ.get("CTRADER_INCLUDE_RESOLVED_IP_FALLBACKS", "false").lower() == "true"
 
-        ranked = _rank_reachable_endpoints(candidates, port=port, timeout_s=2.0)
+        dns_cfg = LatitudeDnsConfig.from_env()
+
+        primary_candidates = _expand_endpoint_candidates([host] + alt_hosts)
+
+        # Optionally expand hostnames to their resolved IPs as extra fallbacks
+        extra_ips: List[str] = []
+        if include_resolved:
+            for h in primary_candidates:
+                if dns_cfg.is_allowed_host(h):
+                    extra_ips.extend(dns_cfg.resolve_host(h))
+            extra_ips = [ip for ip in extra_ips if ip not in primary_candidates]
+
+        candidates = _expand_endpoint_candidates(primary_candidates + extra_ips)
+
+        ranked = _rank_reachable_endpoints(candidates, port=port, timeout_s=probe_timeout)
         selected = ranked[0][0] if ranked else candidates[0]
         if ranked:
             logger.info("[cTrader] Endpoint %s (%.1fms)", ranked[0][0], ranked[0][1])
