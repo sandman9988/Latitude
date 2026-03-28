@@ -29,7 +29,7 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # Ensure project root is on path when run directly
 sys.path.insert(0, str(Path(__file__).parent))
@@ -91,7 +91,7 @@ def load_from_csv(csv_paths: List[Path], symbol: str) -> List[Bar]:
     return bars
 
 
-def download_from_ctrader(symbol: str, days: int, output_dir: Path) -> List[Bar]:
+def download_from_ctrader(symbol: str, days: int, output_dir: Path) -> Tuple[List[Bar], BrokerSpec]:
     try:
         from ctrader.connector import CTraderConnector, CTraderCredentials
         from ctrader.spec_fetcher import fetch_spec
@@ -116,8 +116,6 @@ def download_from_ctrader(symbol: str, days: int, output_dir: Path) -> List[Bar]
             symbol=symbol,
         )
 
-        end_dt = datetime.now(tz=timezone.utc)
-        start_dt = end_dt - timedelta(days=days)
         bars = download_bars(conn, symbol, "M30", days=days)
         bars = clean_bars(bars)
         logger.info(f"Downloaded {len(bars)} M30 bars", symbol=symbol)

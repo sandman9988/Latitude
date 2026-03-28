@@ -7,20 +7,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from enum import IntEnum
 from typing import List, Optional, Dict, Any, Callable
 from core.math_utils import safe_div
 from core.numeric import non_negative, clamp, round_to_step, is_valid_number
 from core.validator import BrokerSpec
 from core.logger import get_logger
 from pipeline.cleaner import Bar
+from backtesting.types import Signal, TradeDirection  # noqa: F401 — re-exported
 
 logger = get_logger("backtest")
-
-
-class TradeDirection(IntEnum):
-    LONG = 1
-    SHORT = -1
 
 
 @dataclass
@@ -239,9 +234,9 @@ class BacktestEngine:
         unrealised = 0.0
         for trade in self._open_trades:
             if trade.direction == TradeDirection.LONG:
-                upnl = (current_price - trade.entry_price) * trade.volume / self._spec.pip_size * self._spec.tick_value
+                upnl = (current_price - trade.entry_price) / self._spec.tick_size * self._spec.tick_value * trade.volume
             else:
-                upnl = (trade.entry_price - current_price) * trade.volume / self._spec.pip_size * self._spec.tick_value
+                upnl = (trade.entry_price - current_price) / self._spec.tick_size * self._spec.tick_value * trade.volume
             unrealised += upnl
         self._equity = self._balance + unrealised
 
@@ -283,10 +278,3 @@ class BacktestEngine:
         self._bar_index = 0
 
 
-@dataclass
-class Signal:
-    direction: int          # 1 = long, -1 = short
-    stop_loss: float
-    take_profit: float
-    volume: Optional[float] = None   # None = engine calculates
-    pyramid_level: int = 1

@@ -49,7 +49,7 @@ from pipeline.features.orderflow import OrderBookImbalance, CumulativeDelta
 
 from models.runway import RunwayPredictor
 from models.entry_filter import EntryFilter
-from backtesting.engine import Signal
+from backtesting.types import Signal
 
 logger = get_logger("strategy")
 
@@ -131,7 +131,7 @@ class TrendStrategy:
         self._vhf = VHF(period=config.vhf_period)
         self._laguerre = LaguerreRSI(gamma=config.laguerre_gamma)
         self._atr = ATR(period=config.atr_period)
-        self._regime = RegimeDetector(period=config.regime_period)
+        self._regime = RegimeDetector(hmm_period=config.regime_period)
         self._structure = MarketStructure()
 
         self._dtw_matcher = self._make_dtw_matcher(config)
@@ -188,11 +188,11 @@ class TrendStrategy:
         self._bar_count += 1
 
         # --- Update all indicators ---
-        self._ker.update(bar.close, bar.high, bar.low)
+        self._ker.update(bar.close)
         self._vhf.update(bar.close)
         self._laguerre.update(bar.close)
         self._atr.update(bar.high, bar.low, bar.close)
-        self._regime.update(bar.close, bar.high, bar.low, bar.volume)
+        self._regime.update(bar.high, bar.low, bar.close)
         self._structure.update(bar.high, bar.low)
         self._dtw_matcher.update(bar.close)
 
@@ -254,7 +254,7 @@ class TrendStrategy:
         features = self._build_features(ker, vhf, laguerre, atr, bar.close)
 
         # --- ML gate ---
-        if self._entry_filter.is_fitted:
+        if self._entry_filter.fitted:
             filter_result = self._entry_filter.predict_proba(features)
             if filter_result < self._cfg.entry_threshold:
                 return None
@@ -303,10 +303,9 @@ class TrendStrategy:
         self._last_pyramid_price[pyramid_level] = bar.close
 
         logger.signal(
-            "entry", self._spec.symbol,
-            direction=direction, close=bar.close,
-            sl=sl, tp=tp, ker=round(ker, 3),
-            pyramid_level=pyramid_level,
+            self._spec.symbol, "M30", "long" if direction == 1 else "short",
+            round(ker, 3),
+            close=bar.close, sl=sl, tp=tp, pyramid_level=pyramid_level,
         )
 
         return Signal(
@@ -502,7 +501,7 @@ class TrendStrategy:
         """Pre-compute HTF KER bias from historical bars."""
         htf_ker = KER(period=self._cfg.ker_period)
         for bar in htf_bars:
-            htf_ker.update(bar.close, bar.high, bar.low)
+            htf_ker.update(bar.close)
         self._htf_ker_value = htf_ker.value
         # Estimate bias: last N closes trending up or down?
         n = min(self._cfg.ker_period, len(htf_bars))
@@ -515,7 +514,7 @@ class TrendStrategy:
         Call with each new H4 bar during live trading or multi-TF backtest
         to keep the HTF context current.
         """
-        self._htf_ker.update(bar.close, bar.high, bar.low)
+        self._htf_ker.update(bar.close)
         self._htf_ker_value = self._htf_ker.value
         # Rolling slope on last ker_period bars
         self._htf_bias = 1.0 if bar.close > bar.open else -1.0

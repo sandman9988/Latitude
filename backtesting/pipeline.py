@@ -23,7 +23,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Any
 
 from core.math_utils import safe_div
 from core.logger import get_logger
@@ -34,7 +34,17 @@ from pipeline.labeller import label_bars
 from pipeline.features.volatility import ATR
 from backtesting.engine import BacktestConfig, BacktestEngine, BacktestResult
 from backtesting.metrics import compute_metrics
-from strategy.trend_strategy import TrendStrategy, StrategyConfig, build_on_bar, FEATURE_NAMES
+
+# Deferred to avoid circular import:
+# strategy.trend_strategy → backtesting.types → backtesting (pkg init) → pipeline → strategy
+if TYPE_CHECKING:
+    from strategy.trend_strategy import TrendStrategy, StrategyConfig
+
+
+def _import_strategy():
+    """Lazy import helper — call once per code path that needs TrendStrategy."""
+    from strategy.trend_strategy import TrendStrategy, StrategyConfig, build_on_bar, FEATURE_NAMES  # noqa: F401
+    return TrendStrategy, StrategyConfig, build_on_bar, FEATURE_NAMES
 
 logger = get_logger("pipeline")
 
@@ -62,7 +72,7 @@ class PipelineResult:
     oos_metrics: Dict[str, float] = field(default_factory=dict)   # aggregated across all OOS
     efficiency: float = 0.0     # mean OOS win_rate / mean IS win_rate
     is_robust: bool = False
-    best_config: Optional[StrategyConfig] = None
+    best_config: Optional[Any] = None
 
 
 # ---------------------------------------------------------------------------
@@ -82,11 +92,14 @@ class BacktestPipeline:
     def __init__(
         self,
         spec: BrokerSpec,
-        config: Optional[StrategyConfig] = None,
+        config: Optional[Any] = None,
         initial_balance: float = 10_000.0,
     ) -> None:
         self._spec = spec
-        self._config = config or StrategyConfig()
+        if config is None:
+            _, StrategyConfig, _, _ = _import_strategy()
+            config = StrategyConfig()
+        self._config = config
         self._initial_balance = initial_balance
 
     # -----------------------------------------------------------------------
@@ -98,6 +111,7 @@ class BacktestPipeline:
         Single pass over all bars. No ML training — heuristic gates only.
         Useful for a quick sanity check before walk-forward.
         """
+        TrendStrategy, _, build_on_bar, _ = _import_strategy()
         mtf = build_mtf(m30_bars)
         htf_bars = mtf.get("H4", [])
         strategy = TrendStrategy(self._config, self._spec, htf_bars)
@@ -320,6 +334,8 @@ class BacktestPipeline:
         """
         fold_result = FoldResult(fold=fold, is_bars=len(train_bars), oos_bars=len(test_bars))
 
+        TrendStrategy, _, build_on_bar, _ = _import_strategy()
+
         # --- IS pass (heuristic only) ---
         is_strategy = TrendStrategy(self._config, self._spec, htf_train)
         is_engine = self._make_engine()
@@ -340,7 +356,7 @@ class BacktestPipeline:
         fold_result.ml_train_samples = len(y)
 
         # --- OOS pass with trained filter (or heuristic if not enough IS data) ---
-        oos_strategy = TrendStrategy(self._config, self._spec, htf_test)
+        oos_strategy = TrendStrategy(self._config, self._spec, htf_test)  # TrendStrategy imported above
         if len(y) >= 30:
             oos_strategy.train(X, y)
             fold_result.ml_trained = True

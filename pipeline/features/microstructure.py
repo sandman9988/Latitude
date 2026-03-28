@@ -175,7 +175,7 @@ class SpreadMonitor:
         return spread
 
     def reset(self) -> None:
-        self.__init__(self._period, self._spike_multiplier)
+        self.__init__(self._period, self._spike_mult)
 
 
 # ---------------------------------------------------------------------------
