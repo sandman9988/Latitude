@@ -211,7 +211,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    symbol = args.symbol.upper()
+    symbol = args.symbol.strip().upper()
+    # Sanitize: prevent path traversal if symbol contains separators
+    symbol = Path(symbol).name or symbol.replace("/", "_").replace("\\", "_")
     output_dir = Path(args.output)
 
     # --- Load or download bars ---

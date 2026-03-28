@@ -263,12 +263,17 @@ def download_bars(
     return bars
 
 
+def _safe_name(s: str) -> str:
+    """Strip path separators so symbol/tf names cannot escape the output directory."""
+    return Path(s).name or s.replace("/", "_").replace("\\", "_")
+
+
 def _save_csv(bars: List[Bar], symbol: str, tf: str, output_dir: Path) -> Path:
-    output_dir = output_dir / symbol / tf
+    output_dir = output_dir / _safe_name(symbol) / _safe_name(tf)
     output_dir.mkdir(parents=True, exist_ok=True)
     t0 = datetime.fromtimestamp(bars[0].timestamp, tz=timezone.utc).strftime("%Y%m%d%H%M")
     t1 = datetime.fromtimestamp(bars[-1].timestamp, tz=timezone.utc).strftime("%Y%m%d%H%M")
-    path = output_dir / f"{symbol}_{tf}_{t0}_{t1}.csv"
+    path = output_dir / f"{_safe_name(symbol)}_{_safe_name(tf)}_{t0}_{t1}.csv"
     with open(path, "w") as f:
         f.write("timestamp,open,high,low,close,volume\n")
         for b in bars:

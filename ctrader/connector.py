@@ -113,6 +113,13 @@ class CTraderCredentials:
     account_id: int
     environment: str = "demo"
 
+    def __repr__(self) -> str:
+        return (
+            f"CTraderCredentials(client_id={self.client_id!r}, "
+            f"client_secret='***', access_token='***', "
+            f"account_id={self.account_id!r}, environment={self.environment!r})"
+        )
+
     @classmethod
     def from_env(
         cls,
@@ -159,7 +166,12 @@ class CTraderCredentials:
                 "Set in .env.openapi or run: python -m ctrader.auth"
             )
 
-        account_id = int(raw_account)
+        try:
+            account_id = int(raw_account)
+        except ValueError:
+            raise ValueError(
+                f"CTRADER_ACCOUNT_ID must be an integer, got: {raw_account!r}"
+            )
         return cls(
             client_id=client_id,
             client_secret=client_secret,

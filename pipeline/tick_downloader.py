@@ -209,7 +209,8 @@ def _save_ticks_csv(
     symbol: str,
     output_dir: Path,
 ) -> None:
-    tick_dir = output_dir / symbol / "ticks"
+    safe_sym = Path(symbol).name or symbol.replace("/", "_").replace("\\", "_")
+    tick_dir = output_dir / safe_sym / "ticks"
     tick_dir.mkdir(parents=True, exist_ok=True)
 
     for side, ticks in [("bid", bid_ticks), ("ask", ask_ticks)]:

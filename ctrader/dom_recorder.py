@@ -220,10 +220,11 @@ class DOMRecorder:
         for symbol, snapshots in self._snapshots.items():
             if not snapshots:
                 continue
-            dom_dir = self._output_dir / symbol / "dom"
+            safe_sym = Path(symbol).name or symbol.replace("/", "_").replace("\\", "_")
+            dom_dir = self._output_dir / safe_sym / "dom"
             dom_dir.mkdir(parents=True, exist_ok=True)
             date_str = datetime.now(tz=timezone.utc).strftime("%Y%m%d")
-            path = dom_dir / f"{symbol}_dom_{date_str}.csv"
+            path = dom_dir / f"{safe_sym}_dom_{date_str}.csv"
             with open(path, "w") as f:
                 f.write("timestamp,mid_price,obi,total_bid_size,total_ask_size,n_levels\n")
                 for snap in snapshots:

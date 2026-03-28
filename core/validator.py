@@ -113,11 +113,16 @@ class BrokerSpec:
     conversion_symbols: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        assert self.tick_size > 0, "tick_size must be positive"
-        assert self.lot_step > 0, "lot_step must be positive"
-        assert self.min_volume >= 0, "min_volume must be non-negative"
-        assert self.max_volume > self.min_volume, "max_volume must exceed min_volume"
-        assert 0.0 < self.margin_rate <= 1.0, "margin_rate must be in (0, 1]"
+        if self.tick_size <= 0:
+            raise ValueError("tick_size must be positive")
+        if self.lot_step <= 0:
+            raise ValueError("lot_step must be positive")
+        if self.min_volume < 0:
+            raise ValueError("min_volume must be non-negative")
+        if self.max_volume <= self.min_volume:
+            raise ValueError("max_volume must exceed min_volume")
+        if not (0.0 < self.margin_rate <= 1.0):
+            raise ValueError("margin_rate must be in (0, 1]")
 
     def round_price(self, price: float) -> float:
         return round_to_step(price, self.tick_size)
