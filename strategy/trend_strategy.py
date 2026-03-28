@@ -267,8 +267,9 @@ class TrendStrategy:
         runway = self._runway.evaluate(features, friction_cost=friction, atr=atr)
         if not runway.allow_entry:
             logger.signal(
-                "blocked_runway", self._spec.symbol,
-                floor_ratio=round(runway.floor_ratio, 3),
+                self._spec.symbol, "M30",
+                "long" if direction == 1 else "short", 0.0,
+                blocked="runway", floor_ratio=round(runway.floor_ratio, 3),
                 reason=runway.reason,
             )
             return None
