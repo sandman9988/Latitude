@@ -14,6 +14,7 @@ Provides:
 
 import logging
 import math
+from typing import Any
 
 import numpy as np
 
@@ -103,6 +104,118 @@ class AgentTrainingMixin:
     """
 
     _AGENT_TAG: str = "AGENT"        # overridden by each subclass
+
+    def _get_param(self, name: str, default: float) -> float:
+        """Load a learned parameter if available; otherwise return default."""
+        manager = getattr(self, "param_manager", None)
+        if manager is None:
+            return float(default)
+
+        symbol = getattr(self, "symbol", "XAUUSD")
+        timeframe = getattr(self, "timeframe", "M15")
+        broker = getattr(self, "broker", "default")
+
+        try:
+            value = manager.get(symbol, name, timeframe=timeframe, broker=broker, default=default)
+            return float(value)
+        except (AttributeError, ValueError, TypeError) as exc:
+            agent_tag = getattr(self, "_AGENT_TAG", "AGENT")
+            LOG.debug("[%s] Falling back to default %.3f for %s (%s)", agent_tag, default, name, exc)
+            return float(default)
+
+    def _load_torch_model(self, model_path: str, n_actions: int, tag: str) -> bool:
+        """Load optional PyTorch model for inference path."""
+        try:
+            import torch  # noqa: PLC0415
+
+            from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
+
+            self.torch = torch
+            self.model = Conv1dQNet(n_features=self.n_features, n_actions=n_actions, temporal_pool_size=1)
+            self.model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
+            self.model.eval()
+            self.use_torch = True
+            LOG.info("[%s] Loaded DDQN model: %s", tag, model_path)
+            return True
+        except (OSError, ImportError, RuntimeError) as exc:
+            LOG.warning("[%s] Failed to load model: %s. Using fallback.", tag, exc)
+            self.use_torch = False
+            return False
+
+    def _ensure_param_manager(self) -> Any:
+        """Lazily initialize LearnedParametersManager when required."""
+        manager = getattr(self, "param_manager", None)
+        if manager is None:
+            from src.persistence.learned_parameters import LearnedParametersManager  # noqa: PLC0415
+
+            manager = LearnedParametersManager()
+            manager.load()
+            self.param_manager = manager
+        return manager
+
+    def _softmax(self, x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
+        """Backward-compatible instance wrapper over shared softmax utility."""
+        return softmax(x, temperature)
+
+    def _init_agent_state(
+        self,
+        *,
+        window: int,
+        n_features: int,
+        symbol: str,
+        timeframe: str,
+        timeframe_minutes: int,
+        broker: str,
+        param_manager: Any,
+    ) -> None:
+        self.window = window
+        self.n_features = n_features
+        self.use_torch = False
+        self.model = None
+        self.torch = None
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.timeframe_minutes = timeframe_minutes
+        self.broker = broker
+        self.param_manager = param_manager
+
+    def _init_training_components(
+        self,
+        *,
+        enable_training: bool,
+        buffer_capacity: int,
+        min_experiences: int,
+        batch_size: int,
+        state_dim: int,
+        n_actions: int,
+        learning_rate: float,
+        gamma: float,
+        tau: float,
+        l2_weight: float,
+        grad_clip_norm: float,
+    ) -> None:
+        from src.core.ddqn_network import DDQNNetwork  # noqa: PLC0415
+        from src.utils.experience_buffer import ExperienceBuffer  # noqa: PLC0415
+
+        self.enable_training = enable_training
+        self.buffer = ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes) if enable_training else None
+        self.min_experiences = min_experiences
+        self.batch_size = batch_size
+        self.training_steps = 0
+        self.last_state = None
+        self.ddqn = (
+            DDQNNetwork(
+                state_dim=state_dim,
+                n_actions=n_actions,
+                learning_rate=learning_rate,
+                gamma=gamma,
+                tau=tau,
+                l2_weight=l2_weight,
+                grad_clip_norm=grad_clip_norm,
+            )
+            if enable_training
+            else None
+        )
 
     # ── add_experience ────────────────────────────────────────────────────────
 

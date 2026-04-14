@@ -247,6 +247,9 @@ def check_invariants(entries: list[dict]) -> list[str]:
 
             elif agent == "HarvesterAgent":
                 if decision in ("HOLD", "CLOSE"):
+                    if decision == "CLOSE" and tid and tid in closed_trade_ids:
+                        continue
+
                     # Invariant 2: harvester entry without prior trigger entry
                     # (recovered trades have rcv_ prefix — don't flag those)
                     if tid and not tid.startswith("rcv_") and tid not in open_trades:

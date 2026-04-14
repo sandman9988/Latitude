@@ -444,7 +444,7 @@ class TradeManager:
 
         # Thread safety: protects orders, pending_orders, broker_orders, position
         # against concurrent mutation from paper-fill daemon threads.
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
         # Position tracking
         self.position = Position(symbol=self.symbol_id)
@@ -1062,56 +1062,58 @@ class TradeManager:
         - ExecType=I (OrderStatus): Status update
         """
         with self._lock:
-          try:
-            resolved = self._resolve_exec_report(msg)
-            if resolved is None:
-                return
-            clord_id, exec_type_str, ord_status_str, order = resolved
+            try:
+                resolved = self._resolve_exec_report(msg)
+                if resolved is None:
+                    return
+                clord_id, exec_type_str, ord_status_str, order = resolved
 
-            # Update order fields
-            order.status = OrderStatus(ord_status_str)
-            order.updated_at = utc_now()
+                # Update order fields
+                order.status = OrderStatus(ord_status_str)
+                order.updated_at = utc_now()
 
-            # Update optional fields from the report
-            self._populate_order_from_execution(msg, order, clord_id)
+                # Update optional fields from the report
+                self._populate_order_from_execution(msg, order, clord_id)
 
-            # Store execution report for debugging
-            self.exec_reports.append(
-                {
-                    "timestamp": utc_now(),
-                    "clord_id": clord_id,
-                    "exec_type": exec_type_str,
-                    "ord_status": ord_status_str,
-                    "filled_qty": order.filled_qty,
-                    "avg_price": order.avg_price,
-                }
-            )
-
-            # Route based on ExecType
-            if exec_type_str == ExecType.NEW.value:
-                self._handle_new(order)
-            elif exec_type_str == ExecType.TRADE.value:
-                self._handle_fill(order)
-            elif exec_type_str == ExecType.CANCELED.value:
-                self._handle_canceled(order)
-            elif exec_type_str == ExecType.REJECTED.value:
-                self._handle_rejected(order, msg)
-            elif exec_type_str == ExecType.REPLACED.value:
-                self._handle_replaced(order)
-            elif exec_type_str == ExecType.ORDER_STATUS.value:
-                self._handle_status_update(order)
-            else:
-                LOG.info(
-                    "[TRADEMGR] ExecutionReport: %s ExecType=%s OrdStatus=%s",
-                    clord_id, exec_type_str, ord_status_str,
+                # Store execution report for debugging
+                self.exec_reports.append(
+                    {
+                        "timestamp": utc_now(),
+                        "clord_id": clord_id,
+                        "exec_type": exec_type_str,
+                        "ord_status": ord_status_str,
+                        "filled_qty": order.filled_qty,
+                        "avg_price": order.avg_price,
+                    }
                 )
 
-            # P0 FIX: Remove from pending orders once acknowledged
-            if clord_id in self.pending_orders:
-                del self.pending_orders[clord_id]
+                # Route based on ExecType
+                if exec_type_str == ExecType.NEW.value:
+                    self._handle_new(order)
+                elif exec_type_str == ExecType.TRADE.value:
+                    self._handle_fill(order)
+                elif exec_type_str == ExecType.CANCELED.value:
+                    self._handle_canceled(order)
+                elif exec_type_str == ExecType.REJECTED.value:
+                    self._handle_rejected(order, msg)
+                elif exec_type_str == ExecType.REPLACED.value:
+                    self._handle_replaced(order)
+                elif exec_type_str == ExecType.ORDER_STATUS.value:
+                    self._handle_status_update(order)
+                else:
+                    LOG.info(
+                        "[TRADEMGR] ExecutionReport: %s ExecType=%s OrdStatus=%s",
+                        clord_id,
+                        exec_type_str,
+                        ord_status_str,
+                    )
 
-          except Exception as e:
-            LOG.error("[TRADEMGR] Error processing ExecutionReport: %s", e, exc_info=True)
+                # P0 FIX: Remove from pending orders once acknowledged
+                if clord_id in self.pending_orders:
+                    del self.pending_orders[clord_id]
+
+            except Exception as e:
+                LOG.error("[TRADEMGR] Error processing ExecutionReport: %s", e, exc_info=True)
 
     def _handle_new(self, order: Order):
         """Handle ExecType=0 (New) - Order accepted by broker"""
@@ -1137,37 +1139,45 @@ class TradeManager:
             already_paper_filled = (
                 order.clord_id not in self.pending_orders
                 and order.status == OrderStatus.FILLED
-                and getattr(order, "position_ticket", "").startswith("PAPER_")
+                and (getattr(order, "position_ticket", "") or "").startswith("PAPER_")
             )
-        if already_paper_filled:
-            LOG.warning(
-                "[TRADEMGR] Ignoring duplicate broker fill for already paper-filled order %s",
-                order.clord_id,
-            )
-            return
+            if already_paper_filled:
+                LOG.warning(
+                    "[TRADEMGR] Ignoring duplicate broker fill for already paper-filled order %s",
+                    order.clord_id,
+                )
+                return
 
-        if order.status == OrderStatus.FILLED:
-            order.filled_at = utc_now()
-            LOG.info(
-                "[TRADEMGR] ✓✓ Order FILLED: %s qty=%.6f @%.5f (ClOrdID=%s)",
-                order.side.name,
-                order.filled_qty,
-                order.avg_price,
-                order.clord_id,
-            )
-        else:
-            LOG.info(
-                "[TRADEMGR] ◐ Order PARTIAL FILL: %s filled=%.6f/%.6f @%.5f",
-                order.side.name,
-                order.filled_qty,
-                order.quantity,
-                order.avg_price,
-            )
+            if order.status == OrderStatus.FILLED:
+                order.filled_at = utc_now()
+                LOG.info(
+                    "[TRADEMGR] ✓✓ Order FILLED: %s qty=%.6f @%.5f (ClOrdID=%s)",
+                    order.side.name,
+                    order.filled_qty,
+                    order.avg_price,
+                    order.clord_id,
+                )
+            else:
+                LOG.info(
+                    "[TRADEMGR] ◐ Order PARTIAL FILL: %s filled=%.6f/%.6f @%.5f",
+                    order.side.name,
+                    order.filled_qty,
+                    order.quantity,
+                    order.avg_price,
+                )
 
-        # FIX: Update position from fill (cTrader doesn't respond to position requests)
-        # Use last_qty for partial fills, filled_qty for full fills
-        fill_qty = order.last_qty if order.last_qty > 0 else order.filled_qty
-        self.position.update_from_fill(order.side, fill_qty, order.avg_price)
+            # FIX: Update position from fill (cTrader doesn't respond to position requests)
+            # Use last_qty for partial fills, filled_qty for full fills
+            fill_qty = order.last_qty if order.last_qty > 0 else order.filled_qty
+            if fill_qty <= 0:
+                LOG.warning(
+                    "[TRADEMGR] Skipping fill update with non-positive qty for %s: last_qty=%.6f filled_qty=%.6f",
+                    order.clord_id,
+                    order.last_qty,
+                    order.filled_qty,
+                )
+                return
+            self.position.update_from_fill(order.side, fill_qty, order.avg_price)
 
         # Audit log: Order fill
         self.audit.log_order_fill(

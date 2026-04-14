@@ -128,7 +128,12 @@ class TestFallbackStrategy:
         entry_price = 100.0
         mfe = entry_price * 0.001
         mae = entry_price * 0.001
-        action = ha._fallback_strategy(mfe, mae, ticks_held=ha.hard_time_stop_bars + 1, entry_price=entry_price)
+        action = ha._fallback_strategy(
+            mfe,
+            mae,
+            ticks_held=ha._bars_to_ticks(ha.hard_time_stop_bars) + 1,
+            entry_price=entry_price,
+        )
         assert action == 1  # CLOSE
 
     def test_soft_time_stop_with_profit(self):
@@ -137,7 +142,7 @@ class TestFallbackStrategy:
         # MFE large enough so net profit > 0 after friction
         mfe = entry_price * 0.01  # 1% MFE
         mae = entry_price * 0.001
-        ticks = ha.soft_time_stop_bars + 1
+        ticks = ha._bars_to_ticks(ha.soft_time_stop_bars) + 1
         action = ha._fallback_strategy(mfe, mae, ticks_held=ticks, entry_price=entry_price)
         assert action == 1  # CLOSE (net positive after friction)
 
@@ -151,7 +156,7 @@ class TestFallbackStrategy:
         ha = HarvesterAgent(window=64, n_features=10, enable_training=True)
         market_state = rng.standard_normal((64, 7)).astype(np.float32)
         # Force ticks well past hard time stop
-        ticks = ha.hard_time_stop_bars + 10
+        ticks = ha._bars_to_ticks(ha.hard_time_stop_bars) + 10
         action, conf = ha.decide(
             market_state=market_state,
             mfe=0.5, mae=0.0,

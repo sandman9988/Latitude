@@ -208,6 +208,37 @@ class TestGhostPositionReconciliation:
 # ---------------------------------------------------------------------------
 
 
+class TestExitTrackerProcessing:
+    def test_find_exit_tracker_uses_captured_direction(self):
+        app = _make_app()
+        app.policy = object()
+        app._pending_closes = set()
+        app._pending_close_times = {}
+        app.contract_size = 100.0
+        app._calculate_position_pnl = MagicMock(return_value=12.5)
+
+        tracker = MagicMock()
+        tracker.position_ticket = "TICKET_1"
+        tracker.direction = -1
+        tracker.get_summary.return_value = {"entry_price": 2900.0, "mfe": 10.0, "mae": 5.0}
+        app.mfe_mae_trackers = {"pos_1": tracker}
+
+        integ = TradeManagerIntegration(app)
+        integ.audit = MagicMock()
+
+        order = MagicMock()
+        order.avg_price = 2895.0
+        order.filled_qty = 0.01
+
+        position_id, summary = integ._find_and_process_exit_tracker(order, "TICKET_1")
+
+        assert position_id == "pos_1"
+        assert summary["ticket"] == "TICKET_1"
+        assert summary["position_id"] == "pos_1"
+        app._calculate_position_pnl.assert_called_once()
+        assert app._calculate_position_pnl.call_args.kwargs["direction"] == "SHORT"
+
+
 class TestIntegrationInit:
     def test_defaults(self):
         app = _make_app()

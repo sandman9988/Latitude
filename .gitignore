@@ -61,3 +61,4 @@ scripts/requirements.txt
 scripts/.env
 scripts/.env.example
 .env.openapi
+.abacusai/

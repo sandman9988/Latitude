@@ -56,6 +56,10 @@ class TestWTLPenalty:
         p = shaper.calculate_wtl_penalty(was_wtl=True, mfe=200.0, exit_pnl=-30.0, bars_from_mfe_to_exit=10)
         assert p < 0
 
+    def test_zero_mfe_no_division_error(self, shaper):
+        p = shaper.calculate_wtl_penalty(was_wtl=True, mfe=0.0, exit_pnl=-30.0, bars_from_mfe_to_exit=10)
+        assert p == pytest.approx(0.0)
+
     def test_longer_hold_bigger_penalty(self, shaper):
         p1 = shaper.calculate_wtl_penalty(was_wtl=True, mfe=200.0, exit_pnl=-30.0, bars_from_mfe_to_exit=5)
         p2 = shaper.calculate_wtl_penalty(was_wtl=True, mfe=200.0, exit_pnl=-30.0, bars_from_mfe_to_exit=20)

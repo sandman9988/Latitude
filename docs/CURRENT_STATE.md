@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** March 19, 2026 (defense-in-depth audit, paper fill fix, circuit breaker reset, offline trainer alignment)  
+**Last Updated:** April 14, 2026 (MFE predictor reliability warmup, WTL hardening, Trades tab telemetry updates)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -78,6 +78,46 @@ Wired `RewardShaper` into `_Simulator` class in `offline_trainer.py`:
 - Added `_rs_volatility()` for rolling realized vol estimate from bar closes
 - Captures `_predicted_runway` from trigger's last decision for reward context
 - Added `penalty_scale` parameter throughout the stack: `_Simulator.__init__`, `OfflineTrainer.__init__`, `_run_job()`, CLI parser (`--penalty-scale`), `_execute_pool()`
+
+---
+
+## 🔧 MFE Reliability Warmup + Winner→Loser Hardening (Apr 14, 2026)
+
+### Trigger: MFE predictor learning mode before hard gating
+To avoid early-session starvation (no entries when runway predictor is still weak), trigger confidence gating now remains in **learning mode** until runway calibration is sufficiently sampled.
+
+- While unreliable: confidence gate is bypassed, predictor keeps learning
+- Once reliable: confidence gate becomes authoritative again
+
+This prevents weak early runway estimates from suppressing all entries while preserving protection once calibration converges.
+
+### Reward shaping: stronger Winner→Loser intolerance
+Harvester reward now penalizes Winner→Loser reversals more aggressively, especially when a trade exits negative after positive MFE.
+
+- Added stronger baseline WTL multiplier
+- Added extra multiplier for negative exits
+- Added reversal-severity multiplier based on `-exit_pnl / mfe`
+
+This explicitly shifts learning pressure toward **protecting developed MFE** rather than allowing late giveback.
+
+### Adaptive exit tightening after WTL outcomes
+Harvester adaptive thresholds are now tightened whenever a trade becomes Winner→Loser.
+
+- `capture_decay_threshold` tightens toward earlier protection
+- `micro_winner_giveback_pct` tightens to reduce acceptable giveback
+- Both are persisted through learned parameters so behavior carries forward
+
+### HUD / Trades visibility
+Telemetry for these controls is now exposed in both Training and Trades detail paths.
+
+- Trigger runway reliability mode + calibration sample visibility
+- Harvester WTL protection thresholds visibility
+
+Key fields surfaced include:
+- `trigger_runway_cal_total_samples`
+- `trigger_runway_predictor_reliable`
+- `harvester_capture_decay_threshold`
+- `harvester_micro_winner_giveback_pct`
 
 ### Training Results
 

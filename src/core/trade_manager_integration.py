@@ -315,6 +315,7 @@ class TradeManagerIntegration:
 
         position_id_to_remove = None
         tracker_summary = None
+        tracker_direction = 0
         # Determine if this is a net-close sentinel (no specific broker ticket)
         _net_close_dir: int | None = None
         if closed_ticket.startswith("_NET_"):
@@ -330,11 +331,13 @@ class TradeManagerIntegration:
                         position_id_to_remove = pos_id
                         tracker.update(order.avg_price)  # capture exit price in MFE/MAE
                         tracker_summary = tracker.get_summary()
+                        tracker_direction = int(getattr(tracker, "direction", 0) or 0)
                         break
                 elif getattr(tracker, "position_ticket", None) == closed_ticket:
                     position_id_to_remove = pos_id
                     tracker.update(order.avg_price)  # capture exit price in MFE/MAE
                     tracker_summary = tracker.get_summary()
+                    tracker_direction = int(getattr(tracker, "direction", 0) or 0)
                     break
 
         if not position_id_to_remove:
@@ -342,7 +345,7 @@ class TradeManagerIntegration:
         mfe = tracker_summary.get("mfe", 0.0)
         mae = tracker_summary.get("mae", 0.0)
         entry_price = tracker_summary.get("entry_price", 0.0)
-        direction = "LONG" if tracker.direction > 0 else "SHORT"
+        direction = "LONG" if tracker_direction > 0 else "SHORT"
 
         if hasattr(self.app, "_calculate_position_pnl"):
             pnl = self.app._calculate_position_pnl(
@@ -350,7 +353,7 @@ class TradeManagerIntegration:
                 direction=direction, quantity=order.filled_qty,
             )
         else:
-            direction_sign = 1 if tracker.direction > 0 else -1
+            direction_sign = 1 if tracker_direction > 0 else -1
             pnl = (order.avg_price - entry_price) * direction_sign * order.filled_qty * self.app.contract_size
 
         self.audit.log_position_close(

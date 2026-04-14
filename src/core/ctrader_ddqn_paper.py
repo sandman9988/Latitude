@@ -3806,7 +3806,7 @@ class CTraderFixApp(fix.Application):
         if self.entry_action is None:
             self.entry_action = 1 if summary.get("direction") == "LONG" else 2
         lot_value = max(self.qty * self.contract_size, 1.0)
-        pnl_pts = pnl / lot_value
+        pnl_pts = SafeMath.safe_div(pnl, lot_value, 0.0)
         reward_data = {
             "exit_pnl": pnl_pts, "mfe": summary.get("mfe", 0.0),
             "mae": summary.get("mae", 0.0), "winner_to_loser": summary.get("winner_to_loser", False),
@@ -4020,6 +4020,16 @@ class CTraderFixApp(fix.Application):
             # the correct lot size instead of the default self.qty.
             _filled_qty = summary.get("filled_qty") or None
             pnl = self._calculate_position_pnl(entry_price, exit_price, direction, quantity=_filled_qty)
+            if not SafeMath.is_valid(pnl):
+                LOG.error(
+                    "[TRADE_COMPLETION] Skipped: invalid pnl=%s entry=%.5f exit=%.5f direction=%s qty=%s",
+                    pnl,
+                    entry_price,
+                    exit_price,
+                    direction,
+                    _filled_qty,
+                )
+                return
 
             # Checkpoint: Store initial P&L to detect corruption
             _pnl_checkpoint = pnl
@@ -5922,8 +5932,13 @@ class CTraderFixApp(fix.Application):
             "harvester_grad_norm": getattr(self, "last_harvester_grad_norm", 0.0),
             "trigger_epsilon_regime_factor": 1.0,
             "trigger_current_zeta": 0.5,
+            "trigger_runway_cal_total_samples": 0,
+            "trigger_runway_cal_active_buckets": 0,
+            "trigger_runway_predictor_reliable": False,
             "harvester_regime_hold_mult": 1.0,
             "harvester_current_zeta": 0.5,
+            "harvester_capture_decay_threshold": 0.0,
+            "harvester_micro_winner_giveback_pct": 0.0,
             "total_agents": 0,
             "arena_diversity": {"trigger_diversity": 0.0, "harvester_diversity": 0.0},
             "last_agreement_score": 1.0,
@@ -5960,8 +5975,13 @@ class CTraderFixApp(fix.Application):
                     # Adaptive RL metrics from recent changes
                     "trigger_epsilon_regime_factor": t.get("epsilon_regime_factor", 1.0),
                     "trigger_current_zeta": t.get("current_zeta", 0.5),
+                    "trigger_runway_cal_total_samples": t.get("runway_cal_total_samples", 0),
+                    "trigger_runway_cal_active_buckets": t.get("runway_cal_active_buckets", 0),
+                    "trigger_runway_predictor_reliable": t.get("runway_predictor_reliable", False),
                     "harvester_regime_hold_mult": h.get("regime_hold_mult", 1.0),
                     "harvester_current_zeta": h.get("current_zeta", 0.5),
+                    "harvester_capture_decay_threshold": h.get("capture_decay_threshold", 0.0),
+                    "harvester_micro_winner_giveback_pct": h.get("micro_winner_giveback_pct", 0.0),
                     # Whether the bot is currently in a position — used by HUD
                     # to label which buffer is actively filling right now.
                     "is_in_position": self.cur_pos != 0,

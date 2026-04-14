@@ -48,6 +48,8 @@ RUNWAY_EXCELLENT_MIN: float = 0.8
 RUNWAY_GOOD_MIN: float = 0.6
 RUNWAY_FAIR_MIN: float = 0.4
 WTL_MULT_DEFAULT: float = 3.0
+WTL_NEGATIVE_EXIT_MULT: float = 1.35
+WTL_REVERSAL_SEVERITY_MULT: float = 0.75
 CAPTURE_MULT_FALLBACK: float = 2.0
 TIMING_PENALTY_SCALE: float = -1.5  # Increased from -0.5 for stronger late-exit penalty
 RUNWAY_EXPECTED_GAIN_MULT: float = 2.0
@@ -258,7 +260,7 @@ class RewardShaper:
         # Starts at BASELINE_MFE_SEED and updates each trade via update_baselines().
         baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 1.0)
 
-        if not was_wtl or mfe < wtl_threshold:
+        if not was_wtl or mfe <= 0 or mfe < wtl_threshold:
             return 0.0
 
         # Normalize MFE by baseline
@@ -717,7 +719,10 @@ class RewardShaper:
                 giveback_ratio = max(0.5, min(giveback_ratio, 2.0))  # Clamp [0.5, 2.0]
             else:
                 giveback_ratio = 1.0
-            r_wtl = -wtl_mult * giveback_ratio
+            negative_exit_mult = WTL_NEGATIVE_EXIT_MULT if exit_pnl < 0 else 1.0
+            reversal_severity = max(0.0, min(1.0, -exit_pnl / mfe)) if mfe > 0 and exit_pnl < 0 else 0.0
+            severity_mult = 1.0 + (reversal_severity * WTL_REVERSAL_SEVERITY_MULT)
+            r_wtl = -wtl_mult * giveback_ratio * negative_exit_mult * severity_mult
         else:
             r_wtl = 0.0
 

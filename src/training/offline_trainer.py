@@ -174,7 +174,7 @@ class _Simulator:
         self.entry_bar_idx: int = 0
         self.entry_action: int = 0
         self._mfe_calc = MFEMAECalculator()  # single source of truth
-        self.ticks_held: int = 0
+        self.bars_held: int = 0
         self.entry_spread_pts: float = 0.0  # spread at entry bar (broker points)
         self._cur_spread_pts: float = 0.0   # spread at current bar (broker points)
         self._predicted_runway: float = 0.0  # stored at entry for trigger reward
@@ -230,7 +230,7 @@ class _Simulator:
         self.entry_bar_idx = bar_idx
         self.entry_action = action
         self._mfe_calc.start(current_price, direction)
-        self.ticks_held = 0
+        self.bars_held = 0
         self._predicted_runway = getattr(self.policy, "predicted_runway", 0.0)
 
         # Snapshot entry state for trigger experience
@@ -255,8 +255,8 @@ class _Simulator:
             LOG.debug("[SIM] on_entry failed: %s", exc)
 
     def _try_exit(self, bar_idx: int, current_price: float) -> None:
-        self.ticks_held += 1
-        hard_stop = self.ticks_held > MAX_POSITION_BARS
+        self.bars_held += 1
+        hard_stop = self.bars_held > MAX_POSITION_BARS
 
         action = 0
         if not hard_stop:
@@ -361,7 +361,7 @@ class _Simulator:
             exit_pnl=pnl_pts,
             mfe=self.mfe,
             was_wtl=not capture,
-            bars_held=self.ticks_held,
+            bars_held=self.bars_held,
             bars_from_mfe_to_exit=0,
             mae=self.mae,
             exit_time=exit_time,
@@ -407,7 +407,7 @@ class _Simulator:
         self.cur_pos = 0
         self.entry_price = 0.0
         self.entry_state = None
-        self.ticks_held = 0
+        self.bars_held = 0
         self._predicted_runway = 0.0
         self._mfe_calc.reset()
 

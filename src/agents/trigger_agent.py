@@ -28,7 +28,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence, softmax
+from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence
 from src.constants import (
     GAMMA,
     GRAD_CLIP_NORM,
@@ -38,9 +38,7 @@ from src.constants import (
     TAU,
     TRIGGER_BUFFER_CAPACITY,
 )
-from src.core.ddqn_network import DDQNNetwork
 from src.persistence.learned_parameters import LearnedParametersManager
-from src.utils.experience_buffer import ExperienceBuffer
 from src.utils.safe_math import SafeMath
 
 LOG = logging.getLogger(__name__)
@@ -69,6 +67,8 @@ RUNWAY_CAL_N_BUCKETS: int = 5            # Q-value buckets for calibration
 RUNWAY_CAL_Q_EDGES: list[float] = [0.0, 0.6, 1.2, 1.8, 2.4, 3.0]  # Bucket boundaries
 RUNWAY_CAL_ALPHA: float = 0.15           # EWMA smoothing factor (higher = faster adaptation)
 RUNWAY_CAL_MIN_SAMPLES: int = 3          # Minimum samples before using calibrated value
+RUNWAY_GATING_MIN_TOTAL_SAMPLES: int = 20
+RUNWAY_GATING_MIN_ACTIVE_BUCKETS: int = 2
 
 
 class _EconomicsGateParams(NamedTuple):
@@ -126,16 +126,15 @@ class TriggerAgent(AgentTrainingMixin):
             n_features: Number of input features
             enable_training: Enable online learning (Phase 3.5)
         """
-        self.window = window
-        self.n_features = n_features
-        self.use_torch = False
-        self.model = None
-        self.torch = None
-        self.symbol = symbol
-        self.timeframe = timeframe
-        self.timeframe_minutes = timeframe_minutes
-        self.broker = broker
-        self.param_manager = param_manager
+        self._init_agent_state(
+            window=window,
+            n_features=n_features,
+            symbol=symbol,
+            timeframe=timeframe,
+            timeframe_minutes=timeframe_minutes,
+            broker=broker,
+            param_manager=param_manager,
+        )
 
         # Paper mode settings - NO GATING in training
         self.paper_mode = os.environ.get("PAPER_MODE", "0") == "1"
@@ -153,29 +152,20 @@ class TriggerAgent(AgentTrainingMixin):
         # Phase 3.5: Experience replay buffer
         # Capacity sized to ~20 days at ~100 trades/day (staleness halflife = 1 day,
         # so >2,000 entries are already near-zero weight and waste memory/diversity).
-        self.enable_training = enable_training
-        self.buffer = ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes) if enable_training else None
-        self.min_experiences = 32  # 1 batch – start training as soon as we have enough
-        self.batch_size = 64
-        self.training_steps = 0
-        self.last_state = None  # Track state for experience creation
-        self.last_action = None
-
-        # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
-        # This is the actual trainable network - separate from the PyTorch model loaded from disk
-        self.ddqn = (
-            DDQNNetwork(
-                state_dim=window * n_features,  # Flattened state vector
-                n_actions=3,  # three actions: NO_ENTRY, LONG, SHORT
-                learning_rate=LEARNING_RATE,
-                gamma=GAMMA,
-                tau=TAU,
-                l2_weight=L2_WEIGHT,
-                grad_clip_norm=GRAD_CLIP_NORM,
-            )
-            if enable_training
-            else None
+        self._init_training_components(
+            enable_training=enable_training,
+            buffer_capacity=buffer_capacity,
+            min_experiences=32,
+            batch_size=64,
+            state_dim=window * n_features,
+            n_actions=3,
+            learning_rate=LEARNING_RATE,
+            gamma=GAMMA,
+            tau=TAU,
+            l2_weight=L2_WEIGHT,
+            grad_clip_norm=GRAD_CLIP_NORM,
         )
+        self.last_action = None
 
         # Phase 2: Platt calibration for probability estimates (online learning)
         # Converts raw scores to calibrated probabilities: p = 1/(1 + exp(A*score + B))
@@ -232,40 +222,14 @@ class TriggerAgent(AgentTrainingMixin):
         return value, source
 
     def _get_param(self, name: str, default: float) -> float:
-        if not self.param_manager:
-            return default
-        try:
-            value = self.param_manager.get(
-                self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default
-            )
-            return float(value)
-        except Exception as exc:
-            LOG.debug(
-                "[TRIGGER] Failed to load %s from LearnedParameters (%s) - using default %.2f",
-                name,
-                exc,
-                default,
-            )
-            return default
+        return super()._get_param(name, default)
 
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for trigger agent."""
-        try:
-            import torch  # noqa: PLC0415
+        from src.core.ddqn_network import Conv1dQNet
 
-            from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
-
-            self.torch = torch
-            # Saved weights were trained with pool-to-1 architecture; use
-            # temporal_pool_size=1 here so load_state_dict succeeds.
-            self.model = Conv1dQNet(n_features=self.n_features, n_actions=3, temporal_pool_size=1)
-            self.model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
-            self.model.eval()
-            self.use_torch = True
-            LOG.info("[TRIGGER] Loaded DDQN model: %s", model_path)
-        except (OSError, ImportError, RuntimeError) as e:
-            LOG.warning("[TRIGGER] Failed to load model: %s. Using fallback.", e)
-            self.use_torch = False
+        _ = Conv1dQNet
+        self._load_torch_model(model_path, n_actions=3, tag="TRIGGER")
 
     def _try_training_decision(self) -> tuple[int, float, float] | None:
         """
@@ -463,7 +427,16 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _confidence_gate_blocked(self, calibrated_prob: float) -> bool:
         """Return True if confidence floor blocks entry."""
-        if self.paper_mode or calibrated_prob >= self.confidence_floor:
+        if self.paper_mode:
+            return False
+        if not self._is_runway_predictor_reliable():
+            LOG.debug(
+                "[TRIGGER] Confidence gate bypassed: runway predictor still warming (samples=%d active_buckets=%d)",
+                self._runway_cal_total_samples(),
+                self._runway_cal_active_buckets(),
+            )
+            return False
+        if calibrated_prob >= self.confidence_floor:
             return False
         LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self.confidence_floor)
         return True
@@ -628,10 +601,6 @@ class TriggerAgent(AgentTrainingMixin):
         action, _, _ = self._fallback_decide(state, regime_threshold_adj)
         return action
 
-    def _softmax(self, x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-        """Softmax with temperature. Delegates to shared utility."""
-        return softmax(x, temperature)
-
     def _platt_calibrate(self, raw_prob: float) -> float:
         """
         Apply Platt scaling to calibrate probability estimates.
@@ -733,6 +702,18 @@ class TriggerAgent(AgentTrainingMixin):
         if self._runway_cal_counts[bucket] < RUNWAY_CAL_MIN_SAMPLES:
             return None
         return self._runway_cal_ewma[bucket]
+
+    def _runway_cal_total_samples(self) -> int:
+        return int(sum(self._runway_cal_counts))
+
+    def _runway_cal_active_buckets(self) -> int:
+        return int(sum(1 for c in self._runway_cal_counts if c >= RUNWAY_CAL_MIN_SAMPLES))
+
+    def _is_runway_predictor_reliable(self) -> bool:
+        return (
+            self._runway_cal_total_samples() >= RUNWAY_GATING_MIN_TOTAL_SAMPLES
+            and self._runway_cal_active_buckets() >= RUNWAY_GATING_MIN_ACTIVE_BUCKETS
+        )
 
     @staticmethod
     def _q_bucket(q_value: float) -> int:
@@ -907,16 +888,21 @@ class TriggerAgent(AgentTrainingMixin):
     def _extra_training_stats(self) -> dict:
         """Trigger-specific stats appended by the mixin."""
         zeta = getattr(self, '_current_zeta', 0.5)
-        # Compute the same regime factor used in _decay_epsilon()
         if zeta < 0.7:
             regime_factor = 1.0
         else:
             regime_factor = max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
+        runway_total_samples = self._runway_cal_total_samples()
+        runway_active_buckets = self._runway_cal_active_buckets()
+        runway_predictor_reliable = self._is_runway_predictor_reliable()
         return {
             "epsilon": self.epsilon,
             "epsilon_end": self.epsilon_end,
             "current_zeta": zeta,
             "epsilon_regime_factor": regime_factor,
+            "runway_cal_total_samples": runway_total_samples,
+            "runway_cal_active_buckets": runway_active_buckets,
+            "runway_predictor_reliable": runway_predictor_reliable,
         }
 
 

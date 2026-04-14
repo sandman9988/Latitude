@@ -221,7 +221,7 @@ class TestPaperFill:
 class TestThreadSafety:
     def test_lock_exists(self, manager):
         assert hasattr(manager, "_lock")
-        assert isinstance(manager._lock, type(threading.Lock()))
+        assert isinstance(manager._lock, type(threading.RLock()))
 
     def test_concurrent_paper_fills_no_crash(self, manager):
         """Stress test: multiple paper fills from concurrent threads."""
@@ -269,3 +269,28 @@ class TestExecReportTracking:
         assert len(manager.exec_reports) == 1
         assert manager.exec_reports[0]["paper_fill"] is True
         assert manager.exec_reports[0]["exec_type"] == "F"
+
+    def test_handle_fill_skips_non_positive_quantity(self, manager):
+        order = Order("c1", "1", Side.BUY, OrdType.MARKET, 0.01)
+        order.status = OrderStatus.FILLED
+        order.filled_qty = 0.0
+        order.last_qty = 0.0
+        order.avg_price = 2901.0
+        manager.orders["c1"] = order
+
+        manager._handle_fill(order)
+
+        assert float(manager.position.net_qty) == pytest.approx(0.0)
+
+    def test_handle_fill_skips_duplicate_broker_fill_after_paper_fill(self, manager):
+        order = Order("c1", "1", Side.BUY, OrdType.MARKET, 0.01)
+        order.status = OrderStatus.FILLED
+        order.filled_qty = 0.01
+        order.last_qty = 0.01
+        order.avg_price = 2901.0
+        order.position_ticket = "PAPER_abc"
+        manager.orders["c1"] = order
+
+        manager._handle_fill(order)
+
+        assert float(manager.position.net_qty) == pytest.approx(0.0)

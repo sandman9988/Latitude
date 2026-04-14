@@ -26,7 +26,7 @@ import os
 
 import numpy as np
 
-from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence, softmax
+from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence
 from src.constants import (
     BREAKEVEN_TRIGGER_PCT,
     CAPTURE_DECAY_MIN_MFE_PCT,
@@ -42,6 +42,7 @@ from src.constants import (
     MICRO_WINNER_GIVEBACK_PCT,
     MICRO_WINNER_MFE_THRESHOLD_PCT,
     MIN_EXPERIENCES,
+    MIN_HOLD_TICKS_DEFAULT,
     MIN_SOFT_PROFIT_PCT,
     PROFIT_TARGET_PCT_DEFAULT,
     SOFT_TIME_STOP_BARS,
@@ -51,16 +52,14 @@ from src.constants import (
     TRAILING_STOP_ACTIVATION_PCT,
     TRAILING_STOP_DISTANCE_PCT,
 )
-from src.core.ddqn_network import DDQNNetwork
 from src.persistence.learned_parameters import LearnedParametersManager
-from src.utils.experience_buffer import ExperienceBuffer
-
 LOG = logging.getLogger(__name__)
 
 # Internal implementation constants (harvester-only, not shared across modules)
 CONFIDENCE_FALLBACK: float = 0.7
 PCT_SCALE: float = 100.0
 TICKS_HELD_NORM_DENOM: float = 100.0  # Normalize tick count to [0,1] range
+DEFAULT_TICKS_PER_MINUTE: float = 150.0
 
 # Magic number constants for code quality
 MAX_MAE_PCT: float = 100.0  # Maximum MAE percentage (clip suspicious values)
@@ -71,6 +70,10 @@ EXCELLENT_CAPTURE_RATIO: float = 0.8  # Excellent capture ratio for trailing sto
 FLOAT_EPSILON: float = 1e-9  # Floating point comparison tolerance
 MFE_TO_SL_RATIO_HIGH: float = 2.0  # High MFE to SL ratio threshold
 MFE_TO_SL_RATIO_LOW: float = 0.5  # Low MFE to SL ratio threshold
+WTL_CAPTURE_DECAY_TIGHTEN_FACTOR: float = 0.90
+WTL_CAPTURE_DECAY_FLOOR: float = 0.35
+WTL_MICRO_WINNER_TIGHTEN_FACTOR: float = 0.90
+WTL_MICRO_WINNER_FLOOR_FACTOR: float = 0.40
 
 
 class HarvesterAgent(AgentTrainingMixin):
@@ -127,41 +130,32 @@ class HarvesterAgent(AgentTrainingMixin):
             enable_training: Enable online learning (Phase 3.5)
             friction_calculator: FrictionCalculator for cost-aware exit decisions
         """
-        self.window = window
-        self.n_features = n_features
-        self.use_torch = False
-        self.model = None
-        self.torch = None
-        self.symbol = symbol
+        self._init_agent_state(
+            window=window,
+            n_features=n_features,
+            symbol=symbol,
+            timeframe=timeframe,
+            timeframe_minutes=timeframe_minutes,
+            broker=broker,
+            param_manager=param_manager,
+        )
         self.friction_calculator = friction_calculator
-        self.timeframe = timeframe
-        self.timeframe_minutes = timeframe_minutes
-        self.broker = broker
-        self.param_manager = param_manager
 
         # Phase 3.5: Experience replay buffer
-        self.enable_training = enable_training
-        self.buffer = ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes) if enable_training else None
-        self.min_experiences = MIN_EXPERIENCES
-        self.batch_size = DEFAULT_BATCH_SIZE
-        self.training_steps = 0
-        self.last_state = None  # Track state for experience creation
-        self._last_q_spread: float = 0.0  # Q-value advantage (best - second-best)
-
-        # Phase 3.5: DDQN network for online learning (numpy-based, no PyTorch required)
-        self.ddqn = (
-            DDQNNetwork(
-                state_dim=window * n_features,
-                n_actions=2,
-                learning_rate=LEARNING_RATE,
-                gamma=GAMMA,
-                tau=TAU,
-                l2_weight=L2_WEIGHT,
-                grad_clip_norm=GRAD_CLIP_NORM,
-            )
-            if enable_training
-            else None
+        self._init_training_components(
+            enable_training=enable_training,
+            buffer_capacity=buffer_capacity,
+            min_experiences=MIN_EXPERIENCES,
+            batch_size=DEFAULT_BATCH_SIZE,
+            state_dim=window * n_features,
+            n_actions=2,
+            learning_rate=LEARNING_RATE,
+            gamma=GAMMA,
+            tau=TAU,
+            l2_weight=L2_WEIGHT,
+            grad_clip_norm=GRAD_CLIP_NORM,
         )
+        self._last_q_spread: float = 0.0  # Q-value advantage (best - second-best)
 
         # Try to load model if path specified
         model_path = os.environ.get("DDQN_HARVESTER_MODEL", "").strip()
@@ -179,30 +173,18 @@ class HarvesterAgent(AgentTrainingMixin):
         # Minimum hold period: prevents DDQN (which may have stale learned Q-values)
         # from issuing a CLOSE on the very first tick after entry before any MFE develops.
         # Only the emergency stop loss is exempt from this guard.
-        # Scale default to ~1 bar (timeframe ≤ 60 min) or 1 bar minimum for anything
-        # longer, so at H4 we don't enforce a 40-hour minimum hold.
-        # Default: ~1 hour expressed in bars (min 1).
-        _default_hold = max(1, int(60 / max(1, timeframe_minutes)))
+        # Expressed in ticks so tick-driven exit evaluation remains responsive.
+        _default_hold = MIN_HOLD_TICKS_DEFAULT
         self.min_hold_ticks = int(os.environ.get("MIN_HOLD_TICKS", str(_default_hold)))
+        # Approximate market tick cadence used to convert bar-based limits to ticks.
+        self.ticks_per_minute = float(os.environ.get("HARVESTER_TICKS_PER_MINUTE", str(DEFAULT_TICKS_PER_MINUTE)))
 
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for harvester agent."""
-        try:
-            import torch  # noqa: PLC0415
+        from src.core.ddqn_network import Conv1dQNet
 
-            from src.core.ddqn_network import (
-                Conv1dQNet,  # noqa: PLC0415 - conditional import for optional torch dependency
-            )
-
-            self.torch = torch
-            self.model = Conv1dQNet(n_features=self.n_features, n_actions=2, temporal_pool_size=1)
-            self.model.load_state_dict(torch.load(model_path, map_location="cpu", weights_only=True))
-            self.model.eval()
-            self.use_torch = True
-            LOG.info("[HARVESTER] Loaded DDQN model: %s", model_path)
-        except (OSError, ImportError, RuntimeError) as e:
-            LOG.warning("[HARVESTER] Failed to load model: %s. Using fallback.", e)
-            self.use_torch = False
+        _ = Conv1dQNet
+        self._load_torch_model(model_path, n_actions=2, tag="HARVESTER")
 
     def _check_emergency_stop_loss(self, mae: float, entry_price: float) -> tuple[bool, tuple[int, float] | None]:
         """Check if emergency stop loss is triggered.
@@ -425,21 +407,23 @@ class HarvesterAgent(AgentTrainingMixin):
             regime_hold_mult = 1.0
         else:
             regime_hold_mult = max(0.7, 1.0 - 0.3 * min(1.0, zeta - 0.7))
-        effective_hard_stop = int(self.hard_time_stop_bars * regime_hold_mult)
-        effective_soft_stop = int(self.soft_time_stop_bars * regime_hold_mult)
+        effective_hard_stop_bars = int(self.hard_time_stop_bars * regime_hold_mult)
+        effective_soft_stop_bars = int(self.soft_time_stop_bars * regime_hold_mult)
+        effective_hard_stop_ticks = self._bars_to_ticks(effective_hard_stop_bars)
+        effective_soft_stop_ticks = self._bars_to_ticks(effective_soft_stop_bars)
 
         # Hard time stop: safety valve that overrides DDQN/model decisions.
         # Prevents degenerate Q-functions from holding positions indefinitely.
-        if ticks_held > effective_hard_stop:
+        if ticks_held > effective_hard_stop_ticks:
             LOG.warning(
-                "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d (ζ=%.2f, mult=%.2f) → CLOSE",
-                ticks_held, effective_hard_stop, zeta, regime_hold_mult,
+                "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d ticks (%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
+                ticks_held, effective_hard_stop_ticks, effective_hard_stop_bars, zeta, regime_hold_mult,
             )
             self.last_close_reason = "hard_time_stop"
             return 1, 1.0  # CLOSE with full confidence
 
         # Soft time stop: exit when holding too long with diminished or positive profits.
-        if ticks_held > effective_soft_stop and entry_price > 0:
+        if ticks_held > effective_soft_stop_ticks and entry_price > 0:
             mfe_pct = (mfe / entry_price) * PCT_SCALE
             mae_pct = (mae / entry_price) * PCT_SCALE
             # Use actual unrealized P&L (not MFE−MAE range) so the stop fires
@@ -452,8 +436,8 @@ class HarvesterAgent(AgentTrainingMixin):
             net_profit_pct = mfe_pct - friction_pct
             if self._check_soft_time_stop(ticks_held, mfe_pct, current_profit_pct, net_profit_pct):
                 LOG.info(
-                    "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d (ζ=%.2f, mult=%.2f) → CLOSE",
-                    ticks_held, effective_soft_stop, zeta, regime_hold_mult,
+                    "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d ticks (%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
+                    ticks_held, effective_soft_stop_ticks, effective_soft_stop_bars, zeta, regime_hold_mult,
                 )
                 self.last_close_reason = "soft_time_stop"
                 return 1, 0.9  # CLOSE with high confidence
@@ -606,17 +590,25 @@ class HarvesterAgent(AgentTrainingMixin):
                 return True
         return False
 
+    def _bars_to_ticks(self, bars: int) -> int:
+        """Convert a bar count threshold into approximate tick count."""
+        tf_minutes = max(1, int(getattr(self, "timeframe_minutes", 1)))
+        ticks_per_min = max(1.0, float(getattr(self, "ticks_per_minute", DEFAULT_TICKS_PER_MINUTE)))
+        return max(1, int(round(float(bars) * tf_minutes * ticks_per_min)))
+
     def _check_soft_time_stop(
         self, ticks_held: int, mfe_pct: float, current_profit_pct: float, net_profit_pct: float
     ) -> bool:
         """Check if soft time stop is triggered."""
-        if ticks_held > self.soft_time_stop_bars:
+        soft_limit_ticks = self._bars_to_ticks(self.soft_time_stop_bars)
+        if ticks_held > soft_limit_ticks:
             if mfe_pct > 0:
                 soft_capture = current_profit_pct / mfe_pct
                 if soft_capture < SOFT_TIME_CAPTURE_THRESHOLD or net_profit_pct > 0:
                     LOG.debug(
-                        "[HARVESTER] Soft time stop: %d ticks, MFE=%.2f%%, capture=%.1f%%, Net=%.2f%%",
+                        "[HARVESTER] Soft time stop: %d ticks (limit=%d), MFE=%.2f%%, capture=%.1f%%, Net=%.2f%%",
                         ticks_held,
+                        soft_limit_ticks,
                         mfe_pct,
                         soft_capture * 100,
                         net_profit_pct,
@@ -628,8 +620,9 @@ class HarvesterAgent(AgentTrainingMixin):
 
     def _check_hard_time_stop(self, ticks_held: int) -> bool:
         """Check if hard time stop is triggered."""
-        if ticks_held > self.hard_time_stop_bars:
-            LOG.debug("[HARVESTER] Hard time stop: %d ticks", ticks_held)
+        hard_limit_ticks = self._bars_to_ticks(self.hard_time_stop_bars)
+        if ticks_held > hard_limit_ticks:
+            LOG.debug("[HARVESTER] Hard time stop: %d ticks (limit=%d)", ticks_held, hard_limit_ticks)
             return True
         return False
 
@@ -738,6 +731,12 @@ class HarvesterAgent(AgentTrainingMixin):
         self.capture_decay_min_mfe_pct = self._get_param(
             "harvester_capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT * timeframe_scale
         )
+        self.capture_decay_threshold = self._get_param(
+            "harvester_capture_decay_threshold", CAPTURE_DECAY_THRESHOLD
+        )
+        self.micro_winner_giveback_pct = self._get_param(
+            "harvester_micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT
+        )
         LOG.info(
             "[HARVESTER] Exit plan: TP=%.2f%% SL=%.2f%% trail_act=%.2f%% trail_dist=%.2f%% "
             "be=%.2f%% micro=%.3f%% soft=%d bars hard=%d bars (timeframe=%s scale=%.2f)",
@@ -814,24 +813,10 @@ class HarvesterAgent(AgentTrainingMixin):
 
         return DEFAULT_FRICTION_PCT  # Fallback to conservative 0.15%
 
-    def _ensure_param_manager(self) -> LearnedParametersManager:
-        if self.param_manager is None:
-            self.param_manager = LearnedParametersManager()
-            self.param_manager.load()
-        return self.param_manager
-
     def _get_param(self, name: str, default: float) -> float:
-        try:
-            manager = self._ensure_param_manager()
-            value = manager.get(self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default)
-            return float(value)
-        except (AttributeError, ValueError, TypeError) as exc:
-            LOG.debug("[HARVESTER] Falling back to default %.3f for %s (%s)", default, name, exc)
-            return float(default)
-
-    def _softmax(self, x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-        """Softmax with temperature. Delegates to shared utility."""
-        return softmax(x, temperature)
+        manager = self._ensure_param_manager()
+        self.param_manager = manager
+        return super()._get_param(name, default)
 
     # ── Parameter learning helpers ────────────────────────────────────────────
 
@@ -899,6 +884,27 @@ class HarvesterAgent(AgentTrainingMixin):
                 self.trailing_stop_distance_pct = max(0.05, min(0.40, current_trail + trail_gradient * current_trail))
                 LOG.debug("[HARVESTER] Updated trailing distance: %.2f%%", self.trailing_stop_distance_pct)
 
+            if was_wtl:
+                current_capture_decay = getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)
+                tightened_capture_decay = max(
+                    WTL_CAPTURE_DECAY_FLOOR,
+                    current_capture_decay * WTL_CAPTURE_DECAY_TIGHTEN_FACTOR,
+                )
+                self.capture_decay_threshold = tightened_capture_decay
+
+                current_micro_giveback = getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)
+                tightened_micro_giveback = max(
+                    WTL_MICRO_WINNER_FLOOR_FACTOR * MICRO_WINNER_GIVEBACK_PCT,
+                    current_micro_giveback * WTL_MICRO_WINNER_TIGHTEN_FACTOR,
+                )
+                self.micro_winner_giveback_pct = tightened_micro_giveback
+
+                LOG.info(
+                    "[HARVESTER] WTL tighten: capture_decay=%.3f micro_giveback=%.3f",
+                    self.capture_decay_threshold,
+                    self.micro_winner_giveback_pct,
+                )
+
             sl_gradient = self._sl_gradient(was_wtl)
             if abs(sl_gradient) > FLOAT_EPSILON:
                 new_sl = self.param_manager.update(
@@ -907,6 +913,22 @@ class HarvesterAgent(AgentTrainingMixin):
                 )
                 self.stop_loss_pct = new_sl * self._get_timeframe_scale()
                 LOG.info("[HARVESTER] Updated stop loss: %.4f%% (gradient=%.3f)", self.stop_loss_pct, sl_gradient)
+
+            if was_wtl:
+                self.param_manager.set_value(
+                    self.symbol,
+                    "harvester_capture_decay_threshold",
+                    float(self.capture_decay_threshold),
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
+                self.param_manager.set_value(
+                    self.symbol,
+                    "harvester_micro_winner_giveback_pct",
+                    float(self.micro_winner_giveback_pct),
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
 
             self.param_manager.save()
             LOG.info(
@@ -933,6 +955,8 @@ class HarvesterAgent(AgentTrainingMixin):
             "min_hold_ticks": self.min_hold_ticks,
             "regime_hold_mult": round(regime_hold_mult, 2),
             "current_zeta": zeta,
+            "capture_decay_threshold": float(getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)),
+            "micro_winner_giveback_pct": float(getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)),
         }
 
 

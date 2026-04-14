@@ -19,7 +19,6 @@ Note: Ctrl+C is ignored to prevent accidental termination when copying text.
 import contextlib
 import json
 import logging
-import math
 import os
 import select
 import subprocess
@@ -130,6 +129,8 @@ RUNWAY_ACCURACY_WARN: float = 0.40     # accuracy > 0.40 → yellow
 CONF_CALIB_OK_MAX: float = 0.20        # Brier < 0.20 → green (better than no-skill)
 CONF_CALIB_WARN_MAX: float = 0.30      # Brier < 0.30 → yellow
 PLATT_ADAPTED_DELTA: float = 0.05      # |platt_a − 1.0| or |platt_b| > 0.05 → adapted
+CONV_EMA_ALPHA: float = 0.1            # EMA alpha (matches bot-side production monitor)
+CONV_MIN_SAMPLES: int = 10             # minimum trade samples to trust trade-log convergence
 
 # Decision log display
 _DEC_LOG_TS_MIN_LEN: int = 19          # timestamp ≥ 19 chars has full HH:MM:SS
@@ -293,6 +294,7 @@ class TabbedHUD:
         self.monthly_metrics = {}
         self.lifetime_metrics = {}
         self.per_symbol_metrics: dict[str, dict] = {}
+        self._trade_log_metrics_trades: list[dict] = []
 
         # Heartbeat
         self.heartbeat_idx = 0
@@ -910,6 +912,7 @@ class TabbedHUD:
 
         # Apply stats epoch filter — exclude old trades from all metrics
         trades = self._filter_trades_by_epoch(trades)
+        self._trade_log_metrics_trades = list(trades)
 
         daily, weekly, monthly = _classify_trades_by_period(trades)
 
@@ -1859,6 +1862,14 @@ class TabbedHUD:
         else:
             _cc = _ANSI_R
         print(f"    Conf:   {_cc}{trig_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
+        _rw_total = int(ts.get("trigger_runway_cal_total_samples", 0) or 0)
+        _rw_active = int(ts.get("trigger_runway_cal_active_buckets", 0) or 0)
+        _rw_reliable = bool(ts.get("trigger_runway_predictor_reliable", False))
+        _rw_col = _ANSI_G if _rw_reliable else _ANSI_Y
+        _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
+        print(
+            f"    Runway: {_rw_col}{_rw_lbl}{_ANSI_RST}  {_ANSI_DIM}samples={_rw_total} active_buckets={_rw_active}{_ANSI_RST}"
+        )
         print()
 
     def _render_live_harvester_agent(
@@ -1918,6 +1929,11 @@ class TabbedHUD:
         _hold_mult = ts.get("harvester_regime_hold_mult", 1.0)
         _hm_col = _ANSI_G if _hold_mult > 1.0 else (_ANSI_Y if _hold_mult >= 0.9 else _ANSI_R)
         print(f"    Hold:   {harv_min_hold} ticks min  {_hm_col}×{_hold_mult:.2f}{_ANSI_RST}  {_ANSI_DIM}(regime mult — >1 trend run, <1 quick exit){_ANSI_RST}")
+        _cd = float(ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
+        _mw = float(ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
+        print(
+            f"    WTL:    {_ANSI_Y}capture_decay<{_cd:.2f}  micro_giveback>{_mw:.2f}×MFE{_ANSI_RST}"
+        )
         print()
 
     def _render_live_arena_and_health(
@@ -2998,13 +3014,71 @@ class TabbedHUD:
                 f"{_ANSI_DIM}(+ve = calibrated){_ANSI_RST}"
             )
 
+    def _compute_trade_log_convergence_metrics(self) -> dict:
+        trades = self._trade_log_metrics_trades
+        rw_delta = 0.0
+        rw_acc = 0.5
+        cc_err = 0.5
+        rw_n = 0
+        cc_n = 0
+        util_sum = 0.0
+        err_pct_sum = 0.0
+        for t in trades:
+            _ec = t.get("entry_confidence")
+            if _ec is not None:
+                _outcome = 1.0 if float(t.get("pnl", 0.0)) > 0.0 else 0.0
+                _brier = (float(_ec) - _outcome) ** 2
+                cc_err = (1 - CONV_EMA_ALPHA) * cc_err + CONV_EMA_ALPHA * _brier
+                cc_n += 1
+            _pred_frac = float(t.get("predicted_runway", 0.0) or 0.0)
+            _entry_price = float(t.get("entry_price", 0.0) or 0.0)
+            _actual_mfe = t.get("mfe")
+            if _pred_frac <= 0.0 or _entry_price <= 0.0 or _actual_mfe is None:
+                continue
+            _pred_pts = _pred_frac * _entry_price
+            _actual_mfe_f = float(_actual_mfe)
+            _delta = _pred_pts - _actual_mfe_f
+            _max_err = max(abs(_actual_mfe_f), abs(_pred_pts), 1.0)
+            _acc = 1.0 - min(abs(_delta) / _max_err, 1.0)
+            rw_delta = (1 - CONV_EMA_ALPHA) * rw_delta + CONV_EMA_ALPHA * _delta
+            rw_acc = (1 - CONV_EMA_ALPHA) * rw_acc + CONV_EMA_ALPHA * _acc
+            rw_n += 1
+            util_sum += (_actual_mfe_f / _pred_pts)
+            err_pct_sum += (abs(_delta) / _pred_pts) * 100.0
+        return {
+            "runway_delta_ema": rw_delta,
+            "runway_accuracy_ema": rw_acc,
+            "conf_calib_err_ema": cc_err,
+            "runway_samples": rw_n,
+            "conf_samples": cc_n,
+            "avg_runway_utilization": (util_sum / rw_n) if rw_n else 0.0,
+            "avg_runway_error_pct": (err_pct_sum / rw_n) if rw_n else 0.0,
+            "trade_samples": len(trades),
+        }
+
+    def _resolve_prediction_convergence_metrics(self, pm: dict) -> dict:
+        tl = self._compute_trade_log_convergence_metrics()
+        use_runway_tl = tl["runway_samples"] >= CONV_MIN_SAMPLES
+        use_conf_tl = tl["conf_samples"] >= CONV_MIN_SAMPLES
+        return {
+            "runway_delta_ema": tl["runway_delta_ema"] if use_runway_tl else float(pm.get("runway_delta_ema", 0.0)),
+            "runway_accuracy_ema": tl["runway_accuracy_ema"] if use_runway_tl else float(pm.get("runway_accuracy_ema", 0.5)),
+            "conf_calib_err_ema": tl["conf_calib_err_ema"] if use_conf_tl else float(pm.get("conf_calib_err_ema", 0.5)),
+            "runway_source": "trade_log.jsonl" if use_runway_tl else "production_metrics.json",
+            "conf_source": "trade_log.jsonl" if use_conf_tl else "production_metrics.json",
+            "runway_samples": tl["runway_samples"],
+            "conf_samples": tl["conf_samples"],
+            "avg_runway_utilization": tl["avg_runway_utilization"],
+            "avg_runway_error_pct": tl["avg_runway_error_pct"],
+            "trade_samples": tl["trade_samples"],
+        }
+
     def _render_trade_timing(self, lt: dict, pm: dict) -> None:
-        """Render trade timing (from trade_log) and prediction convergence (from runtime)."""
-        # avg_trade_duration and last_trade are added by _compute_metrics_from_trade_log;
-        # fall back to production_metrics for legacy / warm-up period.
+        """Render trade timing and prediction convergence."""
         avg_dur = lt.get("avg_trade_duration_mins") or pm.get("avg_trade_duration_mins", 0.0)
         last_trade = lt.get("last_trade_mins_ago") or pm.get("last_trade_mins_ago", 0.0)
-        print(f"\n  Avg hold time:    {self._format_duration(avg_dur):>8}")
+        _timing_source = "trade_log.jsonl" if lt.get("avg_trade_duration_mins") or lt.get("last_trade_mins_ago") else "production_metrics.json"
+        print(f"\n  Avg hold time:    {self._format_duration(avg_dur):>8}  {_ANSI_DIM}(source: {_timing_source}){_ANSI_RST}")
         print(f"  Last trade:       {self._format_duration(last_trade):>8} ago")
         self._render_prediction_convergence(pm)
 
@@ -3019,14 +3093,15 @@ class TabbedHUD:
         return f"{mins / _DURATION_DAY_MINS:.1f}d"
 
     def _render_prediction_convergence(self, pm: dict) -> None:
-        """Render prediction convergence metrics from production stats."""
-        rw_delta = pm.get("runway_delta_ema", 0.0)
-        rw_acc = pm.get("runway_accuracy_ema", 0.5)
-        cc_err = pm.get("conf_calib_err_ema", 0.5)
+        """Render prediction convergence metrics with trade-log-first sourcing."""
+        conv = self._resolve_prediction_convergence_metrics(pm)
+        rw_delta = conv["runway_delta_ema"]
+        rw_acc = conv["runway_accuracy_ema"]
+        cc_err = conv["conf_calib_err_ema"]
         platt_a = pm.get("platt_a", 1.0)
         platt_b = pm.get("platt_b", 0.0)
 
-        if abs(rw_delta) < 1.0:
+        if abs(rw_delta) < RUNWAY_DELTA_OK_MAX:
             delta_col = _ANSI_G
         elif abs(rw_delta) < RUNWAY_DELTA_WARN_MAX:
             delta_col = _ANSI_Y
@@ -3050,12 +3125,12 @@ class TabbedHUD:
             pa_col = _ANSI_DIM
 
         print(
-            f"\n\033[1m🎯 PREDICTION CONVERGENCE\033[0m  {_ANSI_DIM}(EMA-10 trades){_ANSI_RST}\n"
+            f"\n\033[1m🎯 PREDICTION CONVERGENCE\033[0m  {_ANSI_DIM}(EMA-10 trades; runway src={conv['runway_source']}, conf src={conv['conf_source']}){_ANSI_RST}\n"
         )
         print(
             f"  Runway Δ (pred−actual):   "
             f"{delta_col}{rw_delta:>+7.2f} pts{_ANSI_RST}  "
-            f"{_ANSI_DIM}→ 0 = perfect{_ANSI_RST}"
+            f"{_ANSI_DIM}→ 0 = perfect  (n={conv['runway_samples']}){_ANSI_RST}"
         )
         print(
             f"  Runway Accuracy:          "
@@ -3065,12 +3140,25 @@ class TabbedHUD:
         print(
             f"  Conf Brier Score:         "
             f"{cc_col}{cc_err:>7.3f}{_ANSI_RST}      "
-            f"{_ANSI_DIM}→ 0 = perfect  (0.25 = no-skill){_ANSI_RST}"
+            f"{_ANSI_DIM}→ 0 = perfect  (0.25 = no-skill, n={conv['conf_samples']}){_ANSI_RST}"
         )
+        if conv["runway_samples"] > 0:
+            _util_col = _ANSI_G if conv["avg_runway_utilization"] >= 1.0 else (_ANSI_Y if conv["avg_runway_utilization"] >= 0.7 else _ANSI_R)
+            print(
+                f"  Runway Utilization:       "
+                f"{_util_col}{conv['avg_runway_utilization']:>7.3f}x{_ANSI_RST}  "
+                f"{_ANSI_DIM}(actual_MFE/predicted_runway; reward shaping signal){_ANSI_RST}"
+            )
+            _err_col = _ANSI_G if conv["avg_runway_error_pct"] <= 25.0 else (_ANSI_Y if conv["avg_runway_error_pct"] <= 50.0 else _ANSI_R)
+            print(
+                f"  Runway Error %:           "
+                f"{_err_col}{conv['avg_runway_error_pct']:>7.1f}%{_ANSI_RST}  "
+                f"{_ANSI_DIM}(mean absolute prediction error %; reward shaping signal){_ANSI_RST}"
+            )
         print(
             f"  Platt  a={pa_col}{platt_a:.4f}{_ANSI_RST}  "
             f"b={pa_col}{platt_b:+.4f}{_ANSI_RST}  "
-            f"{_ANSI_DIM}(grey=default, blue=adapted){_ANSI_RST}"
+            f"{_ANSI_DIM}(source: production_metrics.json; grey=default, blue=adapted){_ANSI_RST}"
         )
 
     def _render_jsonl_decision_entries(self, entries: list) -> None:
@@ -4066,6 +4154,15 @@ class TabbedHUD:
         print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f} pts{_ANSI_RST}  (max favourable price excursion)")
         print(f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f} pts{_ANSI_RST}  (max adverse price excursion){_ratio_str}")
         print(f"  {'Close reason:':<16} {_rsn}")
+        _ts = self.training_stats if isinstance(self.training_stats, dict) else {}
+        _rw_total = int(_ts.get("trigger_runway_cal_total_samples", 0) or 0)
+        _rw_reliable = bool(_ts.get("trigger_runway_predictor_reliable", False))
+        _rw_col = _ANSI_G if _rw_reliable else _ANSI_Y
+        _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
+        _cd = float(_ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
+        _mw = float(_ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
+        print(f"  {'Runway model:':<16} {_rw_col}{_rw_lbl}{_ANSI_RST}  (samples={_rw_total})")
+        print(f"  {'WTL protection:':<16} capture_decay<{_cd:.2f}  micro_giveback>{_mw:.2f}×MFE")
         if _w2l:
             print(f"  {_ANSI_Y}[!] Winner-to-Loser: trade reversed into a loss after reaching MFE{_ANSI_RST}")
         print()
