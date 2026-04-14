@@ -420,6 +420,22 @@ class TestTriggerTraining:
 
 class TestEWMARunwayCalibration:
 
+    def test_confidence_gate_bypassed_while_runway_unreliable(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta.paper_mode = False
+        ta.confidence_floor = 0.95
+        ta._runway_cal_counts = [0, 0, 0, 0, 0]
+        assert ta._is_runway_predictor_reliable() is False
+        assert ta._confidence_gate_blocked(0.10) is False
+
+    def test_confidence_gate_enforced_after_runway_reliable(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta.paper_mode = False
+        ta.confidence_floor = 0.80
+        ta._runway_cal_counts = [10, 10, 0, 0, 0]
+        assert ta._is_runway_predictor_reliable() is True
+        assert ta._confidence_gate_blocked(0.20) is True
+
     def test_initial_state_uses_static_mapping(self):
         """Before any trades, _q_to_runway should use static linear mapping."""
         ta = TriggerAgent(window=64, n_features=7)

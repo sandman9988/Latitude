@@ -315,12 +315,22 @@ class TestHarvesterUpdateFromTrade:
         ha.update_from_trade(capture_ratio=0.9, was_wtl=False)
         mock_pm.update.assert_called_once()
 
-    def test_update_low_capture(self):
+    def test_update_wtl_tightens_and_persists_thresholds(self):
         mock_pm = MagicMock()
-        mock_pm.update.return_value = 3.0
+        mock_pm.update.return_value = 2.0
         ha = HarvesterAgent(window=64, n_features=10, param_manager=mock_pm)
-        ha.update_from_trade(capture_ratio=0.1, was_wtl=False)
-        mock_pm.update.assert_called_once()
+        old_capture_decay = ha.capture_decay_threshold
+        old_micro_giveback = ha.micro_winner_giveback_pct
+
+        ha.update_from_trade(capture_ratio=0.0, was_wtl=True)
+
+        assert ha.capture_decay_threshold < old_capture_decay
+        assert ha.micro_winner_giveback_pct < old_micro_giveback
+
+        persisted_keys = [c.args[1] for c in mock_pm.set_value.call_args_list]
+        assert "harvester_capture_decay_threshold" in persisted_keys
+        assert "harvester_micro_winner_giveback_pct" in persisted_keys
+        mock_pm.save.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

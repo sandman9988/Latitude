@@ -192,6 +192,44 @@ class TestHarvesterReward:
         )
         assert r["timing_penalty"] < 0
 
+    def test_wtl_negative_exit_penalty_stronger_with_larger_loss(self, shaper):
+        mild = shaper.calculate_harvester_reward(
+            exit_pnl=-5.0,
+            mfe=100.0,
+            mae=20.0,
+            was_wtl=True,
+            bars_held=20,
+            bars_from_mfe_to_exit=10,
+        )
+        severe = shaper.calculate_harvester_reward(
+            exit_pnl=-50.0,
+            mfe=100.0,
+            mae=20.0,
+            was_wtl=True,
+            bars_held=20,
+            bars_from_mfe_to_exit=10,
+        )
+        assert severe["wtl_penalty"] < mild["wtl_penalty"]
+
+    def test_wtl_negative_exit_penalty_stronger_than_positive_exit(self, shaper):
+        positive = shaper.calculate_harvester_reward(
+            exit_pnl=20.0,
+            mfe=100.0,
+            mae=20.0,
+            was_wtl=True,
+            bars_held=20,
+            bars_from_mfe_to_exit=10,
+        )
+        negative = shaper.calculate_harvester_reward(
+            exit_pnl=-20.0,
+            mfe=100.0,
+            mae=20.0,
+            was_wtl=True,
+            bars_held=20,
+            bars_from_mfe_to_exit=10,
+        )
+        assert negative["wtl_penalty"] < positive["wtl_penalty"]
+
     def test_zero_mfe_penalty(self, shaper):
         r = shaper.calculate_harvester_reward(
             exit_pnl=0.0,
@@ -200,7 +238,6 @@ class TestHarvesterReward:
             was_wtl=False,
             bars_held=10,
         )
-        # Zero MFE is now a penalty (bad entry, no favourable move)
         assert r["capture_efficiency"] < 0
 
 

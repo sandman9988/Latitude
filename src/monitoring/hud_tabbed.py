@@ -2020,6 +2020,7 @@ class TabbedHUD:
     def _render_training(self):
         """Render agent training status."""
         ts = self.training_stats
+        print(f"  {_ANSI_DIM}(canonical source: training_stats_*.json; per-bot file preferred){_ANSI_RST}\n")
         pm = self.production_metrics.get("metrics", {})
         ofs = self.offline_stats
         if ofs:
@@ -2342,6 +2343,7 @@ class TabbedHUD:
         """Render overview tab - compact summary"""
         self._render_all_bots_panel()
         self._render_position_block()
+        print(f"  {_ANSI_DIM}(canonical performance source: trade_log.jsonl; mode from performance_snapshot.json){_ANSI_RST}")
 
         # Account balance / equity
         _mode = self.bot_config.get("trading_mode", "paper")
@@ -3382,6 +3384,7 @@ class TabbedHUD:
     def _render_decision_log(self):
         """Render the Decision Log tab (Tab 6) — newest entries first."""
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
+        print(f"  {_ANSI_DIM}(canonical source: logs/audit/decisions.jsonl; fallback: data/decision_log.json){_ANSI_RST}")
 
         jsonl_file = Path("logs/audit/decisions.jsonl")
         entries_jsonl: list[dict] = []
@@ -3446,6 +3449,7 @@ class TabbedHUD:
     def _render_risk(self):
         """Render risk management details."""
         print("\n\033[1m⚠️  RISK MANAGEMENT\033[0m\n")
+        print(f"  {_ANSI_DIM}(source: risk_stats.json + circuit_breakers.json){_ANSI_RST}")
         rs = self.risk_stats
         self._render_risk_circuit_breaker(rs)
         self._render_risk_tail(rs)
@@ -4016,6 +4020,7 @@ class TabbedHUD:
             f"W/L: {_ANSI_G}{wins}{_ANSI_RST}/{_ANSI_R}{losses}{_ANSI_RST}  "
             f"({_ANSI_G if wr >= 50 else _ANSI_R}{wr:.1f}%{_ANSI_RST} win rate)"
         )
+        print(f"  {_ANSI_DIM}(canonical source: data/trade_log.jsonl){_ANSI_RST}")
 
         # Column header — M = mode badge (P=paper / L=live)
         _C_ID   = 5
