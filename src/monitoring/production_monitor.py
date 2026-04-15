@@ -76,6 +76,7 @@ class TradingMetrics:
     conf_calib_err_ema: float = 0.5
     platt_a: float = 1.0
     platt_b: float = 0.0
+    current_regime: str = "UNKNOWN"
 
 
 @dataclass
@@ -163,6 +164,7 @@ class ProductionMonitor:
             conf_calib_err_ema=kwargs.get("conf_calib_err_ema", 0.5),
             platt_a=kwargs.get("platt_a", 1.0),
             platt_b=kwargs.get("platt_b", 0.0),
+            current_regime=kwargs.get("current_regime", "UNKNOWN"),
             # Circuit breakers
             circuit_breakers_tripped=kwargs.get("circuit_breakers_tripped", 0),
             circuit_breaker_names=kwargs.get("circuit_breaker_names") or [],
@@ -196,7 +198,10 @@ class ProductionMonitor:
         new_alerts = []
 
         # Alert: No trades for too long
-        if self.metrics.last_trade_mins_ago > self.alert_no_trade_hours * 60:
+        # Regime-aware behavior: no-trade is expected in ranging/transitional.
+        regime = (self.metrics.current_regime or "UNKNOWN").upper()
+        should_alert_no_trades = regime not in ("TRANSITIONAL", "RANGING")
+        if should_alert_no_trades and self.metrics.last_trade_mins_ago > self.alert_no_trade_hours * 60:
             new_alerts.append(
                 Alert(
                     severity="warning",

@@ -53,6 +53,7 @@ from src.constants import (
     TRAILING_STOP_DISTANCE_PCT,
 )
 from src.persistence.learned_parameters import LearnedParametersManager
+
 LOG = logging.getLogger(__name__)
 
 # Internal implementation constants (harvester-only, not shared across modules)
@@ -174,7 +175,7 @@ class HarvesterAgent(AgentTrainingMixin):
         # from issuing a CLOSE on the very first tick after entry before any MFE develops.
         # Only the emergency stop loss is exempt from this guard.
         # Expressed in ticks so tick-driven exit evaluation remains responsive.
-        _default_hold = MIN_HOLD_TICKS_DEFAULT
+        _default_hold = int(round(self._get_param("harvester_min_hold_ticks", MIN_HOLD_TICKS_DEFAULT)))
         self.min_hold_ticks = int(os.environ.get("MIN_HOLD_TICKS", str(_default_hold)))
         # Approximate market tick cadence used to convert bar-based limits to ticks.
         self.ticks_per_minute = float(os.environ.get("HARVESTER_TICKS_PER_MINUTE", str(DEFAULT_TICKS_PER_MINUTE)))
@@ -215,6 +216,28 @@ class HarvesterAgent(AgentTrainingMixin):
 
         return False, None
 
+    def _check_early_adverse_exit(self, mfe: float, mae: float, ticks_held: int, entry_price: float) -> bool:
+        """Return True when early adverse movement profile should force an exit."""
+        if entry_price <= 0:
+            return False
+        early_ticks = int(max(1, round(self.early_adverse_ticks)))
+        if ticks_held > early_ticks:
+            return False
+        mfe_pct = (mfe / entry_price) * PCT_SCALE
+        mae_pct = (mae / entry_price) * PCT_SCALE
+        if mae_pct >= self.early_adverse_mae_pct and mfe_pct <= self.early_adverse_mfe_ceiling_pct:
+            LOG.info(
+                "[HARVESTER] Early-adverse exit: ticks=%d<=%d MAE=%.3f%%>=%.3f%% MFE=%.3f%%<=%.3f%%",
+                ticks_held,
+                early_ticks,
+                mae_pct,
+                self.early_adverse_mae_pct,
+                mfe_pct,
+                self.early_adverse_mfe_ceiling_pct,
+            )
+            return True
+        return False
+
     def _check_protective_stops(  # noqa: PLR0913
         self,
         mfe: float,
@@ -222,6 +245,9 @@ class HarvesterAgent(AgentTrainingMixin):
         entry_price: float,
         current_price: float,
         direction: int,
+        zeta: float,
+        ticks_held: int,
+        predicted_runway: float = 0.0,
     ) -> tuple[int, float] | None:
         """Run profit-protection checks that override DDQN/model decisions.
 
@@ -261,12 +287,36 @@ class HarvesterAgent(AgentTrainingMixin):
             LOG.info("[HARVESTER] Protective capture decay → CLOSE")
             self.last_close_reason = "capture_decay"
             return 1, 0.85
-        if self._check_micro_winner_exit(mfe_pct, current_profit_pct):
+        if self._check_micro_winner_exit(mfe_pct, current_profit_pct, zeta=zeta, ticks_held=ticks_held):
             LOG.info("[HARVESTER] Protective micro-winner exit → CLOSE")
             self.last_close_reason = "micro_winner"
             return 1, 0.80
+        if predicted_runway > 0 and mfe_pct > 0:
+            runway_capture = self._runway_capture_ratio(mfe_pct, predicted_runway)
+            runway_capture_floor = self._get_param("runway_capture_floor", 0.55)
+            runway_capture_floor = max(0.1, min(1.5, float(runway_capture_floor)))
+            if runway_capture >= runway_capture_floor and current_profit_pct <= max(
+                self.get_friction_cost_pct(entry_price) * PCT_SCALE,
+                mfe_pct * self._get_param("runway_capture_giveback_frac", 0.20),
+            ):
+                LOG.info(
+                    "[HARVESTER] Runway-capture protective exit: capture=%.2f floor=%.2f current=%.3f%% mfe=%.3f%%",
+                    runway_capture,
+                    runway_capture_floor,
+                    current_profit_pct,
+                    mfe_pct,
+                )
+                self.last_close_reason = "runway_capture"
+                return 1, 0.88
 
         return None
+
+    def _runway_capture_ratio(self, mfe_pct: float, predicted_runway_frac: float) -> float:
+        """Return realized runway capture ratio using consistent fractional units."""
+        predicted_mfe_pct = max(0.0, float(predicted_runway_frac)) * PCT_SCALE
+        if predicted_mfe_pct <= FLOAT_EPSILON:
+            return 0.0
+        return max(0.0, mfe_pct) / predicted_mfe_pct
 
     def _decide_with_ddqn(self, full_state: np.ndarray) -> tuple[int, float]:
         """Make decision using DDQN network.
@@ -348,6 +398,7 @@ class HarvesterAgent(AgentTrainingMixin):
         current_price: float = 0.0,
         direction: int = 1,
         zeta: float = 0.5,
+        predicted_runway: float = 0.0,
     ) -> tuple[int, float]:
         """Decide exit action based on market + position state.
 
@@ -360,6 +411,7 @@ class HarvesterAgent(AgentTrainingMixin):
             current_price: Current market price (for unrealized P&L calculation)
             direction: +1=LONG, -1=SHORT (used for correct sign of unrealized P&L)
             zeta: Regime damping ratio (lower = trending, allows longer holds)
+            predicted_runway: Trigger-predicted runway fraction at entry (for convergence-aware exits)
 
         Returns:
             (action, confidence)
@@ -397,17 +449,23 @@ class HarvesterAgent(AgentTrainingMixin):
             )
             return 0, 0.0  # HOLD
 
+        if self._check_early_adverse_exit(mfe, mae, ticks_held, entry_price):
+            self.last_close_reason = "early_adverse"
+            return 1, 0.98
+
         # Regime-aware time stop scaling: in strong trends (ζ < 0.5) allow
         # positions to run longer; in choppy/mean-reverting (ζ > 0.7) exit
         # faster to protect profits.
         self._last_zeta = zeta  # Store for stats exposure
+        self._last_ticks_held = ticks_held
         if zeta < 0.5:
             regime_hold_mult = 1.5
         elif zeta < 0.7:
             regime_hold_mult = 1.0
         else:
-            regime_hold_mult = max(0.7, 1.0 - 0.3 * min(1.0, zeta - 0.7))
-        effective_hard_stop_bars = int(self.hard_time_stop_bars * regime_hold_mult)
+            base_mult = max(0.7, 1.0 - 0.3 * min(1.0, zeta - 0.7))
+            regime_hold_mult = base_mult * self.chop_soft_mult
+        effective_hard_stop_bars = int(self.hard_time_stop_bars * regime_hold_mult * self.chop_hard_mult)
         effective_soft_stop_bars = int(self.soft_time_stop_bars * regime_hold_mult)
         effective_hard_stop_ticks = self._bars_to_ticks(effective_hard_stop_bars)
         effective_soft_stop_ticks = self._bars_to_ticks(effective_soft_stop_bars)
@@ -449,7 +507,14 @@ class HarvesterAgent(AgentTrainingMixin):
         # active.  Without this, a poorly-trained DDQN can hold winners
         # until they reverse into losers — the #1 profitability problem.
         protective_exit = self._check_protective_stops(
-            mfe, mae, entry_price, current_price, direction,
+            mfe,
+            mae,
+            entry_price,
+            current_price,
+            direction,
+            zeta,
+            ticks_held,
+            predicted_runway,
         )
         if protective_exit is not None:
             return protective_exit
@@ -463,7 +528,7 @@ class HarvesterAgent(AgentTrainingMixin):
                 return action, confidence
 
             # Fallback: Simple profit target + stop loss
-            action = self._fallback_strategy(mfe, mae, ticks_held, entry_price, current_price, direction)
+            action = self._fallback_strategy(mfe, mae, ticks_held, entry_price, current_price, direction, zeta)
             if action == 1:
                 self.last_close_reason = "fallback"
             return action, CONFIDENCE_FALLBACK
@@ -517,30 +582,55 @@ class HarvesterAgent(AgentTrainingMixin):
             return True
         return False
 
-    def _check_micro_winner_exit(self, mfe_pct: float, current_profit_pct: float) -> bool:
+    def _check_micro_winner_exit(
+        self,
+        mfe_pct: float,
+        current_profit_pct: float,
+        zeta: float = 0.5,
+        ticks_held: int = 0,
+    ) -> bool:
         """Check if micro-winner protection should trigger.
 
         Exits immediately when:
-        - Trade has shown ANY profit (MFE > threshold)
-        - But is NOW reversing back (giving back > 30% of MFE)
-        - Prevents small winners from becoming massive losses (winner-to-loser trades)
+        - Trade has shown ANY profit (MFE > adaptive threshold)
+        - But is NOW reversing back (giveback exceeds adaptive allowance)
+        - Protection is dampened in trend regimes to let runway harvest continue
         """
         mfe_threshold = getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT)
         giveback_threshold = getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)
 
-        # Only apply if MFE is very small (below normal trailing stop activation).
-        # Use the instance attribute so this scales correctly with the timeframe.
-        if mfe_pct >= getattr(self, "trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT):
-            return False  # Normal exits handle larger winners
+        trailing_activation = getattr(self, "trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT)
+        micro_mfe_frac = self._get_param("harvester_micro_mfe_baseline_frac", 0.30)
+        micro_mfe_frac = max(0.05, min(0.90, float(micro_mfe_frac)))
+        adaptive_mfe_threshold = max(mfe_threshold, trailing_activation * micro_mfe_frac)
 
-        if mfe_pct > mfe_threshold:
+        zeta_ref = self._get_param("harvester_micro_zeta_ref", 0.50)
+        trend_relief = self._get_param("harvester_micro_trend_relief", 0.35)
+        giveback_relief_max = self._get_param("harvester_micro_giveback_relief_max", 0.25)
+
+        if zeta < zeta_ref:
+            zeta_gap = min(1.0, max(0.0, (zeta_ref - zeta) / max(zeta_ref, FLOAT_EPSILON)))
+            relief = zeta_gap * max(0.0, trend_relief)
+        else:
+            relief = 0.0
+
+        if ticks_held <= max(self.min_hold_ticks, 1):
+            relief = max(relief, 0.35)
+
+        effective_giveback_threshold = min(0.99, giveback_threshold + giveback_relief_max * relief)
+
+        if mfe_pct >= trailing_activation:
+            return False
+
+        if mfe_pct > adaptive_mfe_threshold:
             giveback_pct = mfe_pct - current_profit_pct
-            if giveback_pct >= (mfe_pct * giveback_threshold):
+            if giveback_pct >= (mfe_pct * effective_giveback_threshold):
                 LOG.info(
-                    "[HARVESTER] Micro-winner quick exit: MFE=%.4f%%, current=%.4f%%, giveback=%.1f%% of MFE",
+                    "[HARVESTER] Micro-winner quick exit: MFE=%.4f%%, current=%.4f%%, giveback=%.1f%% of MFE, zeta=%.2f",
                     mfe_pct,
                     current_profit_pct,
                     (giveback_pct / mfe_pct * 100),
+                    zeta,
                 )
                 return True
         return False
@@ -627,8 +717,14 @@ class HarvesterAgent(AgentTrainingMixin):
         return False
 
     def _fallback_strategy(  # noqa: PLR0911
-        self, mfe: float, mae: float, ticks_held: int, entry_price: float,
-        current_price: float = 0.0, direction: int = 1,
+        self,
+        mfe: float,
+        mae: float,
+        ticks_held: int,
+        entry_price: float,
+        current_price: float = 0.0,
+        direction: int = 1,
+        zeta: float = 0.5,
     ) -> int:
         """Fallback exit strategy when no model loaded.
 
@@ -674,7 +770,7 @@ class HarvesterAgent(AgentTrainingMixin):
             return 1
         if self._check_profit_target(net_profit_pct, mfe_pct, friction_pct):
             return 1
-        if self._check_micro_winner_exit(mfe_pct, current_profit_pct):
+        if self._check_micro_winner_exit(mfe_pct, current_profit_pct, zeta=zeta, ticks_held=ticks_held):
             return 1
         if self._check_trailing_stop(mfe_pct, current_profit_pct):
             return 1
@@ -737,6 +833,15 @@ class HarvesterAgent(AgentTrainingMixin):
         self.micro_winner_giveback_pct = self._get_param(
             "harvester_micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT
         )
+        self.early_adverse_mae_pct = self._get_param(
+            "harvester_early_adverse_mae_pct", 0.22 * timeframe_scale
+        )
+        self.early_adverse_mfe_ceiling_pct = self._get_param(
+            "harvester_early_adverse_mfe_ceiling_pct", 0.08 * timeframe_scale
+        )
+        self.early_adverse_ticks = int(round(self._get_param("harvester_early_adverse_ticks", 120)))
+        self.chop_soft_mult = self._get_param("harvester_chop_soft_mult", 0.80)
+        self.chop_hard_mult = self._get_param("harvester_chop_hard_mult", 0.90)
         LOG.info(
             "[HARVESTER] Exit plan: TP=%.2f%% SL=%.2f%% trail_act=%.2f%% trail_dist=%.2f%% "
             "be=%.2f%% micro=%.3f%% soft=%d bars hard=%d bars (timeframe=%s scale=%.2f)",
@@ -957,6 +1062,8 @@ class HarvesterAgent(AgentTrainingMixin):
             "current_zeta": zeta,
             "capture_decay_threshold": float(getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)),
             "micro_winner_giveback_pct": float(getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)),
+            "micro_winner_mfe_threshold_pct": float(getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT)),
+            "micro_trend_relief": float(self._get_param("harvester_micro_trend_relief", 0.35)),
         }
 
 

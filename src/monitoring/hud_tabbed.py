@@ -295,6 +295,7 @@ class TabbedHUD:
         self.lifetime_metrics = {}
         self.per_symbol_metrics: dict[str, dict] = {}
         self._trade_log_metrics_trades: list[dict] = []
+        self._trade_log_unlabeled_count: int = 0
 
         # Heartbeat
         self.heartbeat_idx = 0
@@ -908,6 +909,7 @@ class TabbedHUD:
         # Determine active trading mode; if all trades share one mode, use it.
         _modes = {t.get("trading_mode", "") for t in trades}
         _modes.discard("")
+        self._trade_log_unlabeled_count = sum(1 for t in trades if not t.get("trading_mode"))
         self._trade_log_mode = next(iter(_modes)) if len(_modes) == 1 else "mixed" if _modes else ""
 
         # Apply stats epoch filter — exclude old trades from all metrics
@@ -2249,6 +2251,7 @@ class TabbedHUD:
         current = self.position.get("current_price", 0)
         pnl = self.position.get("unrealized_pnl", 0)
         bars = self.position.get("bars_held", 0)
+        ticks = self.position.get("ticks_held", bars)
         if direction == "LONG":
             dir_color = _ANSI_G
         elif direction == "SHORT":
@@ -2263,7 +2266,7 @@ class TabbedHUD:
         else:
             print(
                 f"  {dir_color}{direction}{_ANSI_RST} @ {entry:.{_dec}f} → {current:.{_dec}f}  |  "
-                f"PnL: {pnl_color}{pnl:+.2f}{_ANSI_RST}  |  Bars: {bars}"
+                f"PnL: {pnl_color}{pnl:+.2f}{_ANSI_RST}  |  Ticks: {ticks}"
             )
         # Line 2: MFE/MAE (always printed — blank spacer when FLAT for stable layout)
         if direction != "FLAT":
@@ -2346,9 +2349,15 @@ class TabbedHUD:
         print(f"  {_ANSI_DIM}(canonical performance source: trade_log.jsonl; mode from performance_snapshot.json){_ANSI_RST}")
 
         # Account balance / equity
-        _mode = self.bot_config.get("trading_mode", "paper")
+        _mode = (
+            getattr(self, "_trade_log_mode", "")
+            or getattr(self, "_perf_snapshot_mode", "")
+            or self.bot_config.get("trading_mode", "paper")
+        )
         _acct_tag = f"  {_ANSI_Y}(paper){_ANSI_RST}" if _mode == "paper" else (
-            f"  {_ANSI_G}(live){_ANSI_RST}" if _mode == "live" else ""
+            f"  {_ANSI_G}(live){_ANSI_RST}" if _mode == "live" else (
+                f"  {_ANSI_Y}(paper){_ANSI_RST} + {_ANSI_G}(live){_ANSI_RST}" if _mode == "mixed" else ""
+            )
         )
         print(f"\n\033[1m💰 ACCOUNT\033[0m{_acct_tag}")
         # Prefer starting_equity from universe.json for the active symbol.
@@ -2797,6 +2806,11 @@ class TabbedHUD:
             _mode_tag = ""
         src = f"  {_ANSI_DIM}(source: trade_log.jsonl){_ANSI_RST}" if self._metrics_from_trade_log else ""
         print(f"\n\033[1m📈 PERFORMANCE METRICS\033[0m{_mode_tag}{src}\n")
+        if self._trade_log_unlabeled_count > 0:
+            print(
+                f"  {_ANSI_Y}⚠ {self._trade_log_unlabeled_count} unlabeled trades in trade_log.jsonl (missing trading_mode) — "
+                f"mode split may be incomplete.{_ANSI_RST}"
+            )
 
         # Stats epoch banner
         if self._stats_epoch:

@@ -141,8 +141,9 @@ from src.core.trade_manager_integration import TradeManagerIntegration
 from src.features.event_time_features import EventTimeFeatureEngine
 from src.monitoring.activity_monitor import ActivityMonitor
 from src.monitoring.audit_logger import DecisionLogger, TransactionLogger
-from src.monitoring.performance_tracker import PerformanceTracker
+from src.monitoring.performance_tracker import AgentAttribution, PerformanceTracker
 from src.monitoring.production_monitor import ProductionMonitor
+from src.monitoring.reward_shaping_monitor import RewardShapingMonitor
 from src.monitoring.trade_exporter import TradeExporter
 from src.persistence.learned_parameters import LearnedParametersManager
 from src.persistence.trade_log_reader import read_all_trades, read_recent_trades
@@ -152,9 +153,9 @@ from src.risk.friction_costs import FrictionCalculator
 from src.risk.path_geometry import PathGeometry
 from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator, position_size_from_var
 from src.training.bar_experience_cache import BarExperienceCache
+from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
 from src.utils.non_repaint_guards import NonRepaintBarAccess
 from src.utils.ring_buffer import RollingStats
-from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
 
 # Handbook components - Phase 1
 from src.utils.safe_math import SafeMath
@@ -923,6 +924,12 @@ class CTraderFixApp(fix.Application):
             param_manager=self.param_manager,
             activity_monitor=self.activity_monitor,
         )
+        self.reward_shaping_monitor = RewardShapingMonitor(
+            symbol=self.symbol,
+            timeframe=self.timeframe_label,
+            broker=self.broker,
+            param_manager=self.param_manager,
+        )
 
         # Risk management - VaR estimator with kurtosis circuit breaker
         self.kurtosis_monitor = KurtosisMonitor(window=100, threshold=3.0)
@@ -1190,6 +1197,7 @@ class CTraderFixApp(fix.Application):
                 circuit_breakers_tripped=len(tripped_names),
                 circuit_breaker_names=tripped_names,
                 fix_connected=self.connection_healthy,
+                current_regime=getattr(self.policy, "current_regime", "UNKNOWN") if hasattr(self, "policy") else "UNKNOWN",
             )
         except Exception as e:
             LOG.warning("[METRICS] Failed to flush production metrics: %s", e)
@@ -3782,8 +3790,84 @@ class CTraderFixApp(fix.Application):
 
         return pnl
 
+    def _classify_trigger_quality(self, predicted_runway_pts: float, actual_mfe_pts: float) -> str:
+        if predicted_runway_pts <= 0:
+            return "N/A"
+        utilization = SafeMath.safe_div(actual_mfe_pts, predicted_runway_pts, 0.0)
+        if actual_mfe_pts > 0 and 0.9 <= utilization <= 1.2:
+            return "EXCELLENT"
+        if utilization >= 1.2:
+            return "UNDERPREDICTED"
+        if utilization >= 0.7:
+            return "GOOD"
+        return "OVERPREDICTED"
+
+    def _classify_harvester_quality(
+        self,
+        pnl_usd: float,
+        mfe_usd: float,
+        winner_to_loser: bool,
+        bars_from_mfe_to_exit: int,
+    ) -> str:
+        if winner_to_loser:
+            return "POOR_WTL"
+        if pnl_usd <= 0:
+            return "STOPPED_OUT"
+        if mfe_usd <= 0:
+            return "N/A"
+        capture = SafeMath.safe_div(pnl_usd, mfe_usd, 0.0)
+        if capture >= 0.8 and bars_from_mfe_to_exit <= 2:
+            return "EXCELLENT"
+        if capture >= 0.6:
+            return "GOOD"
+        if capture >= 0.35:
+            return "FAIR"
+        return "POOR"
+
+    def _build_trade_attribution(
+        self,
+        summary: dict,
+        entry_price: float,
+        pnl_usd: float,
+        trade_qty: float,
+        predicted_runway: float,
+    ) -> AgentAttribution:
+        actual_mfe_pts = float(summary.get("mfe", 0.0) or 0.0)
+        predicted_runway_pts = max(0.0, predicted_runway) * max(entry_price, 0.0)
+        runway_utilization = SafeMath.safe_div(actual_mfe_pts, predicted_runway_pts, 0.0)
+        runway_error_pct = (
+            abs(predicted_runway_pts - actual_mfe_pts) / predicted_runway_pts * 100.0
+            if predicted_runway_pts > 0
+            else 0.0
+        )
+        bars_from_mfe_to_exit = int(summary.get("bars_from_mfe_to_exit", -1) or -1)
+        mfe_usd = actual_mfe_pts * trade_qty * self.contract_size
+        trigger_quality = self._classify_trigger_quality(predicted_runway_pts, actual_mfe_pts)
+        harvester_quality = self._classify_harvester_quality(
+            pnl_usd=pnl_usd,
+            mfe_usd=mfe_usd,
+            winner_to_loser=bool(summary.get("winner_to_loser", False)),
+            bars_from_mfe_to_exit=bars_from_mfe_to_exit,
+        )
+        return AgentAttribution(
+            predicted_runway=max(0.0, predicted_runway),
+            runway_utilization=runway_utilization,
+            runway_error_pct=runway_error_pct,
+            trigger_quality=trigger_quality,
+            harvester_quality=harvester_quality,
+            mfe_bar_offset=int(summary.get("mfe_bar_offset", -1) or -1),
+            mae_bar_offset=int(summary.get("mae_bar_offset", -1) or -1),
+            bars_from_mfe_to_exit=bars_from_mfe_to_exit,
+        )
+
     def _update_after_trade_close(
-        self, pnl: float, exit_time, entry_price: float, exit_price: float, summary: dict
+        self,
+        pnl: float,
+        exit_time,
+        entry_price: float,
+        exit_price: float,
+        summary: dict,
+        attribution: AgentAttribution | None = None,
     ) -> tuple:
         """Update timing, performance, and prev-state; return (shaped_rewards, pnl_pts)."""
         if self.trade_entry_time:
@@ -3796,6 +3880,7 @@ class CTraderFixApp(fix.Application):
                 entry_price=entry_price, exit_price=exit_price,
                 mfe=summary.get("mfe", 0.0), mae=summary.get("mae", 0.0),
                 winner_to_loser=summary.get("winner_to_loser", False),
+                attribution=attribution,
             )
         self._last_trade_close_ts = time.time()
         if hasattr(self.policy, "harvester") and hasattr(self.policy.harvester, "last_state"):
@@ -3888,10 +3973,10 @@ class CTraderFixApp(fix.Application):
 
         # Use specialized harvester reward (capture + WTL + MFE-development)
         # instead of the generic 6-component total_reward.
-        from datetime import datetime, timezone
+        from datetime import datetime
         _exit_time = summary.get("exit_time", "")
         if not _exit_time:
-            _exit_time = datetime.now(timezone.utc).isoformat()
+            _exit_time = datetime.now(dt.UTC).isoformat()
         harvester_result = self.reward_shaper.calculate_harvester_reward(
             exit_pnl=float(pnl),
             mfe=float(summary.get("mfe", 0.0)),
@@ -4035,6 +4120,16 @@ class CTraderFixApp(fix.Application):
             _pnl_checkpoint = pnl
             LOG.debug("[PNL_CHECKPOINT] Initial P&L calculated: %.4f", _pnl_checkpoint)
 
+            _trade_qty = summary.get("filled_qty") or self._get_live_qty()
+            _entry_predicted_runway = float(getattr(self, "predicted_runway", 0.0) or 0.0)
+            trade_attr = self._build_trade_attribution(
+                summary=summary,
+                entry_price=entry_price,
+                pnl_usd=pnl,
+                trade_qty=_trade_qty,
+                predicted_runway=_entry_predicted_runway,
+            )
+
             # Log position close
             self.transaction_log.log_position_close(
                 position_id=f"{self.symbol_id}_net",
@@ -4043,7 +4138,14 @@ class CTraderFixApp(fix.Application):
                 mae=summary.get("mae", 0.0),
             )
 
-            shaped_rewards, pnl_pts = self._update_after_trade_close(pnl, exit_time, entry_price, exit_price, summary)
+            shaped_rewards, pnl_pts = self._update_after_trade_close(
+                pnl,
+                exit_time,
+                entry_price,
+                exit_price,
+                summary,
+                attribution=trade_attr,
+            )
 
             if summary.get("mfe", 0.0) > 0 and hasattr(self.reward_shaper, "update_baseline_mfe"):
                 self.reward_shaper.update_baseline_mfe(summary["mfe"])
@@ -4081,7 +4183,6 @@ class CTraderFixApp(fix.Application):
 
             # Save trade record — use the filled_qty stored on the tracker at entry
             # so MFE/MAE dollar conversion uses the same qty as P&L calculation.
-            _trade_qty = summary.get("filled_qty") or self._get_live_qty()
             # Convert MFE/MAE from price points to dollars (same units as pnl)
             _mfe_dollars = summary.get("mfe", 0.0) * _trade_qty * self.contract_size
             _mae_dollars = summary.get("mae", 0.0) * _trade_qty * self.contract_size
@@ -4106,7 +4207,14 @@ class CTraderFixApp(fix.Application):
                 "close_reason": summary.get("close_reason", ""),
                 "bars_held": _bars_held,
                 "hold_seconds": (exit_time - self.trade_entry_time).total_seconds() if self.trade_entry_time else 0.0,
-                "predicted_runway": getattr(self, "predicted_runway", 0.0),
+                "predicted_runway": _entry_predicted_runway,
+                "runway_utilization": trade_attr.runway_utilization,
+                "runway_error_pct": trade_attr.runway_error_pct,
+                "trigger_quality": trade_attr.trigger_quality,
+                "harvester_quality": trade_attr.harvester_quality,
+                "mfe_bar_offset": trade_attr.mfe_bar_offset,
+                "mae_bar_offset": trade_attr.mae_bar_offset,
+                "bars_from_mfe_to_exit": trade_attr.bars_from_mfe_to_exit,
                 "entry_confidence": getattr(self, "entry_confidence", 0.5),
             }
             LOG.info(
@@ -4596,6 +4704,22 @@ class CTraderFixApp(fix.Application):
         self.last_depth_floor = getattr(self.friction_calculator, "depth_buffer", 0.0)
         return imbalance, depth_bid, depth_ask, depth_ratio, depth_levels
 
+    def _run_reward_shaping_monitor(self) -> None:
+        try:
+            regime = getattr(self.policy, "current_regime", "UNKNOWN") if hasattr(self, "policy") else "UNKNOWN"
+            result = self.reward_shaping_monitor.run_if_due(current_regime=regime)
+            if not result:
+                return
+            LOG.info(
+                "[REWARD_MONITOR] hourly regime=%s trades=%d opportunities=%d recommendations=%d",
+                result.get("regime", "UNKNOWN"),
+                result.get("trade_count", 0),
+                result.get("opportunity_count", 0),
+                len(result.get("recommendations", [])),
+            )
+        except Exception as exc:
+            LOG.warning("[REWARD_MONITOR] Hourly monitor failed: %s", exc)
+
     def _obc_get_market_context(self, c: float) -> tuple:
         """Return (vpin_zscore, realized_vol, event_features, is_high_liq)."""
         if hasattr(self.activity_monitor, "get_exploration_bonus"):
@@ -5050,7 +5174,6 @@ class CTraderFixApp(fix.Application):
 
         Returns True if any position exceeded the cap (close dispatched).
         """
-        from src.constants import MAX_LOSS_PER_TRADE_USD  # noqa: PLC0415
 
         if not hasattr(self, "mfe_mae_trackers") or not self.mfe_mae_trackers:
             return False
@@ -5444,6 +5567,7 @@ class CTraderFixApp(fix.Application):
         )
 
         self._obc_periodic_training()
+        self._run_reward_shaping_monitor()
 
         has_dual = hasattr(self.policy, "decide_entry")
         LOG.debug(

@@ -419,6 +419,7 @@ class DualPolicy:
             current_price=current_price,
             direction=self.current_position,
             zeta=self.current_zeta,  # Regime ζ for adaptive hold duration
+            predicted_runway=self.predicted_runway,
         )
 
         if action == 1:  # CLOSE

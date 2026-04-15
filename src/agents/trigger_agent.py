@@ -55,6 +55,8 @@ LIVE_BASE_THRESHOLD = 0.3
 _UTILIZATION_BAD_THRESHOLD: float = 0.3   # utilization below this is a bad entry
 _UTILIZATION_OUTLIER_LOW: float = 0.2     # below this is an outlier (too poor)
 _UTILIZATION_OUTLIER_HIGH: float = 2.0    # above this is an outlier (excessive)
+_RUNWAY_ERROR_HUBER_K: float = 1.0
+_ZERO_MFE_FLOOR_FRAC: float = 1e-7
 PREDICTED_RUNWAY_FALLBACK = 0.0015
 Q_RUNWAY_MIN = 0.0010
 Q_RUNWAY_MAX = 0.0050
@@ -69,6 +71,8 @@ RUNWAY_CAL_ALPHA: float = 0.15           # EWMA smoothing factor (higher = faste
 RUNWAY_CAL_MIN_SAMPLES: int = 3          # Minimum samples before using calibrated value
 RUNWAY_GATING_MIN_TOTAL_SAMPLES: int = 20
 RUNWAY_GATING_MIN_ACTIVE_BUCKETS: int = 2
+RUNWAY_CAL_ALPHA_MIN: float = 0.05
+RUNWAY_CAL_ALPHA_MAX: float = 0.60
 
 
 class _EconomicsGateParams(NamedTuple):
@@ -190,12 +194,34 @@ class TriggerAgent(AgentTrainingMixin):
                 env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55
             )
 
+        self.entry_conf_deadzone_low, _ = self._resolve_gate_value(
+            env_key="ENTRY_CONF_DEADZONE_LOW", param_name="entry_conf_deadzone_low", fallback=0.45
+        )
+        self.entry_conf_deadzone_high, _ = self._resolve_gate_value(
+            env_key="ENTRY_CONF_DEADZONE_HIGH", param_name="entry_conf_deadzone_high", fallback=0.55
+        )
+        self.high_conf_risk_low, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_RISK_LOW", param_name="high_conf_risk_low", fallback=0.80
+        )
+        self.high_conf_risk_high, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_RISK_HIGH", param_name="high_conf_risk_high", fallback=0.90
+        )
+        self.high_conf_vol_z_gate, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_VOL_Z_GATE", param_name="high_conf_vol_z_gate", fallback=1.0
+        )
+        self.high_conf_vpin_z_gate, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_VPIN_Z_GATE", param_name="high_conf_vpin_z_gate", fallback=2.0
+        )
+
         # ── EWMA runway calibration ──────────────────────────────────────────
         # Tracks actual MFE outcomes per Q-value bucket so _q_to_runway()
         # adapts from empirical data rather than a static linear mapping.
         # Each bucket stores: (ewma_mfe, sample_count)
         self._runway_cal_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
         self._runway_cal_counts: list[int] = [0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_resid_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_err_abs_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_step_alpha: list[float] = [RUNWAY_CAL_ALPHA] * RUNWAY_CAL_N_BUCKETS
         self._last_entry_q: float | None = None  # Q-value at most recent entry
 
         # Log consolidated initialization
@@ -292,6 +318,10 @@ class TriggerAgent(AgentTrainingMixin):
 
         if not self.paper_mode and confidence < self.confidence_floor:
             LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", confidence, self.confidence_floor)
+            return 0, confidence, 0.0
+        if self._entry_risk_gate_blocked(action, confidence, state):
+            return 0, confidence, 0.0
+        if self._runway_length_gate_blocked(predicted_runway):
             return 0, confidence, 0.0
 
         self._decay_epsilon()
@@ -401,6 +431,8 @@ class TriggerAgent(AgentTrainingMixin):
 
             if self._confidence_gate_blocked(calibrated_prob):
                 return 0, calibrated_prob, 0.0
+            if self._entry_risk_gate_blocked(action, calibrated_prob, state):
+                return 0, calibrated_prob, 0.0
 
             breakeven_prob = self._calc_breakeven_prob(expected_gain, expected_loss, friction_cost)
             econ_params = _EconomicsGateParams(
@@ -415,6 +447,8 @@ class TriggerAgent(AgentTrainingMixin):
             q_max = q_values[action]
             gross_runway = self._q_to_runway(q_max)
             predicted_runway = max(0.0, gross_runway - friction_cost)
+            if self._runway_length_gate_blocked(predicted_runway):
+                return 0, calibrated_prob, 0.0
 
             LOG.debug(
                 "[TRIGGER] Q=%s action=%d raw_p=%.3f calib_p=%.3f be=%.3f gross=%.4f K=%.4f net=%.4f",
@@ -441,8 +475,59 @@ class TriggerAgent(AgentTrainingMixin):
         LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self.confidence_floor)
         return True
 
+    def _entry_risk_gate_blocked(self, action: int, confidence: float, state: np.ndarray) -> bool:
+        """Return True when adaptive confidence/risk pockets should block entry."""
+        if self.paper_mode or action == 0:
+            return False
+        dead_low = min(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
+        dead_high = max(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
+        if dead_low <= confidence <= dead_high:
+            LOG.debug(
+                "[TRIGGER] BLOCKED by confidence dead-zone: p=%.3f in [%.3f, %.3f]",
+                confidence,
+                dead_low,
+                dead_high,
+            )
+            return True
+        high_low = min(self.high_conf_risk_low, self.high_conf_risk_high)
+        high_high = max(self.high_conf_risk_low, self.high_conf_risk_high)
+        if not (high_low <= confidence <= high_high):
+            return False
+        vol_z = float(state[-1, VOL_Z_INDEX]) if state.shape[1] > VOL_Z_INDEX else 0.0
+        vpin_z = float(state[-1, VPIN_Z_INDEX]) if state.shape[1] > VPIN_Z_INDEX else 0.0
+        if abs(vol_z) >= self.high_conf_vol_z_gate or abs(vpin_z) >= self.high_conf_vpin_z_gate:
+            LOG.debug(
+                "[TRIGGER] BLOCKED high-conf risk pocket: p=%.3f in [%.3f, %.3f], vol_z=%.2f, vpin_z=%.2f",
+                confidence,
+                high_low,
+                high_high,
+                vol_z,
+                vpin_z,
+            )
+            return True
+        return False
+
     def _calc_breakeven_prob(self, expected_gain: float, expected_loss: float, friction_cost: float) -> float:
         return SafeMath.safe_div(expected_loss + friction_cost, expected_gain + expected_loss, 0.0)
+
+    def _runway_length_gate_blocked(self, predicted_runway: float) -> bool:
+        """Return True when predicted runway is too short for live entry."""
+        if self.paper_mode or self.disable_gates:
+            return False
+        if not self._is_runway_predictor_reliable():
+            return False
+        min_runway_frac = self._get_param("runway_gate_min_fraction", 0.40)
+        min_runway_frac = max(0.0, min(1.0, float(min_runway_frac)))
+        min_runway = Q_RUNWAY_MIN * min_runway_frac
+        if predicted_runway >= min_runway:
+            return False
+        LOG.debug(
+            "[TRIGGER] BLOCKED by runway-length gate: runway=%.6f < min=%.6f (fraction=%.2f)",
+            predicted_runway,
+            min_runway,
+            min_runway_frac,
+        )
+        return True
 
     def _economics_gate_blocked(
         self,
@@ -701,7 +786,10 @@ class TriggerAgent(AgentTrainingMixin):
         bucket = self._q_bucket(q_value)
         if self._runway_cal_counts[bucket] < RUNWAY_CAL_MIN_SAMPLES:
             return None
-        return self._runway_cal_ewma[bucket]
+        base = self._runway_cal_ewma[bucket]
+        resid = self._runway_resid_ewma[bucket]
+        corrected = base + resid
+        return max(0.0, corrected)
 
     def _runway_cal_total_samples(self) -> int:
         return int(sum(self._runway_cal_counts))
@@ -723,24 +811,59 @@ class TriggerAgent(AgentTrainingMixin):
                 return i
         return RUNWAY_CAL_N_BUCKETS - 1
 
-    def _update_runway_calibration(self, actual_mfe_frac: float) -> None:
+    def _update_runway_calibration(self, actual_mfe_frac: float, predicted_runway: float = 0.0) -> None:
         """Update the EWMA calibration bucket with the observed MFE (fractional)."""
         q_val = self._last_entry_q
         if q_val is None:
             return
         bucket = self._q_bucket(max(0.0, min(Q_RUNWAY_MAX_Q, q_val)))
         count = self._runway_cal_counts[bucket]
+
+        base_alpha = self._get_param("runway_cal_alpha", RUNWAY_CAL_ALPHA)
+        base_alpha = max(RUNWAY_CAL_ALPHA_MIN, min(RUNWAY_CAL_ALPHA_MAX, float(base_alpha)))
+
         if count == 0:
             self._runway_cal_ewma[bucket] = actual_mfe_frac
+            self._runway_step_alpha[bucket] = base_alpha
         else:
-            alpha = RUNWAY_CAL_ALPHA
+            alpha = self._runway_step_alpha[bucket]
             self._runway_cal_ewma[bucket] = (
                 alpha * actual_mfe_frac + (1 - alpha) * self._runway_cal_ewma[bucket]
             )
+
+        if predicted_runway > 0:
+            error = actual_mfe_frac - predicted_runway
+            huber_k = self._get_param("runway_huber_k", _RUNWAY_ERROR_HUBER_K)
+            k = max(1e-6, float(huber_k))
+            abs_error = abs(error)
+            robust_residual = error if abs_error <= k else np.sign(error) * k
+
+            prev_abs = self._runway_err_abs_ewma[bucket]
+            abs_alpha = self._get_param("runway_error_abs_alpha", 0.25)
+            abs_alpha = max(0.05, min(0.8, float(abs_alpha)))
+            curr_abs = abs_error
+            self._runway_err_abs_ewma[bucket] = abs_alpha * curr_abs + (1 - abs_alpha) * prev_abs
+
+            adapt_gain = self._get_param("runway_adapt_gain", 0.8)
+            adapt_gain = max(0.0, float(adapt_gain))
+            rel = curr_abs / max(k, 1e-6)
+            dynamic_alpha = base_alpha * (1.0 + adapt_gain * min(3.0, rel))
+            self._runway_step_alpha[bucket] = max(RUNWAY_CAL_ALPHA_MIN, min(RUNWAY_CAL_ALPHA_MAX, dynamic_alpha))
+
+            resid_alpha = self._runway_step_alpha[bucket]
+            prev_resid = self._runway_resid_ewma[bucket]
+            self._runway_resid_ewma[bucket] = resid_alpha * robust_residual + (1 - resid_alpha) * prev_resid
+
         self._runway_cal_counts[bucket] += 1
         LOG.debug(
-            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe_frac=%.5f ewma=%.5f n=%d",
-            bucket, q_val, actual_mfe_frac, self._runway_cal_ewma[bucket],
+            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe_frac=%.5f ewma=%.5f resid=%.5f abs_err=%.5f alpha=%.3f n=%d",
+            bucket,
+            q_val,
+            actual_mfe_frac,
+            self._runway_cal_ewma[bucket],
+            self._runway_resid_ewma[bucket],
+            self._runway_err_abs_ewma[bucket],
+            self._runway_step_alpha[bucket],
             self._runway_cal_counts[bucket],
         )
         self._last_entry_q = None
@@ -750,6 +873,9 @@ class TriggerAgent(AgentTrainingMixin):
         return {
             "runway_cal_ewma": list(self._runway_cal_ewma),
             "runway_cal_counts": list(self._runway_cal_counts),
+            "runway_resid_ewma": list(self._runway_resid_ewma),
+            "runway_err_abs_ewma": list(self._runway_err_abs_ewma),
+            "runway_step_alpha": list(self._runway_step_alpha),
             "platt_a": self.platt_a,
             "platt_b": self.platt_b,
         }
@@ -761,6 +887,15 @@ class TriggerAgent(AgentTrainingMixin):
         if ewma and counts and len(ewma) == RUNWAY_CAL_N_BUCKETS and len(counts) == RUNWAY_CAL_N_BUCKETS:
             self._runway_cal_ewma = [float(v) for v in ewma]
             self._runway_cal_counts = [int(c) for c in counts]
+            resid = state.get("runway_resid_ewma")
+            if resid and len(resid) == RUNWAY_CAL_N_BUCKETS:
+                self._runway_resid_ewma = [float(v) for v in resid]
+            abs_err = state.get("runway_err_abs_ewma")
+            if abs_err and len(abs_err) == RUNWAY_CAL_N_BUCKETS:
+                self._runway_err_abs_ewma = [float(v) for v in abs_err]
+            step_alpha = state.get("runway_step_alpha")
+            if step_alpha and len(step_alpha) == RUNWAY_CAL_N_BUCKETS:
+                self._runway_step_alpha = [float(v) for v in step_alpha]
             total = sum(self._runway_cal_counts)
             LOG.info("[TRIGGER] Restored runway calibration: %d total samples across %d buckets",
                      total, sum(1 for c in self._runway_cal_counts if c > 0))
@@ -801,28 +936,30 @@ class TriggerAgent(AgentTrainingMixin):
         # EWMA runway calibration: convert absolute MFE to fractional
         if entry_price > 0 and actual_mfe >= 0:
             actual_mfe_frac = actual_mfe / entry_price
-            self._update_runway_calibration(actual_mfe_frac)
+            self._update_runway_calibration(actual_mfe_frac, predicted_runway)
 
-        utilization = self._log_runway_error(actual_mfe, predicted_runway)
-        outcome = self._trade_outcome(actual_mfe, predicted_runway)
+        utilization = self._log_runway_error(actual_mfe, predicted_runway, entry_price=entry_price)
+        outcome = self._trade_outcome(actual_mfe, predicted_runway, entry_price=entry_price)
         self._update_platt_from_trade(entry_confidence, outcome, raw_confidence=raw_confidence)
-        self._update_confidence_from_trade(utilization)
+        self._update_confidence_from_trade(utilization, actual_mfe=actual_mfe, entry_price=entry_price)
 
-    def _log_runway_error(self, actual_mfe: float, predicted_runway: float) -> float:
+    def _log_runway_error(self, actual_mfe: float, predicted_runway: float, entry_price: float = 0.0) -> float:
         """Log runway prediction error and return utilization."""
-        error = actual_mfe - predicted_runway
+        actual_mfe_frac = actual_mfe / entry_price if entry_price > 0 else actual_mfe
+        error = actual_mfe_frac - predicted_runway
         error_pct = (error / predicted_runway) * 100
         LOG.debug(
-            "[TRIGGER] Runway prediction: %.4f vs actual: %.4f (error: %.1f%%)",
+            "[TRIGGER] Runway prediction: %.6f vs actual_frac: %.6f (error: %.1f%%)",
             predicted_runway,
-            actual_mfe,
+            actual_mfe_frac,
             error_pct,
         )
-        return actual_mfe / predicted_runway if predicted_runway > 0 else 0.0
+        return actual_mfe_frac / predicted_runway if predicted_runway > 0 else 0.0
 
-    def _trade_outcome(self, actual_mfe: float, predicted_runway: float) -> float:
+    def _trade_outcome(self, actual_mfe: float, predicted_runway: float, entry_price: float = 0.0) -> float:
         """Return 1.0 for success, 0.0 for failure based on runway utilization."""
-        trade_success = actual_mfe >= (predicted_runway * 0.5)
+        actual_mfe_frac = actual_mfe / entry_price if entry_price > 0 else actual_mfe
+        trade_success = actual_mfe_frac >= (predicted_runway * 0.5)
         return 1.0 if trade_success else 0.0
 
     def _update_platt_from_trade(self, entry_confidence: float, outcome: float, raw_confidence: float | None = None) -> None:
@@ -832,12 +969,17 @@ class TriggerAgent(AgentTrainingMixin):
         predicted_prob = float(entry_confidence)
         self.update_platt_params(predicted_prob, outcome, raw_prob=raw_confidence)
 
-    def _update_confidence_from_trade(self, utilization: float) -> None:
+    def _update_confidence_from_trade(self, utilization: float, actual_mfe: float = 0.0, entry_price: float = 0.0) -> None:
         """Update confidence_floor and related parameters using utilization."""
         if self.param_manager is None:
             return
         try:
+            zero_mfe_frac = self._get_param("zero_mfe_floor_frac", _ZERO_MFE_FLOOR_FRAC)
+            zero_mfe_trade = (entry_price > 0) and ((actual_mfe / entry_price) <= zero_mfe_frac)
             gradient = self._confidence_gradient_from_utilization(utilization)
+            if zero_mfe_trade:
+                zero_mfe_boost = self._get_param("zero_mfe_conf_boost", 0.08)
+                gradient += max(0.0, float(zero_mfe_boost))
             new_floor = self.param_manager.update(
                 self.symbol,
                 "confidence_floor",
@@ -855,6 +997,16 @@ class TriggerAgent(AgentTrainingMixin):
                 broker=self.broker,
             )
 
+            if zero_mfe_trade:
+                feas_step = self._get_param("zero_mfe_feasibility_step", 0.02)
+                self.param_manager.update(
+                    self.symbol,
+                    "feasibility_threshold",
+                    max(0.0, float(feas_step)),
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
+
             if utilization < _UTILIZATION_OUTLIER_LOW or utilization > _UTILIZATION_OUTLIER_HIGH:
                 self.param_manager.update(
                     self.symbol,
@@ -866,10 +1018,11 @@ class TriggerAgent(AgentTrainingMixin):
 
             self.param_manager.save()
             LOG.debug(
-                "[TRIGGER] Updated confidence_floor: %.3f (gradient=%.3f, utilization=%.2f)",
+                "[TRIGGER] Updated confidence_floor: %.3f (gradient=%.3f, utilization=%.2f zero_mfe=%s)",
                 self.confidence_floor,
                 gradient,
                 utilization,
+                zero_mfe_trade,
             )
         except Exception as exc:
             LOG.warning("[TRIGGER] Failed to update confidence_floor: %s", exc)
@@ -903,6 +1056,8 @@ class TriggerAgent(AgentTrainingMixin):
             "runway_cal_total_samples": runway_total_samples,
             "runway_cal_active_buckets": runway_active_buckets,
             "runway_predictor_reliable": runway_predictor_reliable,
+            "runway_mean_abs_error": float(np.mean(self._runway_err_abs_ewma)) if self._runway_err_abs_ewma else 0.0,
+            "runway_alpha_mean": float(np.mean(self._runway_step_alpha)) if self._runway_step_alpha else RUNWAY_CAL_ALPHA,
         }
 
 

@@ -286,6 +286,62 @@ class TestHarvesterDecide:
         assert action in [0, 1]
         assert 0.0 <= conf <= 1.0
 
+    def test_runway_capture_protective_exit_triggers(self):
+        ha = HarvesterAgent(window=64, n_features=10)
+
+        ha._check_trailing_stop = lambda *_args, **_kwargs: False
+        ha._check_breakeven_stop = lambda *_args, **_kwargs: False
+        ha._check_capture_decay = lambda *_args, **_kwargs: False
+        ha._check_micro_winner_exit = lambda *_args, **_kwargs: False
+
+        entry_price = 100.0
+        predicted_runway = 0.005
+        mfe = entry_price * 0.005
+        current_price = entry_price * 1.00005
+
+        result = ha._check_protective_stops(
+            mfe=mfe,
+            mae=0.0,
+            entry_price=entry_price,
+            current_price=current_price,
+            direction=1,
+            zeta=0.5,
+            ticks_held=5,
+            predicted_runway=predicted_runway,
+        )
+
+        assert result is not None
+        action, conf = result
+        assert action == 1
+        assert conf == pytest.approx(0.88)
+        assert ha.last_close_reason == "runway_capture"
+
+    def test_runway_capture_protective_exit_not_triggered_when_capture_low(self):
+        ha = HarvesterAgent(window=64, n_features=10)
+
+        ha._check_trailing_stop = lambda *_args, **_kwargs: False
+        ha._check_breakeven_stop = lambda *_args, **_kwargs: False
+        ha._check_capture_decay = lambda *_args, **_kwargs: False
+        ha._check_micro_winner_exit = lambda *_args, **_kwargs: False
+
+        entry_price = 100.0
+        predicted_runway = 0.02
+        mfe = entry_price * 0.005
+        current_price = entry_price * 1.00005
+
+        result = ha._check_protective_stops(
+            mfe=mfe,
+            mae=0.0,
+            entry_price=entry_price,
+            current_price=current_price,
+            direction=1,
+            zeta=0.5,
+            ticks_held=5,
+            predicted_runway=predicted_runway,
+        )
+
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # Update from trade

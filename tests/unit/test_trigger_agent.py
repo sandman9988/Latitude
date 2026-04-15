@@ -519,3 +519,76 @@ class TestEWMARunwayCalibration:
         result = ta._q_to_runway(0.3)
         assert result <= Q_RUNWAY_MAX
         assert result >= Q_RUNWAY_MIN
+
+    def test_adaptive_runway_alpha_increases_with_large_error(self):
+        from src.agents.trigger_agent import RUNWAY_CAL_ALPHA, RUNWAY_CAL_ALPHA_MAX, RUNWAY_CAL_ALPHA_MIN
+
+        ta = TriggerAgent(window=64, n_features=7)
+        bucket = TriggerAgent._q_bucket(1.0)
+
+        ta._last_entry_q = 1.0
+        ta._update_runway_calibration(actual_mfe_frac=0.006, predicted_runway=0.001)
+
+        assert ta._runway_step_alpha[bucket] >= RUNWAY_CAL_ALPHA_MIN
+        assert ta._runway_step_alpha[bucket] <= RUNWAY_CAL_ALPHA_MAX
+        assert ta._runway_step_alpha[bucket] > RUNWAY_CAL_ALPHA
+        assert ta._runway_err_abs_ewma[bucket] > 0.0
+
+    def test_adaptive_runway_error_tracks_prediction_error_only_when_predicted_positive(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        bucket = TriggerAgent._q_bucket(2.0)
+
+        ta._last_entry_q = 2.0
+        ta._update_runway_calibration(actual_mfe_frac=0.003, predicted_runway=0.0)
+        assert ta._runway_err_abs_ewma[bucket] == pytest.approx(0.0)
+
+        ta._last_entry_q = 2.0
+        ta._update_runway_calibration(actual_mfe_frac=0.003, predicted_runway=0.001)
+        assert ta._runway_err_abs_ewma[bucket] > 0.0
+
+    def test_runway_length_gate_blocks_short_predicted_runway_when_reliable(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta.paper_mode = False
+        ta.disable_gates = False
+        ta._runway_cal_counts = [10, 10, 0, 0, 0]
+
+        min_fraction = ta._get_param("runway_gate_min_fraction", 0.40)
+        threshold = 0.0010 * min_fraction
+
+        assert ta._is_runway_predictor_reliable() is True
+        assert ta._runway_length_gate_blocked(max(0.0, threshold - 1e-7)) is True
+
+    def test_runway_length_gate_bypassed_when_unreliable(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta.paper_mode = False
+        ta.disable_gates = False
+        ta._runway_cal_counts = [0, 0, 0, 0, 0]
+
+        assert ta._is_runway_predictor_reliable() is False
+        assert ta._runway_length_gate_blocked(0.0) is False
+
+    def test_runway_length_gate_bypassed_in_paper_mode(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta.paper_mode = True
+        ta.disable_gates = False
+        ta._runway_cal_counts = [10, 10, 0, 0, 0]
+
+        assert ta._runway_length_gate_blocked(0.0) is False
+
+    def test_calibration_state_roundtrip_restores_adaptive_fields(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        bucket = TriggerAgent._q_bucket(1.5)
+
+        ta._last_entry_q = 1.5
+        ta._update_runway_calibration(actual_mfe_frac=0.004, predicted_runway=0.001)
+        state = ta.get_calibration_state()
+
+        restored = TriggerAgent(window=64, n_features=7)
+        ok = restored.load_calibration_state(state)
+
+        assert ok is True
+        assert restored._runway_cal_ewma[bucket] == pytest.approx(ta._runway_cal_ewma[bucket])
+        assert restored._runway_resid_ewma[bucket] == pytest.approx(ta._runway_resid_ewma[bucket])
+        assert restored._runway_err_abs_ewma[bucket] == pytest.approx(ta._runway_err_abs_ewma[bucket])
+        assert restored._runway_step_alpha[bucket] == pytest.approx(ta._runway_step_alpha[bucket])
+        assert restored._runway_cal_counts[bucket] == ta._runway_cal_counts[bucket]

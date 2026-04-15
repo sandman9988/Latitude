@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** April 14, 2026 (MFE predictor reliability warmup, WTL hardening, Trades tab telemetry updates)  
+**Last Updated:** April 15, 2026 (adaptive runway gating, harvester early-adverse/runway-capture exits, reward-shaping monitor automation)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -78,6 +78,49 @@ Wired `RewardShaper` into `_Simulator` class in `offline_trainer.py`:
 - Added `_rs_volatility()` for rolling realized vol estimate from bar closes
 - Captures `_predicted_runway` from trigger's last decision for reward context
 - Added `penalty_scale` parameter throughout the stack: `_Simulator.__init__`, `OfflineTrainer.__init__`, `_run_job()`, CLI parser (`--penalty-scale`), `_execute_pool()`
+
+---
+
+## 🔧 Adaptive Entry/Exit Gating + Reward-Shaping Monitor (Apr 15, 2026)
+
+### Trigger: adaptive confidence/risk pocket gates + runway-length gate
+Trigger entry gating now includes two additional learned-parameter controls:
+
+- Confidence dead-zone block (`entry_conf_deadzone_low/high`)
+- High-confidence risk pocket block when `vol_z` or `vpin_z` is elevated (`high_conf_*` gates)
+- Runway-length minimum gate (`runway_gate_min_fraction`) that activates only when runway predictor reliability is sufficient
+
+Runway calibration was also upgraded with adaptive residual correction:
+
+- Huber-clipped prediction residual tracking
+- Adaptive EWMA step alpha based on recent error magnitude
+- Persisted calibration fields for residuals/error/alpha
+
+### Harvester: early-adverse guard + runway-capture protective exits
+Harvester exit logic now adds:
+
+- Early-adverse profile exit in first N ticks when MAE is high and MFE is weak
+- Regime-aware chop multipliers for time-stop scaling
+- Runway-capture protective de-risk exit when realized runway capture is adequate but profit has decayed back toward friction/giveback threshold
+
+Predicted runway is now passed from `DualPolicy` into harvester decision flow, enabling convergence-aware exits.
+
+### Reward-shaping monitor automation
+Added `RewardShapingMonitor` for hourly monitoring and recommendation generation from:
+
+- Trade outcomes (`trade_log.jsonl`)
+- Entry opportunities (`decision_log.json`)
+- Current regime (`risk_metrics.json` fallback)
+
+The monitor emits recommendations for participation/selectivity and reward-weight tuning with atomic writes to `data/reward_shaping_monitor.json`.
+
+### Persistence + observability updates
+- Learned parameter specs expanded for new trigger/harvester/monitor controls
+- HUD/production monitor integration updated for reward-shaping monitor telemetry
+- New/expanded unit coverage for trigger adaptive runway gating, harvester runway-capture exits, and reward-shaping monitor recommendations
+
+**Files Modified:** `src/agents/trigger_agent.py`, `src/agents/harvester_agent.py`, `src/agents/dual_policy.py`, `src/core/ctrader_ddqn_paper.py`, `src/monitoring/hud_tabbed.py`, `src/monitoring/production_monitor.py`, `src/monitoring/reward_shaping_monitor.py`, `src/persistence/learned_parameters.py`, `tests/unit/test_trigger_agent.py`, `tests/unit/test_harvester_agent.py`, `tests/unit/test_reward_shaping_monitor.py`  
+**Validation:** targeted unit tests passed (`98 passed`)
 
 ---
 
