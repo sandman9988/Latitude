@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — cTrader DDQN Trading Bot
 
-> Last updated: 2026-03-19
+> Last updated: 2026-04-16
 > Read MASTER_HANDBOOK.md and docs/CURRENT_STATE.md before making structural changes.
 
 ---
@@ -8,7 +8,7 @@
 ## Project Identity
 
 Dual-agent DDQN reinforcement learning trading system connected to cTrader via FIX 4.4 protocol.
-Active paper trading XAUUSD M5, Pepperstone demo. Python 3.12, ~41 300 production lines, 2 221 tests passing.
+Active paper trading XAUUSD M5, Pepperstone demo. Python 3.12, ~41 300 production lines, 2 221 tests passing. Validation remains green with a known log/environment-dependent correlation caveat for runway diagnostics.
 
 ---
 
@@ -88,6 +88,14 @@ Load via `ddqn_network.load_weights()` which handles both `.pt` and legacy `.npz
 - `session` = session_id from `DecisionLogger`, now in both logs
 - `position_id` = broker IDs (`PAPER_xxx` in paper mode, FIX ticket in live)
 
+### Trade-log runway diagnostics fields (points)
+
+- `predicted_runway_net_points_raw` = unadjusted net runway projection in points
+- `runway_bias_ema_points` = EMA runway bias estimate used for adaptive correction
+- `runway_adjustment_scale` = adaptive multiplier applied to raw runway projection
+- `runway_delta_points` = adjusted predicted runway minus realized `mfe_points`
+- `mfe_points`, `mae_points` = realized excursion metrics in points for close attribution
+
 ---
 
 ## HUD tab map
@@ -101,6 +109,21 @@ Load via `ddqn_network.load_weights()` which handles both `.pt` and legacy `.npz
 | 5   | Market        | spread, L2 ladder, VPIN-z, imbalance, signal synthesis               |
 | 6   | Decision Log  | `MM-DD HH:MM` timestamps, TrdID column, session-break separators     |
 | 7   | Trade History | paginated list with mode badge (P/L), drill-down detail              |
+
+## Runway-delta adaptation (point-unit contract)
+
+- Adaptive runway correction is driven by `runway_delta_ema` and applied at close attribution time.
+- Safety clamps must remain enforced:
+  - `RUNWAY_BIAS_LIMIT_POINTS` caps absolute bias correction (points)
+  - `RUNWAY_ADJUST_MIN_SCALE` / `RUNWAY_ADJUST_MAX_SCALE` clamp adaptive scale
+- Keep all runway adaptation math in point units end-to-end when populating trade attribution and persisted logs.
+
+### HUD convergence runway precedence
+
+When reading trade records for convergence, HUD should resolve runway points in this order:
+1. `predicted_runway_net_points` (adjusted)
+2. `predicted_runway_net_points_raw` (raw)
+3. legacy fallback: `predicted_runway * entry_price`
 
 ## HUD keyboard shortcuts
 
@@ -168,6 +191,7 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 
 - Run `python -m pytest tests/ -q` before committing — must stay at 2 221 passing
 - Unit tests in `tests/unit/`, integration tests in `tests/integration/`, validation in `tests/validation/`
+- Known caveat: runway-correlation validation can be environment/log-data dependent; treat as a data-quality check when log completeness differs
 - After modifying reward shaper dims: run `tests/unit/test_reward_calculations.py`
 - After modifying IS weights: run `tests/unit/test_experience_buffer.py`
 - After modifying risk manager: run `tests/validation/test_risk_manager.py`
