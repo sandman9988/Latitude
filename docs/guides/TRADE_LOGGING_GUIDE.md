@@ -27,9 +27,13 @@ Each export creates **2 files**:
 ```
 trade_num, entry_time, exit_time, duration_seconds, direction,
 entry_price, exit_price, price_change, pnl, pnl_percent,
-mfe, mae, mfe_percent, mae_percent, capture_efficiency,
+mfe, mae, mfe_points, mae_points, mfe_percent, mae_percent, capture_efficiency,
 winner_to_loser, equity_after, result,
-predicted_runway, runway_utilization, runway_error_pct,
+predicted_runway, predicted_runway_net, predicted_runway_gross,
+predicted_runway_net_points, predicted_runway_gross_points,
+predicted_runway_net_points_raw, runway_bias_ema_points,
+runway_adjustment_scale, runway_delta_points,
+runway_utilization, runway_error_pct,
 trigger_quality, harvester_quality, mfe_bar_offset,
 mae_bar_offset, bars_from_mfe_to_exit
 ```

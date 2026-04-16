@@ -110,6 +110,17 @@ Recent: ▃▂▅▇▁▆█▄
 - Green = profitable trades
 - Red = losing trades
 
+### Runway Convergence (Performance Tab)
+
+The prediction convergence block reports runway metrics in point units:
+- **Runway Δ (pred−actual)**: EMA of adjusted predicted runway points minus actual MFE points
+- **Runway Accuracy**: normalized [0,1] score, 1.0 is perfect
+- **Runway Utilization**: `actual_MFE / predicted_runway_pts_adj`
+- **Runway Error %**: absolute error % vs `predicted_runway_pts_adj`
+
+For new trade records, HUD prefers persisted point fields (`predicted_runway_net_points`,
+`predicted_runway_net_points_raw`) and falls back to legacy fractional runway × entry price.
+
 ## Data Files Required
 
 HUD reads from `data/` directory:

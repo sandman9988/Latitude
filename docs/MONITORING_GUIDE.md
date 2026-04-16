@@ -131,7 +131,7 @@ jupyter notebook analysis_notebook.ipynb
 2. **Win/Loss Distribution**: Histogram analysis
 3. **MFE/MAE Analysis**: Path efficiency scatter plots
 4. **Dual-Agent Attribution**: TriggerAgent vs HarvesterAgent quality
-5. **Runway Accuracy**: TriggerAgent prediction analysis
+5. **Runway Accuracy**: TriggerAgent prediction analysis (point-consistent adjusted runway delta/error)
 6. **Direction Analysis**: LONG vs SHORT performance
 7. **Interactive Visualizations**: Plotly charts with hover data
 
