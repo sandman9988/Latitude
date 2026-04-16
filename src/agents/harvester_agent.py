@@ -177,6 +177,9 @@ class HarvesterAgent(AgentTrainingMixin):
         # Expressed in ticks so tick-driven exit evaluation remains responsive.
         _default_hold = int(round(self._get_param("harvester_min_hold_ticks", MIN_HOLD_TICKS_DEFAULT)))
         self.min_hold_ticks = int(os.environ.get("MIN_HOLD_TICKS", str(_default_hold)))
+        self.min_hold_ticks_trend = int(
+            round(self._get_param("harvester_min_hold_ticks_trend", max(1, self.min_hold_ticks + 2)))
+        )
         # Approximate market tick cadence used to convert bar-based limits to ticks.
         self.ticks_per_minute = float(os.environ.get("HARVESTER_TICKS_PER_MINUTE", str(DEFAULT_TICKS_PER_MINUTE)))
 
@@ -438,20 +441,23 @@ class HarvesterAgent(AgentTrainingMixin):
             self.last_close_reason = "emergency_stop"
             return exit_decision
 
-        # Minimum hold period: only emergency stop may close before this threshold.
-        # This prevents DDQN Q-values (potentially stale from prior training) from
-        # issuing an immediate CLOSE before any price movement can develop.
-        if ticks_held < self.min_hold_ticks:
-            LOG.debug(
-                "[HARVESTER] Min-hold: ticks=%d < min=%d → HOLD",
-                ticks_held,
-                self.min_hold_ticks,
-            )
-            return 0, 0.0  # HOLD
-
         if self._check_early_adverse_exit(mfe, mae, ticks_held, entry_price):
             self.last_close_reason = "early_adverse"
             return 1, 0.98
+
+        effective_min_hold_ticks = self.min_hold_ticks
+        if zeta < 0.5:
+            effective_min_hold_ticks = max(self.min_hold_ticks, self.min_hold_ticks_trend)
+        if ticks_held < effective_min_hold_ticks:
+            LOG.debug(
+                "[HARVESTER] Effective min-hold: ticks=%d < min=%d (base=%d trend=%d zeta=%.2f) → HOLD",
+                ticks_held,
+                effective_min_hold_ticks,
+                self.min_hold_ticks,
+                self.min_hold_ticks_trend,
+                zeta,
+            )
+            return 0, 0.0
 
         # Regime-aware time stop scaling: in strong trends (ζ < 0.5) allow
         # positions to run longer; in choppy/mean-reverting (ζ > 0.7) exit

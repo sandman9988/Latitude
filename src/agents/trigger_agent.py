@@ -178,6 +178,8 @@ class TriggerAgent(AgentTrainingMixin):
         self.platt_lr = 0.01  # Learning rate for Platt updates
         self._last_raw_confidence: float = 0.5  # Pre-Platt confidence (for gradient update)
         self._last_q_spread: float = 0.0  # Q-value advantage (best - second-best)
+        self.last_predicted_runway_gross: float = 0.0
+        self.last_predicted_runway_net: float = 0.0
 
         # Phase 2: Gating strategy
         # Training mode: NO GATES - pure exploration, learn through rewards
@@ -305,14 +307,21 @@ class TriggerAgent(AgentTrainingMixin):
             self._last_q_spread = float(sorted_q[0] - sorted_q[1]) if len(sorted_q) >= 2 else 0.0
             gross_runway = self._q_to_runway(float(q_values[action]))
             predicted_runway = max(0.0, gross_runway - friction_cost)
+            self.last_predicted_runway_gross = float(gross_runway)
+            self.last_predicted_runway_net = float(predicted_runway)
             LOG.debug(
-                "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, runway=%.4f",
-                q_values, action, confidence, predicted_runway,
+                "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, gross=%.4f, net=%.4f",
+                q_values, action, confidence, gross_runway, predicted_runway,
             )
         else:
-            action, confidence, predicted_runway = self._fallback_decide(state, regime_threshold_adj)
+            action, confidence, gross_runway = self._fallback_decide(state, regime_threshold_adj)
             if action == 0:
+                self.last_predicted_runway_gross = 0.0
+                self.last_predicted_runway_net = 0.0
                 return 0, 0.0, 0.0
+            predicted_runway = max(0.0, gross_runway - friction_cost)
+            self.last_predicted_runway_gross = float(gross_runway)
+            self.last_predicted_runway_net = float(predicted_runway)
 
         self.last_action = action
 
@@ -449,6 +458,8 @@ class TriggerAgent(AgentTrainingMixin):
             predicted_runway = max(0.0, gross_runway - friction_cost)
             if self._runway_length_gate_blocked(predicted_runway):
                 return 0, calibrated_prob, 0.0
+            self.last_predicted_runway_gross = float(gross_runway)
+            self.last_predicted_runway_net = float(predicted_runway)
 
             LOG.debug(
                 "[TRIGGER] Q=%s action=%d raw_p=%.3f calib_p=%.3f be=%.3f gross=%.4f K=%.4f net=%.4f",
@@ -912,6 +923,7 @@ class TriggerAgent(AgentTrainingMixin):
         entry_confidence: float = 0.5,
         entry_price: float = 0.0,
         raw_confidence: float | None = None,
+        predicted_runway_gross: float = 0.0,
     ):
         """
         Update trigger agent based on trade outcome.
@@ -929,14 +941,16 @@ class TriggerAgent(AgentTrainingMixin):
             entry_confidence: Calibrated probability at entry
             entry_price: Entry price for MFE→fractional conversion
             raw_confidence: Pre-Platt probability (for correct gradient)
+            predicted_runway_gross: Gross predicted runway before friction subtraction
         """
-        if predicted_runway <= 0:
+        if predicted_runway <= 0 and predicted_runway_gross <= 0:
             return
 
         # EWMA runway calibration: convert absolute MFE to fractional
         if entry_price > 0 and actual_mfe >= 0:
             actual_mfe_frac = actual_mfe / entry_price
-            self._update_runway_calibration(actual_mfe_frac, predicted_runway)
+            calibration_target = predicted_runway_gross if predicted_runway_gross > 0 else predicted_runway
+            self._update_runway_calibration(actual_mfe_frac, calibration_target)
 
         utilization = self._log_runway_error(actual_mfe, predicted_runway, entry_price=entry_price)
         outcome = self._trade_outcome(actual_mfe, predicted_runway, entry_price=entry_price)
@@ -1058,6 +1072,8 @@ class TriggerAgent(AgentTrainingMixin):
             "runway_predictor_reliable": runway_predictor_reliable,
             "runway_mean_abs_error": float(np.mean(self._runway_err_abs_ewma)) if self._runway_err_abs_ewma else 0.0,
             "runway_alpha_mean": float(np.mean(self._runway_step_alpha)) if self._runway_step_alpha else RUNWAY_CAL_ALPHA,
+            "last_predicted_runway_gross": float(getattr(self, "last_predicted_runway_gross", 0.0)),
+            "last_predicted_runway_net": float(getattr(self, "last_predicted_runway_net", 0.0)),
         }
 
 

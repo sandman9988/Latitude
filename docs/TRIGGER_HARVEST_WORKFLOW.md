@@ -29,6 +29,7 @@ on_bar_close() →
 │   │   action=0: NO_ENTRY (HOLD)
 │   │   action=1: LONG
 │   │   action=2: SHORT
+│   │   runway = net runway (gross minus friction)
 │   ├── Store entry_state for online learning
 │   └── Log trigger decision
 └── Step 5: Execute entry order

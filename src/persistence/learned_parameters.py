@@ -473,6 +473,14 @@ class LearnedParametersManager:
                 "momentum": 0.8,
                 "description": "Minimum ticks held before non-emergency close decisions",
             },
+            "harvester_min_hold_ticks_trend": {
+                "default": 8,
+                "min": 1,
+                "max": 40,
+                "learning_rate": 0.5,
+                "momentum": 0.8,
+                "description": "Minimum ticks held before non-emergency close decisions in trending regimes",
+            },
             "harvester_early_adverse_mae_pct": {
                 "default": 0.22,
                 "min": 0.05,

@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** April 15, 2026 (adaptive runway gating, harvester early-adverse/runway-capture exits, reward-shaping monitor automation)  
+**Last Updated:** April 16, 2026 (runway net/gross refactor, calibration wiring, targeted validations)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -80,6 +80,41 @@ Wired `RewardShaper` into `_Simulator` class in `offline_trainer.py`:
 - Added `penalty_scale` parameter throughout the stack: `_Simulator.__init__`, `OfflineTrainer.__init__`, `_run_job()`, CLI parser (`--penalty-scale`), `_execute_pool()`
 
 ---
+
+## 🔧 Runway Net/Gross Refactor + Validation Pass (Apr 16, 2026)
+
+### Trigger/Policy runway split: gross vs net
+Runway prediction flow now explicitly separates:
+
+- **Gross runway**: expected move before friction
+- **Net runway**: gross runway minus estimated friction
+
+Both values are tracked and propagated through TriggerAgent, DualPolicy, cTrader app state, attribution, and telemetry.
+
+### Attribution/logging upgrades
+Trade attribution and close-path logging now include:
+
+- `predicted_runway_net`
+- `predicted_runway_gross`
+- `predicted_runway_net_points`
+- `predicted_runway_gross_points`
+
+Trigger close-reward diagnostics now log net/gross point projections explicitly while reward accuracy remains net-based.
+
+### Calibration wiring
+Trigger calibration updates now use gross runway when available as the calibration target, while net runway remains the utilization/outcome target for trading quality metrics.
+
+### Harvester trend hold parameter
+Added learned-parameter support for trend-specific minimum hold ticks:
+
+- `harvester_min_hold_ticks_trend`
+
+Harvester now applies an effective minimum hold in trending regimes before non-emergency exits.
+
+### Validation status (this pass)
+- Targeted unit+validation suite: **172 passed**
+- `mypy`: unavailable in current environment (`No module named mypy`)
+- Fixed an introduced runtime issue: undefined `c` in `_obc_record_entry_state` replaced with entry-price-derived value
 
 ## 🔧 Adaptive Entry/Exit Gating + Reward-Shaping Monitor (Apr 15, 2026)
 

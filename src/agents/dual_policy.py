@@ -205,7 +205,8 @@ class DualPolicy:
         self.entry_bar_time = None
         self._mfe_calc = MFEMAECalculator()  # single source of truth
         self.ticks_held = 0  # Number of market data ticks (not bars!)
-        self.predicted_runway = 0.0  # From trigger agent
+        self.predicted_runway = 0.0  # From trigger agent (net, friction-adjusted)
+        self.predicted_runway_gross = 0.0
 
         # Phase 3.4: Regime state
         self.current_regime = "UNKNOWN"
@@ -273,7 +274,8 @@ class DualPolicy:
             self.mfe = 0.0
             self.mae = 0.0
             self.ticks_held = 0
-            self.predicted_runway = 0.0
+        self.predicted_runway = 0.0
+        self.predicted_runway_gross = 0.0
 
         self._update_regime_from_bars(bars)
 
@@ -353,25 +355,32 @@ class DualPolicy:
         if action in [1, 2] and self.regime_detector:
             regime_multiplier = self.regime_detector.get_regime_multiplier()
             predicted_runway_adjusted = predicted_runway * regime_multiplier
+            predicted_runway_gross = float(getattr(self.trigger, "last_predicted_runway_gross", predicted_runway))
+            predicted_runway_gross_adjusted = predicted_runway_gross * regime_multiplier
 
             LOG.info(
-                "[DUAL_POLICY] TRIGGER: %s entry, conf=%.2f, runway=%.4f (base=%.4f, regime=%s, mult=%.2fx)",
+                "[DUAL_POLICY] TRIGGER: %s entry, conf=%.2f, runway_net=%.4f runway_gross=%.4f (base_net=%.4f base_gross=%.4f regime=%s mult=%.2fx)",
                 "LONG" if action == 1 else "SHORT",
                 confidence,
                 predicted_runway_adjusted,
+                predicted_runway_gross_adjusted,
                 predicted_runway,
+                predicted_runway_gross,
                 self.current_regime,
                 regime_multiplier,
             )
 
             self.predicted_runway = predicted_runway_adjusted
+            self.predicted_runway_gross = predicted_runway_gross_adjusted
         elif action in [1, 2]:
             self.predicted_runway = predicted_runway
+            self.predicted_runway_gross = float(getattr(self.trigger, "last_predicted_runway_gross", predicted_runway))
             LOG.info(
-                "[DUAL_POLICY] TRIGGER: %s entry, conf=%.2f, predicted_runway=%.4f",
+                "[DUAL_POLICY] TRIGGER: %s entry, conf=%.2f, predicted_runway_net=%.4f predicted_runway_gross=%.4f",
                 "LONG" if action == 1 else "SHORT",
                 confidence,
                 predicted_runway,
+                self.predicted_runway_gross,
             )
 
     def decide_exit(  # noqa: PLR0913
@@ -541,6 +550,7 @@ class DualPolicy:
             entry_confidence=entry_confidence,
             entry_price=self.entry_price,
             raw_confidence=raw_confidence,
+            predicted_runway_gross=self.predicted_runway_gross,
         )
         self.harvester.update_from_trade(capture_ratio=capture_ratio, was_wtl=was_wtl)
 
@@ -558,6 +568,7 @@ class DualPolicy:
         self._mfe_calc.reset()
         self.ticks_held = 0
         self.predicted_runway = 0.0
+        self.predicted_runway_gross = 0.0
 
     def _update_mfe_mae(self, current_price: float):
         """Update MFE and MAE based on current price.

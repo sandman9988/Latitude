@@ -1024,6 +1024,10 @@ class CTraderFixApp(fix.Application):
         self.entry_state = None  # Will be deprecated
         self.entry_action = None  # Will be deprecated
         self.predicted_runway = 0.0  # FIX 1: Track predicted MFE for backward compatibility
+        self.predicted_runway_net = 0.0
+        self.predicted_runway_gross = 0.0
+        self.predicted_runway_net_points = 0.0
+        self.predicted_runway_gross_points = 0.0
         self.entry_confidence = 0.5  # Calibrated confidence at entry (for Platt update at close)
         self.entry_raw_confidence = 0.5  # Pre-Platt confidence (for correct Platt gradient)
         self.entry_var = 0.0          # VaR at entry time (for regime-conditioned reward)
@@ -3830,19 +3834,24 @@ class CTraderFixApp(fix.Application):
         entry_price: float,
         pnl_usd: float,
         trade_qty: float,
-        predicted_runway: float,
+        predicted_runway_net: float,
+        predicted_runway_gross: float,
     ) -> AgentAttribution:
         actual_mfe_pts = float(summary.get("mfe", 0.0) or 0.0)
-        predicted_runway_pts = max(0.0, predicted_runway) * max(entry_price, 0.0)
-        runway_utilization = SafeMath.safe_div(actual_mfe_pts, predicted_runway_pts, 0.0)
+        entry_price_val = max(entry_price, 0.0)
+        predicted_runway_net_val = max(0.0, float(predicted_runway_net or 0.0))
+        predicted_runway_gross_val = max(0.0, float(predicted_runway_gross or 0.0))
+        predicted_runway_net_pts = predicted_runway_net_val * entry_price_val
+        predicted_runway_gross_pts = predicted_runway_gross_val * entry_price_val
+        runway_utilization = SafeMath.safe_div(actual_mfe_pts, predicted_runway_net_pts, 0.0)
         runway_error_pct = (
-            abs(predicted_runway_pts - actual_mfe_pts) / predicted_runway_pts * 100.0
-            if predicted_runway_pts > 0
+            abs(predicted_runway_net_pts - actual_mfe_pts) / predicted_runway_net_pts * 100.0
+            if predicted_runway_net_pts > 0
             else 0.0
         )
         bars_from_mfe_to_exit = int(summary.get("bars_from_mfe_to_exit", -1) or -1)
         mfe_usd = actual_mfe_pts * trade_qty * self.contract_size
-        trigger_quality = self._classify_trigger_quality(predicted_runway_pts, actual_mfe_pts)
+        trigger_quality = self._classify_trigger_quality(predicted_runway_net_pts, actual_mfe_pts)
         harvester_quality = self._classify_harvester_quality(
             pnl_usd=pnl_usd,
             mfe_usd=mfe_usd,
@@ -3850,7 +3859,11 @@ class CTraderFixApp(fix.Application):
             bars_from_mfe_to_exit=bars_from_mfe_to_exit,
         )
         return AgentAttribution(
-            predicted_runway=max(0.0, predicted_runway),
+            predicted_runway=predicted_runway_net_val,
+            predicted_runway_net=predicted_runway_net_val,
+            predicted_runway_gross=predicted_runway_gross_val,
+            predicted_runway_net_points=predicted_runway_net_pts,
+            predicted_runway_gross_points=predicted_runway_gross_pts,
             runway_utilization=runway_utilization,
             runway_error_pct=runway_error_pct,
             trigger_quality=trigger_quality,
@@ -3928,7 +3941,10 @@ class CTraderFixApp(fix.Application):
             LOG.info("[ONLINE_LEARNING] Exploration entry: outcome reward=%.4f", trigger_reward)
         else:
             trigger_reward = self._calculate_trigger_reward(
-                trade_summary=summary, predicted_runway=self.predicted_runway, realized_vol=realized_vol,
+                trade_summary=summary,
+                predicted_runway_net=self.predicted_runway_net,
+                predicted_runway_gross=self.predicted_runway_gross,
+                realized_vol=realized_vol,
             )
         self.policy.add_trigger_experience(
             state=self.entry_state, action=self.entry_action,
@@ -3938,14 +3954,19 @@ class CTraderFixApp(fix.Application):
             LOG.info("[BUFFER] TriggerAgent buffer size: %d", self.policy.trigger.buffer.size)
         LOG.info(
             "[ONLINE_LEARNING] Added TriggerAgent experience: action=%d reward=%.4f "
-            "(predicted_mfe=%.4f actual_mfe=%.4f explore=%s)",
-            self.entry_action, trigger_reward, self.predicted_runway, summary.get("mfe", 0.0), was_explore,
+            "(predicted_net=%.4f predicted_gross=%.4f actual_mfe=%.4f explore=%s)",
+            self.entry_action,
+            trigger_reward,
+            self.predicted_runway_net,
+            self.predicted_runway_gross,
+            summary.get("mfe", 0.0),
+            was_explore,
         )
         _ep_price = max(float(summary.get("entry_price", 0.0) or entry_price), 1.0)
-        _pred_pts = self.predicted_runway * _ep_price
+        _pred_net_pts = self.predicted_runway_net * _ep_price
         _actual_mfe = float(summary.get("mfe", 0.0))
-        _runway_delta = _pred_pts - _actual_mfe
-        _max_err = max(abs(_actual_mfe), abs(_pred_pts), 1.0)
+        _runway_delta = _pred_net_pts - _actual_mfe
+        _max_err = max(abs(_actual_mfe), abs(_pred_net_pts), 1.0)
         _alpha = 0.1
         self._runway_delta_ema = (1 - _alpha) * self._runway_delta_ema + _alpha * _runway_delta
         self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * (1.0 - min(abs(_runway_delta) / _max_err, 1.0))
@@ -3954,6 +3975,10 @@ class CTraderFixApp(fix.Application):
         self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * _brier
         self.entry_state = None
         self.predicted_runway = 0.0
+        self.predicted_runway_net = 0.0
+        self.predicted_runway_gross = 0.0
+        self.predicted_runway_net_points = 0.0
+        self.predicted_runway_gross_points = 0.0
         return trigger_reward
 
     def _add_harvester_experience_for_close(
@@ -4121,13 +4146,15 @@ class CTraderFixApp(fix.Application):
             LOG.debug("[PNL_CHECKPOINT] Initial P&L calculated: %.4f", _pnl_checkpoint)
 
             _trade_qty = summary.get("filled_qty") or self._get_live_qty()
-            _entry_predicted_runway = float(getattr(self, "predicted_runway", 0.0) or 0.0)
+            _entry_predicted_runway_net = float(getattr(self, "predicted_runway_net", getattr(self, "predicted_runway", 0.0)) or 0.0)
+            _entry_predicted_runway_gross = float(getattr(self, "predicted_runway_gross", _entry_predicted_runway_net) or 0.0)
             trade_attr = self._build_trade_attribution(
                 summary=summary,
                 entry_price=entry_price,
                 pnl_usd=pnl,
                 trade_qty=_trade_qty,
-                predicted_runway=_entry_predicted_runway,
+                predicted_runway_net=_entry_predicted_runway_net,
+                predicted_runway_gross=_entry_predicted_runway_gross,
             )
 
             # Log position close
@@ -4207,7 +4234,11 @@ class CTraderFixApp(fix.Application):
                 "close_reason": summary.get("close_reason", ""),
                 "bars_held": _bars_held,
                 "hold_seconds": (exit_time - self.trade_entry_time).total_seconds() if self.trade_entry_time else 0.0,
-                "predicted_runway": _entry_predicted_runway,
+                "predicted_runway": _entry_predicted_runway_net,
+                "predicted_runway_net": _entry_predicted_runway_net,
+                "predicted_runway_gross": _entry_predicted_runway_gross,
+                "predicted_runway_net_points": trade_attr.predicted_runway_net_points,
+                "predicted_runway_gross_points": trade_attr.predicted_runway_gross_points,
                 "runway_utilization": trade_attr.runway_utilization,
                 "runway_error_pct": trade_attr.runway_error_pct,
                 "trigger_quality": trade_attr.trigger_quality,
@@ -4423,7 +4454,11 @@ class CTraderFixApp(fix.Application):
     # TriggerAgent Reward Calculation (FIX 1)
     # ----------------------------
     def _calculate_trigger_reward(
-        self, trade_summary: dict, predicted_runway: float, realized_vol: float = 0.01
+        self,
+        trade_summary: dict,
+        predicted_runway_net: float,
+        predicted_runway_gross: float = 0.0,
+        realized_vol: float = 0.01,
     ) -> float:
         """
         Calculate reward for TriggerAgent based on prediction accuracy.
@@ -4436,7 +4471,8 @@ class CTraderFixApp(fix.Application):
 
         Args:
             trade_summary: Trade summary with 'mfe', 'mae', 'pnl', etc.
-            predicted_runway: Predicted MFE at entry
+            predicted_runway_net: Predicted net runway at entry (fraction of price)
+            predicted_runway_gross: Predicted gross runway before friction (fraction of price)
             realized_vol: Realized volatility for normalization
 
         Returns:
@@ -4452,7 +4488,7 @@ class CTraderFixApp(fix.Application):
         # ----------------------------------------------------------------
         # Instrument-agnostic dimensional alignment
         # -  actual_mfe is in price-point units (absolute, e.g. 3.42 pts)
-        # -  predicted_runway is in fractional-price units (e.g. 0.0015)
+        # -  predicted_runway_net is in fractional-price units (e.g. 0.0015)
         # -  realized_vol is per-bar fractional-return std-dev
         # -  pnl is in USD  ($)
         # We normalise everything to σ-of-price-movement (σ_pts) so the
@@ -4462,12 +4498,14 @@ class CTraderFixApp(fix.Application):
         lot_value = max(self.qty * self.contract_size, 1.0)
         # vol in price-point units: RS-std × price level  (e.g. 0.0005 × 5000 = 2.5 pts/bar σ)
         vol_pts = max(realized_vol * entry_price_val, 1e-6)
-        # Convert predicted_runway (fractional) → price-point units
-        predicted_runway_pts = predicted_runway * entry_price_val
+        predicted_runway_net = max(0.0, float(predicted_runway_net or 0.0))
+        predicted_runway_gross = max(0.0, float(predicted_runway_gross or 0.0))
+        predicted_runway_net_pts = predicted_runway_net * entry_price_val
+        predicted_runway_gross_pts = predicted_runway_gross * entry_price_val
 
         # Normalize MFE and predicted runway to σ-of-price-movement
         norm_mfe = actual_mfe / vol_pts
-        norm_predicted = predicted_runway_pts / vol_pts
+        norm_predicted = predicted_runway_net_pts / vol_pts
 
         # Component 1: Prediction accuracy
         # How close was predicted MFE to actual MFE?
@@ -4486,7 +4524,7 @@ class CTraderFixApp(fix.Application):
         # If trade resulted in loss despite positive prediction, penalize proportionally.
         # Use price-point pnl so the severity is instrument-agnostic.
         false_positive_penalty = 0.0
-        if predicted_runway > 0 and pnl < 0:
+        if predicted_runway_net > 0 and pnl < 0:
             pnl_pts = pnl / lot_value                             # $ → price-point units
             loss_severity = min(abs(pnl_pts) / vol_pts / 3.0, 1.0)
             false_positive_penalty = -0.2 - 0.5 * loss_severity  # -0.2 to -0.7
@@ -4509,12 +4547,14 @@ class CTraderFixApp(fix.Application):
         total_reward = np.clip(total_reward, -1.5, 1.5)
 
         LOG.debug(
-            "[TRIGGER_REWARD] Accuracy: %.3f | Magnitude: %.3f | FP Penalty: %.3f | Toxic: %.3f | Total: %.3f",
+            "[TRIGGER_REWARD] Accuracy: %.3f | Magnitude: %.3f | FP Penalty: %.3f | Toxic: %.3f | Total: %.3f | PredNetPts: %.4f | PredGrossPts: %.4f",
             accuracy_reward,
             magnitude_bonus,
             false_positive_penalty,
             toxic_penalty,
             total_reward,
+            predicted_runway_net_pts,
+            predicted_runway_gross_pts,
         )
 
         return total_reward
@@ -4886,6 +4926,11 @@ class CTraderFixApp(fix.Application):
         )
         self._last_trigger_conf = 0.9 * self._last_trigger_conf + 0.1 * confidence
         self.predicted_runway = runway
+        self.predicted_runway_net = runway
+        self.predicted_runway_gross = float(getattr(self.policy, "predicted_runway_gross", runway) or runway)
+        _entry_price = float(self.bars[-1][4]) if self.bars else 1.0
+        self.predicted_runway_net_points = self.predicted_runway_net * _entry_price
+        self.predicted_runway_gross_points = self.predicted_runway_gross * _entry_price
         self.entry_vpin_z = vpin_zscore
         self.entry_imbalance = imbalance
         LOG.info("[ENTRY-STATE-DIAG] ✓ Entry state recorded: action=%d, confidence=%.3f", action, confidence)

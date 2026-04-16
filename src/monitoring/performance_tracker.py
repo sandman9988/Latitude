@@ -28,6 +28,10 @@ class AgentAttribution:
     )
 
     predicted_runway: float = 0.0
+    predicted_runway_net: float = 0.0
+    predicted_runway_gross: float = 0.0
+    predicted_runway_net_points: float = 0.0
+    predicted_runway_gross_points: float = 0.0
     runway_utilization: float = 0.0
     runway_error_pct: float = 0.0
     trigger_quality: str = "N/A"
@@ -38,6 +42,10 @@ class AgentAttribution:
 
     def __post_init__(self) -> None:
         self.predicted_runway = max(0.0, self.predicted_runway or 0.0)
+        self.predicted_runway_net = max(0.0, self.predicted_runway_net or 0.0)
+        self.predicted_runway_gross = max(0.0, self.predicted_runway_gross or 0.0)
+        self.predicted_runway_net_points = max(0.0, self.predicted_runway_net_points or 0.0)
+        self.predicted_runway_gross_points = max(0.0, self.predicted_runway_gross_points or 0.0)
         self.runway_utilization = max(0.0, min(10.0, self.runway_utilization or 0.0))
         self.runway_error_pct = max(0.0, min(1000.0, self.runway_error_pct or 0.0))
         if self.trigger_quality not in self._VALID_TRIGGER:
@@ -134,6 +142,10 @@ class PerformanceTracker:
                 "equity_after": self.current_equity,
                 # Phase 3.3: Dual-agent attribution
                 "predicted_runway": attr.predicted_runway,
+                "predicted_runway_net": attr.predicted_runway_net,
+                "predicted_runway_gross": attr.predicted_runway_gross,
+                "predicted_runway_net_points": attr.predicted_runway_net_points,
+                "predicted_runway_gross_points": attr.predicted_runway_gross_points,
                 "runway_utilization": attr.runway_utilization,
                 "runway_error_pct": attr.runway_error_pct,
                 "trigger_quality": attr.trigger_quality,
