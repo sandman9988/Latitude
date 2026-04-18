@@ -598,7 +598,7 @@ train_flow() {
     activate_venv
     local hist_dir="${HISTORY_DIR:-/home/renierdejager/Projects/Kinetra/data/master_standardized}"
     local symbols="${SYMBOLS:-XAUUSD BTCUSD}"
-    local timeframes="${TIMEFRAMES:-M15 M30 H1 H4}"
+    local timeframes="${TIMEFRAMES:-M5 M15 M30 H1 H4}"
     log ""
     log "${BLUE}=== Offline Training ===${NC}"
     log "  History : $hist_dir"

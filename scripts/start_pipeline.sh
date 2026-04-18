@@ -24,7 +24,7 @@ cd "$SCRIPT_DIR" || exit 1
 
 # ── Configurable defaults ──────────────────────────────────────────────────────
 SYMBOLS="${SYMBOLS:-XAUUSD BTCUSD}"
-TIMEFRAMES="${TIMEFRAMES:-M15 M30 H1 H4}"
+TIMEFRAMES="${TIMEFRAMES:-M5 M15 M30 H1 H4}"
 WORKERS="${WORKERS:-$(nproc)}"  # default: all logical CPU cores
 THRESHOLD="${THRESHOLD:-1.0}"
 RETRAIN_ROUNDS="${RETRAIN_ROUNDS:-3}"    # warm-start re-runs for jobs below threshold
@@ -107,7 +107,21 @@ fi
 PAPER_COUNT=$(python3 -c "
 import json
 u = json.load(open('$UNIVERSE'))
-print(sum(1 for v in u.values() if v.get('stage') == 'PAPER'))
+ins = u.get('instruments', []) if isinstance(u, dict) else []
+if isinstance(ins, dict):
+    entries = []
+    for sym, item in ins.items():
+        if isinstance(item, list):
+            for sub in item:
+                if isinstance(sub, dict):
+                    entries.append(dict(sub, symbol=sub.get('symbol', sym)))
+        elif isinstance(item, dict):
+            entries.append(dict(item, symbol=item.get('symbol', sym)))
+elif isinstance(ins, list):
+    entries = [e for e in ins if isinstance(e, dict)]
+else:
+    entries = []
+print(sum(1 for e in entries if e.get('stage') == 'PAPER'))
 " 2>/dev/null || echo 0)
 
 if [ "$PAPER_COUNT" -eq 0 ]; then
