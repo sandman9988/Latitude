@@ -69,8 +69,20 @@ def _read_universe(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
-def _write_universe(path: Path, instruments: dict) -> None:
+def _write_universe(path: Path, instruments: object) -> None:
     path.write_text(json.dumps({"version": 1, "instruments": instruments}))
+
+
+def _entry(instruments: list[dict], symbol: str, tf: int | None = None) -> dict | None:
+    for item in instruments:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("symbol", "")).upper() != symbol.upper():
+            continue
+        if tf is not None and int(item.get("timeframe_minutes", 0) or 0) != int(tf):
+            continue
+        return item
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +98,8 @@ class TestRegisterUniverse:
         to._register_universe("EURUSD", _TF_H1_MINUTES, z_omega=2.5, weights_path="data/checkpoints/best/EURUSD_trigger.npz")
 
         assert uni.exists()
-        inst = _read_universe(uni)["instruments"]["EURUSD"]
+        inst = _entry(_read_universe(uni)["instruments"], "EURUSD", _TF_H1_MINUTES)
+        assert inst is not None
         assert inst["stage"] == "PAPER"
         assert inst["timeframe_minutes"] == _TF_H1_MINUTES
         assert inst["z_omega"] == pytest.approx(2.5)
@@ -94,41 +107,40 @@ class TestRegisterUniverse:
 
     def test_promotes_from_offline_training(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
-        _write_universe(uni, {"XAUUSD": {"stage": "OFFLINE_TRAINING", "timeframe_minutes": 240}})
+        _write_universe(uni, [{"symbol": "XAUUSD", "stage": "OFFLINE_TRAINING", "timeframe_minutes": 240}])
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
 
         to._register_universe("XAUUSD", 240, z_omega=3.0, weights_path="")
 
-        assert _read_universe(uni)["instruments"]["XAUUSD"]["stage"] == "PAPER"
+        assert _entry(_read_universe(uni)["instruments"], "XAUUSD", 240)["stage"] == "PAPER"
 
     def test_does_not_demote_from_micro(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
-        _write_universe(uni, {"BTCUSD": {"stage": "MICRO", "timeframe_minutes": 15, "z_omega": 4.0}})
+        _write_universe(uni, [{"symbol": "BTCUSD", "stage": "MICRO", "timeframe_minutes": 15, "z_omega": 4.0}])
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
 
         to._register_universe("BTCUSD", 15, z_omega=1.0, weights_path="")
 
-        assert _read_universe(uni)["instruments"]["BTCUSD"]["stage"] == "MICRO"
+        assert _entry(_read_universe(uni)["instruments"], "BTCUSD", 15)["stage"] == "MICRO"
 
     def test_does_not_demote_from_live(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
-        _write_universe(uni, {"EURUSD": {"stage": "LIVE", "timeframe_minutes": 5}})
+        _write_universe(uni, [{"symbol": "EURUSD", "stage": "LIVE", "timeframe_minutes": 5}])
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
 
         to._register_universe("EURUSD", 5, z_omega=1.5, weights_path="")
 
-        assert _read_universe(uni)["instruments"]["EURUSD"]["stage"] == "LIVE"
+        assert _entry(_read_universe(uni)["instruments"], "EURUSD", 5)["stage"] == "LIVE"
 
     def test_does_not_demote_from_paper(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
-        _write_universe(uni, {"GBPUSD": {"stage": "PAPER", "z_omega": 5.0, "timeframe_minutes": 30}})
+        _write_universe(uni, [{"symbol": "GBPUSD", "stage": "PAPER", "z_omega": 5.0, "timeframe_minutes": 30}])
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
 
         to._register_universe("GBPUSD", 30, z_omega=0.5, weights_path="")
 
-        assert _read_universe(uni)["instruments"]["GBPUSD"]["stage"] == "PAPER"
-        # z_omega must NOT be overwritten
-        assert _read_universe(uni)["instruments"]["GBPUSD"]["z_omega"] == pytest.approx(5.0)
+        assert _entry(_read_universe(uni)["instruments"], "GBPUSD", 30)["stage"] == "PAPER"
+        assert _entry(_read_universe(uni)["instruments"], "GBPUSD", 30)["z_omega"] == pytest.approx(5.0)
 
     def test_atomic_write_leaves_no_tmp_file(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
@@ -145,9 +157,9 @@ class TestRegisterUniverse:
 
         to._register_universe("AUDCAD", 60, z_omega=2.0, weights_path="")
 
-        inst = _read_universe(uni)["instruments"]["AUDCAD"]
+        inst = _entry(_read_universe(uni)["instruments"], "AUDCAD", 60)
+        assert inst is not None
         assert "promoted_at" in inst
-        # Should be a valid ISO timestamp
         datetime.fromisoformat(inst["promoted_at"])
 
 
@@ -207,9 +219,9 @@ class TestAutoPromoteCLI:
         assert ret == 0
         assert uni.exists(), "universe.json was not created"
         data = _read_universe(uni)
-        assert "XAUUSD" in data["instruments"], "XAUUSD not registered"
-        assert data["instruments"]["XAUUSD"]["stage"] == "PAPER"
-        zo = data["instruments"]["XAUUSD"]["z_omega"]
+        assert _entry(data["instruments"], "XAUUSD") is not None, "XAUUSD not registered"
+        assert _entry(data["instruments"], "XAUUSD")["stage"] == "PAPER"
+        zo = _entry(data["instruments"], "XAUUSD")["z_omega"]
         assert isinstance(zo, float), "z_omega must be a float"
 
     def test_real_training_skips_below_threshold(self, tmp_path, monkeypatch):
@@ -234,7 +246,7 @@ class TestAutoPromoteCLI:
 
         if uni.exists():
             data = _read_universe(uni)
-            assert "EURUSD" not in data.get("instruments", {}), (
+            assert _entry(data.get("instruments", []), "EURUSD") is None, (
                 "EURUSD should not be promoted when ZOmega < 9999"
             )
 
@@ -283,8 +295,8 @@ class TestAutoPromoteCLI:
 
         assert ret == 0
         data = _read_universe(uni)
-        assert data["instruments"]["XAUUSD"]["stage"] == "PAPER"
-        assert data["instruments"]["BTCUSD"]["stage"] == "PAPER"
+        assert _entry(data["instruments"], "XAUUSD")["stage"] == "PAPER"
+        assert _entry(data["instruments"], "BTCUSD")["stage"] == "PAPER"
 
     def test_existing_live_instrument_not_demoted(self, tmp_path, monkeypatch):
         """
@@ -292,7 +304,7 @@ class TestAutoPromoteCLI:
         --auto-promote must NOT demote it back to PAPER.
         """
         uni = tmp_path / "universe.json"
-        _write_universe(uni, {"XAUUSD": {"stage": "LIVE", "timeframe_minutes": 240, "z_omega": 8.0}})
+        _write_universe(uni, [{"symbol": "XAUUSD", "stage": "LIVE", "timeframe_minutes": 240, "z_omega": 8.0}])
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
         monkeypatch.setattr(to, "_STATUS_PATH", tmp_path / "status.json")
 
@@ -307,4 +319,4 @@ class TestAutoPromoteCLI:
             "--workers", "1",
         ])
 
-        assert _read_universe(uni)["instruments"]["XAUUSD"]["stage"] == "LIVE"
+        assert _entry(_read_universe(uni)["instruments"], "XAUUSD", 240)["stage"] == "LIVE"

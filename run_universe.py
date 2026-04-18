@@ -95,14 +95,43 @@ _PAPER_ENV_DEFAULTS: dict[str, str] = {
 # Universe I/O
 # ---------------------------------------------------------------------------
 
+def _normalize_instruments(raw_instruments: object) -> list[dict]:
+    """Normalize legacy/new universe shapes into a list of entry dicts."""
+    out: list[dict] = []
+    if isinstance(raw_instruments, list):
+        for item in raw_instruments:
+            if isinstance(item, dict):
+                _entry = dict(item)
+                if _entry.get("symbol"):
+                    _entry["symbol"] = str(_entry["symbol"]).upper()
+                out.append(_entry)
+        return out
+    if isinstance(raw_instruments, dict):
+        for sym, item in raw_instruments.items():
+            if isinstance(item, list):
+                for sub in item:
+                    if not isinstance(sub, dict):
+                        continue
+                    _entry = dict(sub)
+                    _entry.setdefault("symbol", str(sym).upper())
+                    out.append(_entry)
+            elif isinstance(item, dict):
+                _entry = dict(item)
+                _entry.setdefault("symbol", str(sym).upper())
+                out.append(_entry)
+    return out
+
+
 def _load_universe() -> dict:
     if _UNIVERSE_PATH.exists():
         try:
             with open(_UNIVERSE_PATH) as f:
-                return json.load(f)
+                raw = json.load(f)
+            instruments = _normalize_instruments(raw.get("instruments", raw))
+            return {"version": int(raw.get("version", 1)), "instruments": instruments}
         except Exception as exc:
             LOG.warning("Could not load %s: %s — starting empty", _UNIVERSE_PATH, exc)
-    return {"version": 1, "instruments": {}}
+    return {"version": 1, "instruments": []}
 
 
 def _save_universe(registry: dict) -> None:
@@ -279,10 +308,16 @@ def launch_paper_bots(
     Walk registry; for every PAPER-stage instrument that has no live bot,
     launch one and write the PID back.  Returns the (possibly mutated) registry.
     """
-    instruments = registry.get("instruments", {})
+    instruments = registry.get("instruments", [])
     changed = False
 
-    for symbol, entry in instruments.items():
+    for entry in instruments:
+        if not isinstance(entry, dict):
+            continue
+        symbol = str(entry.get("symbol", "") or "").upper()
+        if not symbol:
+            continue
+        entry["symbol"] = symbol
         if entry.get("stage") != _PAPER_STAGE:
             continue
 
@@ -299,7 +334,6 @@ def launch_paper_bots(
             LOG.warning("%s — missing timeframe_minutes in universe.json; skipping", symbol)
             continue
 
-        # Resolve symbol_id: universe.json > symbol_specs.json
         spec = specs.get(symbol, {})
         symbol_id = entry.get("symbol_id") or spec.get("symbol_id")
         if not symbol_id:
@@ -311,7 +345,7 @@ def launch_paper_bots(
             continue
 
         qty = float(spec.get("min_volume", 0.01))
-        starting_equity = entry.get("starting_equity")  # None → bot uses default 10 000
+        starting_equity = entry.get("starting_equity")
 
         try:
             new_pid = _launch_paper_bot(symbol, tf, int(symbol_id), qty, base_env, starting_equity)
@@ -320,7 +354,7 @@ def launch_paper_bots(
             entry["paper_log"]        = f"logs/paper_{symbol}_M{tf}.log"
             changed = True
         except Exception as exc:
-            LOG.error("Failed to launch paper bot for %s: %s", symbol, exc)
+            LOG.error("Failed to launch paper bot for %s M%d: %s", symbol, tf, exc)
 
     if changed:
         _save_universe(registry)
@@ -333,7 +367,7 @@ def launch_paper_bots(
 # ---------------------------------------------------------------------------
 
 def cmd_list(registry: dict) -> None:
-    instruments = registry.get("instruments", {})
+    instruments = registry.get("instruments", [])
     if not instruments:
         print(
             "Universe is empty.\n"
@@ -350,12 +384,17 @@ def cmd_list(registry: dict) -> None:
     print(f"\n{sep}")
     print(header)
     print(sep)
-    for sym, entry in sorted(instruments.items()):
+    _rows = sorted(
+        [e for e in instruments if isinstance(e, dict)],
+        key=lambda x: (str(x.get("symbol", "")), int(x.get("timeframe_minutes", 0) or 0)),
+    )
+    for entry in _rows:
+        sym = str(entry.get("symbol", "?") or "?")
         stage = entry.get("stage", "UNTRAINED")
-        tf    = entry.get("timeframe_minutes", "?")
-        zo    = entry.get("z_omega", 0.0)
-        pid   = entry.get("paper_pid")
-        prom  = (entry.get("promoted_at") or "")[:19].replace("T", " ")
+        tf = entry.get("timeframe_minutes", "?")
+        zo = entry.get("z_omega", 0.0)
+        pid = entry.get("paper_pid")
+        prom = (entry.get("promoted_at") or "")[:19].replace("T", " ")
         alive = "✓ running" if _pid_alive(pid) else ("✗ stopped" if pid else "—")
         zo_str = f"{zo:.4f}" if isinstance(zo, float) else str(zo)
         print(
@@ -373,10 +412,24 @@ def cmd_promote(
     z_omega: float = 0.0,
     symbol_id: int | None = None,
 ) -> dict:
-    instruments = registry.setdefault("instruments", {})
-    existing = instruments.get(symbol, {})
-    instruments[symbol] = {
+    instruments = registry.setdefault("instruments", [])
+    if not isinstance(instruments, list):
+        instruments = _normalize_instruments(instruments)
+        registry["instruments"] = instruments
+
+    existing_idx = next(
+        (
+            i for i, e in enumerate(instruments)
+            if isinstance(e, dict)
+            and str(e.get("symbol", "")).upper() == symbol
+            and int(e.get("timeframe_minutes", 0) or 0) == int(timeframe_minutes)
+        ),
+        -1,
+    )
+    existing = instruments[existing_idx] if existing_idx >= 0 else {}
+    promoted = {
         **existing,
+        "symbol":            symbol,
         "stage":             _PAPER_STAGE,
         "timeframe_minutes": timeframe_minutes,
         "z_omega":           existing.get("z_omega", z_omega),
@@ -385,32 +438,52 @@ def cmd_promote(
         "paper_started_at":  None,
         **({"symbol_id": symbol_id} if symbol_id else {}),
     }
+    if existing_idx >= 0:
+        instruments[existing_idx] = promoted
+    else:
+        instruments.append(promoted)
     _save_universe(registry)
     LOG.info("Promoted %s M%d → PAPER", symbol, timeframe_minutes)
     return registry
 
 
 def cmd_demote(registry: dict, symbol: str) -> dict:
-    instruments = registry.get("instruments", {})
-    if symbol not in instruments:
+    instruments = registry.get("instruments", [])
+    if not isinstance(instruments, list):
+        instruments = _normalize_instruments(instruments)
+        registry["instruments"] = instruments
+    matches = [
+        e for e in instruments
+        if isinstance(e, dict) and str(e.get("symbol", "")).upper() == symbol
+    ]
+    if not matches:
         LOG.warning("%s not found in universe.json", symbol)
         return registry
-    entry = instruments[symbol]
-    pid = entry.get("paper_pid")
-    if _pid_alive(pid):
-        _stop_pid(pid, f"{symbol} paper bot")
-    entry["stage"]     = "UNTRAINED"
-    entry["paper_pid"] = None
+    for entry in matches:
+        pid = entry.get("paper_pid")
+        tf = int(entry.get("timeframe_minutes", 0) or 0)
+        if _pid_alive(pid):
+            _stop_pid(pid, f"{symbol} M{tf} paper bot")
+        entry["stage"] = "UNTRAINED"
+        entry["paper_pid"] = None
     _save_universe(registry)
-    LOG.info("Demoted %s → UNTRAINED", symbol)
+    LOG.info("Demoted %s (%d entries) → UNTRAINED", symbol, len(matches))
     return registry
 
 
 def cmd_stop_all(registry: dict) -> dict:
-    for sym, entry in registry.get("instruments", {}).items():
+    instruments = registry.get("instruments", [])
+    if not isinstance(instruments, list):
+        instruments = _normalize_instruments(instruments)
+        registry["instruments"] = instruments
+    for entry in instruments:
+        if not isinstance(entry, dict):
+            continue
+        sym = str(entry.get("symbol", "?") or "?")
+        tf = int(entry.get("timeframe_minutes", 0) or 0)
         pid = entry.get("paper_pid")
         if _pid_alive(pid):
-            _stop_pid(pid, f"{sym} paper bot")
+            _stop_pid(pid, f"{sym} M{tf} paper bot")
             entry["paper_pid"] = None
     _save_universe(registry)
     return registry

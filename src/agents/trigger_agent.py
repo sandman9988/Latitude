@@ -182,16 +182,17 @@ class TriggerAgent(AgentTrainingMixin):
         self.last_predicted_runway_net: float = 0.0
 
         # Phase 2: Gating strategy
-        # Training mode: NO GATES - pure exploration, learn through rewards
-        # Live mode: LEARNED GATES - confidence floor from trained model
-        if self.disable_gates or self.paper_mode:
+        # Paper mode keeps feasibility gate disabled, but confidence floor remains active.
+        if self.disable_gates:
             self.feasibility_threshold = 0.0
             self.confidence_floor = 0.0
         else:
-            # Live trading: use learned gating
-            self.feasibility_threshold, _ = self._resolve_gate_value(
-                env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5
-            )
+            if self.paper_mode:
+                self.feasibility_threshold = 0.0
+            else:
+                self.feasibility_threshold, _ = self._resolve_gate_value(
+                    env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5
+                )
             self.confidence_floor, _ = self._resolve_gate_value(
                 env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55
             )
@@ -325,7 +326,7 @@ class TriggerAgent(AgentTrainingMixin):
 
         self.last_action = action
 
-        if not self.paper_mode and confidence < self.confidence_floor:
+        if confidence < self.confidence_floor:
             LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", confidence, self.confidence_floor)
             return 0, confidence, 0.0
         if self._entry_risk_gate_blocked(action, confidence, state):
@@ -472,7 +473,7 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _confidence_gate_blocked(self, calibrated_prob: float) -> bool:
         """Return True if confidence floor blocks entry."""
-        if self.paper_mode:
+        if self.disable_gates:
             return False
         if not self._is_runway_predictor_reliable():
             LOG.debug(
@@ -488,7 +489,7 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _entry_risk_gate_blocked(self, action: int, confidence: float, state: np.ndarray) -> bool:
         """Return True when adaptive confidence/risk pockets should block entry."""
-        if self.paper_mode or action == 0:
+        if self.disable_gates or action == 0:
             return False
         dead_low = min(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
         dead_high = max(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)

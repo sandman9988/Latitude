@@ -25,12 +25,24 @@ import run_universe as ru   # noqa: E402
 # helpers
 # ---------------------------------------------------------------------------
 
-def _write_universe(path: Path, instruments: dict) -> None:
+def _write_universe(path: Path, instruments: object) -> None:
     path.write_text(json.dumps({"version": 1, "instruments": instruments}))
 
 
 def _read_universe(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def _entry(instruments: list[dict], symbol: str, tf: int | None = None) -> dict | None:
+    for item in instruments:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("symbol", "")).upper() != symbol.upper():
+            continue
+        if tf is not None and int(item.get("timeframe_minutes", 0) or 0) != int(tf):
+            continue
+        return item
+    return None
 
 
 def _patch_universe(monkeypatch, path: Path) -> None:
@@ -46,38 +58,38 @@ class TestUniverseIO:
     def test_load_returns_empty_when_missing(self, tmp_path, monkeypatch):
         _patch_universe(monkeypatch, tmp_path / "universe.json")
         result = ru._load_universe()
-        assert result == {"version": 1, "instruments": {}}
+        assert result == {"version": 1, "instruments": []}
 
     def test_load_returns_contents(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _write_universe(uni, {"XAUUSD": {"stage": "PAPER"}})
         _patch_universe(monkeypatch, uni)
         result = ru._load_universe()
-        assert result["instruments"]["XAUUSD"]["stage"] == "PAPER"
+        assert _entry(result["instruments"], "XAUUSD")["stage"] == "PAPER"
 
     def test_load_returns_empty_on_corrupt_json(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         uni.write_text("not valid json{{{")
         _patch_universe(monkeypatch, uni)
         result = ru._load_universe()
-        assert result == {"version": 1, "instruments": {}}
+        assert result == {"version": 1, "instruments": []}
 
     def test_save_writes_and_renames_atomically(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        ru._save_universe({"version": 1, "instruments": {"EURUSD": {"stage": "MICRO"}}})
+        ru._save_universe({"version": 1, "instruments": [{"symbol": "EURUSD", "stage": "MICRO"}]})
         assert uni.exists()
         assert not uni.with_suffix(".tmp").exists()
         data = _read_universe(uni)
-        assert data["instruments"]["EURUSD"]["stage"] == "MICRO"
+        assert _entry(data["instruments"], "EURUSD")["stage"] == "MICRO"
 
     def test_round_trip(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        original = {"version": 1, "instruments": {"BTCUSD": {"stage": "PAPER", "timeframe_minutes": 15}}}
+        original = {"version": 1, "instruments": [{"symbol": "BTCUSD", "stage": "PAPER", "timeframe_minutes": 15}]}
         ru._save_universe(original)
         loaded = ru._load_universe()
-        assert loaded["instruments"]["BTCUSD"]["timeframe_minutes"] == 15
+        assert _entry(loaded["instruments"], "BTCUSD", 15)["timeframe_minutes"] == 15
 
 
 # ---------------------------------------------------------------------------
@@ -146,42 +158,45 @@ class TestCmdPromote:
     def test_promotes_new_symbol(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {}}
+        registry = {"version": 1, "instruments": []}
 
         result = ru.cmd_promote(registry, "GBPUSD", 30)
 
-        assert result["instruments"]["GBPUSD"]["stage"] == "PAPER"
-        assert result["instruments"]["GBPUSD"]["timeframe_minutes"] == 30
+        assert _entry(result["instruments"], "GBPUSD", 30)["stage"] == "PAPER"
+        assert _entry(result["instruments"], "GBPUSD", 30)["timeframe_minutes"] == 30
 
     def test_promotes_preserves_existing_fields(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"USDJPY": {"stage": "OFFLINE_TRAINING", "z_omega": 2.0}}}
+        registry = {
+            "version": 1,
+            "instruments": [{"symbol": "USDJPY", "stage": "OFFLINE_TRAINING", "timeframe_minutes": 1440, "z_omega": 2.0}],
+        }
 
         result = ru.cmd_promote(registry, "USDJPY", 1440)
 
-        assert result["instruments"]["USDJPY"]["z_omega"] == pytest.approx(2.0)
-        assert result["instruments"]["USDJPY"]["stage"] == "PAPER"
+        assert _entry(result["instruments"], "USDJPY", 1440)["z_omega"] == pytest.approx(2.0)
+        assert _entry(result["instruments"], "USDJPY", 1440)["stage"] == "PAPER"
 
     def test_promotes_with_optional_symbol_id(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {}}
+        registry = {"version": 1, "instruments": []}
 
         result = ru.cmd_promote(registry, "EURUSD", 60, symbol_id=1)
 
-        assert result["instruments"]["EURUSD"]["symbol_id"] == 1
+        assert _entry(result["instruments"], "EURUSD", 60)["symbol_id"] == 1
 
     def test_saves_universe_file(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {}}
+        registry = {"version": 1, "instruments": []}
 
         ru.cmd_promote(registry, "AUDCAD", 60)
 
         assert uni.exists()
         data = _read_universe(uni)
-        assert "AUDCAD" in data["instruments"]
+        assert _entry(data["instruments"], "AUDCAD", 60) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -193,50 +208,50 @@ class TestCmdDemote:
     def test_sets_stage_to_untrained(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"XAUUSD": {"stage": "PAPER", "paper_pid": None}}}
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": None}]}
 
         result = ru.cmd_demote(registry, "XAUUSD")
 
-        assert result["instruments"]["XAUUSD"]["stage"] == "UNTRAINED"
+        assert _entry(result["instruments"], "XAUUSD")["stage"] == "UNTRAINED"
 
     def test_clears_pid_field(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"XAUUSD": {"stage": "PAPER", "paper_pid": 12345}}}
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": 12345}]}
 
         with patch.object(ru, "_pid_alive", return_value=False):
             result = ru.cmd_demote(registry, "XAUUSD")
 
-        assert result["instruments"]["XAUUSD"]["paper_pid"] is None
+        assert _entry(result["instruments"], "XAUUSD")["paper_pid"] is None
 
     def test_stops_running_bot(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"BTCUSD": {"stage": "PAPER", "paper_pid": 9999}}}
+        registry = {"version": 1, "instruments": [{"symbol": "BTCUSD", "stage": "PAPER", "paper_pid": 9999, "timeframe_minutes": 240}]}
 
         with patch.object(ru, "_pid_alive", return_value=True), \
              patch.object(ru, "_stop_pid") as mock_stop:
             ru.cmd_demote(registry, "BTCUSD")
-            mock_stop.assert_called_once_with(9999, "BTCUSD paper bot")
+            mock_stop.assert_called_once_with(9999, "BTCUSD M240 paper bot")
 
     def test_noop_for_unknown_symbol(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {}}
+        registry = {"version": 1, "instruments": []}
 
         result = ru.cmd_demote(registry, "NONEXISTENT")
 
-        assert result == {"version": 1, "instruments": {}}
+        assert result == {"version": 1, "instruments": []}
 
     def test_saves_universe_file(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"EURUSD": {"stage": "PAPER", "paper_pid": None}}}
+        registry = {"version": 1, "instruments": [{"symbol": "EURUSD", "stage": "PAPER", "paper_pid": None}]}
 
         ru.cmd_demote(registry, "EURUSD")
 
         data = _read_universe(uni)
-        assert data["instruments"]["EURUSD"]["stage"] == "UNTRAINED"
+        assert _entry(data["instruments"], "EURUSD")["stage"] == "UNTRAINED"
 
 
 # ---------------------------------------------------------------------------
@@ -250,10 +265,10 @@ class TestCmdStopAll:
         _patch_universe(monkeypatch, uni)
         registry = {
             "version": 1,
-            "instruments": {
-                "XAUUSD": {"stage": "PAPER", "paper_pid": 111},
-                "BTCUSD": {"stage": "PAPER", "paper_pid": 222},
-            },
+            "instruments": [
+                {"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": 111},
+                {"symbol": "BTCUSD", "stage": "PAPER", "paper_pid": 222},
+            ],
         }
         stopped: list[int] = []
 
@@ -272,18 +287,18 @@ class TestCmdStopAll:
     def test_clears_pids_in_registry(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"XAUUSD": {"stage": "PAPER", "paper_pid": 111}}}
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": 111}]}
 
         with patch.object(ru, "_pid_alive", return_value=True), \
              patch.object(ru, "_stop_pid"):
             result = ru.cmd_stop_all(registry)
 
-        assert result["instruments"]["XAUUSD"]["paper_pid"] is None
+        assert _entry(result["instruments"], "XAUUSD")["paper_pid"] is None
 
     def test_skips_dead_pids(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"USDJPY": {"stage": "PAPER", "paper_pid": 777}}}
+        registry = {"version": 1, "instruments": [{"symbol": "USDJPY", "stage": "PAPER", "paper_pid": 777}]}
 
         with patch.object(ru, "_pid_alive", return_value=False), \
              patch.object(ru, "_stop_pid") as mock_stop:
@@ -300,9 +315,9 @@ class TestLaunchPaperBots:
     def _registry_with(self, symbol: str, stage: str, pid=None, tf=240) -> dict:
         return {
             "version": 1,
-            "instruments": {
-                symbol: {"stage": stage, "timeframe_minutes": tf, "paper_pid": pid},
-            },
+            "instruments": [
+                {"symbol": symbol, "stage": stage, "timeframe_minutes": tf, "paper_pid": pid},
+            ],
         }
 
     def test_launches_for_paper_stage(self, tmp_path, monkeypatch):
@@ -317,7 +332,7 @@ class TestLaunchPaperBots:
             result = ru.launch_paper_bots(registry, specs, base_env)
 
         mock_launch.assert_called_once_with("XAUUSD", 240, 41, 0.01, base_env, None)
-        assert result["instruments"]["XAUUSD"]["paper_pid"] == 5555
+        assert _entry(result["instruments"], "XAUUSD", 240)["paper_pid"] == 5555
 
     def test_skips_non_paper_stages(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
@@ -361,7 +376,7 @@ class TestLaunchPaperBots:
     def test_skips_missing_timeframe(self, tmp_path, monkeypatch, caplog):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": {"XAUUSD": {"stage": "PAPER", "paper_pid": None}}}
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": None}]}
         specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
 
         with patch.object(ru, "_pid_alive", return_value=False), \
@@ -383,7 +398,7 @@ class TestLaunchPaperBots:
             ru.launch_paper_bots(registry, specs, {})
 
         data = _read_universe(uni)
-        assert data["instruments"]["GBPUSD"]["paper_pid"] == 1234
+        assert _entry(data["instruments"], "GBPUSD", 30)["paper_pid"] == 1234
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +433,7 @@ class TestCLI:
 
         assert ret == 0
         data = _read_universe(uni)
-        assert data["instruments"]["AUDUSD"]["stage"] == "PAPER"
+        assert _entry(data["instruments"], "AUDUSD", 60)["stage"] == "PAPER"
 
     def test_demote_cli(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
@@ -431,7 +446,7 @@ class TestCLI:
 
         assert ret == 0
         data = _read_universe(uni)
-        assert data["instruments"]["XAUUSD"]["stage"] == "UNTRAINED"
+        assert _entry(data["instruments"], "XAUUSD")["stage"] == "UNTRAINED"
 
     def test_stop_all_cli(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"

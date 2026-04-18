@@ -101,7 +101,7 @@ def _register_universe(
     Never downgrades an instrument already at PAPER or above.
     """
     _UNIVERSE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    registry: dict = {"version": 1, "instruments": {}}
+    registry: dict = {"version": 1, "instruments": []}
     if _UNIVERSE_PATH.exists():
         try:
             with open(_UNIVERSE_PATH) as _f:
@@ -109,8 +109,24 @@ def _register_universe(
         except Exception:
             pass
 
-    instruments = registry.setdefault("instruments", {})
-    existing = instruments.get(symbol, {})
+    raw = registry.get("instruments", [])
+    instruments: list[dict] = []
+    if isinstance(raw, list):
+        instruments = [e for e in raw if isinstance(e, dict)]
+    elif isinstance(raw, dict):
+        for _sym, _entry in raw.items():
+            if isinstance(_entry, dict):
+                instruments.append({"symbol": str(_sym).upper(), **_entry})
+
+    existing_idx = next(
+        (
+            i for i, e in enumerate(instruments)
+            if str(e.get("symbol", "")).upper() == symbol
+            and int(e.get("timeframe_minutes", 0) or 0) == int(timeframe_minutes)
+        ),
+        -1,
+    )
+    existing = instruments[existing_idx] if existing_idx >= 0 else {}
     current_stage = existing.get("stage", "UNTRAINED")
     current_idx = (
         _STAGE_ORDER.index(current_stage)
@@ -122,10 +138,10 @@ def _register_universe(
     better_score = z_omega > existing.get("z_omega", 0.0)
 
     if not already_paper or better_score:
-        # Preserve stage if already at PAPER or above (MICRO/LIVE) — never demote
         new_stage = current_stage if already_paper else "PAPER"
-        instruments[symbol] = {
+        updated = {
             **existing,
+            "symbol":            symbol,
             "stage":             new_stage,
             "timeframe_minutes": timeframe_minutes,
             "z_omega":           z_omega,
@@ -135,6 +151,12 @@ def _register_universe(
             "paper_pid":         existing.get("paper_pid"),
             "paper_started_at":  existing.get("paper_started_at"),
         }
+        if existing_idx >= 0:
+            instruments[existing_idx] = updated
+        else:
+            instruments.append(updated)
+
+        registry["instruments"] = instruments
         tmp = _UNIVERSE_PATH.with_suffix(".tmp")
         with open(tmp, "w") as _f:
             json.dump(registry, _f, indent=2)
@@ -151,8 +173,8 @@ def _register_universe(
             )
     else:
         LOG.info(
-            "[UNIVERSE] %s already %s ZΩ=%.4f, new ZΩ=%.4f — keeping best",
-            symbol, current_stage, existing.get("z_omega", 0.0), z_omega,
+            "[UNIVERSE] %s M%d already %s ZΩ=%.4f, new ZΩ=%.4f — keeping best",
+            symbol, timeframe_minutes, current_stage, existing.get("z_omega", 0.0), z_omega,
         )
 
 # ── Import training modules ────────────────────────────────────────────────────
