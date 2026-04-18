@@ -32,6 +32,10 @@ class AgentAttribution:
     predicted_runway_gross: float = 0.0
     predicted_runway_net_points: float = 0.0
     predicted_runway_gross_points: float = 0.0
+    predicted_runway_net_points_raw: float = 0.0
+    runway_bias_ema_points: float = 0.0
+    runway_adjustment_scale: float = 1.0
+    runway_delta_points: float = 0.0
     runway_utilization: float = 0.0
     runway_error_pct: float = 0.0
     trigger_quality: str = "N/A"
@@ -46,6 +50,10 @@ class AgentAttribution:
         self.predicted_runway_gross = max(0.0, self.predicted_runway_gross or 0.0)
         self.predicted_runway_net_points = max(0.0, self.predicted_runway_net_points or 0.0)
         self.predicted_runway_gross_points = max(0.0, self.predicted_runway_gross_points or 0.0)
+        self.predicted_runway_net_points_raw = max(0.0, self.predicted_runway_net_points_raw or 0.0)
+        self.runway_bias_ema_points = float(self.runway_bias_ema_points or 0.0)
+        self.runway_adjustment_scale = max(0.5, min(1.5, float(self.runway_adjustment_scale or 1.0)))
+        self.runway_delta_points = float(self.runway_delta_points or 0.0)
         self.runway_utilization = max(0.0, min(10.0, self.runway_utilization or 0.0))
         self.runway_error_pct = max(0.0, min(1000.0, self.runway_error_pct or 0.0))
         if self.trigger_quality not in self._VALID_TRIGGER:
@@ -146,6 +154,10 @@ class PerformanceTracker:
                 "predicted_runway_gross": attr.predicted_runway_gross,
                 "predicted_runway_net_points": attr.predicted_runway_net_points,
                 "predicted_runway_gross_points": attr.predicted_runway_gross_points,
+                "predicted_runway_net_points_raw": attr.predicted_runway_net_points_raw,
+                "runway_bias_ema_points": attr.runway_bias_ema_points,
+                "runway_adjustment_scale": attr.runway_adjustment_scale,
+                "runway_delta_points": attr.runway_delta_points,
                 "runway_utilization": attr.runway_utilization,
                 "runway_error_pct": attr.runway_error_pct,
                 "trigger_quality": attr.trigger_quality,

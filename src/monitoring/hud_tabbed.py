@@ -20,6 +20,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import select
 import subprocess
 import sys
@@ -58,9 +59,9 @@ RUNWAY_SHORT_THRESHOLD: float = 0.5  # runway < 0.5 ≈ sigma > 0.02 (high vol h
 _PRICE_REF_HIGH: float = 1000.0        # ref_price ≥ 1000 → 2 dp (BTC / Gold)
 _PRICE_REF_MED: float = 10.0           # ref_price ≥ 10 → 3 dp; else 5 dp
 
-# Z-Omega quality display bands (training/paper pipeline)
+# Z-Omega quality display bands (training/trading pipeline)
 Z_OMEGA_OFFLINE_WARM_MIN: float = 0.8   # zo ≥ 0.8 → yellow in offline results
-Z_OMEGA_POSITIVE_MIN: float = 0.5       # zo > 0.5 → green in paper pipeline
+Z_OMEGA_POSITIVE_MIN: float = 0.5       # zo > 0.5 → green in trading pipeline
 
 # Agent confidence display bands (°healthy°: 0.55 – 0.85)
 CONF_HEALTHY_LOW: float = 0.55          # lower bound of healthy confidence range
@@ -293,9 +294,19 @@ class TabbedHUD:
         self.weekly_metrics = {}
         self.monthly_metrics = {}
         self.lifetime_metrics = {}
+        self.daily_metrics_by_mode: dict[str, dict] = {}
+        self.weekly_metrics_by_mode: dict[str, dict] = {}
+        self.monthly_metrics_by_mode: dict[str, dict] = {}
+        self.lifetime_metrics_by_mode: dict[str, dict] = {}
         self.per_symbol_metrics: dict[str, dict] = {}
+        self.metrics_cube: dict[tuple[str, str, str], list[dict]] = {}
+        self.metrics_cube_keys: list[tuple[str, str, str]] = []
+        self.metrics_by_symbol_tf: dict[tuple[str, str], dict] = {}
         self._trade_log_metrics_trades: list[dict] = []
+        self._trade_log_metrics_trades_by_mode: dict[str, list[dict]] = {}
         self._trade_log_unlabeled_count: int = 0
+        self._trade_log_inferred_count: int = 0
+        self._trade_log_unknown_timeframe_count: int = 0
 
         # Heartbeat
         self.heartbeat_idx = 0
@@ -311,6 +322,7 @@ class TabbedHUD:
         self._trades_detail: bool = False
         self._trades_detail_trade: dict = {}
         self._all_trades: list = []          # newest-first sorted
+        self._trades_view: list = []          # current filtered view for trades tab
         self._all_trades_loaded_at: float = 0.0
         self._trade_log_reader = CachedTradeLogReader(Path("data/trade_log.jsonl"))
 
@@ -454,7 +466,7 @@ class TabbedHUD:
                 elif key.lower() == "n":
                     if self.current_tab == "trades":
                         self._trades_detail = False
-                        _max_pg = max(0, (len(self._all_trades) - 1) // self._trades_per_page)
+                        _max_pg = max(0, (len(self._trades_view) - 1) // self._trades_per_page)
                         self._trades_page = min(self._trades_page + 1, _max_pg)
                         self._trades_cursor = 0
                 elif key.lower() == "p":
@@ -464,7 +476,7 @@ class TabbedHUD:
                         self._trades_cursor = 0
                 elif key.lower() == "j":
                     if self.current_tab == "trades" and not self._trades_detail:
-                        _page_cnt = min(self._trades_per_page, len(self._all_trades) - self._trades_page * self._trades_per_page)
+                        _page_cnt = min(self._trades_per_page, len(self._trades_view) - self._trades_page * self._trades_per_page)
                         self._trades_cursor = min(self._trades_cursor + 1, max(0, _page_cnt - 1))
                 elif key.lower() == "k":
                     if self.current_tab == "trades" and not self._trades_detail:
@@ -475,9 +487,10 @@ class TabbedHUD:
                             self._trades_detail = False
                         else:
                             _idx = self._trades_page * self._trades_per_page + self._trades_cursor
-                            if _idx < len(self._all_trades):
-                                self._trades_detail_trade = self._all_trades[_idx]
+                            if _idx < len(self._trades_view):
+                                self._trades_detail_trade = self._trades_view[_idx]
                                 self._trades_detail = True
+
                 elif key.lower() == "b" and self.current_tab == "trades" and self._trades_detail:
                     self._trades_detail = False
         except Exception:  # noqa: BLE001 — ignore terminal read errors silently
@@ -538,14 +551,146 @@ class TabbedHUD:
             self._harv_step_hist.append((_now, _hs))
 
     @staticmethod
-    def _load_paper_bot_stats(symbol: str, tf: int) -> dict:
-        """Load per-bot paper stats file written by ctrader_ddqn_paper."""
-        path = Path("data") / f"paper_stats_{symbol}_M{tf}.json"
+    def _resolve_trade_mode_from_record(trade: dict) -> str:
+        """Resolve trade mode using explicit field, then legacy heuristics."""
+        mode = str(trade.get("trading_mode", "") or "").strip().lower()
+        if mode in ("paper", "live"):
+            return mode
+
+        ticket = trade.get("ticket")
+        if ticket not in (None, "", "UNKNOWN"):
+            return "live"
+
+        position_id = trade.get("position_id")
+        if position_id not in (None, "", "UNKNOWN"):
+            return "live"
+
+        return "paper"
+
+    @staticmethod
+    def _normalize_symbol(value: Any) -> str:
+        _sym = str(value or "").strip().upper()
+        return _sym if _sym else "UNKNOWN"
+
+    @staticmethod
+    def _normalize_timeframe_label(trade: dict) -> str:
+        _tf_raw = trade.get("timeframe_minutes", 0)
+        _tf = 0
         try:
-            with open(path, encoding="utf-8") as _f:
-                return json.load(_f)
-        except Exception:
-            return {}
+            _tf = int(_tf_raw or 0)
+        except (TypeError, ValueError):
+            _tf = 0
+        if _tf > 0:
+            return f"M{_tf}"
+        _label = str(trade.get("timeframe", "") or "").strip().upper()
+        if _label:
+            _m = re.fullmatch(r"M(\d+)", _label)
+            if _m:
+                return f"M{int(_m.group(1))}"
+            _m = re.fullmatch(r"(\d+)M", _label)
+            if _m:
+                return f"M{int(_m.group(1))}"
+            if _label in {"H1", "H4", "H12", "D1"}:
+                _mins = {"H1": 60, "H4": 240, "H12": 720, "D1": 1440}[_label]
+                return f"M{_mins}"
+            return _label
+        return "M?"
+
+    def _build_metrics_cube(self, trades: list[dict]) -> None:
+        _cube: dict[tuple[str, str, str], list[dict]] = {}
+        for _t in trades:
+            _sym = self._normalize_symbol(_t.get("symbol"))
+            _tf = self._normalize_timeframe_label(_t)
+            _mode = self._resolve_trade_mode_from_record(_t)
+            _t["trading_mode"] = _mode
+            _cube.setdefault((_sym, _tf, _mode), []).append(_t)
+        self.metrics_cube = _cube
+        self.metrics_cube_keys = sorted(_cube.keys(), key=lambda k: (k[0], self._timeframe_sort_key(k[1]), k[2]))
+
+    @staticmethod
+    def _timeframe_sort_key(tf_label: str) -> int:
+        _m = re.fullmatch(r"M(\d+)", str(tf_label).upper())
+        if _m:
+            return int(_m.group(1))
+        return 999999
+
+    @staticmethod
+    def _entry_key(entry: dict, fallback_idx: int) -> str:
+        """Stable key for entry dedup/grouping across legacy universe layouts."""
+        _sym = str(entry.get("symbol") or entry.get("_symbol") or "")
+        _tf = int(entry.get("timeframe_minutes", 0) or 0)
+        if _sym and _tf:
+            return f"{_sym}::M{_tf}"
+        if _sym:
+            return f"{_sym}::idx{fallback_idx}"
+        return f"idx{fallback_idx}"
+
+    def _iter_universe_entries(self, uni_raw: dict) -> list[dict]:
+        """Return normalized universe entries supporting old and new schemas."""
+        entries: list[dict] = []
+        instruments = uni_raw.get("instruments", {})
+        if isinstance(instruments, list):
+            for idx, item in enumerate(instruments):
+                if not isinstance(item, dict):
+                    continue
+                _entry = dict(item)
+                if not _entry.get("symbol"):
+                    _entry["symbol"] = str(_entry.get("_symbol", "") or "")
+                if _entry.get("symbol"):
+                    _entry["symbol"] = str(_entry["symbol"]).upper()
+                entries.append(_entry)
+            return entries
+        if isinstance(instruments, dict):
+            for idx, (sym, item) in enumerate(instruments.items()):
+                if isinstance(item, list):
+                    for sub in item:
+                        if not isinstance(sub, dict):
+                            continue
+                        _entry = dict(sub)
+                        _entry.setdefault("symbol", str(sym).upper())
+                        entries.append(_entry)
+                elif isinstance(item, dict):
+                    _entry = dict(item)
+                    _entry.setdefault("symbol", str(sym).upper())
+                    entries.append(_entry)
+            return entries
+        if isinstance(uni_raw, dict):
+            for idx, (sym, item) in enumerate(uni_raw.items()):
+                if sym in ("version", "instruments"):
+                    continue
+                if isinstance(item, list):
+                    for sub in item:
+                        if not isinstance(sub, dict):
+                            continue
+                        _entry = dict(sub)
+                        _entry.setdefault("symbol", str(sym).upper())
+                        entries.append(_entry)
+                elif isinstance(item, dict):
+                    _entry = dict(item)
+                    _entry.setdefault("symbol", str(sym).upper())
+                    entries.append(_entry)
+        return entries
+
+    def _universe_starting_equity(self) -> float:
+        """Resolve starting equity for active bot, falling back safely."""
+        if self.active_sym and self.active_tf_min:
+            _k = f"{self.active_sym}::M{self.active_tf_min}"
+            _e = self.universe_stats.get(_k, {})
+            if isinstance(_e, dict) and _e.get("starting_equity") is not None:
+                return float(_e.get("starting_equity"))
+
+        if self.active_sym:
+            for _entry in self.universe_stats.values():
+                if not isinstance(_entry, dict):
+                    continue
+                if _entry.get("symbol") == self.active_sym and _entry.get("starting_equity") is not None:
+                    return float(_entry.get("starting_equity"))
+
+        for _entry in self.universe_stats.values():
+            if isinstance(_entry, dict) and _entry.get("starting_equity") is not None:
+                return float(_entry.get("starting_equity"))
+
+        return float(self.bot_config.get("starting_equity", 10_000.0))
 
     def _load_universe_stats(self) -> None:
         """Load universe.json, annotate liveness, auto-prune dead entries."""
@@ -555,12 +700,16 @@ class TabbedHUD:
             return
         try:
             _uni_raw: dict = json.loads(_uni_path.read_text())
-            # Support both flat {"XAUUSD": {...}} and nested {"instruments": {...}}
-            _instruments: dict = _uni_raw.get("instruments", _uni_raw)
+            _entries = self._iter_universe_entries(_uni_raw)
             _dead_keys: list[str] = []
-            for _sym, _entry in list(_instruments.items()):
+            _normalized: dict[str, dict] = {}
+            for idx, _entry in enumerate(_entries):
                 if not isinstance(_entry, dict):
                     continue
+                _sym = str(_entry.get("symbol", "") or "").upper()
+                if not _sym:
+                    continue
+                _entry["symbol"] = _sym
                 _pid = _entry.get("paper_pid")
                 _alive = False
                 if _pid:
@@ -574,23 +723,18 @@ class TabbedHUD:
                     except OSError:
                         pass
                 _entry["_pid_alive"] = _alive
-                # Auto-prune: remove entries whose PID is dead — they are stale
-                # from a previous pipeline run and should not clutter the HUD.
+                _k = self._entry_key(_entry, idx)
+                _entry["_entry_key"] = _k
                 if _pid and not _alive:
-                    _dead_keys.append(_sym)
+                    _dead_keys.append(_k)
                     continue
                 _tf = _entry.get("timeframe_minutes", 0)
-                _entry["_paper_stats"] = self._load_paper_bot_stats(_sym, _tf) if _tf else {}
-            # Remove dead entries from the file itself so they don't reappear
+                _entry["_bot_stats"] = self._load_bot_stats(_sym, _tf) if _tf else {}
+                _normalized[_k] = _entry
+
             if _dead_keys:
-                for _dk in _dead_keys:
-                    _instruments.pop(_dk, None)
-                try:
-                    _uni_raw["instruments"] = _instruments
-                    _uni_path.write_text(json.dumps(_uni_raw, indent=2))
-                except Exception:
-                    LOG.debug("[HUD] Failed to write cleaned universe.json", exc_info=True)
-            self.universe_stats = _instruments
+                LOG.debug("[HUD] Ignoring %d dead universe entries in-memory", len(_dead_keys))
+            self.universe_stats = _normalized
         except Exception:
             LOG.debug("[HUD] Failed to load universe.json", exc_info=True)
 
@@ -871,15 +1015,7 @@ class TabbedHUD:
         # Resolve starting_equity: universe.json entries are authoritative (they
         # reflect the real account size); bot_config.json is shared across bots
         # and may carry a stale or default value from whichever bot wrote last.
-        _uni_eq = (
-            self.universe_stats.get(self.active_sym, {}).get("starting_equity")
-            or next(
-                (e.get("starting_equity") for e in self.universe_stats.values()
-                 if isinstance(e, dict) and e.get("starting_equity")),
-                None,
-            )
-            or self.bot_config.get("starting_equity", 10_000.0)
-        )
+        _uni_eq = self._universe_starting_equity()
         starting_equity = float(_uni_eq)
 
         # DATA QUALITY CHECK: Log warnings for data integrity issues
@@ -906,15 +1042,37 @@ class TabbedHUD:
                 _recalc_trades, len(trades), _original_pnl, _current_pnl, _variance
             )
 
-        # Determine active trading mode; if all trades share one mode, use it.
-        _modes = {t.get("trading_mode", "") for t in trades}
-        _modes.discard("")
-        self._trade_log_unlabeled_count = sum(1 for t in trades if not t.get("trading_mode"))
+        # Determine active trading mode; infer missing legacy labels.
+        _modes: set[str] = set()
+        _unlabeled = 0
+        _inferred = 0
+        for _t in trades:
+            _raw_mode = str(_t.get("trading_mode", "") or "").strip().lower()
+            if _raw_mode in ("paper", "live"):
+                _resolved = _raw_mode
+            else:
+                _unlabeled += 1
+                _resolved = self._resolve_trade_mode_from_record(_t)
+                _inferred += 1
+                _t["trading_mode"] = _resolved
+            _modes.add(_resolved)
+        self._trade_log_unlabeled_count = _unlabeled
+        self._trade_log_inferred_count = _inferred
+        self._trade_log_unknown_timeframe_count = sum(
+            1 for _t in trades if self._normalize_timeframe_label(_t) == "M?"
+        )
         self._trade_log_mode = next(iter(_modes)) if len(_modes) == 1 else "mixed" if _modes else ""
 
         # Apply stats epoch filter — exclude old trades from all metrics
         trades = self._filter_trades_by_epoch(trades)
         self._trade_log_metrics_trades = list(trades)
+        self._build_metrics_cube(trades)
+
+        trades_by_mode = {
+            "paper": [t for t in trades if t.get("trading_mode") == "paper"],
+            "live": [t for t in trades if t.get("trading_mode") == "live"],
+        }
+        self._trade_log_metrics_trades_by_mode = {k: list(v) for k, v in trades_by_mode.items()}
 
         daily, weekly, monthly = _classify_trades_by_period(trades)
 
@@ -932,10 +1090,27 @@ class TabbedHUD:
         _pre_weekly_equity  = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _weekly_ids)
         _pre_monthly_equity = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _monthly_ids)
 
-        self.daily_metrics   = _hud_period_metrics(daily,   _pre_daily_equity)
-        self.weekly_metrics  = _hud_period_metrics(weekly,  _pre_weekly_equity)
+        self.daily_metrics = _hud_period_metrics(daily, _pre_daily_equity)
+        self.weekly_metrics = _hud_period_metrics(weekly, _pre_weekly_equity)
         self.monthly_metrics = _hud_period_metrics(monthly, _pre_monthly_equity)
         self.lifetime_metrics = _hud_period_metrics(trades, starting_equity)
+
+        self.daily_metrics_by_mode = {}
+        self.weekly_metrics_by_mode = {}
+        self.monthly_metrics_by_mode = {}
+        self.lifetime_metrics_by_mode = {}
+        for _mode_name, _mode_trades in trades_by_mode.items():
+            _d_m, _w_m, _m_m = _classify_trades_by_period(_mode_trades)
+            _d_ids = set(map(id, _d_m))
+            _w_ids = set(map(id, _w_m))
+            _m_ids = set(map(id, _m_m))
+            _pre_d = starting_equity + sum(t.get("pnl", 0) for t in _mode_trades if id(t) not in _d_ids)
+            _pre_w = starting_equity + sum(t.get("pnl", 0) for t in _mode_trades if id(t) not in _w_ids)
+            _pre_m = starting_equity + sum(t.get("pnl", 0) for t in _mode_trades if id(t) not in _m_ids)
+            self.daily_metrics_by_mode[_mode_name] = _hud_period_metrics(_d_m, _pre_d)
+            self.weekly_metrics_by_mode[_mode_name] = _hud_period_metrics(_w_m, _pre_w)
+            self.monthly_metrics_by_mode[_mode_name] = _hud_period_metrics(_m_m, _pre_m)
+            self.lifetime_metrics_by_mode[_mode_name] = _hud_period_metrics(_mode_trades, starting_equity)
 
         # Augment lifetime_metrics with timing data derived from trade timestamps.
         # These are more accurate than the runtime-counter values in production_metrics.json
@@ -970,6 +1145,14 @@ class TabbedHUD:
         self.per_symbol_metrics: dict[str, dict] = {}
         for _s, _st in _by_sym.items():
             self.per_symbol_metrics[_s] = _hud_period_metrics(_st, starting_equity)
+
+        _by_symbol_tf: dict[tuple[str, str], list[dict]] = {}
+        for (_sym, _tf, _mode), _trades in self.metrics_cube.items():
+            _by_symbol_tf.setdefault((_sym, _tf), []).extend(_trades)
+        self.metrics_by_symbol_tf = {
+            _k: _hud_period_metrics(_v, starting_equity)
+            for _k, _v in _by_symbol_tf.items()
+        }
 
     def _price_decimals(self, ref_price: float = 0.0) -> int:
         """Return the correct number of decimal places for the active symbol.
@@ -1670,8 +1853,8 @@ class TabbedHUD:
             )
         return f"{'—':<38}"
 
-    def _render_paper_pipeline(self) -> None:
-        """Render the paper trading pipeline status block — one card per bot.
+    def _render_trading_pipeline(self) -> None:
+        """Render the trading pipeline status block — one card per bot.
 
         Skips rendering entirely when there are no live entries to avoid
         showing stale information from dead pipeline processes.
@@ -1686,10 +1869,10 @@ class TabbedHUD:
             if running_count else
             f"{_ANSI_R}0/{total_count} running{_ANSI_RST}"
         )
-        print(f"  \033[1m📈 PAPER TRADING PIPELINE\033[0m  {hdr_badge}")
+        print(f"  \033[1m📈 TRADING PIPELINE\033[0m  {hdr_badge}")
         print()
-        for sym, entry in sorted(uni.items()):
-            self._render_paper_pipeline_card(sym, entry)
+        for _, entry in sorted(uni.items(), key=lambda kv: (str(kv[1].get("symbol", "")), int(kv[1].get("timeframe_minutes", 0) or 0))):
+            self._render_pipeline_card(str(entry.get("symbol", "?")), entry)
         print()
 
     @staticmethod
@@ -1699,15 +1882,15 @@ class TabbedHUD:
         col = _ANSI_G if filled_frac >= 0.5 else (_ANSI_Y if filled_frac >= 0.2 else _ANSI_DIM)
         return f"{col}[{'█' * filled}{'░' * (width - filled)}]{_ANSI_RST}"
 
-    def _render_paper_pipeline_card(self, sym: str, entry: dict) -> None:
-        """Render one paper-bot card with connection + training + activity stats."""
+    def _render_pipeline_card(self, sym: str, entry: dict) -> None:
+        """Render one bot card with connection + training + activity stats."""
         stage    = entry.get("stage", "?")
         tf_min   = entry.get("timeframe_minutes", 0)
         tf_lbl   = f"M{tf_min}" if tf_min else "?"
         zo       = entry.get("z_omega")
         pid      = entry.get("paper_pid")
         alive    = entry.get("_pid_alive", False)
-        ps       = entry.get("_paper_stats", {})   # per-bot stats JSON from bot
+        ps       = entry.get("_bot_stats", {})   # per-bot stats JSON from bot
 
         # ── title line ────────────────────────────────────────────────────────
         stage_col = {
@@ -2046,7 +2229,7 @@ class TabbedHUD:
             else:
                 self._render_offline_training(ofs)
         if self.universe_stats:
-            self._render_paper_pipeline()
+            self._render_trading_pipeline()
         _ts_nonempty = any(v for v in ts.values() if v)
         _mode = self.bot_config.get("trading_mode", "paper")
         _mode_label = "PAPER" if _mode == "paper" else ("LIVE" if _mode == "live" else "OFFLINE")
@@ -2155,7 +2338,7 @@ class TabbedHUD:
         # Use the active-position bot's paper_stats for correct symbol/tf/uptime
         # in multi-bot setups where bot_config.json is shared (last writer wins).
         _aps = (
-            self._load_paper_bot_stats(self.active_sym, self.active_tf_min)
+            self._load_bot_stats(self.active_sym, self.active_tf_min)
             if self.active_sym and self.active_tf_min else {}
         )
         symbol = _aps.get("symbol") or self.bot_config.get("symbol", "UNKNOWN")
@@ -2363,13 +2546,7 @@ class TabbedHUD:
         # Prefer starting_equity from universe.json for the active symbol.
         # bot_config.json is shared across bots; the last writer may reflect a
         # different instrument's equity baseline.
-        _ue = self.universe_stats.get(
-            self.active_sym or self.bot_config.get("symbol", ""), {}
-        )
-        _starting = float(
-            _ue.get("starting_equity")
-            or self.bot_config.get("starting_equity", 10_000.0)
-        )
+        _starting = self._universe_starting_equity()
         _lifetime_pnl = float(self.lifetime_metrics.get("total_pnl", 0.0))
         _unreal = float(self.position.get("unrealized_pnl", 0.0))
         # Prefer real broker values (from CollateralReport BA) when available
@@ -2405,17 +2582,48 @@ class TabbedHUD:
 
         # Quick metrics
         print("\n\033[1m📈 TODAY'S STATS\033[0m")
-        d = self.daily_metrics
-        trades = d.get("total_trades", 0)
-        wr = d.get("win_rate", 0) * 100
-        day_pnl = d.get("total_pnl", 0)
-        print(f"  Trades: {trades}  |  Win Rate: {wr:.1f}%  |  PnL: {self._pnl_color(day_pnl)}{day_pnl:+.2f}\033[0m")
+        _mode = (
+            getattr(self, "_trade_log_mode", "")
+            or getattr(self, "_perf_snapshot_mode", "")
+            or self.bot_config.get("trading_mode", "paper")
+        )
+        if _mode == "mixed":
+            _paper = self.daily_metrics_by_mode.get("paper", {})
+            _live = self.daily_metrics_by_mode.get("live", {})
+            _p_trades = _paper.get("total_trades", 0)
+            _p_wr = _paper.get("win_rate", 0) * 100
+            _p_pnl = _paper.get("total_pnl", 0)
+            _l_trades = _live.get("total_trades", 0)
+            _l_wr = _live.get("win_rate", 0) * 100
+            _l_pnl = _live.get("total_pnl", 0)
+            print(
+                f"  Paper: {_p_trades} trades | WR {_p_wr:.1f}% | PnL {self._pnl_color(_p_pnl)}{_p_pnl:+.2f}\033[0m"
+            )
+            print(
+                f"  Live:  {_l_trades} trades | WR {_l_wr:.1f}% | PnL {self._pnl_color(_l_pnl)}{_l_pnl:+.2f}\033[0m"
+            )
+        else:
+            d = self.daily_metrics
+            trades = d.get("total_trades", 0)
+            wr = d.get("win_rate", 0) * 100
+            day_pnl = d.get("total_pnl", 0)
+            print(f"  Trades: {trades}  |  Win Rate: {wr:.1f}%  |  PnL: {self._pnl_color(day_pnl)}{day_pnl:+.2f}\033[0m")
 
-        # Add sparkline for recent performance if available
-        recent_pnl = d.get("recent_pnl_sequence", [])
-        if recent_pnl and len(recent_pnl) > 1:
-            sparkline = self._create_sparkline(recent_pnl[-20:])  # Last 20 trades
-            print(f"  Recent: {sparkline}")
+            recent_pnl = d.get("recent_pnl_sequence", [])
+            if recent_pnl and len(recent_pnl) > 1:
+                sparkline = self._create_sparkline(recent_pnl[-20:])
+                print(f"  Recent: {sparkline}")
+
+        if self.metrics_by_symbol_tf:
+            print("\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m")
+            print(f"  {'Symbol':<9} {'TF':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11}")
+            print("  " + "─" * 47)
+            for (_sym, _tf), _sm in sorted(self.metrics_by_symbol_tf.items(), key=lambda kv: (kv[0][0], self._timeframe_sort_key(kv[0][1]))):
+                _tr = _sm.get("total_trades", 0)
+                _wr = _sm.get("win_rate", 0) * 100
+                _pnl = _sm.get("total_pnl", 0.0)
+                _pc = self._pnl_color(_pnl)
+                print(f"  {_sym:<9} {_tf:<6} {_tr:>7} {_wr:>6.1f}% {_pc}{_pnl:>+10.2f}{_ANSI_RST}")
 
         # Risk snapshot
         print("\n\033[1m⚠️  RISK STATUS\033[0m")
@@ -2808,8 +3016,13 @@ class TabbedHUD:
         print(f"\n\033[1m📈 PERFORMANCE METRICS\033[0m{_mode_tag}{src}\n")
         if self._trade_log_unlabeled_count > 0:
             print(
-                f"  {_ANSI_Y}⚠ {self._trade_log_unlabeled_count} unlabeled trades in trade_log.jsonl (missing trading_mode) — "
-                f"mode split may be incomplete.{_ANSI_RST}"
+                f"  {_ANSI_Y}⚠ {self._trade_log_unlabeled_count} legacy trades were missing trading_mode; "
+                f"{self._trade_log_inferred_count} inferred via ticket/position heuristics.{_ANSI_RST}"
+            )
+        if self._trade_log_unknown_timeframe_count > 0:
+            print(
+                f"  {_ANSI_Y}ℹ M? = legacy trades missing timeframe metadata "
+                f"({self._trade_log_unknown_timeframe_count} trades).{_ANSI_RST}"
             )
 
         # Stats epoch banner
@@ -2824,38 +3037,54 @@ class TabbedHUD:
                 f"[e] to change{_ANSI_RST}\n"
             )
 
+        def _render_period_rows(rows: list[tuple[str, dict]]) -> None:
+            print(
+                f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'TQR':>7} {'PF':>7} {'MaxDD%':>8}"
+            )
+            print("  " + "─" * 62)
+            for label, metrics in rows:
+                trades = metrics.get("total_trades", 0)
+                wr = metrics.get("win_rate", 0) * 100
+                pnl = metrics.get("total_pnl", 0)
+                sharpe = metrics.get("sharpe_ratio", 0)
+                pf = metrics.get("profit_factor", 0)
+                maxdd = metrics.get("max_drawdown", 0.0)
+                pnl_color = self._pnl_color(pnl)
+                if maxdd > DD_HIGH_PCT:
+                    dd_color = _ANSI_R
+                elif maxdd > DD_WARN_PCT:
+                    dd_color = _ANSI_Y
+                else:
+                    dd_color = _ANSI_G
+                print(
+                    f"  {label:<9} {trades:>7} {wr:>6.1f}% {pnl_color}{pnl:>+10.2f}{_ANSI_RST} "
+                    f"{sharpe:>7.2f} {pf:>7.2f} {dd_color}{maxdd:>7.2f}%{_ANSI_RST}"
+                )
+
         # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
         # This is NOT an annualised return-based Sharpe ratio.
-        print(
-            f"  {'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'TQR':>7} {'PF':>7} {'MaxDD%':>8}"
-        )
-        print("  " + "─" * 62)
-
-        for label, metrics in [
-            ("24h",    self.daily_metrics),
+        if _mode == "mixed":
+            print(f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
+            _render_period_rows([
+                ("24h", self.daily_metrics_by_mode.get("paper", {})),
+                ("7 days", self.weekly_metrics_by_mode.get("paper", {})),
+                ("Month", self.monthly_metrics_by_mode.get("paper", {})),
+                ("All", self.lifetime_metrics_by_mode.get("paper", {})),
+            ])
+            print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
+            _render_period_rows([
+                ("24h", self.daily_metrics_by_mode.get("live", {})),
+                ("7 days", self.weekly_metrics_by_mode.get("live", {})),
+                ("Month", self.monthly_metrics_by_mode.get("live", {})),
+                ("All", self.lifetime_metrics_by_mode.get("live", {})),
+            ])
+            print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
+        _render_period_rows([
+            ("24h", self.daily_metrics),
             ("7 days", self.weekly_metrics),
-            ("Month",  self.monthly_metrics),
-            ("All",    self.lifetime_metrics),
-        ]:
-            trades = metrics.get("total_trades", 0)
-            wr = metrics.get("win_rate", 0) * 100
-            pnl = metrics.get("total_pnl", 0)
-            sharpe = metrics.get("sharpe_ratio", 0)
-            pf = metrics.get("profit_factor", 0)  # profit factor (capped at 99)
-            maxdd = metrics.get("max_drawdown", 0.0)  # already a % of peak equity
-
-            pnl_color = self._pnl_color(pnl)
-            if maxdd > DD_HIGH_PCT:
-                dd_color = _ANSI_R
-            elif maxdd > DD_WARN_PCT:
-                dd_color = _ANSI_Y
-            else:
-                dd_color = _ANSI_G
-
-            print(
-                f"  {label:<9} {trades:>7} {wr:>6.1f}% {pnl_color}{pnl:>+10.2f}{_ANSI_RST} "
-                f"{sharpe:>7.2f} {pf:>7.2f} {dd_color}{maxdd:>7.2f}%{_ANSI_RST}"
-            )
+            ("Month", self.monthly_metrics),
+            ("All", self.lifetime_metrics),
+        ])
 
         # Per-symbol breakdown (only when multiple symbols exist)
         if len(self.per_symbol_metrics) > 1:
@@ -2879,26 +3108,28 @@ class TabbedHUD:
                 )
 
         self._render_mode_breakdown()
+        self._render_timeframe_mode_breakdown()
 
-        self._render_trade_quality(self.lifetime_metrics)
+        _quality_metrics = self.lifetime_metrics
+        if _mode == "paper":
+            _quality_metrics = self.lifetime_metrics_by_mode.get("paper", self.lifetime_metrics)
+        elif _mode == "live":
+            _quality_metrics = self.lifetime_metrics_by_mode.get("live", self.lifetime_metrics)
+        self._render_trade_quality(_quality_metrics)
 
         pm = self.production_metrics.get("metrics", {})
         # Always render timing and prediction convergence; use trade_log-derived
         # lifetime_metrics for authoritative timing, pm for runtime convergence stats.
-        self._render_trade_timing(self.lifetime_metrics, pm)
+        self._render_trade_timing(_quality_metrics, pm)
 
     def _render_mode_breakdown(self) -> None:
-        """Show paper vs live trade breakdown using cached per-symbol metrics."""
-        # Reuse trades already parsed by _compute_metrics_from_trade_log()
-        # via _load_all_trades_cached() to avoid double-parsing the file.
-        self._load_all_trades_cached()
-        trades = self._filter_trades_by_epoch(self._all_trades)
+        """Show paper vs live trade breakdown using canonical trade-log grouping."""
+        trades = self._trade_log_metrics_trades
         if not trades:
             return
-        paper_trades = [t for t in trades if t.get("trading_mode") == "paper"]
-        live_trades = [t for t in trades if t.get("trading_mode") == "live"]
+        paper_trades = self._trade_log_metrics_trades_by_mode.get("paper", [])
+        live_trades = self._trade_log_metrics_trades_by_mode.get("live", [])
 
-        # Only show breakdown when there is something to display
         if not paper_trades and not live_trades:
             return
 
@@ -2924,6 +3155,31 @@ class TabbedHUD:
                 f"{pnl_c}{total_pnl:>+10.2f}{_ANSI_RST}"
             )
         print("  " + "\u2500" * 37)
+
+    def _render_timeframe_mode_breakdown(self) -> None:
+        """Render canonical symbol/timeframe/mode table from metrics cube."""
+        if not self.metrics_cube_keys:
+            return
+
+        print("\n  \033[1mPER SYMBOL / TIMEFRAME / MODE\033[0m")
+        print(f"  {'Symbol':<9} {'TF':<6} {'Mode':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'PF':>7}")
+        print("  " + "\u2500" * 64)
+        for _sym, _tf, _mode in self.metrics_cube_keys:
+            _trades = self.metrics_cube.get((_sym, _tf, _mode), [])
+            if not _trades:
+                continue
+            _m = _hud_period_metrics(_trades, self._universe_starting_equity())
+            _tr = _m.get("total_trades", 0)
+            _wr = _m.get("win_rate", 0) * 100
+            _pnl = _m.get("total_pnl", 0.0)
+            _pf = _m.get("profit_factor", 0.0)
+            _mc = _ANSI_Y if _mode == "paper" else _ANSI_G
+            _pc = self._pnl_color(_pnl)
+            print(
+                f"  {_sym:<9} {_tf:<6} {_mc}{_mode.upper():<6}{_ANSI_RST} {_tr:>7} {_wr:>6.1f}% "
+                f"{_pc}{_pnl:>+10.2f}{_ANSI_RST} {_pf:>7.2f}"
+            )
+        print("  " + "\u2500" * 64)
 
     def _render_trade_quality(self, lt: dict) -> None:
         """Render trade quality metrics block."""
@@ -3049,9 +3305,20 @@ class TabbedHUD:
             _pred_frac = float(t.get("predicted_runway", 0.0) or 0.0)
             _entry_price = float(t.get("entry_price", 0.0) or 0.0)
             _actual_mfe = t.get("mfe")
-            if _pred_frac <= 0.0 or _entry_price <= 0.0 or _actual_mfe is None:
+            _pred_pts_raw = t.get("predicted_runway_net_points_raw")
+            _pred_pts_adj = t.get("predicted_runway_net_points")
+            if _actual_mfe is None:
                 continue
-            _pred_pts = _pred_frac * _entry_price
+            if _pred_pts_adj is not None:
+                _pred_pts = float(_pred_pts_adj or 0.0)
+            elif _pred_pts_raw is not None:
+                _pred_pts = float(_pred_pts_raw or 0.0)
+            elif _pred_frac > 0.0 and _entry_price > 0.0:
+                _pred_pts = _pred_frac * _entry_price
+            else:
+                continue
+            if _pred_pts <= 0.0:
+                continue
             _actual_mfe_f = float(_actual_mfe)
             _delta = _pred_pts - _actual_mfe_f
             _max_err = max(abs(_actual_mfe_f), abs(_pred_pts), 1.0)
@@ -3163,13 +3430,13 @@ class TabbedHUD:
             print(
                 f"  Runway Utilization:       "
                 f"{_util_col}{conv['avg_runway_utilization']:>7.3f}x{_ANSI_RST}  "
-                f"{_ANSI_DIM}(actual_MFE/predicted_runway; reward shaping signal){_ANSI_RST}"
+                f"{_ANSI_DIM}(actual_MFE/predicted_runway_pts_adj; reward shaping signal){_ANSI_RST}"
             )
             _err_col = _ANSI_G if conv["avg_runway_error_pct"] <= 25.0 else (_ANSI_Y if conv["avg_runway_error_pct"] <= 50.0 else _ANSI_R)
             print(
                 f"  Runway Error %:           "
                 f"{_err_col}{conv['avg_runway_error_pct']:>7.1f}%{_ANSI_RST}  "
-                f"{_ANSI_DIM}(mean absolute prediction error %; reward shaping signal){_ANSI_RST}"
+                f"{_ANSI_DIM}(mean absolute prediction error % vs predicted_runway_pts_adj; reward shaping signal){_ANSI_RST}"
             )
         print(
             f"  Platt  a={pa_col}{platt_a:.4f}{_ANSI_RST}  "
@@ -3177,7 +3444,7 @@ class TabbedHUD:
             f"{_ANSI_DIM}(source: production_metrics.json; grey=default, blue=adapted){_ANSI_RST}"
         )
 
-    def _render_jsonl_decision_entries(self, entries: list) -> None:
+    def _render_jsonl_decision_entries(self, entries: list, mode_filter: str = "") -> None:
         """Render the rich JSONL decision log entries.
 
         Collapses consecutive CLOSE_PENDING rows into a single summary line
@@ -3186,6 +3453,10 @@ class TabbedHUD:
         Columns:
           Date+Time | Mode | Agent | Decision | Conf | Detail (varies by decision type)
         """
+        # ── Pre-filter: keep only selected mode when mixed ───────────────────
+        if mode_filter in ("paper", "live"):
+            entries = [e for e in entries if e.get("trading_mode") == mode_filter]
+
         # ── Pre-pass: collapse CLOSE_PENDING runs ─────────────────────────
         collapsed: list[dict | str] = []  # dict = normal entry, str = summary line
         i = 0
@@ -3347,8 +3618,10 @@ class TabbedHUD:
             )
         print("  " + "─" * 90)
 
-    def _render_legacy_decision_entries(self, entries: list) -> None:
+    def _render_legacy_decision_entries(self, entries: list, mode_filter: str = "") -> None:
         """Render legacy JSON-format decision log entries — newest first."""
+        if mode_filter in ("paper", "live"):
+            entries = [e for e in entries if e.get("trading_mode") == mode_filter]
         recent = list(reversed(entries[-20:]))
         print(f"  Showing {len(recent)} most recent decisions (legacy format):\n")
         print("  " + "─" * 76)
@@ -3400,6 +3673,15 @@ class TabbedHUD:
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
         print(f"  {_ANSI_DIM}(canonical source: logs/audit/decisions.jsonl; fallback: data/decision_log.json){_ANSI_RST}")
 
+        _mode_filter = ""
+        if getattr(self, "_trade_log_mode", "") == "mixed":
+            _mode_filter = getattr(self, "_perf_snapshot_mode", "") or self.bot_config.get("trading_mode", "")
+            if _mode_filter not in ("paper", "live"):
+                _mode_filter = ""
+            if _mode_filter:
+                _mode_lbl = "PAPER" if _mode_filter == "paper" else "LIVE"
+                print(f"  {_ANSI_DIM}Showing {_mode_lbl} entries only while trade history is mixed-mode.{_ANSI_RST}")
+
         jsonl_file = Path("logs/audit/decisions.jsonl")
         entries_jsonl: list[dict] = []
         if jsonl_file.exists():
@@ -3416,7 +3698,7 @@ class TabbedHUD:
         if entries_jsonl:
             # Reverse so newest entries display at top
             entries_jsonl.reverse()
-            self._render_jsonl_decision_entries(entries_jsonl)
+            self._render_jsonl_decision_entries(entries_jsonl, _mode_filter)
             return
 
         log_file = self.data_dir / "decision_log.json"
@@ -3458,7 +3740,7 @@ class TabbedHUD:
             print("  No entries yet. Waiting for bot decisions...")
             return
 
-        self._render_legacy_decision_entries(entries)
+        self._render_legacy_decision_entries(entries, _mode_filter)
 
     def _render_risk(self):
         """Render risk management details."""
@@ -3989,19 +4271,30 @@ class TabbedHUD:
 
     def _render_trades(self) -> None:
         """Render the trade history tab with pagination and optional drill-down."""
+        _mode_filter = ""
+        if getattr(self, "_trade_log_mode", "") == "mixed":
+            _mode_filter = getattr(self, "_perf_snapshot_mode", "") or self.bot_config.get("trading_mode", "")
+            if _mode_filter not in ("paper", "live"):
+                _mode_filter = ""
+        trades_view = self._all_trades
+        if _mode_filter:
+            trades_view = [t for t in self._all_trades if t.get("trading_mode") == _mode_filter]
+        self._trades_view = trades_view
+
         W = self._term_width()
-        total = len(self._all_trades)
+        total = len(trades_view)
         if total == 0:
-            print("\n\033[1m[T] TRADE HISTORY\033[0m  No trades recorded yet.")
+            _empty_label = f" ({_mode_filter})" if _mode_filter else ""
+            print(f"\n\033[1m[T] TRADE HISTORY\033[0m{_empty_label}  No trades recorded yet.")
             return
         max_page = max(0, (total - 1) // self._trades_per_page)
         self._trades_page = min(self._trades_page, max_page)
         page_start = self._trades_page * self._trades_per_page
-        page_trades = self._all_trades[page_start: page_start + self._trades_per_page]
+        page_trades = trades_view[page_start: page_start + self._trades_per_page]
         self._trades_cursor = min(self._trades_cursor, max(0, len(page_trades) - 1))
 
         # Header
-        lm = self.lifetime_metrics
+        lm = self.lifetime_metrics_by_mode.get(_mode_filter, self.lifetime_metrics) if _mode_filter else self.lifetime_metrics
         total_pnl = lm.get("total_pnl", 0.0)
         wins      = lm.get("winning_trades", 0)
         losses    = lm.get("losing_trades", 0)
@@ -4009,7 +4302,12 @@ class TabbedHUD:
         pg_str    = f"Pg {self._trades_page + 1}/{max_page + 1}"
         _tl_mode  = getattr(self, "_trade_log_mode", "")
         if _tl_mode == "mixed":
-            _mode_hdr = f"  {_ANSI_Y}⚠ MIXED{_ANSI_RST}"
+            _mode_suffix = ""
+            if _mode_filter == "paper":
+                _mode_suffix = f"  {_ANSI_Y}📄 PAPER VIEW{_ANSI_RST}"
+            elif _mode_filter == "live":
+                _mode_suffix = f"  {_ANSI_G}💰 LIVE VIEW{_ANSI_RST}"
+            _mode_hdr = f"  {_ANSI_Y}⚠ MIXED{_ANSI_RST}{_mode_suffix}"
         elif _tl_mode == "live":
             _mode_hdr = f"  {_ANSI_G}💰 LIVE{_ANSI_RST}"
         else:
@@ -4022,10 +4320,17 @@ class TabbedHUD:
 
         # Mixed-mode banner — operator must know metrics are contaminated
         if _tl_mode == "mixed":
-            print(
-                f"  {_ANSI_Y}⚠  MIXED MODE — paper and live trades combined. "
-                f"Metrics span both modes. See [P] Performance tab for breakdown.{_ANSI_RST}"
-            )
+            if _mode_filter:
+                _mode_lbl = "paper" if _mode_filter == "paper" else "live"
+                print(
+                    f"  {_ANSI_Y}⚠  MIXED MODE SOURCE — showing {_mode_lbl} trades only. "
+                    f"Use bot mode switch to view the other mode.{_ANSI_RST}"
+                )
+            else:
+                print(
+                    f"  {_ANSI_Y}⚠  MIXED MODE — paper and live trades combined. "
+                    f"Metrics span both modes. See [P] Performance tab for breakdown.{_ANSI_RST}"
+                )
 
         # Summary bar
         _pnl_c = _ANSI_G if total_pnl >= 0 else _ANSI_R

@@ -435,6 +435,7 @@ class CircuitBreakerManager:
         self.emergency_closer = None
         self.auto_close_on_trip = auto_close_on_trip
         self.positions_closed_on_trip = False
+        self.manual_reset_cooldown_until: datetime | None = None
 
         LOG.info(
             "Circuit Breaker Manager initialized | Sortino>=%.2f (%s) Kurtosis<=%.1f (%s) DD<=%.0f%% (%s) MaxLoss=%d (%s)",
@@ -554,7 +555,7 @@ class CircuitBreakerManager:
         """Get list of tripped breakers"""
         return [breaker.state for breaker in self.breakers if breaker.state.is_tripped]
 
-    def reset_all(self):
+    def reset_all(self, manual_cooldown_seconds: int = 0):
         """Reset all breakers and clear underlying data so they don't
         immediately re-trip on the next ``check()`` call."""
         for breaker in self.breakers:
@@ -570,6 +571,10 @@ class CircuitBreakerManager:
         self.drawdown_breaker.current_drawdown = 0.0
         self.drawdown_breaker.size_multiplier = 1.0
         self.positions_closed_on_trip = False
+        if manual_cooldown_seconds > 0:
+            self.manual_reset_cooldown_until = datetime.now(UTC) + timedelta(seconds=manual_cooldown_seconds)
+        else:
+            self.manual_reset_cooldown_until = None
         LOG.info("[CIRCUIT_BREAKER] All breakers reset (data windows cleared)")
 
     def reset_if_cooldown_elapsed(self):
@@ -577,6 +582,10 @@ class CircuitBreakerManager:
         for breaker in self.breakers:
             if breaker.state.is_tripped and breaker.state.can_reset():
                 breaker.state.reset()
+
+    def is_manual_reset_cooldown_active(self) -> bool:
+        """Return True while post-manual-reset grace period is active."""
+        return bool(self.manual_reset_cooldown_until and datetime.now(UTC) < self.manual_reset_cooldown_until)
 
     def get_position_size_multiplier(self) -> float:
         """
@@ -656,6 +665,9 @@ class CircuitBreakerManager:
             "consecutive_losses": _breaker_dict(self.consecutive_losses_breaker.state, {
                 "consecutive_losses": self.consecutive_losses_breaker.consecutive_losses,
             }),
+            "manual_reset_cooldown_until": (
+                self.manual_reset_cooldown_until.isoformat() if self.manual_reset_cooldown_until else None
+            ),
         }
 
         save_json_atomic(filepath, state)
@@ -712,6 +724,17 @@ class CircuitBreakerManager:
             if "consecutive_losses" in state:
                 _restore_breaker(self.consecutive_losses_breaker.state, state["consecutive_losses"])
                 self.consecutive_losses_breaker.consecutive_losses = state["consecutive_losses"].get("consecutive_losses", 0)
+
+            _mr_until = state.get("manual_reset_cooldown_until")
+            self.manual_reset_cooldown_until = None
+            if isinstance(_mr_until, str):
+                try:
+                    _dt = datetime.fromisoformat(_mr_until)
+                    if _dt.tzinfo is None:
+                        _dt = _dt.replace(tzinfo=UTC)
+                    self.manual_reset_cooldown_until = _dt
+                except (TypeError, ValueError):
+                    self.manual_reset_cooldown_until = None
 
             LOG.info("[CIRCUIT-BREAKER] State restored from %s", filepath)
             return True

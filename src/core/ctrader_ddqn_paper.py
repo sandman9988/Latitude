@@ -120,6 +120,7 @@ from src.agents.dual_policy import DualPolicy
 from src.constants import (
     ACTION_LONG,
     ACTION_SHORT,
+    BREAKER_RESET_GRACE_SECONDS,
     DEFAULT_VOLATILITY,
     HARVESTER_BUFFER_CAPACITY,
     HUD_EXPORT_INTERVAL_CYCLES,
@@ -190,6 +191,10 @@ HARVESTER_DEBUG_INTERVAL: float = 60.0  # Seconds between harvester debug log li
 MIN_BARS_FOR_VOL_CALC: int = 20          # Minimum bars before RS-volatility is reliable
 EPSILON_HIGH_THRESHOLD: float = 0.5      # epsilon above this ⇒ still in random-exploration phase
 RUNWAY_FALLBACK_THRESHOLD: float = 0.002 # Predicted-runway below this ⇒ treat as exploration entry
+RUNWAY_BIAS_ALPHA: float = 0.1           # EMA smoothing for runway bias adaptation
+RUNWAY_BIAS_LIMIT_POINTS: float = 12.0   # Cap absolute bias correction in points
+RUNWAY_ADJUST_MIN_SCALE: float = 0.5     # Lower clamp for adaptive runway scale
+RUNWAY_ADJUST_MAX_SCALE: float = 1.5     # Upper clamp for adaptive runway scale
 EXPLORATION_SAMPLE_RATE: float = 0.30    # Fraction of NO_ENTRY bars logged to experience buffer
 MAX_LOG_ENTRIES: int = 1000              # Maximum decision-log entries kept in the JSON file
 
@@ -1461,9 +1466,10 @@ class CTraderFixApp(fix.Application):
             if not _payload.get("reset"):
                 return
             LOG.info("[CB-RESET] 🔄 Manual circuit breaker reset requested from HUD")
-            self.circuit_breakers.reset_all()
+            self.circuit_breakers.reset_all(manual_cooldown_seconds=BREAKER_RESET_GRACE_SECONDS)
+            self.kurtosis_monitor.reset()
             self.circuit_breakers.save_state()
-            LOG.info("[CB-RESET] ✓ All circuit breakers reset and state persisted")
+            LOG.info("[CB-RESET] ✓ All circuit breakers reset, kurtosis gate reset, and state persisted")
         except Exception as _e:
             LOG.error("[CB-RESET] Error processing reset request: %s", _e)
 
@@ -2617,20 +2623,21 @@ class CTraderFixApp(fix.Application):
             # can trip immediately on adverse moves, not only at bar close.
             if now - self._last_tick_dd_check_time >= TICK_DRAWDOWN_CHECK_INTERVAL_S:
                 self._last_tick_dd_check_time = now
-                try:
-                    equity = self._estimate_account_equity()
-                    self.circuit_breakers.drawdown_breaker.update(equity)
-                    if self.circuit_breakers.drawdown_breaker.check():
-                        LOG.warning(
-                            "[TICK-CB] Drawdown breaker tripped on tick  "
-                            "equity=%.2f  dd=%.4f",
-                            equity,
-                            self.circuit_breakers.drawdown_breaker.current_drawdown,
-                        )
-                        self.circuit_breakers.save_state()
-                        self._export_hud_data()
-                except Exception as dd_exc:
-                    LOG.debug("[TICK-CB] Drawdown check error: %s", dd_exc)
+                if not self.circuit_breakers.is_manual_reset_cooldown_active():
+                    try:
+                        equity = self._estimate_account_equity()
+                        self.circuit_breakers.drawdown_breaker.update(equity)
+                        if self.circuit_breakers.drawdown_breaker.check():
+                            LOG.warning(
+                                "[TICK-CB] Drawdown breaker tripped on tick  "
+                                "equity=%.2f  dd=%.4f",
+                                equity,
+                                self.circuit_breakers.drawdown_breaker.current_drawdown,
+                            )
+                            self.circuit_breakers.save_state()
+                            self._export_hud_data()
+                    except Exception as dd_exc:
+                        LOG.debug("[TICK-CB] Drawdown check error: %s", dd_exc)
 
             self._last_ob_export_time = now
         except Exception as e:
@@ -3841,14 +3848,22 @@ class CTraderFixApp(fix.Application):
         entry_price_val = max(entry_price, 0.0)
         predicted_runway_net_val = max(0.0, float(predicted_runway_net or 0.0))
         predicted_runway_gross_val = max(0.0, float(predicted_runway_gross or 0.0))
-        predicted_runway_net_pts = predicted_runway_net_val * entry_price_val
+        predicted_runway_net_pts_raw = predicted_runway_net_val * entry_price_val
         predicted_runway_gross_pts = predicted_runway_gross_val * entry_price_val
+        runway_bias_ema_points = float(getattr(self, "_runway_delta_ema", 0.0) or 0.0)
+        bias_clip = min(RUNWAY_BIAS_LIMIT_POINTS, max(entry_price_val * 0.003, 1.0))
+        clipped_bias = float(np.clip(runway_bias_ema_points, -bias_clip, bias_clip))
+        adjusted_runway_pts = max(0.0, predicted_runway_net_pts_raw - clipped_bias)
+        adjustment_scale = SafeMath.safe_div(adjusted_runway_pts, max(predicted_runway_net_pts_raw, 1e-6), 1.0)
+        adjustment_scale = float(np.clip(adjustment_scale, RUNWAY_ADJUST_MIN_SCALE, RUNWAY_ADJUST_MAX_SCALE))
+        predicted_runway_net_pts = predicted_runway_net_pts_raw * adjustment_scale
         runway_utilization = SafeMath.safe_div(actual_mfe_pts, predicted_runway_net_pts, 0.0)
         runway_error_pct = (
-            abs(predicted_runway_net_pts - actual_mfe_pts) / predicted_runway_net_pts * 100.0
+            abs(predicted_runway_net_pts - actual_mfe_pts) / max(predicted_runway_net_pts, 1.0) * 100.0
             if predicted_runway_net_pts > 0
             else 0.0
         )
+        runway_delta_points = predicted_runway_net_pts - actual_mfe_pts
         bars_from_mfe_to_exit = int(summary.get("bars_from_mfe_to_exit", -1) or -1)
         mfe_usd = actual_mfe_pts * trade_qty * self.contract_size
         trigger_quality = self._classify_trigger_quality(predicted_runway_net_pts, actual_mfe_pts)
@@ -3864,6 +3879,10 @@ class CTraderFixApp(fix.Application):
             predicted_runway_gross=predicted_runway_gross_val,
             predicted_runway_net_points=predicted_runway_net_pts,
             predicted_runway_gross_points=predicted_runway_gross_pts,
+            predicted_runway_net_points_raw=predicted_runway_net_pts_raw,
+            runway_bias_ema_points=runway_bias_ema_points,
+            runway_adjustment_scale=adjustment_scale,
+            runway_delta_points=runway_delta_points,
             runway_utilization=runway_utilization,
             runway_error_pct=runway_error_pct,
             trigger_quality=trigger_quality,
@@ -3967,7 +3986,7 @@ class CTraderFixApp(fix.Application):
         _actual_mfe = float(summary.get("mfe", 0.0))
         _runway_delta = _pred_net_pts - _actual_mfe
         _max_err = max(abs(_actual_mfe), abs(_pred_net_pts), 1.0)
-        _alpha = 0.1
+        _alpha = RUNWAY_BIAS_ALPHA
         self._runway_delta_ema = (1 - _alpha) * self._runway_delta_ema + _alpha * _runway_delta
         self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * (1.0 - min(abs(_runway_delta) / _max_err, 1.0))
         # Brier score: (predicted_prob - outcome)^2.  Range [0,1]; 0=perfect, 0.25=no-skill at p=0.5.
@@ -4144,6 +4163,7 @@ class CTraderFixApp(fix.Application):
             # Checkpoint: Store initial P&L to detect corruption
             _pnl_checkpoint = pnl
             LOG.debug("[PNL_CHECKPOINT] Initial P&L calculated: %.4f", _pnl_checkpoint)
+            _is_ghost_reconcile = summary.get("close_reason") == "GHOST_RECONCILE"
 
             _trade_qty = summary.get("filled_qty") or self._get_live_qty()
             _entry_predicted_runway_net = float(getattr(self, "predicted_runway_net", getattr(self, "predicted_runway", 0.0)) or 0.0)
@@ -4165,16 +4185,27 @@ class CTraderFixApp(fix.Application):
                 mae=summary.get("mae", 0.0),
             )
 
-            shaped_rewards, pnl_pts = self._update_after_trade_close(
-                pnl,
-                exit_time,
-                entry_price,
-                exit_price,
-                summary,
-                attribution=trade_attr,
-            )
+            if not _is_ghost_reconcile:
+                shaped_rewards, pnl_pts = self._update_after_trade_close(
+                    pnl,
+                    exit_time,
+                    entry_price,
+                    exit_price,
+                    summary,
+                    attribution=trade_attr,
+                )
+            else:
+                shaped_rewards = {
+                    "capture_efficiency": 0.0,
+                    "wtl_penalty": 0.0,
+                    "opportunity_cost": 0.0,
+                    "total_reward": 0.0,
+                    "components_active": 0,
+                }
+                lot_value = max(self.qty * self.contract_size, 1.0)
+                pnl_pts = SafeMath.safe_div(pnl, lot_value, 0.0)
 
-            if summary.get("mfe", 0.0) > 0 and hasattr(self.reward_shaper, "update_baseline_mfe"):
+            if not _is_ghost_reconcile and summary.get("mfe", 0.0) > 0 and hasattr(self.reward_shaper, "update_baseline_mfe"):
                 self.reward_shaper.update_baseline_mfe(summary["mfe"])
 
             LOG.info(
@@ -4186,11 +4217,15 @@ class CTraderFixApp(fix.Application):
                 shaped_rewards["components_active"],
             )
 
-            trigger_reward = self._add_trigger_experience_for_close(summary, pnl, entry_price, pnl_pts, shaped_rewards)
-            self._add_harvester_experience_for_close(summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward)
+            if not _is_ghost_reconcile:
+                trigger_reward = self._add_trigger_experience_for_close(summary, pnl, entry_price, pnl_pts, shaped_rewards)
+                self._add_harvester_experience_for_close(summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward)
+            else:
+                trigger_reward = 0.0
+                LOG.info("[GHOST-RECONCILE] Skipping replay-buffer updates for ghost-recovered trade (approx PnL=%.4f)", pnl)
             # Ghost-reconcile trades use approximate mid-price exits and represent
             # recovered stale state — do not feed their P&L to circuit breakers.
-            if summary.get("close_reason") != "GHOST_RECONCILE":
+            if not _is_ghost_reconcile:
                 self._update_circuit_breakers_after_trade(pnl)
             else:
                 LOG.info("[CIRCUIT-BREAKER] Skipping CB update for GHOST_RECONCILE trade (approx PnL=%.4f)", pnl)
@@ -4215,11 +4250,24 @@ class CTraderFixApp(fix.Application):
             _mae_dollars = summary.get("mae", 0.0) * _trade_qty * self.contract_size
             # bars_held: use live path recorder (summary doesn't include it)
             _bars_held = self._get_live_bars_held()
+            _close_spread = float(self.best_ask - self.best_bid) if self.best_bid and self.best_ask else 0.0
+            _close_mid = float((self.best_ask + self.best_bid) * 0.5) if self.best_bid and self.best_ask else 0.0
+            _close_spread_bps = (_close_spread / _close_mid * 10000.0) if _close_mid > 0 else 0.0
+            _cb_active = bool(self.circuit_breakers.is_any_tripped()) if hasattr(self, "circuit_breakers") else False
+            _cb_tripped = (
+                list(self.circuit_breakers.get_tripped_breakers())
+                if _cb_active and hasattr(self, "circuit_breakers")
+                else []
+            )
+            _zero_mfe_loss = bool(_mfe_dollars <= 0.0 and pnl < 0.0)
+            _hold_seconds = (exit_time - self.trade_entry_time).total_seconds() if self.trade_entry_time else 0.0
             trade_record = {
                 "trade_id": self.performance.total_trades if hasattr(self, "performance") else int(time.time()),
                 "ticket": summary.get("ticket", ""),
                 "position_id": summary.get("position_id", ""),
                 "symbol": self.symbol,
+                "timeframe": self.timeframe_label,
+                "timeframe_minutes": self.timeframe_minutes,
                 "trading_mode": "paper" if self.paper_mode else "live",
                 "direction": summary.get("direction", "UNKNOWN"),
                 "quantity": _trade_qty,
@@ -4230,15 +4278,21 @@ class CTraderFixApp(fix.Application):
                 "pnl": pnl,
                 "mfe": _mfe_dollars,
                 "mae": _mae_dollars,
+                "mfe_points": float(summary.get("mfe", 0.0) or 0.0),
+                "mae_points": float(summary.get("mae", 0.0) or 0.0),
                 "winner_to_loser": summary.get("winner_to_loser", False),
                 "close_reason": summary.get("close_reason", ""),
                 "bars_held": _bars_held,
-                "hold_seconds": (exit_time - self.trade_entry_time).total_seconds() if self.trade_entry_time else 0.0,
+                "hold_seconds": _hold_seconds,
                 "predicted_runway": _entry_predicted_runway_net,
                 "predicted_runway_net": _entry_predicted_runway_net,
                 "predicted_runway_gross": _entry_predicted_runway_gross,
                 "predicted_runway_net_points": trade_attr.predicted_runway_net_points,
                 "predicted_runway_gross_points": trade_attr.predicted_runway_gross_points,
+                "predicted_runway_net_points_raw": trade_attr.predicted_runway_net_points_raw,
+                "runway_bias_ema_points": trade_attr.runway_bias_ema_points,
+                "runway_adjustment_scale": trade_attr.runway_adjustment_scale,
+                "runway_delta_points": trade_attr.runway_delta_points,
                 "runway_utilization": trade_attr.runway_utilization,
                 "runway_error_pct": trade_attr.runway_error_pct,
                 "trigger_quality": trade_attr.trigger_quality,
@@ -4247,7 +4301,33 @@ class CTraderFixApp(fix.Application):
                 "mae_bar_offset": trade_attr.mae_bar_offset,
                 "bars_from_mfe_to_exit": trade_attr.bars_from_mfe_to_exit,
                 "entry_confidence": getattr(self, "entry_confidence", 0.5),
+                "diag_zero_mfe_loss": _zero_mfe_loss,
+                "diag_close_spread": _close_spread,
+                "diag_close_spread_bps": _close_spread_bps,
+                "diag_circuit_breaker_active": _cb_active,
+                "diag_circuit_breakers_tripped": _cb_tripped,
+                "diag_entry_to_exit_seconds": _hold_seconds,
             }
+            if _zero_mfe_loss:
+                LOG.warning(
+                    "[TRADE_DIAG] zero_mfe_loss trade_id=%s ticket=%s pos_id=%s dir=%s close_reason=%s bars_held=%s hold_s=%.2f pnl=%.4f mfe=%.4f mae=%.4f pred_runway=%.6f runway_err_pct=%.2f spread=%.5f spread_bps=%.2f cb_active=%s cb_tripped=%s",
+                    trade_record["trade_id"],
+                    trade_record["ticket"],
+                    trade_record["position_id"],
+                    trade_record["direction"],
+                    trade_record["close_reason"],
+                    trade_record["bars_held"],
+                    _hold_seconds,
+                    trade_record["pnl"],
+                    trade_record["mfe"],
+                    trade_record["mae"],
+                    trade_record["predicted_runway_net"],
+                    trade_record["runway_error_pct"],
+                    _close_spread,
+                    _close_spread_bps,
+                    _cb_active,
+                    ",".join(_cb_tripped) if _cb_tripped else "none",
+                )
             LOG.info(
                 "[TRADE_RECORD] Saving: ticket=%s pos_id=%s trade_id=%s pnl=%.4f close_reason=%s",
                 trade_record["ticket"], trade_record["position_id"],
@@ -5009,6 +5089,17 @@ class CTraderFixApp(fix.Application):
             depth_ratio=depth_ratio, realized_vol=realized_vol,
             event_features=event_features,
         )
+        _base_floor = float(getattr(self.policy.trigger, "confidence_floor", 0.55))
+        _cal_err = float(getattr(self, "_conf_calib_err_ema", 0.0) or 0.0)
+        _uplift = min(max(_cal_err - 0.20, 0.0), 0.15)
+        _dyn_floor = _base_floor + _uplift
+        if action in (ACTION_LONG, ACTION_SHORT) and confidence < _dyn_floor:
+            LOG.info(
+                "[ENTRY_GUARD] blocked by dynamic floor: conf=%.3f < dyn_floor=%.3f (base=%.3f calib_err=%.3f uplift=%.3f)",
+                confidence, _dyn_floor, _base_floor, _cal_err, _uplift,
+            )
+            action = 0
+            runway = 0.0
         if action == ACTION_LONG:
             desired = 1
         elif action == ACTION_SHORT:

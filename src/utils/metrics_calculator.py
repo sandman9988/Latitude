@@ -43,7 +43,14 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     if not pts:
         return dict(_EMPTY)
 
-    pnls = [t.get("pnl", 0.0) for t in pts]
+    pts_non_ghost = [
+        t for t in pts
+        if not (isinstance(t, dict) and t.get("close_reason") == "GHOST_RECONCILE")
+    ]
+    if not pts_non_ghost:
+        return dict(_EMPTY)
+
+    pnls = [t.get("pnl", 0.0) for t in pts_non_ghost]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
     n = len(pnls)
@@ -91,10 +98,8 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     # Winner-to-loser count + PnL impact (exclude ghost trades)
     w2l_count = 0
     w2l_pnl = 0.0
-    for t in pts:
+    for t in pts_non_ghost:
         if not isinstance(t, dict):
-            continue
-        if t.get("close_reason") == "GHOST_RECONCILE":
             continue
         if t.get("winner_to_loser"):
             w2l_count += 1
@@ -106,10 +111,8 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     # Convert legacy price-point MFE/MAE to dollar values when possible.
     _mfe_vals: list[float] = []
     _mae_vals: list[float] = []
-    for t in pts:
+    for t in pts_non_ghost:
         if not isinstance(t, dict):
-            continue
-        if t.get("close_reason") == "GHOST_RECONCILE":
             continue
         _m = t.get("mfe", 0.0)
         _a = t.get("mae", 0.0)
@@ -134,10 +137,8 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     avg_mae = sum(_mae_vals) / len(_mae_vals) if _mae_vals else 0.0
 
     _captures: list[float] = []
-    for t in pts:
+    for t in pts_non_ghost:
         if not isinstance(t, dict):
-            continue
-        if t.get("close_reason") == "GHOST_RECONCILE":
             continue
         _mfe = t.get("mfe", 0.0)
         _pnl = t.get("pnl", 0.0)

@@ -76,6 +76,7 @@ HUD_EXPORT_MIN_INTERVAL_S: float = 2.0  # Global rate-limit: skip export if call
 
 # Tick-level drawdown circuit breaker (Change B)
 TICK_DRAWDOWN_CHECK_INTERVAL_S: float = 1.0  # Min seconds between tick-level drawdown checks
+BREAKER_RESET_GRACE_SECONDS: int = 120       # Delay breaker checks briefly after manual reset
 
 # ── HARVESTER EXIT THRESHOLDS ─────────────────────────────────────────────────
 # Cold-start defaults only — overridden at runtime by LearnedParametersManager.
