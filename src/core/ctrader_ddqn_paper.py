@@ -33,7 +33,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import numpy as np
 
@@ -104,15 +104,19 @@ except ImportError:
         """Stub namespace for quickfix44 message types."""
         pass
 
-try:
+if TYPE_CHECKING:
     import torch
     from torch import nn
+else:
+    try:
+        import torch
+        from torch import nn
 
-    TORCH_AVAILABLE = True
-except ImportError:
-    torch = None  # type: ignore[assignment]
-    nn = None  # type: ignore[assignment]
-    TORCH_AVAILABLE = False
+        TORCH_AVAILABLE = True
+    except ImportError:
+        torch = None
+        nn = None
+        TORCH_AVAILABLE = False
 
 from src.agents.dual_policy import DualPolicy
 
@@ -191,9 +195,9 @@ HARVESTER_DEBUG_INTERVAL: float = 60.0  # Seconds between harvester debug log li
 MIN_BARS_FOR_VOL_CALC: int = 20          # Minimum bars before RS-volatility is reliable
 EPSILON_HIGH_THRESHOLD: float = 0.5      # epsilon above this ⇒ still in random-exploration phase
 RUNWAY_FALLBACK_THRESHOLD: float = 0.002 # Predicted-runway below this ⇒ treat as exploration entry
-RUNWAY_BIAS_ALPHA: float = 0.1           # EMA smoothing for runway bias adaptation
+RUNWAY_BIAS_ALPHA: float = 0.2           # EMA smoothing for runway bias adaptation
 RUNWAY_BIAS_LIMIT_POINTS: float = 12.0   # Cap absolute bias correction in points
-RUNWAY_ADJUST_MIN_SCALE: float = 0.5     # Lower clamp for adaptive runway scale
+RUNWAY_ADJUST_MIN_SCALE: float = 0.35    # Lower clamp for adaptive runway scale
 RUNWAY_ADJUST_MAX_SCALE: float = 1.5     # Upper clamp for adaptive runway scale
 EXPLORATION_SAMPLE_RATE: float = 0.30    # Fraction of NO_ENTRY bars logged to experience buffer
 MAX_LOG_ENTRIES: int = 1000              # Maximum decision-log entries kept in the JSON file
@@ -737,6 +741,8 @@ class CTraderFixApp(fix.Application):
 
         self.symbol = symbol  # Instrument-agnostic: BTCUSD, XAUUSD, etc.
         self.symbol_id = symbol_id  # Numeric symbol identifier for FIX messages
+        self.data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
         # Symbol ID lookup cache: symbol name -> broker ID (populated from SecurityList)
         self.symbol_id_cache: dict[str, int] = {}
@@ -747,7 +753,9 @@ class CTraderFixApp(fix.Application):
         self.quote_subscription_deferred = False  # True if we deferred MD subscription
 
         # Initialize learned parameters manager (single source of truth)
-        self.param_manager = LearnedParametersManager()
+        self.param_manager = LearnedParametersManager(
+            persistence_path=self.data_dir / "learned_parameters.json",
+        )
         self.param_manager.load()
 
         self.timeframe_minutes = timeframe_minutes
@@ -850,9 +858,10 @@ class CTraderFixApp(fix.Application):
         self.builder = BarBuilder(timeframe_minutes)
 
         # ── H4 parallel shadow-training ────────────────────────────────────
-        # Shares the same FIX tick stream — builds H4 bars internally,
-        # runs a separate DualPolicy for XAUUSD_M240, no real orders placed.
-        _h4_enabled = use_dual_agent and enable_online_learning
+        # Disabled: M240 is now a first-class supervised bot in the universe,
+        # so the H4 shadow is redundant and caused file-collisions
+        # (training_stats_XAUUSD_M240.json, checkpoints_h4/).
+        _h4_enabled = False
         self._h4_enabled = _h4_enabled
         self.bars_h4: deque = deque(maxlen=500)
         self.builder_h4 = BarBuilder(240)
@@ -909,11 +918,11 @@ class CTraderFixApp(fix.Application):
         self._market_data_lock = threading.Lock()  # Protects best_bid/best_ask across FIX sessions
         self.performance = PerformanceTracker()
         self.prod_monitor = ProductionMonitor(
-            metrics_file=Path("data/production_metrics.json"),
+            metrics_file=self.data_dir / "production_metrics.json",
             alert_drawdown_pct=0.10,
             http_enabled=False,
         )
-        self.trade_exporter = TradeExporter(output_dir="trades")  # Save to trades/ directory
+        self.trade_exporter = TradeExporter(output_dir=str(self.data_dir / "trades"))
         self.last_export_count = 0  # Track last export to avoid duplicates
         self.bar_count = 0  # Track bars for periodic auto-save
         self.last_autosave_bar = 0  # Last bar when auto-save occurred
@@ -995,7 +1004,7 @@ class CTraderFixApp(fix.Application):
         self._last_hud_export_time: float = 0.0   # Rate-limit for _export_hud_data() calls
         self._last_tick_dd_check_time: float = 0.0  # Rate-limit for tick-level drawdown checks
         # Open API balance file (written by scripts/fetch_balance.py)
-        self._balance_file_path = Path("data") / "account_balance.json"
+        self._balance_file_path = self.data_dir / "account_balance.json"
         self._last_balance_file_mtime: float = 0.0  # Skip re-reads when file unchanged
         self.vpin_calculator = VPINCalculator(bucket_volume=max(self.vpin_bucket_volume, 1e-6), window=50)
         self.last_vpin_stats = {"vpin": 0.0, "mean": 0.0, "std": 0.0, "zscore": 0.0}
@@ -1064,7 +1073,8 @@ class CTraderFixApp(fix.Application):
         # Connection health monitoring - ROCK SOLID for financial trading
         self.last_quote_heartbeat = None
         self.last_trade_heartbeat = None
-        self.heartbeat_timeout = 45  # seconds (3x heartbeat interval)
+        heartbeat_timeout = float(os.environ.get("CTRADER_HEARTBEAT_TIMEOUT_SEC", "75"))
+        self.heartbeat_timeout = max(30.0, heartbeat_timeout)
         self.connection_healthy = True
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 100  # Increased - keep trying with failover hosts
@@ -1092,9 +1102,15 @@ class CTraderFixApp(fix.Application):
         restart_cooldown = float(os.environ.get("CTRADER_FORCE_RESTART_COOLDOWN", "120"))
         self.force_restart_cooldown = max(restart_cooldown, 30.0)
         self.last_forced_restart: dict[str, float | None] = {"QUOTE": None, "TRADE": None}
+        self.test_request_cooldown = max(10.0, float(os.environ.get("CTRADER_TESTREQUEST_COOLDOWN_SEC", "30")))
+        self.last_test_request: dict[str, float | None] = {"QUOTE": None, "TRADE": None}
+        startup_grace = float(os.environ.get("CTRADER_SESSION_STARTUP_GRACE_SEC", "90"))
+        self.session_startup_grace_until = time.time() + max(startup_grace, 0.0)
 
         # Stale data protection - block trading if data too old
-        self.max_quote_age_for_trading = 30  # seconds - don't trade on stale prices
+        _quote_age_base = float(os.environ.get("CTRADER_MAX_QUOTE_AGE_SECONDS", "30"))
+        _quote_age_scale = max(1.0, float(self.timeframe_minutes) / 5.0)
+        self.max_quote_age_for_trading = int(min(3600.0, max(10.0, _quote_age_base * _quote_age_scale)))
 
         # Systemd watchdog support
         self.watchdog_enabled = os.environ.get("WATCHDOG_USEC") is not None
@@ -1109,11 +1125,11 @@ class CTraderFixApp(fix.Application):
         self._health_thread = threading.Thread(target=self._monitor_connection_health, daemon=True)
         self._health_thread.start()
 
-        # Kill switch monitor — polls data/kill_switch.json every 5 s, independent of bar frequency.
+        # Kill switch monitor — polls control files every 5 s, independent of bar frequency.
         # Allows the HUD (Alt+K) to trigger emergency close on H12/D1 without waiting for bar close.
-        self._kill_switch_path = Path("data/kill_switch.json")
-        self._cb_reset_path = Path("data/circuit_breaker_reset.json")
-        self._kurtosis_gate_reset_path = Path("data/kurtosis_gate_reset.json")
+        self._kill_switch_path = self.data_dir / "kill_switch.json"
+        self._cb_reset_path = self.data_dir / "circuit_breaker_reset.json"
+        self._kurtosis_gate_reset_path = self.data_dir / "kurtosis_gate_reset.json"
         self._kill_switch_thread = threading.Thread(target=self._monitor_kill_switch, daemon=True)
         self._kill_switch_thread.start()
 
@@ -1138,20 +1154,34 @@ class CTraderFixApp(fix.Application):
         self.component_error_counts = dict.fromkeys(self.components_healthy, 0)
         self.max_component_errors = 5
 
+        # HUD data export tracking - initialize early to avoid AttributeError
+        self.start_time = dt.datetime.now(dt.UTC)
+        self.hud_data_dir = self.data_dir
+        self.hud_data_dir.mkdir(exist_ok=True)
+        # Shared HUD root: per-bot-named files (e.g. paper_stats_XAUUSD_M5.json)
+        # are written here so the single-root HUD can discover every bot without
+        # symlinks.  Falls back to hud_data_dir when CTRADER_DATA_DIR is not a
+        # child of a "data" root (e.g. tests running in a temp dir).
+        _shared = Path("data")
+        try:
+            _is_child = self.hud_data_dir.resolve() != _shared.resolve() and _shared.resolve() in self.hud_data_dir.resolve().parents
+        except Exception:
+            _is_child = False
+        self.shared_hud_dir = _shared if _is_child else self.hud_data_dir
+        try:
+            self.shared_hud_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            self.shared_hud_dir = self.hud_data_dir
+
         # Audit logging for transaction trail and decision debugging
-        self.transaction_log = TransactionLogger(log_dir="logs/audit", filename="transactions.jsonl")
+        self.transaction_log = TransactionLogger(log_dir=str(self.shared_hud_dir / "logs" / "audit"), filename="transactions.jsonl")
         self.decision_log = DecisionLogger(
-            log_dir="logs/audit", filename="decisions.jsonl",
+            log_dir=str(self.shared_hud_dir / "logs" / "audit"), filename="decisions.jsonl",
             trading_mode="paper" if self.paper_mode else "live",
         )
 
         LOG.info("[INIT] ✓ Bot initialized: %s (ID:%d) M%d | Contract=%.0f | Online learning=%s",
             symbol, symbol_id, timeframe_minutes, self.contract_size, enable_online_learning)
-
-        # HUD data export tracking - initialize early to avoid AttributeError
-        self.start_time = dt.datetime.now(dt.UTC)
-        self.hud_data_dir = Path("data")
-        self.hud_data_dir.mkdir(exist_ok=True)
 
     @property
     def cur_pos(self) -> int:
@@ -1218,9 +1248,18 @@ class CTraderFixApp(fix.Application):
             if age > self.heartbeat_timeout:
                 issues.append(f"{qual} stale ({age:.0f}s)")
                 self._try_send_test_request(sid, qual)
-                if age > self.heartbeat_timeout * 2:
+                if age > self.heartbeat_timeout * 3:
                     self._force_session_restart(sid, qual, f"heartbeat stale {age:.0f}s")
-        elif sid is None and last_hb is not None:
+            return
+
+        if sid is None and now.timestamp() < self.session_startup_grace_until:
+            return
+
+        if sid is None and last_hb is not None:
+            issues.append(f"{qual} disconnected")
+            return
+
+        if sid is None and last_hb is None:
             issues.append(f"{qual} disconnected")
 
     def _check_market_data_freshness(self) -> None:
@@ -1356,11 +1395,17 @@ class CTraderFixApp(fix.Application):
         if not session_id:
             return False
 
+        now_ts = time.time()
+        last_test = self.last_test_request.get(qual)
+        if last_test and now_ts - last_test < self.test_request_cooldown:
+            return False
+
         try:
             test_req = fix.Message()
             test_req.getHeader().setField(fix.MsgType("1"))  # TestRequest
-            test_req.setField(fix.TestReqID(f"HEALTH_{qual}_{int(time.time())}"))
+            test_req.setField(fix.TestReqID(f"HEALTH_{qual}_{int(now_ts)}"))
             fix.Session.sendToTarget(test_req, session_id)
+            self.last_test_request[qual] = now_ts
             LOG.info("[HEALTH] Sent TestRequest to %s session", qual)
             return True
         except Exception as e:
@@ -1383,7 +1428,7 @@ class CTraderFixApp(fix.Application):
             session = fix.Session.lookupSession(session_id)
             if session:
                 LOG.warning("[RECONNECT] Forcing %s session restart (%s)", qual, reason)
-                session.disconnect(reason, False)
+                session.disconnect()
                 self.last_forced_restart[qual] = now_ts
                 self.last_disconnect_reason = str(reason)
                 return True
@@ -1394,7 +1439,7 @@ class CTraderFixApp(fix.Application):
 
     def _monitor_kill_switch(self):
         """
-        Background thread that polls data/kill_switch.json every 5 seconds.
+        Background thread that polls the per-bot kill_switch.json every 5 seconds.
 
         This is intentionally independent of bar close so that emergency kills
         work immediately on any timeframe (M15, H4, H12, D1, etc.).
@@ -3760,8 +3805,8 @@ class CTraderFixApp(fix.Application):
         entry_price: float,
         exit_price: float,
         direction: str,
-        quantity: float = None,
-        contract_size: float = None,
+        quantity: float | None = None,
+        contract_size: float | None = None,
     ) -> float:
         """
         Calculate position P&L (single source of truth).
@@ -3851,8 +3896,10 @@ class CTraderFixApp(fix.Application):
         predicted_runway_net_pts_raw = predicted_runway_net_val * entry_price_val
         predicted_runway_gross_pts = predicted_runway_gross_val * entry_price_val
         runway_bias_ema_points = float(getattr(self, "_runway_delta_ema", 0.0) or 0.0)
+        active_tf_min = max(int(getattr(self, "timeframe_minutes", 0) or 0), 1)
+        tf_gain = float(np.clip(15.0 / float(active_tf_min), 0.6, 2.5))
         bias_clip = min(RUNWAY_BIAS_LIMIT_POINTS, max(entry_price_val * 0.003, 1.0))
-        clipped_bias = float(np.clip(runway_bias_ema_points, -bias_clip, bias_clip))
+        clipped_bias = float(np.clip(runway_bias_ema_points * tf_gain, -bias_clip, bias_clip))
         adjusted_runway_pts = max(0.0, predicted_runway_net_pts_raw - clipped_bias)
         adjustment_scale = SafeMath.safe_div(adjusted_runway_pts, max(predicted_runway_net_pts_raw, 1e-6), 1.0)
         adjustment_scale = float(np.clip(adjustment_scale, RUNWAY_ADJUST_MIN_SCALE, RUNWAY_ADJUST_MAX_SCALE))
@@ -4147,8 +4194,10 @@ class CTraderFixApp(fix.Application):
             # Calculate P&L using dedicated method (single source of truth).
             # Use the filled_qty recorded at entry so VaR-sized positions get
             # the correct lot size instead of the default self.qty.
-            _filled_qty = summary.get("filled_qty") or None
-            pnl = self._calculate_position_pnl(entry_price, exit_price, direction, quantity=_filled_qty)
+            _filled_qty = summary.get("filled_qty")
+            if _filled_qty is None:
+                _filled_qty = self.qty
+            pnl = self._calculate_position_pnl(entry_price, exit_price, direction, quantity=float(_filled_qty))
             if not SafeMath.is_valid(pnl):
                 LOG.error(
                     "[TRADE_COMPLETION] Skipped: invalid pnl=%s entry=%.5f exit=%.5f direction=%s qty=%s",
@@ -5949,14 +5998,14 @@ class CTraderFixApp(fix.Application):
         return True
 
     def _quote_is_fresh(self) -> bool:
-        """Return True if the last quote heartbeat is recent enough for trading."""
-        if not self.last_quote_heartbeat:
+        """Return True if the latest market data tick is recent enough for trading."""
+        if self.last_market_data_time is None:
             return True
-        quote_age = (utc_now() - self.last_quote_heartbeat).total_seconds()
+        quote_age = time.time() - self.last_market_data_time
         if quote_age <= self.max_quote_age_for_trading:
             return True
         LOG.warning(
-            "[SAFETY] ✗ Order blocked - quote data stale (%.1fs old, max=%ds)",
+            "[SAFETY] ✗ Order blocked - market data stale (%.1fs old, max=%ds)",
             quote_age,
             self.max_quote_age_for_trading,
         )
@@ -6377,6 +6426,60 @@ class CTraderFixApp(fix.Application):
             imbalance = 0.0
         return depth_bid, depth_ask, imbalance
 
+    def _build_hud_reward_shaping_block(self) -> dict:
+        """Per-bot reward-shaping telemetry for HUD + reward monitor.
+
+        Single source of truth for adaptive reward weights, learned reward
+        multipliers, and per-component average rewards (capture, wtl,
+        opportunity, activity, counterfactual, ensemble).
+        """
+        try:
+            stats = self.reward_shaper.get_statistics()
+        except Exception:
+            stats = {}
+        weights = stats.get("weights", {}) if isinstance(stats, dict) else {}
+        params = stats.get("parameters", {}) if isinstance(stats, dict) else {}
+        components: dict[str, dict] = {}
+        try:
+            cs = self.reward_shaper.component_stats
+            for name, d in cs.items():
+                count = int(d.get("count", 0) or 0)
+                total = float(d.get("sum", 0.0) or 0.0)
+                components[name] = {
+                    "count": count,
+                    "sum": total,
+                    "avg": (total / count) if count > 0 else 0.0,
+                }
+        except Exception:
+            pass
+        return {
+            "symbol": self.symbol,
+            "timeframe": getattr(self, "timeframe_label", f"M{self.timeframe_minutes}"),
+            "broker": getattr(self.reward_shaper, "broker", "default"),
+            "total_rewards_calculated": stats.get("total_rewards_calculated", 0),
+            "weights": weights,
+            "parameters": params,
+            "components": components,
+        }
+
+    def _build_hud_mfe_mae_block(self) -> dict:
+        """Per-bot MFE/MAE summary of the currently-tracked position, if any.
+
+        Returns an empty dict when flat.  MFE/MAE are the raw inputs to the
+        capture / wtl / opportunity reward components.
+        """
+        try:
+            tracker = None
+            if getattr(self, "mfe_mae_trackers", None):
+                tracker = next(reversed(self.mfe_mae_trackers.values()), None)
+            if tracker is None:
+                tracker = getattr(self, "mfe_mae_tracker", None)
+            if tracker is None or not hasattr(tracker, "get_summary"):
+                return {}
+            return tracker.get_summary()
+        except Exception:
+            return {}
+
     def _export_hud_data(self):
         """Export real-time data to JSON files for HUD display."""
         # Global rate-limit: avoid I/O floods from timer + bar-close + gate-abort callers
@@ -6417,6 +6520,8 @@ class CTraderFixApp(fix.Application):
             if self.paper_mode:
                 _ts = training_stats
                 _pm = metrics
+                _reward_block = self._build_hud_reward_shaping_block()
+                _mfe_mae_block = self._build_hud_mfe_mae_block()
                 _paper_stats = {
                     "symbol":             self.symbol,
                     "timeframe_minutes":  self.timeframe_minutes,
@@ -6445,17 +6550,23 @@ class CTraderFixApp(fix.Application):
                     "real_account_equity":  self.real_account_equity,
                     "real_margin_free":     self.real_margin_free,
                     "next_bar_close_utc":  self.builder.next_bar_close_utc(),
+                    # Per-bot reward-shaping telemetry — single source of truth
+                    # for informed RL reward adjustments (weights, avg component
+                    # rewards, learned multipliers).
+                    "reward_shaping":     _reward_block,
+                    # Per-bot MFE/MAE — used by capture / wtl / opportunity rewards.
+                    "mfe_mae":            _mfe_mae_block,
                     "updated_at":         now.isoformat(),
                 }
                 _stats_path = (
-                    self.hud_data_dir
+                    self.shared_hud_dir
                     / f"paper_stats_{self.symbol}_M{self.timeframe_minutes}.json"
                 )
                 self._atomic_write_json(_stats_path, self._sanitize_for_json(_paper_stats))
             current_price = self._get_hud_current_price()
             position_data = self._build_hud_position_data(current_price)
             _pos_file = f"current_position_{self.symbol}_M{self.timeframe_minutes}.json"
-            self._atomic_write_json(self.hud_data_dir / _pos_file, self._sanitize_for_json(position_data))
+            self._atomic_write_json(self.shared_hud_dir / _pos_file, self._sanitize_for_json(position_data))
             performance_snapshot = self._build_performance_snapshot(metrics)
             self._atomic_write_json(
                 self.hud_data_dir / "performance_snapshot.json",
@@ -6466,7 +6577,7 @@ class CTraderFixApp(fix.Application):
                 self._sanitize_for_json(training_stats),
             )
             # Per-bot training stats — lets multi-bot HUD show the correct bot's stats
-            _bot_train = self.hud_data_dir / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json"
+            _bot_train = self.shared_hud_dir / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json"
             self._atomic_write_json(_bot_train, self._sanitize_for_json(training_stats))
             risk_metrics = self._build_hud_risk_metrics()
             self._atomic_write_json(
@@ -6474,7 +6585,7 @@ class CTraderFixApp(fix.Application):
                 self._sanitize_for_json(risk_metrics),
             )
             # Per-bot risk metrics — correct VaR/vol/regime for the active position's symbol
-            _bot_risk = self.hud_data_dir / f"risk_metrics_{self.symbol}_M{self.timeframe_minutes}.json"
+            _bot_risk = self.shared_hud_dir / f"risk_metrics_{self.symbol}_M{self.timeframe_minutes}.json"
             self._atomic_write_json(_bot_risk, self._sanitize_for_json(risk_metrics))
         except Exception as e:
             LOG.error("[HUD] Failed to export data: %s", str(e))
@@ -6508,7 +6619,7 @@ class CTraderFixApp(fix.Application):
             return _period_metrics_calc(pts, starting_equity=float(self.starting_equity))
 
         # Load trade log
-        trade_file = Path("data") / TRADE_LOG_FILENAME
+        trade_file = self.shared_hud_dir / TRADE_LOG_FILENAME
         all_trades = read_all_trades(trade_file)
 
         now = datetime.now(dt.UTC)
@@ -6629,12 +6740,12 @@ class CTraderFixApp(fix.Application):
         Args:
             trade_record: Dict containing all trade data (path, performance, experience)
         """
-        backup_dir = Path("data") / "trade_backups"
+        backup_dir = self.shared_hud_dir / "trade_backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
 
         trade_id = trade_record.get("trade_id", int(time.time()))
         backup_file = backup_dir / f"trade_{trade_id}_backup.json"
-        primary_file = Path("data") / TRADE_LOG_FILENAME
+        primary_file = self.shared_hud_dir / TRADE_LOG_FILENAME
 
         try:
             # First write to backup location
@@ -6836,8 +6947,8 @@ def main():
 
     # Persist lightweight runtime profile for control panel / HUD
     try:
-        status_dir = Path("data")
-        status_dir.mkdir(exist_ok=True)
+        status_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
+        status_dir.mkdir(parents=True, exist_ok=True)
         profile = {
             "symbol": symbol,
             "symbol_id": symbol_id,

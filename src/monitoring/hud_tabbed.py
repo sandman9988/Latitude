@@ -17,6 +17,7 @@ Note: Ctrl+C is ignored to prevent accidental termination when copying text.
 """
 
 import contextlib
+import io
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ import threading
 import time
 import tty
 from collections import deque
+from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -272,6 +274,7 @@ class TabbedHUD:
         self.offline_job_progress: dict = {}  # keyed by (symbol, tf_minutes)
         self.universe_stats: dict = {}        # universe.json + PID liveness
         self.all_bots_stats: list = []        # one entry per paper_stats_*.json
+        self.training_stats_all: list = []    # one entry per training_stats_*_M*.json
         # Active-position bot identity (populated each refresh from position file metadata)
         self.active_sym: str = ""
         self.active_tf_min: int = 0
@@ -288,6 +291,7 @@ class TabbedHUD:
         self.notification = ""
         self.notification_expiry = datetime.min
         self.profile_options = self._load_profile_options()
+        self._last_frame: str = ""
 
         # Time-based metrics
         self.daily_metrics = {}
@@ -324,7 +328,7 @@ class TabbedHUD:
         self._all_trades: list = []          # newest-first sorted
         self._trades_view: list = []          # current filtered view for trades tab
         self._all_trades_loaded_at: float = 0.0
-        self._trade_log_reader = CachedTradeLogReader(Path("data/trade_log.jsonl"))
+        self._trade_log_reader = CachedTradeLogReader(self.data_dir / "trade_log.jsonl")
 
         # Stats epoch: trades before this timestamp are excluded from metrics
         self._stats_epoch: datetime | None = None
@@ -408,6 +412,8 @@ class TabbedHUD:
         except Exception:  # noqa: BLE001 — terminal may not support raw mode
             pass
 
+        sys.stdout.write("\033[?25l\033[2J\033[H")
+        sys.stdout.flush()
         self.thread = threading.Thread(target=self._update_loop, daemon=True)
         self.thread.start()
 
@@ -416,6 +422,8 @@ class TabbedHUD:
         self.running = False
         # Restore terminal settings
         self._disable_raw_mode()
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
         if self.thread:
             self.thread.join(timeout=2)
 
@@ -539,15 +547,15 @@ class TabbedHUD:
         _tl = self.training_stats.get("trigger_loss", 0.0)
         _hl = self.training_stats.get("harvester_loss", 0.0)
         _now = time.time()
-        if _tl > 0:
+        if _tl > 0 and (not self._trig_loss_hist or self._trig_loss_hist[-1] != _tl):
             self._trig_loss_hist.append(_tl)
-        if _hl > 0:
+        if _hl > 0 and (not self._harv_loss_hist or self._harv_loss_hist[-1] != _hl):
             self._harv_loss_hist.append(_hl)
         _ts = self.training_stats.get("trigger_training_steps", 0)
         _hs = self.training_stats.get("harvester_training_steps", 0)
-        if _ts > 0:
+        if _ts > 0 and (not self._trig_step_hist or self._trig_step_hist[-1][1] != _ts):
             self._trig_step_hist.append((_now, _ts))
-        if _hs > 0:
+        if _hs > 0 and (not self._harv_step_hist or self._harv_step_hist[-1][1] != _hs):
             self._harv_step_hist.append((_now, _hs))
 
     @staticmethod
@@ -691,6 +699,71 @@ class TabbedHUD:
                 return float(_entry.get("starting_equity"))
 
         return float(self.bot_config.get("starting_equity", 10_000.0))
+
+    def _load_bot_stats(self, symbol: str, timeframe_minutes: int) -> dict:
+        _sym = str(symbol or "").upper()
+        try:
+            _tf = int(timeframe_minutes or 0)
+        except (TypeError, ValueError):
+            _tf = 0
+        if not _sym or _tf <= 0:
+            return {}
+        _path = self.data_dir / f"paper_stats_{_sym}_M{_tf}.json"
+        if not _path.exists():
+            return {}
+        try:
+            return json.loads(_path.read_text())
+        except Exception:
+            LOG.debug("[HUD] Failed to load bot stats for %s M%s", _sym, _tf, exc_info=True)
+            return {}
+
+    def _load_bots_stats(self, symbol: str, timeframe_minutes: int) -> dict:
+        return self._load_bot_stats(symbol, timeframe_minutes)
+
+    def _parse_training_stats_identity(self, path: Path) -> tuple[str, int]:
+        _stem = path.stem.removeprefix("training_stats_")
+        if "_M" not in _stem:
+            return "", 0
+        _sym_part, _, _tf_str = _stem.rpartition("_M")
+        try:
+            _tf = int(_tf_str)
+        except ValueError:
+            return "", 0
+        return _sym_part.upper(), _tf
+
+    def _load_all_training_stats(self) -> None:
+        _by_key: dict[tuple[str, int, str], dict] = {}
+        _candidates = sorted(
+            self.data_dir.glob("training_stats_*_M*.json"),
+            key=lambda _p: _p.stat().st_mtime if _p.exists() else 0,
+            reverse=False,
+        )
+        for _path in _candidates:
+            try:
+                _payload = json.loads(_path.read_text())
+            except Exception:
+                LOG.debug("[HUD] Failed to load %s", _path, exc_info=True)
+                continue
+            if not isinstance(_payload, dict):
+                continue
+            _sym, _tf = self._parse_training_stats_identity(_path)
+            if not _sym or _tf <= 0:
+                continue
+            _mode = str(_payload.get("trading_mode", "paper") or "paper").strip().lower()
+            if _mode not in ("paper", "live"):
+                _mode = "paper"
+            _k = (_sym, _tf, _mode)
+            if _k in _by_key:
+                continue
+            _by_key[_k] = {
+                "symbol": _sym,
+                "timeframe_minutes": _tf,
+                "trading_mode": _mode,
+                "stats": _payload,
+                "path": _path,
+                "mtime": _path.stat().st_mtime if _path.exists() else 0,
+            }
+        self.training_stats_all = list(_by_key.values())
 
     def _load_universe_stats(self) -> None:
         """Load universe.json, annotate liveness, auto-prune dead entries."""
@@ -855,6 +928,7 @@ class TabbedHUD:
         self._load_json("production_metrics.json", "production_metrics")
         self._load_json("offline_training_status.json", "offline_stats")
         self._load_universe_stats()
+        self._load_all_training_stats()
 
         # Per-job live progress files (written by OfflineTrainer worker processes)
         _prog: dict = {}
@@ -886,23 +960,26 @@ class TabbedHUD:
                 self._load_json(_per_risk, "risk_stats")
                 self._apply_risk_stats_to_market_stats()
         else:
-            # FLAT with no active position: load from the most recently written
-            # per-bot training_stats_*.json so the Training tab stays live.
-            _ts_candidates = sorted(
-                [_p for _p in self.data_dir.glob("training_stats_*_M*.json") if "_M240" not in _p.name],
-                key=lambda _p: _p.stat().st_mtime if _p.exists() else 0,
-                reverse=True,
-            )
-            if _ts_candidates:
-                self._load_json(_ts_candidates[0].name, "training_stats")
+            if self.training_stats_all:
+                _active_item = max(self.training_stats_all, key=lambda _item: _item.get("mtime", 0))
+                self.training_stats = _active_item.get("stats", {})
                 self._accumulate_loss_history()
-            # Same for risk/market stats: pick the freshest per-bot risk file
+                self.active_sym = _active_item.get("symbol", "")
+                self.active_tf_min = int(_active_item.get("timeframe_minutes", 0) or 0)
             _rm_candidates = sorted(
                 self.data_dir.glob("risk_metrics_*_M*.json"),
                 key=lambda _p: _p.stat().st_mtime if _p.exists() else 0,
                 reverse=True,
             )
-            if _rm_candidates:
+            if self.active_sym and self.active_tf_min:
+                _matched_risk = self.data_dir / f"risk_metrics_{self.active_sym}_M{self.active_tf_min}.json"
+                if _matched_risk.exists():
+                    self._load_json(_matched_risk.name, "risk_stats")
+                    self._apply_risk_stats_to_market_stats()
+                elif _rm_candidates:
+                    self._load_json(_rm_candidates[0].name, "risk_stats")
+                    self._apply_risk_stats_to_market_stats()
+            elif _rm_candidates:
                 self._load_json(_rm_candidates[0].name, "risk_stats")
                 self._apply_risk_stats_to_market_stats()
 
@@ -918,13 +995,6 @@ class TabbedHUD:
         # H4 shadow training stats (written by _export_h4_training_stats)
         _h4_sym = self.active_sym or self.bot_config.get("symbol", "")
         self.training_stats_h4 = {}
-        if _h4_sym:
-            _h4_ts_path = self.data_dir / f"training_stats_{_h4_sym}_M240.json"
-            if _h4_ts_path.exists():
-                try:
-                    self.training_stats_h4 = json.loads(_h4_ts_path.read_text())
-                except Exception:
-                    LOG.debug("[HUD] Failed to load H4 training stats", exc_info=True)
 
         # Re-apply order_book.json on top of any per-bot risk-file override.
         # The per-bot risk_metrics_SYM_MTF.json is written at bar-close (every N minutes)
@@ -1379,11 +1449,17 @@ class TabbedHUD:
             }
 
             _any_tripped = False
+            _kurt_gate_active = bool(self.risk_stats.get("kurtosis_gate_active", False))
+            _kurtosis_now = float(self.risk_stats.get("kurtosis", 0.0) or 0.0)
             for _key, (_label, _explain) in _breaker_labels.items():
                 _b = _cb_data.get(_key, {})
                 if not isinstance(_b, dict):
-                    continue
-                _tripped = _b.get("is_tripped", False)
+                    _b = {}
+                _tripped = bool(_b.get("is_tripped", False))
+                _gate_only = False
+                if _key == "kurtosis" and _kurt_gate_active and not _tripped:
+                    _tripped = True
+                    _gate_only = True
                 if _tripped:
                     _any_tripped = True
                     _reason = _b.get("trip_reason", _explain)
@@ -1391,6 +1467,10 @@ class TabbedHUD:
                     _th = _b.get("threshold", 0.0)
                     _trip_ts = _b.get("trip_time", "")
                     _cd_mins = _b.get("cooldown_minutes", 60)
+                    if _gate_only:
+                        _reason = "Kurtosis gate active (entry gate)"
+                        _tv = _kurtosis_now
+                        _th = 3.0
                     print(f"  {RED}✗ {_label}: TRIPPED{RST}")
                     print(f"    Reason:    {YLW}{_reason}{RST}")
                     print(f"    Value:     {_tv:.4f}  (threshold: {_th:.4f})")
@@ -1638,32 +1718,35 @@ class TabbedHUD:
 
     def _render(self):
         """Render current tab and always show footer"""
-        os.system("clear")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self._render_header()
+            self._render_tab_bar()
 
-        # Header
-        self._render_header()
+            if self.current_tab == "overview":
+                self._render_overview()
+            elif self.current_tab == "performance":
+                self._render_performance()
+            elif self.current_tab == "training":
+                self._render_training()
+            elif self.current_tab == "risk":
+                self._render_risk()
+            elif self.current_tab == "market":
+                self._render_market()
+            elif self.current_tab == "log":
+                self._render_decision_log()
+            elif self.current_tab == "trades":
+                self._render_trades()
 
-        # Tab bar
-        self._render_tab_bar()
+            self._render_footer()
 
-        # Tab content
-        if self.current_tab == "overview":
-            self._render_overview()
-        elif self.current_tab == "performance":
-            self._render_performance()
-        elif self.current_tab == "training":
-            self._render_training()
-        elif self.current_tab == "risk":
-            self._render_risk()
-        elif self.current_tab == "market":
-            self._render_market()
-        elif self.current_tab == "log":
-            self._render_decision_log()
-        elif self.current_tab == "trades":
-            self._render_trades()
-
-        # Always render footer (bottom menu)
-        self._render_footer()
+        frame = buf.getvalue()
+        if frame != self._last_frame:
+            sys.stdout.write("\033[H")
+            sys.stdout.write(frame)
+            sys.stdout.write("\033[J")
+            sys.stdout.flush()
+            self._last_frame = frame
 
     # ── _render_training helpers ──────────────────────────────────────────
 
@@ -1749,11 +1832,28 @@ class TabbedHUD:
             col = _ANSI_DIM
         return f"{col}{rate:.1f} steps/min{_ANSI_RST}"
 
+    def _offline_status_normalized(self, ofs: dict) -> str:
+        """Return normalized offline-training state label."""
+        _raw = str(ofs.get("status", "idle") or "idle").strip().lower()
+        if _raw in {"complete", "completed", "done", "finished", "success"}:
+            return "complete"
+        if _raw in {"running", "in_progress", "in-progress", "active", "started"}:
+            return "running"
+        return _raw
+
+    def _offline_total_jobs(self, ofs: dict, results: list) -> int:
+        """Return robust total_jobs value from status payload."""
+        _total = int(ofs.get("total_jobs", 0) or 0)
+        if _total > 0:
+            return _total
+        return len(results)
+
     def _render_offline_training(self, ofs: dict) -> None:
         """Render the offline training status block."""
-        ofs_status = ofs.get("status", "idle")
-        ofs_total = ofs.get("total_jobs", 0)
-        ofs_done = sum(1 for r in ofs.get("results", []) if r.get("status") in ("done", "error"))
+        _results = ofs.get("results", [])
+        ofs_status = self._offline_status_normalized(ofs)
+        ofs_total = self._offline_total_jobs(ofs, _results)
+        ofs_done = sum(1 for r in _results if r.get("status") in ("done", "error"))
         ofs_elapsed = ofs.get("elapsed_s", 0.0)
         ofs_start = ofs.get("started_at", "")[:19].replace("T", " ") if ofs.get("started_at") else "—"
         ofs_end = ofs.get("completed_at", "")[:19].replace("T", " ") if ofs.get("completed_at") else None
@@ -1762,7 +1862,6 @@ class TabbedHUD:
         print(f"\n  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
         print(f"    Progress:  {prog_bar}   Elapsed: {ofs_elapsed:.0f}s")
         print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
-        _results = ofs.get("results", [])
         if _results:
             self._render_offline_jobs_table(_results)
         print()
@@ -1773,6 +1872,8 @@ class TabbedHUD:
             return f"{_ANSI_Y}⚙  RUNNING ({done}/{total} done){_ANSI_RST}"
         if status == "complete":
             return f"{_ANSI_G}✓ COMPLETE  ({done}/{total} jobs){_ANSI_RST}"
+        if status in {"idle", ""}:
+            return f"{_ANSI_DIM}idle{_ANSI_RST}"
         return f"{_ANSI_DIM}{status}{_ANSI_RST}"
 
     def _offline_progress_bar(self, done: int, total: int) -> str:
@@ -2209,9 +2310,10 @@ class TabbedHUD:
         pm = self.production_metrics.get("metrics", {})
         ofs = self.offline_stats
         if ofs:
+            _ofs_status = self._offline_status_normalized(ofs)
             # Auto-prune completed offline training older than 24 h
             _ofs_stale = False
-            if ofs.get("status") == "complete" and ofs.get("completed_at"):
+            if _ofs_status == "complete" and ofs.get("completed_at"):
                 try:
                     _comp = datetime.fromisoformat(ofs["completed_at"])
                     if _comp.tzinfo is None:
@@ -2230,32 +2332,60 @@ class TabbedHUD:
                 self._render_offline_training(ofs)
         if self.universe_stats:
             self._render_trading_pipeline()
-        _ts_nonempty = any(v for v in ts.values() if v)
         _mode = self.bot_config.get("trading_mode", "paper")
         _mode_label = "PAPER" if _mode == "paper" else ("LIVE" if _mode == "live" else "OFFLINE")
-        if not _ts_nonempty:
-            print(f"\033[1m🤖 {_mode_label} BOT TRAINING\033[0m  {_ANSI_DIM}(no live bot running){_ANSI_RST}\n")
-            return
-        _has_h4 = bool(self.training_stats_h4)
-        _m5_label = f"{_mode_label} M5 TRAINING" if _has_h4 else f"{_mode_label} BOT TRAINING"
-        print(f"\033[1m🤖 {_m5_label}\033[0m\n")
-        trig_ready = ts.get("trigger_ready", False)
-        harv_ready = ts.get("harvester_ready", False)
-        trig_steps = ts.get("trigger_training_steps", 0)
-        harv_steps = ts.get("harvester_training_steps", 0)
-        self._render_live_trigger_agent(ts, pm, trig_ready, trig_steps)
-        self._render_live_harvester_agent(ts, pm, harv_ready, harv_steps)
-        self._render_live_arena_and_health(ts, trig_ready, harv_ready, trig_steps, harv_steps)
+
+        _training_items = [
+            _item
+            for _item in self.training_stats_all
+            if isinstance(_item.get("stats"), dict)
+        ]
+        if not _training_items:
+            _ts_nonempty = any(v for v in ts.values() if v)
+            if not _ts_nonempty:
+                print(f"\033[1m🤖 {_mode_label} BOT TRAINING\033[0m  {_ANSI_DIM}(no live bot running){_ANSI_RST}\n")
+                return
+            _training_items = [
+                {
+                    "symbol": self.active_sym,
+                    "timeframe_minutes": self.active_tf_min,
+                    "stats": ts,
+                }
+            ]
+
+        _has_h4 = False
+        for _idx, _item in enumerate(_training_items):
+            _its = _item.get("stats", {})
+            _tf_for_label = _item.get("timeframe_minutes") or self.active_tf_min
+            _train_label = (
+                f"{_mode_label} M{int(_tf_for_label)} TRAINING"
+                if _tf_for_label else f"{_mode_label} BOT TRAINING"
+            )
+            print(f"\033[1m🤖 {_train_label}\033[0m\n")
+            trig_ready = _its.get("trigger_ready", False)
+            harv_ready = _its.get("harvester_ready", False)
+            trig_steps = _its.get("trigger_training_steps", 0)
+            harv_steps = _its.get("harvester_training_steps", 0)
+            self._render_live_trigger_agent(_its, pm, trig_ready, trig_steps)
+            self._render_live_harvester_agent(_its, pm, harv_ready, harv_steps)
+            self._render_live_arena_and_health(_its, trig_ready, harv_ready, trig_steps, harv_steps)
+            if _idx < len(_training_items) - 1:
+                print("  " + "─" * (self._term_width() - 4))
+                print()
         if _has_h4:
             self._render_h4_shadow_training()
 
         # Next-update hint — training stats only refresh on bar close
         _nbc_raw = self.market_stats.get("next_bar_close_utc")
+        if not _nbc_raw and self.active_sym and self.active_tf_min:
+            _aps = self._load_bot_stats(self.active_sym, self.active_tf_min)
+            _nbc_raw = _aps.get("next_bar_close_utc")
         if not _nbc_raw:
             _nbc_raw = self.bot_config.get("next_bar_close_utc")
         _tf_min = (
             self.market_stats.get("timeframe_minutes")
             or self.bot_config.get("timeframe_minutes")
+            or self.active_tf_min
         )
         if _nbc_raw:
             try:
@@ -2394,6 +2524,22 @@ class TabbedHUD:
             _mode_badge = f"{_ANSI_DIM}● OFFLINE{_ANSI_RST}"
 
         print(f"\n🎯 {symbol} @ {tf}  {_mode_badge}    💰 {price_str}    ⏱  {hours:02d}h {minutes:02d}m{_nbc_str}")
+        _fleet: dict[str, list[int]] = {}
+        for _bot in self.all_bots_stats:
+            _sym = str(_bot.get("symbol", "") or "").upper()
+            try:
+                _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
+            except (TypeError, ValueError):
+                _tfm = 0
+            if _sym and _tfm > 0:
+                _fleet.setdefault(_sym, []).append(_tfm)
+        if _fleet:
+            _chunks: list[str] = []
+            for _sym in sorted(_fleet.keys()):
+                _tfs = sorted(set(_fleet[_sym]))
+                _tf_labels = ",".join([f"M{_v}" for _v in _tfs])
+                _chunks.append(f"{_sym}[{_tf_labels}]")
+            print(f"{_ANSI_DIM}🧭 Active paper TFs: {' | '.join(_chunks)}{_ANSI_RST}")
         print(f"{heartbeat} {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
     def _render_tab_bar(self):
@@ -2474,10 +2620,10 @@ class TabbedHUD:
         if not bots:
             print(f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}No bots currently running{_ANSI_RST}")
             return
-        print(f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}(Trd/PnL/Win% = session counters, reset on restart){_ANSI_RST}")
+        print(f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}— SESSION metrics (reset on each bot restart; see SYMBOL/TF SNAPSHOT below for lifetime){_ANSI_RST}")
         _hdr = ("  " + "Bot".ljust(13) + "  Status   " + "Bars".rjust(4)
                 + "  Position               "
-                + "  T-buf  H-buf  Trd    PnL     Win%")
+                + "  T-buf  H-buf  sTrd   sPnL    sWin%")
         print(f"\033[2m{_hdr}\033[0m")
         print("  " + "─" * 82)
         _now = datetime.now(UTC)
@@ -2485,18 +2631,46 @@ class TabbedHUD:
             sym = bot.get("symbol", "?")
             tf  = bot.get("timeframe_minutes", 0)
             label = f"{sym}/M{tf}"
-            # Freshness
             try:
-                _age = (_now - datetime.fromisoformat(bot.get("updated_at", ""))).total_seconds()
+                _updated_at = datetime.fromisoformat(bot.get("updated_at", ""))
+                if _updated_at.tzinfo is None:
+                    _updated_at = _updated_at.replace(tzinfo=UTC)
+                _age = (_now - _updated_at).total_seconds()
             except Exception:
                 _age = 9999.0
             conn = bot.get("connection_healthy", False) and bot.get("quote_ok", False)
-            if not conn or _age > 180:
+            _entry = next(
+                (
+                    _e for _e in self.universe_stats.values()
+                    if isinstance(_e, dict)
+                    and str(_e.get("symbol", "")).upper() == str(sym).upper()
+                    and int(_e.get("timeframe_minutes", 0) or 0) == int(tf or 0)
+                ),
+                None,
+            )
+            _pid_alive = bool(_entry.get("_pid_alive", True)) if isinstance(_entry, dict) else True
+            _tf_min = int(tf or 0)
+            _live_age = max(120.0, min(float(_tf_min * 30), 3600.0)) if _tf_min > 0 else 120.0
+            _slow_age = max(180.0, min(float(_tf_min * 120), 7200.0)) if _tf_min > 0 else 180.0
+            _awaiting_bar = False
+            _nbc_raw = bot.get("next_bar_close_utc")
+            if _nbc_raw and _tf_min > 0:
+                try:
+                    _nbc_dt = datetime.fromisoformat(_nbc_raw)
+                    if _nbc_dt.tzinfo is None:
+                        _nbc_dt = _nbc_dt.replace(tzinfo=UTC)
+                    _secs_to_bar = (_nbc_dt - _now).total_seconds()
+                    _awaiting_bar = 0.0 <= _secs_to_bar <= (_tf_min * 60 + 180)
+                except Exception:
+                    _awaiting_bar = False
+            if not _pid_alive or not conn:
                 status = f"{_ANSI_R}● STALE{_ANSI_RST}"
-            elif _age < 70:
+            elif _age <= _live_age:
                 status = f"{_ANSI_G}● LIVE {_ANSI_RST}"
-            else:
+            elif _age <= _slow_age or _awaiting_bar:
                 status = f"{_ANSI_Y}● SLOW {_ANSI_RST}"
+            else:
+                status = f"{_ANSI_R}● STALE{_ANSI_RST}"
             bars = bot.get("bar_count", 0)
             # Position — build visible and colored strings separately to keep columns aligned
             pos = bot.get("_position", {})
@@ -2515,9 +2689,10 @@ class TabbedHUD:
             pos_pad = " " * max(0, 22 - len(visible_pos))
             trig_buf = bot.get("trigger_buffer", 0)
             harv_buf = bot.get("harvester_buffer", 0)
-            trades   = bot.get("total_trades", 0)
-            pnl      = bot.get("total_pnl", 0.0)
-            wr       = bot.get("win_rate", 0.0) * 100
+            _sm = self.metrics_by_symbol_tf.get((str(sym).upper(), f"M{int(tf or 0)}"), {})
+            trades   = _sm.get("total_trades", 0)
+            pnl      = _sm.get("total_pnl", 0.0)
+            wr       = _sm.get("win_rate", 0.0) * 100
             wr_str   = f"{wr:.0f}%" if trades > 0 else "  -"
             print(
                 f"  {label:<13}  {status}  {bars:>4}  {colored_pos}{pos_pad}  "
@@ -2581,7 +2756,7 @@ class TabbedHUD:
         )
 
         # Quick metrics
-        print("\n\033[1m📈 TODAY'S STATS\033[0m")
+        print(f"\n\033[1m📈 LAST 24H\033[0m  {_ANSI_DIM}(rolling 24-hour window from trade_log.jsonl){_ANSI_RST}")
         _mode = (
             getattr(self, "_trade_log_mode", "")
             or getattr(self, "_perf_snapshot_mode", "")
@@ -2614,15 +2789,28 @@ class TabbedHUD:
                 sparkline = self._create_sparkline(recent_pnl[-20:])
                 print(f"  Recent: {sparkline}")
 
-        if self.metrics_by_symbol_tf:
-            print("\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m")
+        # Build the TF snapshot using union of (a) trade_log metrics and
+        # (b) running bots — so zero-trade bots still appear rather than
+        # silently dropping TFs.
+        _tf_keys: set = set(self.metrics_by_symbol_tf.keys())
+        for _bot in self.all_bots_stats or []:
+            _s = self._normalize_symbol(_bot.get("symbol"))
+            _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
+            if _s and _tfm > 0:
+                _tf_keys.add((_s, f"M{_tfm}"))
+        if _tf_keys:
+            _epoch_str = ""
+            if self._stats_epoch:
+                _epoch_str = f" since {self._stats_epoch.strftime('%Y-%m-%d')}"
+            print(f"\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m  {_ANSI_DIM}— LIFETIME{_epoch_str} (all closed trades from trade_log.jsonl){_ANSI_RST}")
             print(f"  {'Symbol':<9} {'TF':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11}")
             print("  " + "─" * 47)
-            for (_sym, _tf), _sm in sorted(self.metrics_by_symbol_tf.items(), key=lambda kv: (kv[0][0], self._timeframe_sort_key(kv[0][1]))):
+            for (_sym, _tf) in sorted(_tf_keys, key=lambda kv: (kv[0], self._timeframe_sort_key(kv[1]))):
+                _sm = self.metrics_by_symbol_tf.get((_sym, _tf), {})
                 _tr = _sm.get("total_trades", 0)
                 _wr = _sm.get("win_rate", 0) * 100
                 _pnl = _sm.get("total_pnl", 0.0)
-                _pc = self._pnl_color(_pnl)
+                _pc = self._pnl_color(_pnl) if _tr > 0 else _ANSI_DIM
                 print(f"  {_sym:<9} {_tf:<6} {_tr:>7} {_wr:>6.1f}% {_pc}{_pnl:>+10.2f}{_ANSI_RST}")
 
         # Risk snapshot
@@ -3158,23 +3346,37 @@ class TabbedHUD:
 
     def _render_timeframe_mode_breakdown(self) -> None:
         """Render canonical symbol/timeframe/mode table from metrics cube."""
-        if not self.metrics_cube_keys:
+        # Build set of (sym, tf_label, mode) present in cube
+        _keys = set(self.metrics_cube_keys)
+
+        # Supplement with all running bots (so zero-trade TFs still appear)
+        for _bot in self.all_bots_stats or []:
+            _sym = self._normalize_symbol(_bot.get("symbol"))
+            _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
+            if not _sym or _tfm <= 0:
+                continue
+            _tf_label = f"M{_tfm}"
+            _mode = "paper" if _bot.get("paper_mode", True) else "live"
+            _keys.add((_sym, _tf_label, _mode))
+
+        if not _keys:
             return
 
         print("\n  \033[1mPER SYMBOL / TIMEFRAME / MODE\033[0m")
         print(f"  {'Symbol':<9} {'TF':<6} {'Mode':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'PF':>7}")
         print("  " + "\u2500" * 64)
-        for _sym, _tf, _mode in self.metrics_cube_keys:
+        for _sym, _tf, _mode in sorted(_keys, key=lambda k: (k[0], self._timeframe_sort_key(k[1]), k[2])):
             _trades = self.metrics_cube.get((_sym, _tf, _mode), [])
-            if not _trades:
-                continue
-            _m = _hud_period_metrics(_trades, self._universe_starting_equity())
-            _tr = _m.get("total_trades", 0)
-            _wr = _m.get("win_rate", 0) * 100
-            _pnl = _m.get("total_pnl", 0.0)
-            _pf = _m.get("profit_factor", 0.0)
+            if _trades:
+                _m = _hud_period_metrics(_trades, self._universe_starting_equity())
+                _tr = _m.get("total_trades", 0)
+                _wr = _m.get("win_rate", 0) * 100
+                _pnl = _m.get("total_pnl", 0.0)
+                _pf = _m.get("profit_factor", 0.0)
+            else:
+                _tr, _wr, _pnl, _pf = 0, 0.0, 0.0, 0.0
             _mc = _ANSI_Y if _mode == "paper" else _ANSI_G
-            _pc = self._pnl_color(_pnl)
+            _pc = self._pnl_color(_pnl) if _tr > 0 else _ANSI_DIM
             print(
                 f"  {_sym:<9} {_tf:<6} {_mc}{_mode.upper():<6}{_ANSI_RST} {_tr:>7} {_wr:>6.1f}% "
                 f"{_pc}{_pnl:>+10.2f}{_ANSI_RST} {_pf:>7.2f}"
@@ -3286,8 +3488,8 @@ class TabbedHUD:
                 f"{_ANSI_DIM}(+ve = calibrated){_ANSI_RST}"
             )
 
-    def _compute_trade_log_convergence_metrics(self) -> dict:
-        trades = self._trade_log_metrics_trades
+    def _compute_trade_log_convergence_metrics(self, trades: list[dict] | None = None) -> dict:
+        trades = list(trades) if trades is not None else self._trade_log_metrics_trades
         rw_delta = 0.0
         rw_acc = 0.5
         cc_err = 0.5
@@ -3340,20 +3542,75 @@ class TabbedHUD:
         }
 
     def _resolve_prediction_convergence_metrics(self, pm: dict) -> dict:
-        tl = self._compute_trade_log_convergence_metrics()
-        use_runway_tl = tl["runway_samples"] >= CONV_MIN_SAMPLES
-        use_conf_tl = tl["conf_samples"] >= CONV_MIN_SAMPLES
+        _mode = getattr(self, "_perf_snapshot_mode", "")
+        _trades = self._trade_log_metrics_trades
+        if _mode in ("paper", "live"):
+            _trades = [t for t in _trades if str(t.get("trading_mode", "") or "").lower() == _mode]
+
+        _active_trades = _trades
+        _active_tf = int(getattr(self, "active_tf_min", 0) or 0)
+        _active_sym = str(getattr(self, "active_sym", "") or "").upper()
+        if _active_tf > 0:
+            _active_label = f"M{_active_tf}"
+            _active_trades = [
+                t for t in _trades
+                if self._normalize_timeframe_label(t) == _active_label
+                and (_active_sym == "" or self._normalize_symbol(t.get("symbol")) == _active_sym)
+            ]
+
+        tl_active = self._compute_trade_log_convergence_metrics(_active_trades)
+        tl_all = self._compute_trade_log_convergence_metrics(_trades)
+        use_active_runway = tl_active["runway_samples"] >= CONV_MIN_SAMPLES
+        use_active_conf = tl_active["conf_samples"] >= CONV_MIN_SAMPLES
+        use_all_runway = tl_all["runway_samples"] >= CONV_MIN_SAMPLES
+        use_all_conf = tl_all["conf_samples"] >= CONV_MIN_SAMPLES
+
+        if use_active_runway:
+            runway_val = tl_active["runway_delta_ema"]
+            acc_val = tl_active["runway_accuracy_ema"]
+            runway_source = "trade_log.jsonl(active_tf)"
+            runway_samples = tl_active["runway_samples"]
+            avg_util = tl_active["avg_runway_utilization"]
+            avg_err = tl_active["avg_runway_error_pct"]
+        elif use_all_runway:
+            runway_val = tl_all["runway_delta_ema"]
+            acc_val = tl_all["runway_accuracy_ema"]
+            runway_source = "trade_log.jsonl(mode_all_tf)"
+            runway_samples = tl_all["runway_samples"]
+            avg_util = tl_all["avg_runway_utilization"]
+            avg_err = tl_all["avg_runway_error_pct"]
+        else:
+            runway_val = float(pm.get("runway_delta_ema", 0.0))
+            acc_val = float(pm.get("runway_accuracy_ema", 0.5))
+            runway_source = "production_metrics.json"
+            runway_samples = tl_active["runway_samples"]
+            avg_util = tl_active["avg_runway_utilization"]
+            avg_err = tl_active["avg_runway_error_pct"]
+
+        if use_active_conf:
+            conf_val = tl_active["conf_calib_err_ema"]
+            conf_source = "trade_log.jsonl(active_tf)"
+            conf_samples = tl_active["conf_samples"]
+        elif use_all_conf:
+            conf_val = tl_all["conf_calib_err_ema"]
+            conf_source = "trade_log.jsonl(mode_all_tf)"
+            conf_samples = tl_all["conf_samples"]
+        else:
+            conf_val = float(pm.get("conf_calib_err_ema", 0.5))
+            conf_source = "production_metrics.json"
+            conf_samples = tl_active["conf_samples"]
+
         return {
-            "runway_delta_ema": tl["runway_delta_ema"] if use_runway_tl else float(pm.get("runway_delta_ema", 0.0)),
-            "runway_accuracy_ema": tl["runway_accuracy_ema"] if use_runway_tl else float(pm.get("runway_accuracy_ema", 0.5)),
-            "conf_calib_err_ema": tl["conf_calib_err_ema"] if use_conf_tl else float(pm.get("conf_calib_err_ema", 0.5)),
-            "runway_source": "trade_log.jsonl" if use_runway_tl else "production_metrics.json",
-            "conf_source": "trade_log.jsonl" if use_conf_tl else "production_metrics.json",
-            "runway_samples": tl["runway_samples"],
-            "conf_samples": tl["conf_samples"],
-            "avg_runway_utilization": tl["avg_runway_utilization"],
-            "avg_runway_error_pct": tl["avg_runway_error_pct"],
-            "trade_samples": tl["trade_samples"],
+            "runway_delta_ema": runway_val,
+            "runway_accuracy_ema": acc_val,
+            "conf_calib_err_ema": conf_val,
+            "runway_source": runway_source,
+            "conf_source": conf_source,
+            "runway_samples": runway_samples,
+            "conf_samples": conf_samples,
+            "avg_runway_utilization": avg_util,
+            "avg_runway_error_pct": avg_err,
+            "trade_samples": tl_active["trade_samples"],
         }
 
     def _render_trade_timing(self, lt: dict, pm: dict) -> None:
@@ -3671,7 +3928,7 @@ class TabbedHUD:
     def _render_decision_log(self):
         """Render the Decision Log tab (Tab 6) — newest entries first."""
         print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
-        print(f"  {_ANSI_DIM}(canonical source: logs/audit/decisions.jsonl; fallback: data/decision_log.json){_ANSI_RST}")
+        print(f"  {_ANSI_DIM}(canonical source: {self.data_dir / 'logs' / 'audit' / 'decisions.jsonl'} + per-bot audit files; fallback: {self.data_dir / 'decision_log.json'}){_ANSI_RST}")
 
         _mode_filter = ""
         if getattr(self, "_trade_log_mode", "") == "mixed":
@@ -3682,22 +3939,28 @@ class TabbedHUD:
                 _mode_lbl = "PAPER" if _mode_filter == "paper" else "LIVE"
                 print(f"  {_ANSI_DIM}Showing {_mode_lbl} entries only while trade history is mixed-mode.{_ANSI_RST}")
 
-        jsonl_file = Path("logs/audit/decisions.jsonl")
+        _decision_files: list[Path] = []
+        _primary = self.data_dir / "logs" / "audit" / "decisions.jsonl"
+        if _primary.exists():
+            _decision_files.append(_primary)
+        _decision_files.extend(sorted(self.data_dir.glob("paper_*_M*/logs/audit/decisions.jsonl")))
+
         entries_jsonl: list[dict] = []
-        if jsonl_file.exists():
+        if _decision_files:
             try:
-                with open(jsonl_file, encoding="utf-8") as f:
-                    lines = f.readlines()
-                for raw_line in lines[-100:]:
-                    stripped = raw_line.strip()
-                    if stripped:
-                        entries_jsonl.append(json.loads(stripped))
+                for _jf in _decision_files:
+                    with open(_jf, encoding="utf-8") as f:
+                        for raw_line in f.readlines()[-200:]:
+                            stripped = raw_line.strip()
+                            if stripped:
+                                entries_jsonl.append(json.loads(stripped))
             except Exception:
                 entries_jsonl = []
 
         if entries_jsonl:
-            # Reverse so newest entries display at top
-            entries_jsonl.reverse()
+            def _ts_key(e: dict) -> str:
+                return str(e.get("timestamp") or e.get("ts") or e.get("time") or "")
+            entries_jsonl.sort(key=_ts_key, reverse=True)
             self._render_jsonl_decision_entries(entries_jsonl, _mode_filter)
             return
 
@@ -3793,29 +4056,37 @@ class TabbedHUD:
             "consecutive_losses": "Consec Losses",
         }
         print("  \033[1m🔌 INDIVIDUAL BREAKERS\033[0m")
+        _kurt_gate_active = bool(rs.get("kurtosis_gate_active", False))
+        _kurtosis_now = float(rs.get("kurtosis", 0.0) or 0.0)
         for _key, _label in _breaker_labels.items():
             _b = _cb_data.get(_key)
             if not isinstance(_b, dict):
-                continue
-            _tripped = _b.get("is_tripped", False)
+                _b = {}
+            _tripped = bool(_b.get("is_tripped", False))
+            _gate_only = False
+            if _key == "kurtosis" and _kurt_gate_active and not _tripped:
+                _tripped = True
+                _gate_only = True
             if _tripped:
                 _trip_ts = _b.get("trip_time", "")
                 _ts_short = _trip_ts[11:19] if _trip_ts and len(_trip_ts) >= 19 else (_trip_ts or "?")
                 _icon = f"{_ANSI_R}✗ TRIPPED{_ANSI_RST}"
-                _detail = f"  {_ANSI_DIM}@ {_ts_short}{_ANSI_RST}"
+                _detail = f"  {_ANSI_DIM}@ {_ts_short}{_ANSI_RST}" if _trip_ts else ""
 
-                # Show reason
                 _reason = _b.get("trip_reason", "")
+                if _gate_only:
+                    _reason = "Kurtosis gate active (entry gate)"
                 if _reason:
                     _detail += f"  {_ANSI_Y}→ {_reason}{_ANSI_RST}"
 
-                # Show value vs threshold
                 _tv = _b.get("trip_value", 0.0)
                 _th = _b.get("threshold", 0.0)
+                if _gate_only:
+                    _tv = _kurtosis_now
+                    _th = 3.0
                 if _tv or _th:
                     _detail += f"  {_ANSI_DIM}(val={_tv:.2f} thr={_th:.2f}){_ANSI_RST}"
 
-                # Show cooldown remaining
                 _cd_mins = _b.get("cooldown_minutes", 60)
                 if _trip_ts:
                     try:
@@ -3930,6 +4201,20 @@ class TabbedHUD:
             return
         print("  \033[1m🎚️  REWARD WEIGHTS\033[0m  " + f"{_ANSI_DIM}(adaptive, bounded 0.2–2.0){_ANSI_RST}")
         _gauge_w = 20
+        # Pull per-bot reward-shaping telemetry (avg component rewards + total)
+        # from the active bot's paper_stats entry, if available.
+        _rshape: dict = {}
+        try:
+            for _b in getattr(self, "all_bots_stats", []) or []:
+                if (
+                    _b.get("symbol") == self.active_sym
+                    and int(_b.get("timeframe_minutes", 0) or 0) == int(self.active_tf_min or 0)
+                ):
+                    _rshape = _b.get("reward_shaping", {}) or {}
+                    break
+        except Exception:
+            _rshape = {}
+        _comps = _rshape.get("components", {}) if isinstance(_rshape, dict) else {}
         for name, val in weights.items():
             # Visual bar: 0.2 (min) to 2.0 (max), default 1.0
             frac = max(0.0, min(1.0, (val - 0.2) / 1.8))
@@ -3942,7 +4227,18 @@ class TabbedHUD:
                 col = _ANSI_Y
             else:
                 col = _ANSI_R
-            print(f"    {name:<16s} {col}{val:>5.2f}{_ANSI_RST}  [{bar}]")
+            _c = _comps.get(name, {}) if isinstance(_comps, dict) else {}
+            _cnt = int(_c.get("count", 0) or 0) if isinstance(_c, dict) else 0
+            _avg = float(_c.get("avg", 0.0) or 0.0) if isinstance(_c, dict) else 0.0
+            if _cnt > 0:
+                _avg_col = _ANSI_G if _avg > 0 else (_ANSI_R if _avg < 0 else _ANSI_DIM)
+                _tail = f"  {_ANSI_DIM}avg={_ANSI_RST}{_avg_col}{_avg:+.3f}{_ANSI_RST}  {_ANSI_DIM}n={_cnt}{_ANSI_RST}"
+            else:
+                _tail = f"  {_ANSI_DIM}avg= n/a   n=0{_ANSI_RST}"
+            print(f"    {name:<16s} {col}{val:>5.2f}{_ANSI_RST}  [{bar}]{_tail}")
+        _total = int(_rshape.get("total_rewards_calculated", 0) or 0) if isinstance(_rshape, dict) else 0
+        if _total:
+            print(f"    {_ANSI_DIM}total rewards calculated: {_total}{_ANSI_RST}")
         print()
 
     def _render_risk_path_geometry(self, rs: dict) -> None:
@@ -4232,17 +4528,33 @@ class TabbedHUD:
             print(ctrl_line1)
             print(ctrl_line2)
 
-        # Data freshness — use order_book.json mtime (written ~1s by FIX handler)
-        _ob = self.data_dir / _ORDER_BOOK_FILE
-        _bc = self.data_dir / _BOT_CONFIG_FILE
-        if _ob.exists():
-            _fp = _ob
-        elif _bc.exists():
-            _fp = _bc
-        else:
-            _fp = None
-        if _fp is not None:
-            _fage = time.time() - os.path.getmtime(_fp)
+        # Data freshness — use freshest file across all bots so one stale file
+        # cannot trigger false "Bot silent" while others are active.
+        _candidates: list[Path] = []
+        for _b in self.all_bots_stats or []:
+            _sym = _b.get("symbol", "")
+            _tf = int(_b.get("timeframe_minutes", 0) or 0)
+            if _sym and _tf > 0:
+                _ob = self.data_dir / f"order_book_{_sym}_M{_tf}.json"
+                _bc = self.data_dir / f"bot_config_{_sym}_M{_tf}.json"
+                _ps = self.data_dir / f"paper_stats_{_sym}_M{_tf}.json"
+                if _ob.exists():
+                    _candidates.append(_ob)
+                if _bc.exists():
+                    _candidates.append(_bc)
+                if _ps.exists():
+                    _candidates.append(_ps)
+        if not _candidates:
+            _ob = self.data_dir / _ORDER_BOOK_FILE
+            _bc = self.data_dir / _BOT_CONFIG_FILE
+            if _ob.exists():
+                _candidates.append(_ob)
+            if _bc.exists():
+                _candidates.append(_bc)
+
+        if _candidates:
+            _latest_mtime = max(os.path.getmtime(_p) for _p in _candidates)
+            _fage = time.time() - _latest_mtime
             if _fage > DATA_STALE_SECS:
                 freshness = f"{_ANSI_R}⚠️  Bot silent ({_fage:.0f}s){_ANSI_RST}"
             elif _fage > DATA_AGING_SECS:
@@ -4261,7 +4573,7 @@ class TabbedHUD:
         _now = time.time()
         if _now - self._all_trades_loaded_at < 5.0:
             return
-        trades = read_all_trades(Path("data/trade_log.jsonl"))
+        trades = read_all_trades(self.data_dir / "trade_log.jsonl")
         # Sort newest → oldest by exit_time, fallback to entry_time then trade_id
         def _skey(t: dict) -> tuple:
             return (t.get("exit_time") or t.get("entry_time") or "", t.get("trade_id", 0))
@@ -4339,7 +4651,7 @@ class TabbedHUD:
             f"W/L: {_ANSI_G}{wins}{_ANSI_RST}/{_ANSI_R}{losses}{_ANSI_RST}  "
             f"({_ANSI_G if wr >= 50 else _ANSI_R}{wr:.1f}%{_ANSI_RST} win rate)"
         )
-        print(f"  {_ANSI_DIM}(canonical source: data/trade_log.jsonl){_ANSI_RST}")
+        print(f"  {_ANSI_DIM}(canonical source: {self.data_dir / 'trade_log.jsonl'}){_ANSI_RST}")
 
         # Column header — M = mode badge (P=paper / L=live)
         _C_ID   = 5
