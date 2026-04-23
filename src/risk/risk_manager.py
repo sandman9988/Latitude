@@ -64,6 +64,22 @@ CONF_BUCKET_75: float = 0.75
 CONF_BUCKET_85: float = 0.85
 CONF_BUCKET_95: float = 0.95
 
+# ── Dynamic threshold tuning (runway/capture quality feedback) ──────────────
+ADAPT_MIN_SAMPLES: int = 20                 # outcomes required before tuning
+ADAPT_COOLDOWN_SECS: float = 30.0           # prevent threshold thrashing
+ADAPT_ENTRY_EMA_ALPHA: float = 0.08         # entry quality smoothing
+ADAPT_EXIT_EMA_ALPHA: float = 0.12          # exit quality smoothing (react faster)
+ADAPT_ENTRY_STEP_UP: float = 0.01           # tighten entry gating
+ADAPT_ENTRY_STEP_DOWN: float = 0.005        # relax entry gating
+ADAPT_EXIT_STEP_UP: float = 0.005           # tighten exit gating
+ADAPT_EXIT_STEP_DOWN: float = 0.01          # relax exit gating (faster protective exits)
+ADAPT_ENTRY_LOW_QUALITY: float = 0.52       # below -> tighten entries
+ADAPT_ENTRY_HIGH_QUALITY: float = 0.65      # above -> loosen entries slightly
+ADAPT_EXIT_LOW_QUALITY: float = 0.58        # below -> allow earlier exits
+ADAPT_EXIT_HIGH_QUALITY: float = 0.72       # above -> slightly tighten exits
+ADAPT_CALIB_BIAS_WEIGHT: float = 0.25       # weight of signed calibration error
+ADAPT_CALIB_MIN_BUCKET_SAMPLES: int = 8     # minimum samples per bucket for bias calc
+
 # ── Capital allocation constants ──────────────────────────────────────────────
 CIRCUIT_BREAKER_BUDGET_FACTOR: float = 0.75  # 25% risk budget cut when breakers active
 UNCORRELATED_RESERVE_FRACTION: float = 0.10  # Reserve 10% capital for uncorrelated assets
@@ -292,6 +308,15 @@ class RiskManager:
         self.calibration_buckets_composite: dict[float, deque[tuple[float, bool]]] = {
             b: deque(maxlen=self.calibration_window) for b in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
         }
+
+        # Adaptive confidence threshold feedback loops:
+        # - Entry quality approximates runway prediction usefulness.
+        # - Exit quality approximates capture efficiency / giveback control.
+        self._entry_quality_ema: float = 0.5
+        self._exit_quality_ema: float = 0.5
+        self._entry_feedback_n: int = 0
+        self._exit_feedback_n: int = 0
+        self._last_threshold_adjust_ts: float = 0.0
 
         # === CORRELATION MONITORING ===
         # Multi-symbol returns for correlation calculation
@@ -1065,6 +1090,147 @@ class RiskManager:
         # RL state update (run after enough data collected)
         if self.rl_enabled and actual_outcome is not None:
             self._update_q_learning(decision_type, confidence, approved, actual_outcome)
+
+        # Dynamic threshold adaptation from realized outcomes.
+        if actual_outcome is not None:
+            self._adaptive_threshold_tune_from_feedback(
+                decision_type=decision_type,
+                actual_outcome=actual_outcome,
+                approved=approved,
+                agent_id=agent_id,
+            )
+
+    @staticmethod
+    def _clamp_threshold(value: float, lower: float, upper: float) -> float:
+        """Clamp threshold into safe operational bounds."""
+        return max(lower, min(upper, value))
+
+    @staticmethod
+    def _signed_calibration_bias(
+        buckets: dict[float, deque[tuple[float, bool]]],
+        min_bucket_samples: int = ADAPT_CALIB_MIN_BUCKET_SAMPLES,
+    ) -> float:
+        """Return weighted signed calibration bias (predicted - actual).
+
+        Positive means overconfidence; negative means underconfidence.
+        """
+        num = 0.0
+        den = 0.0
+        for outcomes in buckets.values():
+            n = len(outcomes)
+            if n < min_bucket_samples:
+                continue
+            confs, results = zip(*outcomes, strict=True)
+            pred = float(np.mean(confs))
+            actual = float(np.mean([1.0 if r else 0.0 for r in results]))
+            bias = pred - actual
+            num += bias * n
+            den += n
+        if den <= 0.0:
+            return 0.0
+        return num / den
+
+    def _adaptive_threshold_tune_from_feedback(
+        self,
+        decision_type: str,
+        actual_outcome: bool,
+        approved: bool,
+        agent_id: str,
+    ) -> None:
+        """Tune entry/exit thresholds to improve runway and capture outcomes.
+
+        Entry quality maps to runway prediction usefulness (good entries should
+        convert to wins). Exit quality maps to capture discipline (better exits
+        preserve gains / limit losses).
+        """
+        if not approved:
+            return
+
+        now = time.time()
+        outcome_f = 1.0 if actual_outcome else 0.0
+        d = str(decision_type or "").strip().lower()
+
+        if d == "entry":
+            self._entry_feedback_n += 1
+            self._entry_quality_ema = (
+                (1.0 - ADAPT_ENTRY_EMA_ALPHA) * self._entry_quality_ema
+                + ADAPT_ENTRY_EMA_ALPHA * outcome_f
+            )
+        elif d == "exit":
+            self._exit_feedback_n += 1
+            self._exit_quality_ema = (
+                (1.0 - ADAPT_EXIT_EMA_ALPHA) * self._exit_quality_ema
+                + ADAPT_EXIT_EMA_ALPHA * outcome_f
+            )
+        else:
+            return
+
+        # Cooldown + minimum evidence gate.
+        total_feedback = self._entry_feedback_n + self._exit_feedback_n
+        if total_feedback < ADAPT_MIN_SAMPLES:
+            return
+        if now - self._last_threshold_adjust_ts < ADAPT_COOLDOWN_SECS:
+            return
+
+        changed = False
+        old_entry = self.min_confidence_entry
+        old_exit = self.min_confidence_exit
+
+        # Signed calibration bias per agent family.
+        trigger_bias = self._signed_calibration_bias(self.calibration_buckets_trigger)
+        harvester_bias = self._signed_calibration_bias(self.calibration_buckets_harvester)
+
+        # Entry threshold tuning (runway accuracy proxy).
+        entry_score = self._entry_quality_ema - ADAPT_CALIB_BIAS_WEIGHT * trigger_bias
+        if entry_score < ADAPT_ENTRY_LOW_QUALITY:
+            self.min_confidence_entry = self._clamp_threshold(
+                self.min_confidence_entry + ADAPT_ENTRY_STEP_UP,
+                0.5,
+                0.9,
+            )
+            changed = True
+        elif entry_score > ADAPT_ENTRY_HIGH_QUALITY:
+            self.min_confidence_entry = self._clamp_threshold(
+                self.min_confidence_entry - ADAPT_ENTRY_STEP_DOWN,
+                0.5,
+                0.9,
+            )
+            changed = True
+
+        # Exit threshold tuning (capture efficiency proxy).
+        # If quality is weak or confidence is overconfident, lower threshold to
+        # allow earlier/more frequent protective exits.
+        exit_score = self._exit_quality_ema - ADAPT_CALIB_BIAS_WEIGHT * harvester_bias
+        if exit_score < ADAPT_EXIT_LOW_QUALITY:
+            self.min_confidence_exit = self._clamp_threshold(
+                self.min_confidence_exit - ADAPT_EXIT_STEP_DOWN,
+                0.4,
+                0.8,
+            )
+            changed = True
+        elif exit_score > ADAPT_EXIT_HIGH_QUALITY:
+            self.min_confidence_exit = self._clamp_threshold(
+                self.min_confidence_exit + ADAPT_EXIT_STEP_UP,
+                0.4,
+                0.8,
+            )
+            changed = True
+
+        if changed:
+            self._last_threshold_adjust_ts = now
+            LOG.info(
+                "[RISK ADAPT] thresholds adjusted: entry %.3f→%.3f (entry_ema=%.3f trig_bias=%+.3f) "
+                "exit %.3f→%.3f (exit_ema=%.3f harv_bias=%+.3f) agent=%s",
+                old_entry,
+                self.min_confidence_entry,
+                self._entry_quality_ema,
+                trigger_bias,
+                old_exit,
+                self.min_confidence_exit,
+                self._exit_quality_ema,
+                harvester_bias,
+                agent_id,
+            )
 
     def _get_confidence_bucket(self, confidence: float) -> float:
         """Map confidence to calibration bucket (0.5, 0.6, ..., 1.0)"""

@@ -524,7 +524,7 @@ help_flow() {
     echo -e ""
     echo -e "${BLUE}Override env vars for train/pipeline:${NC}"
     echo -e "  SYMBOLS=\"XAUUSD\"          single symbol"
-    echo -e "  TIMEFRAMES=\"H1 H4\"        specific timeframes"
+    echo -e "  TIMEFRAMES=\"M60 M240\"     specific timeframes (canonical M* labels)"
     echo -e "  THRESHOLD=1.5             stricter Z-Omega gate"
     echo -e "  EPOCHS=5                  training passes per dataset"
     echo -e "  WORKERS=4                 parallel workers"
@@ -534,7 +534,7 @@ help_flow() {
     echo -e "  ./run.sh production"
     echo -e "  ./run.sh live-train"
     echo -e "  ./run.sh pipeline"
-    echo -e "  SYMBOLS=\"XAUUSD\" TIMEFRAMES=\"H4\" ./run.sh train"
+    echo -e "  SYMBOLS=\"XAUUSD\" TIMEFRAMES=\"M240\" ./run.sh train"
     echo -e "  ./run.sh status"
     echo -e ""
 }
@@ -592,13 +592,30 @@ universe_flow() {
         tail -20 logs/run_universe.log 2>/dev/null || true
         exit 1
     fi
+
+    # Autostart HUD once universe bots are up (skip in non-interactive shells)
+    if should_enable_hud; then
+        log ""
+        log "${BLUE}Waiting for paper bots to come online...${NC}"
+        local _i
+        for ((_i=1; _i<=30; _i++)); do
+            if pgrep -f "src\.core\.ctrader_ddqn_paper" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 1
+        done
+        seed_hud_state
+        launch_hud_foreground
+    else
+        log "${YELLOW}⚠ Non-interactive shell — skipping HUD autostart. Attach later with: ./run.sh --hud-only${NC}"
+    fi
 }
 
 train_flow() {
     activate_venv
     local hist_dir="${HISTORY_DIR:-/home/renierdejager/Projects/Kinetra/data/master_standardized}"
     local symbols="${SYMBOLS:-XAUUSD BTCUSD}"
-    local timeframes="${TIMEFRAMES:-M5 M15 M30 H1 H4}"
+    local timeframes="${TIMEFRAMES:-M1 M5 M15 M30 M60 M240}"
     log ""
     log "${BLUE}=== Offline Training ===${NC}"
     log "  History : $hist_dir"
@@ -704,6 +721,28 @@ orchestrate_with_hud() {
     fi
     apply_pending_profile
     apply_defaults
+
+    # Guard: if universe paper bots (managed by run_universe.py) are already
+    # running, don't spawn a duplicate standalone bot — the extra LOGON would
+    # cause the broker to kick every session repeatedly.  Attach the HUD to
+    # the existing bots instead.
+    local universe_pids
+    universe_pids=$(pgrep -f "src\.core\.ctrader_ddqn_paper" 2>/dev/null || true)
+    local universe_count=0
+    if [[ -n "$universe_pids" ]]; then
+        universe_count=$(echo "$universe_pids" | wc -l)
+    fi
+    if (( universe_count > 0 )); then
+        log "${YELLOW}⚠ Detected ${universe_count} paper bot(s) already running (likely universe-managed).${NC}"
+        log "${YELLOW}  Skipping duplicate bot start to avoid FIX session conflicts.${NC}"
+        log "${BLUE}  Attaching HUD to existing bots...${NC}"
+        activate_venv
+        setup_logging
+        seed_hud_state
+        launch_hud_foreground
+        return
+    fi
+
     check_env
     activate_venv
     check_configs

@@ -331,3 +331,33 @@ class TestRLThresholdRecommendations:
         rec = rm.get_rl_recommended_thresholds()
         assert rec["entry_threshold"] <= 0.9
         assert rec["exit_threshold"] <= 0.8
+
+
+class TestDynamicThresholdFeedback:
+    """Adaptive threshold feedback from realized entry/exit outcomes."""
+
+    def test_poor_entry_outcomes_raise_entry_threshold(self, rm):
+        start = rm.min_confidence_entry
+        # Strong overconfidence + losses should tighten entry gating.
+        for _ in range(24):
+            rm.update_decision_outcome(
+                decision_type="entry",
+                confidence=0.85,
+                approved=True,
+                actual_outcome=False,
+                agent_id="trigger",
+            )
+        assert rm.min_confidence_entry > start
+
+    def test_poor_exit_outcomes_lower_exit_threshold(self, rm):
+        start = rm.min_confidence_exit
+        # Weak exit outcomes should relax exit gating for earlier protection.
+        for _ in range(24):
+            rm.update_decision_outcome(
+                decision_type="exit",
+                confidence=0.90,
+                approved=True,
+                actual_outcome=False,
+                agent_id="harvester",
+            )
+        assert rm.min_confidence_exit < start

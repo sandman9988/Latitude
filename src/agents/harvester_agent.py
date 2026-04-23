@@ -992,8 +992,16 @@ class HarvesterAgent(AgentTrainingMixin):
             trail_gradient = self._trail_stop_gradient(capture_ratio, was_wtl)
             if abs(trail_gradient) > FLOAT_EPSILON:
                 current_trail = getattr(self, "trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT)
-                self.trailing_stop_distance_pct = max(0.05, min(0.40, current_trail + trail_gradient * current_trail))
-                LOG.debug("[HARVESTER] Updated trailing distance: %.2f%%", self.trailing_stop_distance_pct)
+                tf_scale = self._get_timeframe_scale()
+                trail_floor = max(0.05, TRAILING_STOP_DISTANCE_PCT * tf_scale * 0.5)
+                trail_ceiling = max(trail_floor + 0.01, TRAILING_STOP_DISTANCE_PCT * tf_scale * 2.5)
+                self.trailing_stop_distance_pct = max(
+                    trail_floor, min(trail_ceiling, current_trail + trail_gradient * current_trail)
+                )
+                LOG.debug(
+                    "[HARVESTER] Updated trailing distance: %.4f%% (floor=%.4f ceiling=%.4f)",
+                    self.trailing_stop_distance_pct, trail_floor, trail_ceiling,
+                )
 
             if was_wtl:
                 current_capture_decay = getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)

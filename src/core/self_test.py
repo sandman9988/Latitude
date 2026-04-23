@@ -260,7 +260,13 @@ def _chk_circuit_breakers() -> tuple[Sev, str]:
         if tripped:
             return Sev.WARNING, f"tripped from previous session: {tripped}"
         # Verify schema version matches what save_state() writes
-        expected_keys = {"sortino", "kurtosis", "drawdown", "consecutive_losses"}
+        expected_keys = {
+            "sortino",
+            "kurtosis",
+            "drawdown",
+            "consecutive_losses",
+            "manual_reset_cooldown_until",
+        }
         present_keys = {k for k in data if k != "timestamp"}
         if present_keys and not present_keys.issubset(expected_keys | {"timestamp"}):
             return Sev.WARNING, f"unexpected CB schema keys {present_keys - expected_keys} — schema drift?"

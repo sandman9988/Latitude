@@ -156,6 +156,7 @@ from src.risk.circuit_breakers import CircuitBreakerManager
 from src.risk.emergency_close import create_emergency_closer
 from src.risk.friction_costs import FrictionCalculator
 from src.risk.path_geometry import PathGeometry
+from src.risk.risk_manager import RiskManager
 from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator, position_size_from_var
 from src.training.bar_experience_cache import BarExperienceCache
 from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
@@ -190,6 +191,7 @@ MIN_POSITION_QTY: float = 0.0001      # Minimum qty to treat position as active
 MIN_POSITION_THRESHOLD: float = 0.001  # Minimum qty for long/short side checks
 MAX_POSITION_SANITY: float = 1000.0   # Sanity upper bound for position quantities
 HARVESTER_DEBUG_INTERVAL: float = 60.0  # Seconds between harvester debug log lines
+RISK_TUNER_SAVE_INTERVAL_TRADES: int = 5  # persist adaptive RL thresholds every N closed trades
 
 # Threshold / limit constants (also reduce magic-value violations)
 MIN_BARS_FOR_VOL_CALC: int = 20          # Minimum bars before RS-volatility is reliable
@@ -971,6 +973,18 @@ class CTraderFixApp(fix.Application):
             broker="default",
             param_manager=self.param_manager,
         )
+        # RiskManager runs as an adaptive threshold-feedback engine.
+        # Live execution gates remain in the existing bot flow.
+        self.risk_manager = RiskManager(
+            circuit_breakers=self.circuit_breakers,
+            var_estimator=self.var_estimator,
+            risk_budget_usd=self.risk_budget_usd,
+            max_position_size=max(self.qty, 0.01),
+            symbol=symbol,
+            timeframe=self.timeframe_label,
+            broker=self.broker,
+            param_manager=self.param_manager,
+        )
 
         # Restore circuit breaker state from previous session
         self.circuit_breakers.restore_state()
@@ -1048,6 +1062,25 @@ class CTraderFixApp(fix.Application):
         # EMA-averaged confidence for HUD production_metrics export (α=0.1 ≈ 10-trade window)
         self._last_trigger_conf = 0.5
         self._last_harvester_conf = 0.5
+        self._last_exit_confidence = 0.5
+        self._entry_conf_dynamic_floor = float(
+            self.param_manager.get(
+                self.symbol,
+                "entry_confidence_threshold",
+                timeframe=self.timeframe_label,
+                broker=self.broker,
+                default=0.6,
+            )
+        )
+        self._exit_conf_dynamic_floor = float(
+            self.param_manager.get(
+                self.symbol,
+                "exit_confidence_threshold",
+                timeframe=self.timeframe_label,
+                broker=self.broker,
+                default=0.45,
+            )
+        )
         self.entry_vpin_z = 0.0       # VPIN z-score at entry time (for regime-conditioned reward)
         self.current_trade_id: str | None = None  # Correlation ID linking entry → HOLD(s) → CLOSE in decision log
 
@@ -3217,6 +3250,7 @@ class CTraderFixApp(fix.Application):
         self, position_id: str, mid_price: float, tracker, exit_conf: float
     ) -> None:
         """Attempt to close a specific tracked position via trade_integration."""
+        self._last_exit_confidence = float(exit_conf)
         self._pending_closes.add(position_id)
         if not hasattr(self, "_pending_close_times"):
             self._pending_close_times = {}
@@ -4069,7 +4103,10 @@ class CTraderFixApp(fix.Application):
         if not _exit_time:
             _exit_time = datetime.now(dt.UTC).isoformat()
         harvester_result = self.reward_shaper.calculate_harvester_reward(
-            exit_pnl=float(pnl),
+            # RewardShaper compares exit_pnl directly to MFE/MAE.  The tracker
+            # stores excursions in price points, so use normalized PnL points
+            # here, not dollar PnL, or capture_ratio is inflated by lot value.
+            exit_pnl=float(pnl_pts),
             mfe=float(summary.get("mfe", 0.0)),
             was_wtl=bool(summary.get("winner_to_loser", False)),
             bars_held=int(summary.get("bars_held", 0)),
@@ -4269,6 +4306,7 @@ class CTraderFixApp(fix.Application):
             if not _is_ghost_reconcile:
                 trigger_reward = self._add_trigger_experience_for_close(summary, pnl, entry_price, pnl_pts, shaped_rewards)
                 self._add_harvester_experience_for_close(summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward)
+                self._update_risk_feedback_thresholds(pnl=pnl)
             else:
                 trigger_reward = 0.0
                 LOG.info("[GHOST-RECONCILE] Skipping replay-buffer updates for ghost-recovered trade (approx PnL=%.4f)", pnl)
@@ -4412,6 +4450,55 @@ class CTraderFixApp(fix.Application):
         except Exception as e:
             LOG.error("[TRADE_COMPLETION] Error: %s", e, exc_info=True)
             LOG.debug("[TRADE_COMPLETION] Exit: recorded=failed")
+
+    def _update_risk_feedback_thresholds(self, pnl: float) -> None:
+        """Feed closed-trade outcomes into RiskManager and apply tuned floors."""
+        rm = getattr(self, "risk_manager", None)
+        if rm is None:
+            return
+        try:
+            win = bool(pnl > 0.0)
+            trigger_conf = float(getattr(self, "entry_confidence", getattr(self, "_last_trigger_conf", 0.5)) or 0.5)
+            exit_conf = float(getattr(self, "_last_exit_confidence", getattr(self, "_last_harvester_conf", 0.5)) or 0.5)
+            rm.update_decision_outcome("entry", trigger_conf, True, win, "trigger")
+            rm.update_decision_outcome("exit", exit_conf, True, win, "harvester")
+            rm.update_decision_outcome("entry", 0.5 * (trigger_conf + exit_conf), True, win, "composite")
+            rm.on_trade_complete(
+                pnl=float(pnl),
+                equity=float(self._estimate_account_equity()),
+                is_win=win,
+            )
+            rec = rm.get_rl_recommended_thresholds()
+            self._entry_conf_dynamic_floor = float(rec.get("entry_threshold", self._entry_conf_dynamic_floor))
+            self._exit_conf_dynamic_floor = float(rec.get("exit_threshold", self._exit_conf_dynamic_floor))
+            if hasattr(self, "param_manager"):
+                self.param_manager.set_value(
+                    self.symbol,
+                    "entry_confidence_threshold",
+                    float(self._entry_conf_dynamic_floor),
+                    timeframe=self.timeframe_label,
+                    broker=self.broker,
+                )
+                self.param_manager.set_value(
+                    self.symbol,
+                    "exit_confidence_threshold",
+                    float(self._exit_conf_dynamic_floor),
+                    timeframe=self.timeframe_label,
+                    broker=self.broker,
+                )
+                if int(getattr(self.performance, "total_trades", 0) or 0) % RISK_TUNER_SAVE_INTERVAL_TRADES == 0:
+                    self.param_manager.save()
+            LOG.info(
+                "[RISK_TUNER] floors: entry=%.3f exit=%.3f (trigger_conf=%.3f exit_conf=%.3f win=%s rec=%s)",
+                self._entry_conf_dynamic_floor,
+                self._exit_conf_dynamic_floor,
+                trigger_conf,
+                exit_conf,
+                win,
+                rec.get("reason", "n/a"),
+            )
+        except Exception as exc:
+            LOG.warning("[RISK_TUNER] Failed to update adaptive thresholds: %s", exc)
 
     def on_exec_report(self, msg: fix.Message):
         # Route to TradeManager first (callbacks will handle state updates)
@@ -5141,11 +5228,13 @@ class CTraderFixApp(fix.Application):
         _base_floor = float(getattr(self.policy.trigger, "confidence_floor", 0.55))
         _cal_err = float(getattr(self, "_conf_calib_err_ema", 0.0) or 0.0)
         _uplift = min(max(_cal_err - 0.20, 0.0), 0.15)
-        _dyn_floor = _base_floor + _uplift
+        _runway_penalty = min(max(0.65 - float(getattr(self, "_runway_accuracy_ema", 0.5)), 0.0), 0.10)
+        _dyn_floor = max(_base_floor + _uplift + _runway_penalty, float(self._entry_conf_dynamic_floor or 0.0))
         if action in (ACTION_LONG, ACTION_SHORT) and confidence < _dyn_floor:
             LOG.info(
-                "[ENTRY_GUARD] blocked by dynamic floor: conf=%.3f < dyn_floor=%.3f (base=%.3f calib_err=%.3f uplift=%.3f)",
-                confidence, _dyn_floor, _base_floor, _cal_err, _uplift,
+                "[ENTRY_GUARD] blocked by dynamic floor: conf=%.3f < dyn_floor=%.3f "
+                "(base=%.3f calib_err=%.3f uplift=%.3f runway_penalty=%.3f rl_floor=%.3f)",
+                confidence, _dyn_floor, _base_floor, _cal_err, _uplift, _runway_penalty, self._entry_conf_dynamic_floor,
             )
             action = 0
             runway = 0.0
@@ -5352,6 +5441,13 @@ class CTraderFixApp(fix.Application):
             self.bars, current_price=price, imbalance=imbalance,
             vpin_z=vpin_zscore, depth_ratio=depth_ratio, event_features=event_features,
         )
+        if exit_action == 1 and exit_conf < float(getattr(self, "_exit_conf_dynamic_floor", 0.45)):
+            LOG.info(
+                "[EXIT_GUARD] blocked by dynamic floor: conf=%.3f < floor=%.3f",
+                exit_conf,
+                self._exit_conf_dynamic_floor,
+            )
+            return 0, exit_conf, False
         return exit_action, exit_conf, False
 
     def _obc_max_loss_force_close(self, price: float) -> bool:
@@ -5455,6 +5551,7 @@ class CTraderFixApp(fix.Application):
             q_spread=getattr(self.policy.harvester, "_last_q_spread", 0.0),
         )
         if exit_action == 1:
+            self._last_exit_confidence = float(exit_conf)
             self.current_trade_id = None
         return _bar_trade_id, _close_pending
 
@@ -6256,6 +6353,8 @@ class CTraderFixApp(fix.Application):
             "harvester_loss": getattr(self, "last_harvester_loss", 0.0),
             "trigger_confidence": getattr(self, "_last_trigger_conf", 0.5),
             "harvester_confidence": getattr(self, "_last_harvester_conf", 0.5),
+            "entry_conf_dynamic_floor": getattr(self, "_entry_conf_dynamic_floor", 0.6),
+            "exit_conf_dynamic_floor": getattr(self, "_exit_conf_dynamic_floor", 0.45),
         }
 
     def _populate_policy_training_stats(self, stats: dict) -> None:
@@ -6944,6 +7043,37 @@ def main():
     # WARNINGs are logged and the bot continues in degraded/cold-start mode.
     run_self_test()
     # ────────────────────────────────────────────────────────────────────────────
+
+    # ── Singleton guard: prevent duplicate (symbol, TF) instances ─────────
+    # Without this, a stray launch (e.g. a leftover `--with hud` parent, or
+    # a manual re-run while run_universe still has the previous PID) races
+    # with the registered bot to overwrite paper_stats_<SYMBOL>_M<TF>.json,
+    # producing flip-flopping `connection_healthy` / `next_bar_close_utc`
+    # values in the HUD.  We take an OS-level fcntl lock keyed on the tuple
+    # so the second process exits cleanly instead of corrupting shared state.
+    _lock_fh = None
+    try:
+        import fcntl  # noqa: PLC0415 — POSIX-only; cTrader bot is Linux-only
+        _lock_dir = Path("data") / "locks"
+        _lock_dir.mkdir(parents=True, exist_ok=True)
+        _lock_path = _lock_dir / f".paper_{symbol}_M{timeframe_minutes}.lock"
+        _lock_fh = open(_lock_path, "w", encoding="utf-8")  # noqa: SIM115
+        try:
+            fcntl.flock(_lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            LOG.error(
+                "[SINGLETON] Another paper bot is already running for %s M%d "
+                "(lock held on %s).  Exiting to avoid paper_stats file races.",
+                symbol, timeframe_minutes, _lock_path,
+            )
+            _lock_fh.close()
+            sys.exit(2)
+        _lock_fh.write(f"{os.getpid()}\n")
+        _lock_fh.flush()
+        LOG.info("[SINGLETON] Acquired lock %s for %s M%d (pid=%d)",
+                 _lock_path, symbol, timeframe_minutes, os.getpid())
+    except ImportError:
+        LOG.warning("[SINGLETON] fcntl unavailable on this platform; skipping lock")
 
     # Persist lightweight runtime profile for control panel / HUD
     try:

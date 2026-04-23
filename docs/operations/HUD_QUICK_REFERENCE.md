@@ -1,181 +1,90 @@
 # Tabbed HUD Quick Reference Card
 
+**Last Updated:** 2026-04-23  
+**Status:** Active  
+**Audience:** Operators, Developers
+
 ## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| **1** | Overview Tab - Quick snapshot |
-| **2** | Performance Tab - Detailed metrics |
-| **3** | Training Tab - Agent statistics |
-| **4** | Risk Tab - Risk management |
-| **5** | Market Tab - Microstructure |
-| **6** | Decision Log Tab - Trade history |
-| **Tab** | Next tab (cycle forward) |
-| **Shift+Tab** | Previous tab (cycle backward) |
-| **h** | Help screen |
-| **s** | Select symbol/timeframe preset |
-| **q** | Quit HUD |
+| `1` | Overview tab |
+| `2` | Performance tab |
+| `3` | Training tab |
+| `4` | Risk tab |
+| `5` | Market tab |
+| `6` | Decision Log tab |
+| `7` | Trades tab |
+| `Tab` | Next tab |
+| `Shift+Tab` | Previous tab |
+| `←` / `→` | Cycle tabs left/right |
+| `s` | Select symbol/timeframe preset |
+| `e` | Set/Clear stats epoch cutoff |
+| `r` | Review/reset tripped circuit breakers |
+| `h` | Help screen |
+| `q` or `Ctrl+X` | Quit HUD |
 
 ## Tab Contents
 
 ### Tab 1: Overview
-- Current position (LONG/SHORT/FLAT)
-- Unrealized P&L
-- Today's trade count, win rate, P&L
-- Recent performance sparkline ▃▂▅▇
-- Risk status (circuit breaker, regime, volatility)
-- Agent buffer sizes
-- Market conditions (spread, VPIN, imbalance)
-- **System health summary** 🏥
+- Current bot snapshot and current position
+- Fleet table (`ALL BOTS`) with canonical timeframe labels (`M1`, `M5`, `M15`, `M30`, `M60`, `M240`)
+- Session metrics and Symbol/TF snapshot
+- Health/freshness context
 
 ### Tab 2: Performance
-- Metrics across 4 timeframes:
-  - Daily
-  - Weekly
-  - Monthly
-  - Lifetime
-- For each: Trades, Win%, PnL, Sharpe, Sortino, Omega, MaxDD
-- Additional stats: Best/Worst/Avg trade, Profit Factor, Expectancy
+- Period metrics (24h / 7d / 30d / lifetime or stats-epoch scope)
+- Mode breakdown and symbol/TF/mode breakdown
+- Trade quality and runway convergence panels
 
 ### Tab 3: Training
-- Multi-agent arena info (if applicable)
-- Trigger agent stats: Buffer size, loss, TD-error, epsilon
-- Harvester agent stats: Buffer size, loss, TD-error, epsilon
-- Visual buffer fill indicators
-- Last training time
+- Trigger + Harvester live training stats
+- Runway model reliability diagnostics
+- RL dynamic confidence floors:
+  - Trigger: `entry_conf_dynamic_floor`
+  - Harvester: `exit_conf_dynamic_floor`
+- Arena/learning health blocks
 
 ### Tab 4: Risk
-- **Circuit breaker status** (visual alert if active)
-- VaR and kurtosis (tail risk)
-- Realized volatility and regime
-- Path geometry: Efficiency, gamma, jerk, runway
-- Entry feasibility gauge
+- Circuit breaker status
+- VaR, volatility, regime, feasibility
+- Risk budget and gating views
 
 ### Tab 5: Market
-- Bid-ask spread
-- Depth (bid vs ask) with visual bar
-- VPIN (order flow toxicity) with z-score
-- Order imbalance (buy/sell pressure)
-- Visual gauges for VPIN and imbalance
+- Spread/depth/imbalance/VPIN synthesis
+- Market feed freshness (`LIVE` / `AGING` / `STALE`)
 
 ### Tab 6: Decision Log
-- Last 20 trading decisions
-- Color-coded events:
-  - 🟢 Green: OPEN entries
-  - 🔴 Red: CLOSE exits
-  - 🟡 Yellow: HOLD actions
-- Timestamps and decision details
+- Recent decision records and confidence context
+- Session/trade correlation fields for review
 
-## Color Coding Legend
+### Tab 7: Trades
+- Closed-trade ledger with pagination
+- Capture% uses normalized `capture_ratio` and preserves negative values on losses
+- Drill-down detail view per trade
 
-| Color | Meaning |
-|-------|---------|
-| 🟢 **Green** | Positive, good, profitable, normal |
-| 🔴 **Red** | Negative, alert, loss, critical |
-| 🟡 **Yellow** | Neutral, warning, hold |
-| 🔵 **Blue** | Information, regime transitional |
-| ⚪ **Gray** | Inactive, waiting |
+## Footer Freshness States
 
-## Footer Indicators
+- `Data fresh`: age <= 5s
+- `Data aging`: 5s < age <= 15s
+- `Data stale`: age > 15s
 
-### Data Freshness
-- ✓ Data fresh (X.Xs old) - Green, <5 seconds
-- ⚡ Data aging (Xs old) - Yellow, 5-10 seconds
-- ⚠️ Data stale (Xs old) - Red, >10 seconds
-- ⏳ Waiting for data... - Gray, never updated
+## Data Sources (Primary)
 
-### Circuit Breaker Alert
-When circuit breaker is ACTIVE, the header turns red:
-```
-╔══════════════════════════════════╗
-║ ⚠️ CIRCUIT BREAKER ACTIVE ⚠️    ║
-╚══════════════════════════════════╝
-```
+HUD reads from `data/` with per-bot preference where available:
+- `paper_stats_<SYMBOL>_M<TF>.json`
+- `training_stats_<SYMBOL>_M<TF>.json`
+- `risk_metrics_<SYMBOL>_M<TF>.json`
+- `current_position_<SYMBOL>_M<TF>.json`
+- `trade_log.jsonl`
+- `logs/audit/decisions.jsonl`
 
-## System Health (Overview Tab)
+## Quick Start
 
-4-metric health check:
-- **Data Fresh:** ✓ OK / ⚡ Aging / ✗ Stale
-- **Circuit Breaker:** ✓ OK / ⚠️ Active
-- **Agent Buffers:** ✓ OK / ⚡ Low / ✗ Critical
-- **Volatility:** ✓ Normal / ⚡ Elevated / ⚠️ High
-
-## Sparkline (Overview Tab)
-
-Visual trend of last 20 trades:
-```
-Recent: ▃▂▅▇▁▆█▄
-```
-- Higher bars = larger P&L
-- Green = profitable trades
-- Red = losing trades
-
-### Runway Convergence (Performance Tab)
-
-The prediction convergence block reports runway metrics in point units:
-- **Runway Δ (pred−actual)**: EMA of adjusted predicted runway points minus actual MFE points
-- **Runway Accuracy**: normalized [0,1] score, 1.0 is perfect
-- **Runway Utilization**: `actual_MFE / predicted_runway_pts_adj`
-- **Runway Error %**: absolute error % vs `predicted_runway_pts_adj`
-
-For new trade records, HUD prefers persisted point fields (`predicted_runway_net_points`,
-`predicted_runway_net_points_raw`) and falls back to legacy fractional runway × entry price.
-
-## Data Files Required
-
-HUD reads from `data/` directory:
-- `bot_config.json` - Bot configuration
-- `current_position.json` - Position details
-- `performance_snapshot.json` - Performance metrics
-- `training_stats.json` - Training statistics
-- `risk_metrics.json` - Risk & market data
-- `decision_log.json` - Decision history
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| Data stale warning | Check if bot is running |
-| Missing files error | Ensure bot is exporting data |
-| Garbled display | Use terminal with UTF-8 & ANSI colors |
-| Keys not working | Try different terminal emulator |
-| HUD frozen | Press Ctrl+C to exit, restart |
-
-## Tips
-
-1. **Press 'h' anytime** for full help screen
-2. **Watch data freshness** in footer to ensure bot is alive
-3. **Check system health** in Overview for quick diagnostics
-4. **Use Tab/Shift+Tab** to quickly cycle through tabs
-5. **Monitor circuit breaker** - red header means trading halted
-6. **Review decision log** to understand bot behavior
-7. **Terminal size:** Minimum 80x24 recommended
-
-## Symbol/Timeframe Presets
-
-Press **'s'** to access preset selection:
-1. Displays available trading profiles
-2. Select by number
-3. Updates `.env` file
-4. Requires bot restart to apply
-
-Presets defined in: `config/profile_presets.json`
-
----
-
-**Quick Start:**
 ```bash
-# Start HUD
-python3 hud_tabbed.py
+# Attach HUD to running fleet
+./run.sh --hud-only
 
-# Navigate
-Press 1-6 for tabs, h for help, q to quit
-
-# Monitor
-Check footer for data freshness
-Check Overview for system health
+# Start/restart fleet + HUD autostart (interactive shell)
+./run.sh universe
 ```
-
----
-
-*Last Updated: 2026-01-11*

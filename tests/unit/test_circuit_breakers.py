@@ -143,6 +143,67 @@ class TestKurtosisBreaker:
         assert len(kb.returns) <= 100
 
 
+class TestKurtosisAdaptive:
+    """Quantile-based threshold learning (low-hanging-fruit risk tuner)."""
+
+    def _seed_fat_tails(self, kb: KurtosisBreaker, rng, n: int = 60):
+        """Feed enough fat-tailed returns to build up a reading history."""
+        for v in rng.standard_t(df=3, size=n):
+            kb.update(float(v))
+            # Force kurtosis readings to accumulate (check() records one).
+            kb.check()
+
+    def test_seed_threshold_used_until_min_readings(self):
+        kb = KurtosisBreaker(threshold=5.0, min_samples=10, adaptive=True)
+        rng = np.random.default_rng(0)
+        # Only a handful of readings — quantile must NOT kick in yet.
+        for v in rng.normal(0, 0.01, size=15):
+            kb.update(float(v))
+            kb.check()
+        assert kb.threshold == 5.0  # untouched
+
+    def test_threshold_drifts_toward_quantile(self):
+        kb = KurtosisBreaker(
+            threshold=5.0,
+            min_samples=10,
+            adaptive=True,
+            adapt_min_readings=20,
+            adapt_bounds=(2.5, 10.0),
+            adapt_ema_alpha=0.25,
+        )
+        rng = np.random.default_rng(1)
+        # Fat-tailed regime: kurtosis readings should be well above 3.0
+        self._seed_fat_tails(kb, rng, n=120)
+        # Threshold must have left its 5.0 seed — in either direction,
+        # clipped to adapt_bounds.
+        assert 2.5 <= kb.threshold <= 10.0
+        assert kb.threshold != 5.0
+
+    def test_threshold_respects_max_bound(self):
+        kb = KurtosisBreaker(
+            threshold=5.0,
+            min_samples=10,
+            adaptive=True,
+            adapt_min_readings=10,
+            adapt_bounds=(2.5, 6.0),
+            adapt_ema_alpha=1.0,  # instant adoption
+        )
+        rng = np.random.default_rng(2)
+        # Pathologically fat tails → raw quantile would blow past 6.0
+        for v in rng.standard_t(df=1.5, size=150):
+            kb.update(float(v))
+            kb.check()
+        assert kb.threshold <= 6.0 + 1e-9
+
+    def test_non_adaptive_mode_keeps_seed(self):
+        kb = KurtosisBreaker(threshold=5.0, min_samples=10, adaptive=False)
+        rng = np.random.default_rng(3)
+        for v in rng.standard_t(df=2, size=120):
+            kb.update(float(v))
+            kb.check()
+        assert kb.threshold == 5.0
+
+
 # ---------------------------------------------------------------------------
 # DrawdownBreaker
 # ---------------------------------------------------------------------------
@@ -269,6 +330,21 @@ class TestCircuitBreakerManager:
         assert mgr.is_any_tripped()
         mgr.reset_all()
         assert not mgr.is_any_tripped()
+
+    def test_manual_reset_cooldown_blocks_immediate_retrip(self):
+        mgr = CircuitBreakerManager(max_consecutive_losses=1)
+        mgr.update_trade(pnl=-10, equity=10000)
+        assert mgr.check_all() is True
+        assert mgr.is_any_tripped() is True
+
+        mgr.reset_all(manual_cooldown_seconds=60)
+        mgr.update_trade(pnl=-10, equity=10000)
+        assert mgr.check_all() is False
+        assert mgr.is_any_tripped() is False
+
+        mgr.manual_reset_cooldown_until = None
+        assert mgr.check_all() is True
+        assert mgr.is_any_tripped() is True
 
     def test_position_multiplier_zero_when_tripped(self):
         mgr = CircuitBreakerManager(max_consecutive_losses=2)

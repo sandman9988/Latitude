@@ -523,6 +523,19 @@ def copy_best_weights(best: dict[str, dict], dest_dir: Path) -> None:
                 LOG.warning("[BEST] Could not copy %s: %s", src, exc)
 
 
+def _retrain_eligible(
+    best_result: dict | None,
+    threshold: float,
+    negative_only: bool,
+) -> bool:
+    if not best_result or best_result.get("error"):
+        return False
+    z_omega = float(best_result.get("z_omega", 0.0))
+    if negative_only:
+        return z_omega < 0.0
+    return z_omega < threshold
+
+
 # ── Summary table ──────────────────────────────────────────────────────────────
 
 def print_summary(results: list[dict]) -> None:
@@ -596,6 +609,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "After the first round, any job whose ZOmega < paper-threshold is re-run "
             "with warm_start=True until it meets the threshold or N rounds are exhausted "
             "(default: 1 = no auto-retrain)."
+        ),
+    )
+    p.add_argument(
+        "--retrain-negative-only", action="store_true", default=False,
+        help=(
+            "After round 1, retrain only jobs with negative ZOmega (z_omega < 0). "
+            "When enabled, this overrides threshold-based retry selection."
         ),
     )
     p.add_argument("-v", "--verbose", action="store_true",
@@ -822,22 +842,41 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
             best_per_job[key] = r
 
     for retrain_round in range(1, args.retrain_rounds):
-        # Jobs that still haven't met the threshold and had no error
         retry_jobs = [
             j for j in jobs
-            if (
-                best_per_job.get((j.symbol, j.timeframe_minutes), {}).get("z_omega", 0.0)
-                < args.paper_threshold
-                and not best_per_job.get((j.symbol, j.timeframe_minutes), {}).get("error")
+            if _retrain_eligible(
+                best_per_job.get((j.symbol, j.timeframe_minutes)),
+                threshold=args.paper_threshold,
+                negative_only=args.retrain_negative_only,
             )
         ]
         if not retry_jobs:
-            LOG.info("[RETRAIN] All jobs met threshold after round %d — stopping early.", retrain_round)
+            if args.retrain_negative_only:
+                LOG.info(
+                    "[RETRAIN] No jobs with negative ZΩ after round %d — stopping early.",
+                    retrain_round,
+                )
+            else:
+                LOG.info(
+                    "[RETRAIN] All jobs met threshold after round %d — stopping early.",
+                    retrain_round,
+                )
             break
-        LOG.info(
-            "[RETRAIN] Round %d/%d: %d job(s) below ZΩ=%.2f — re-training with warm_start=True",
-            retrain_round + 1, args.retrain_rounds, len(retry_jobs), args.paper_threshold,
-        )
+        if args.retrain_negative_only:
+            LOG.info(
+                "[RETRAIN] Round %d/%d: %d job(s) with negative ZΩ — re-training with warm_start=True",
+                retrain_round + 1,
+                args.retrain_rounds,
+                len(retry_jobs),
+            )
+        else:
+            LOG.info(
+                "[RETRAIN] Round %d/%d: %d job(s) below ZΩ=%.2f — re-training with warm_start=True",
+                retrain_round + 1,
+                args.retrain_rounds,
+                len(retry_jobs),
+                args.paper_threshold,
+            )
         # Reset HUD entries for jobs being retrained so they show "running" again
         retry_keys = {(j.symbol, j.timeframe_minutes) for j in retry_jobs}
         for entry in _ot_status["results"]:

@@ -61,6 +61,10 @@ FRICTION_COST_MULT: float = 0.1
 # of the move was surrendered (high MAE relative to MFE).
 UNDEVELOPED_MFE_PENALTY_SCALE: float = -1.0  # max penalty at full giveback
 ZERO_MFE_PENALTY: float = -0.3  # flat penalty when MFE ≤ 0
+ZERO_MFE_EPSILON: float = 1e-8
+ZERO_MFE_LOSS_MULT: float = 3.0
+ZERO_MFE_LOSS_BASELINE_SCALE: float = 0.5
+ZERO_MFE_LOSS_CAP_MULT: float = 5.0
 
 # Session quality multiplier: MFE during high-liquidity sessions is "worth
 # more" because the signal is cleaner and slippage lower.  Pure results
@@ -702,9 +706,21 @@ class RewardShaper:
 
             r_capture = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult * magnitude_scale))
         else:
-            # No favorable movement — this is a bad entry, penalize
             capture_ratio = 0.0
-            r_capture = ZERO_MFE_PENALTY
+            zero_mfe_epsilon = max(float(self._get_param("zero_mfe_epsilon", ZERO_MFE_EPSILON)), 1e-12)
+            if mfe <= zero_mfe_epsilon and exit_pnl < 0:
+                loss_mult = max(float(self._get_param("zero_mfe_loss_multiplier", ZERO_MFE_LOSS_MULT)), 1.0)
+                baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
+                baseline_scale = max(
+                    float(self._get_param("zero_mfe_loss_baseline_scale", ZERO_MFE_LOSS_BASELINE_SCALE)),
+                    1e-6,
+                )
+                cap_mult = max(float(self._get_param("zero_mfe_loss_cap_multiplier", ZERO_MFE_LOSS_CAP_MULT)), 1.0)
+                loss_mag = abs(exit_pnl)
+                loss_scale = min(loss_mag / (baseline_mfe * baseline_scale), cap_mult)
+                r_capture = ZERO_MFE_PENALTY * loss_mult * (1.0 + loss_scale)
+            else:
+                r_capture = ZERO_MFE_PENALTY
 
         # 2. WTL penalty (proportional to profit giveback, not flat)
         try:

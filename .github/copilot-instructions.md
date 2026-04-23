@@ -8,13 +8,13 @@
 ## Project Identity
 
 Dual-agent DDQN reinforcement learning trading system connected to cTrader via FIX 4.4 protocol.
-Active paper trading XAUUSD on a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) against a Pepperstone demo, supervised by `run_universe.py --watch`. Python 3.12, ~41 300 production lines, 2 221 tests passing. Validation remains green with a known log/environment-dependent correlation caveat for runway diagnostics.
+Active paper trading XAUUSD on a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) against a Pepperstone demo, supervised by `run_universe.py --watch`. Python 3.12. Validation remains green with a known log/environment-dependent correlation caveat for runway diagnostics.
 
 ---
 
 ## Architecture in one paragraph
 
-A **Trigger agent** (entry specialist) and **Harvester agent** (exit specialist) are both Conv1d DDQN networks trained with Prioritized Experience Replay. Market state is built from log-return features + DSP-based regime detector (damping ratio ζ). `DualPolicy` orchestrates them: Trigger scores high-quality entries; Harvester decides when to close. Risk gate (`RiskManager` + `CircuitBreakers` + `VaR`) sizes positions and blocks trading when circuit breakers trip. All decisions are logged to `logs/audit/decisions.jsonl` (rich JSONL) and mirrored to `data/decision_log.json` (bar-close summary). The HUD (`src/monitoring/hud_tabbed.py`) is a 7-tab curses terminal UI.
+A **Trigger agent** (entry specialist) and **Harvester agent** (exit specialist) are both Conv1d DDQN networks trained with Prioritized Experience Replay. Market state is built from log-return features + DSP-based regime detector (damping ratio ζ). `DualPolicy` orchestrates them: Trigger scores high-quality entries; Harvester decides when to close. Risk gate (`RiskManager` + `CircuitBreakers` + `VaR`) sizes positions and blocks trading when circuit breakers trip. All decisions are logged to `logs/audit/decisions.jsonl` (rich JSONL) and mirrored to `data/decision_log.json` (bar-close summary). The HUD (`src/monitoring/hud_tabbed.py`) is a 7-tab terminal UI with low-latency input polling/drain, arrow-key tab switching, and a dedicated Trades tab.
 
 ---
 
@@ -22,24 +22,24 @@ A **Trigger agent** (entry specialist) and **Harvester agent** (exit specialist)
 
 | File                                  | Purpose                                                                 |
 | ------------------------------------- | ----------------------------------------------------------------------- |
-| `src/core/ctrader_ddqn_paper.py`      | Main bot orchestrator (6 554 lines)                                     |
-| `src/agents/trigger_agent.py`         | Entry DDQN + fallback strategy (931 lines)                              |
-| `src/agents/harvester_agent.py`       | Exit DDQN + min-hold guard (972 lines)                                  |
-| `src/agents/dual_policy.py`           | Orchestrates both agents; feasibility × ζ gate (1 190 lines)            |
-| `src/core/ddqn_network.py`            | Conv1dQNet → temporal_pool_size param (396 lines)                       |
-| `src/core/reward_shaper.py`           | 6-dim asymmetric rewards; result-based timing (890 lines)               |
+| `src/core/ctrader_ddqn_paper.py`      | Main bot orchestrator                                                    |
+| `src/agents/trigger_agent.py`         | Entry DDQN + fallback strategy                                           |
+| `src/agents/harvester_agent.py`       | Exit DDQN + min-hold guard                                               |
+| `src/agents/dual_policy.py`           | Orchestrates both agents; feasibility × ζ gate                           |
+| `src/core/ddqn_network.py`            | Conv1dQNet → temporal_pool_size param                                    |
+| `src/core/reward_shaper.py`           | 6-dim asymmetric rewards; result-based timing                            |
 | `src/utils/experience_buffer.py`      | PER + IS weights (raw-priority IS, post-loop update)                    |
 | `src/utils/metrics_calculator.py`     | Single-source period metrics (Sharpe, Sortino, PF, MaxDD)               |
 | `src/features/regime_detector.py`     | DSP pipeline → damping ratio ζ                                          |
-| `src/features/hmm_regime.py`          | HMM-based regime detector (264 lines)                                   |
-| `src/risk/risk_manager.py`            | VaR-based sizing; payoff-ratio budget adaptation (1 521 lines)          |
-| `src/risk/circuit_breakers.py`        | Sortino, Kurtosis, VPIN breakers (870 lines)                            |
-| `src/core/broker_execution_model.py`  | Asymmetric slippage model (440 lines)                                   |
+| `src/features/hmm_regime.py`          | HMM-based regime detector                                                |
+| `src/risk/risk_manager.py`            | VaR-based sizing; payoff-ratio budget adaptation                         |
+| `src/risk/circuit_breakers.py`        | Sortino, Kurtosis, VPIN breakers                                         |
+| `src/core/broker_execution_model.py`  | Asymmetric slippage model                                                |
 | `src/persistence/bot_persistence.py`  | Atomic + journaled state persistence                                    |
-| `src/persistence/trade_log_reader.py` | Centralized trade_log.jsonl reader (127 lines)                          |
-| `src/monitoring/hud_tabbed.py`        | 7-tab curses HUD (4 090 lines)                                          |
+| `src/persistence/trade_log_reader.py` | Centralized trade_log.jsonl reader                                       |
+| `src/monitoring/hud_tabbed.py`        | 7-tab terminal HUD                                                       |
 | `src/monitoring/audit_logger.py`      | `DecisionLogger` → `logs/audit/decisions.jsonl`                         |
-| `src/training/offline_trainer.py`     | Walk-forward DDQN training on historical bars (721 lines)               |
+| `src/training/offline_trainer.py`     | Walk-forward DDQN training on historical bars                            |
 | `src/risk/path_geometry.py`           | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
 | `src/features/event_time_features.py` | Session/rollover/week event features (6 broadcast dims)                 |
 
@@ -131,6 +131,7 @@ When reading trade records for convergence, HUD should resolve runway points in 
 | ------- | ------------------------------------------------------- |
 | `1`-`7` | Switch to tab                                           |
 | `Tab`   | Cycle forward; `Shift+Tab` backward                     |
+| `←`/`→` | Cycle tabs left/right                                   |
 | `s`     | Select symbol/timeframe preset                          |
 | `r`     | Review & reset tripped circuit breakers                 |
 | `e`     | Set/clear stats epoch (exclude old trades from metrics) |
@@ -165,7 +166,7 @@ Watcher semantics:
 
 Agent caveats:
 
-- The HUD (`src.monitoring.hud_tabbed`) is a **curses TUI** — it cannot be rendered from a non-interactive agent shell. Summarise from `./run.sh status`, `logs/paper_*.log`, and `data/universe.json` instead of trying to launch it in the background.
+- The HUD (`src.monitoring.hud_tabbed`) is an **interactive terminal UI** — it cannot be rendered from a non-interactive agent shell. Summarise from `./run.sh status`, `logs/paper_*.log`, and `data/universe.json` instead of trying to launch it in the background.
 - Do **not** edit `data/universe.json` as a dict — the canonical schema is `{"version": 1, "instruments": [ {...}, ... ]}` (list of entries). Any status/diagnostic helper must iterate the list.
 - Before stopping bots for a hotfix, prefer targeted `pkill -f "paper_<SYMBOL>_M<TF>"` when only one timeframe needs recycling; the watcher will relaunch it on the next poll.
 
@@ -216,7 +217,7 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 
 ## Testing requirements
 
-- Run `python -m pytest tests/ -q` before committing — must stay at 2 221 passing
+- Run `python -m pytest tests/ -q` before committing — must stay green
 - Unit tests in `tests/unit/`, integration tests in `tests/integration/`, validation in `tests/validation/`
 - Known caveat: runway-correlation validation can be environment/log-data dependent; treat as a data-quality check when log completeness differs
 - After modifying reward shaper dims: run `tests/unit/test_reward_calculations.py`

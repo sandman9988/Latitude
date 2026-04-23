@@ -54,12 +54,14 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p < 0]
     n = len(pnls)
+    decisive_n = len(wins) + len(losses)
     total_pnl = sum(pnls)
-    win_rate = len(wins) / n
+    win_rate = (len(wins) / decisive_n) if decisive_n > 0 else 0.0
     avg_win = sum(wins) / len(wins) if wins else 0.0
     avg_loss = sum(losses) / len(losses) if losses else 0.0
     profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
-    expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+    loss_rate = (len(losses) / decisive_n) if decisive_n > 0 else 0.0
+    expectancy = (win_rate * avg_win) + (loss_rate * avg_loss)
 
     mean_p = total_pnl / n
     variance = sum((p - mean_p) ** 2 for p in pnls) / n
@@ -140,6 +142,10 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     for t in pts_non_ghost:
         if not isinstance(t, dict):
             continue
+        _stored_capture = t.get("capture_ratio")
+        if isinstance(_stored_capture, (int, float)) and math.isfinite(float(_stored_capture)):
+            _captures.append(float(_stored_capture))
+            continue
         _mfe = t.get("mfe", 0.0)
         _pnl = t.get("pnl", 0.0)
         if _mfe <= 0:
@@ -168,7 +174,7 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     # Confidence calibration
     _conf_wins: list[float] = []
     _conf_losses: list[float] = []
-    for t in pts:
+    for t in pts_non_ghost:
         if not isinstance(t, dict):
             continue
         _ec = t.get("entry_confidence")
@@ -183,7 +189,7 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
 
     # Bars held — fall back to hold_seconds, then entry/exit timestamps for legacy data
     _bars: list[int] = []
-    for t in pts:
+    for t in pts_non_ghost:
         if not isinstance(t, dict):
             continue
         bh = t.get("bars_held")

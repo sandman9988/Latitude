@@ -204,7 +204,7 @@ class ProductionMonitor:
         if should_alert_no_trades and self.metrics.last_trade_mins_ago > self.alert_no_trade_hours * 60:
             new_alerts.append(
                 Alert(
-                    severity="warning",
+                    severity="critical",
                     category="trade",
                     message=f"No trades for {self.metrics.last_trade_mins_ago/60:.1f} hours",
                     metric_value=self.metrics.last_trade_mins_ago / 60,

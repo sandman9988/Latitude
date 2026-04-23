@@ -140,13 +140,94 @@ class TestPidAlive:
         assert ru._pid_alive(0) is False
 
     def test_live_pid_returns_true(self):
-        # Current process is definitively alive
         assert ru._pid_alive(os.getpid()) is True
 
     def test_dead_pid_returns_false(self):
-        # PID 1 always exists on Linux but is accessible — use a certainly-dead PID
         with patch("os.kill", side_effect=OSError):
             assert ru._pid_alive(999999) is False
+
+
+class TestRuntimeIsolation:
+
+    def test_resolve_python_executable_prefers_project_venv(self, tmp_path, monkeypatch):
+        venv_python = tmp_path / ".venv/bin/python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("#!/usr/bin/env python3\n")
+        venv_python.chmod(0o755)
+
+        monkeypatch.setattr(ru, "_PROJECT_VENV_PYTHONS", (venv_python,))
+
+        result = ru._resolve_python_executable({})
+        assert result == str(venv_python.resolve())
+
+    def test_resolve_python_executable_uses_virtual_env_when_project_missing(self, tmp_path, monkeypatch):
+        venv_root = tmp_path / "runtime_venv"
+        env_python = venv_root / "bin/python"
+        env_python.parent.mkdir(parents=True)
+        env_python.write_text("#!/usr/bin/env python3\n")
+        env_python.chmod(0o755)
+
+        monkeypatch.setattr(ru, "_PROJECT_VENV_PYTHONS", ())
+
+        result = ru._resolve_python_executable({"VIRTUAL_ENV": str(venv_root)})
+        assert result == str(env_python)
+
+    def test_bot_slug_normalizes_symbol(self):
+        assert ru._bot_slug("xau/usd", 240) == "paper_XAU_USD_M240"
+
+    def test_prepare_bot_runtime_writes_isolated_cfg(self, tmp_path, monkeypatch):
+        quote_tpl = tmp_path / "ctrader_quote.cfg"
+        trade_tpl = tmp_path / "ctrader_trade.cfg"
+        quote_tpl.write_text("FileStorePath=store/QUOTE\nFileLogPath=logs/fix/QUOTE\nSenderCompID=demo\n")
+        trade_tpl.write_text("FileStorePath=store/TRADE\nFileLogPath=logs/fix/TRADE\nSenderCompID=demo\n")
+
+        monkeypatch.setattr(ru, "_CFG_QUOTE_TEMPLATE", quote_tpl)
+        monkeypatch.setattr(ru, "_CFG_TRADE_TEMPLATE", trade_tpl)
+        monkeypatch.setattr(ru, "_RUNTIME_ROOT", tmp_path / "paper_runtime")
+
+        env = ru._prepare_bot_runtime("XAUUSD", 240)
+
+        assert env["CTRADER_DATA_DIR"].endswith("data/paper_XAUUSD_M240")
+        quote_out = Path(env["CTRADER_CFG_QUOTE"])
+        trade_out = Path(env["CTRADER_CFG_TRADE"])
+        assert quote_out.exists()
+        assert trade_out.exists()
+        quote_text = quote_out.read_text()
+        trade_text = trade_out.read_text()
+        assert "FileStorePath=store/paper_XAUUSD_M240/QUOTE" in quote_text
+        assert "FileLogPath=logs/fix/paper_XAUUSD_M240/QUOTE" in quote_text
+        assert "FileStorePath=store/paper_XAUUSD_M240/TRADE" in trade_text
+        assert "FileLogPath=logs/fix/paper_XAUUSD_M240/TRADE" in trade_text
+        assert "SenderCompID=demo" in quote_text
+        assert "SenderCompID=demo" in trade_text
+
+    def test_launch_paper_bot_includes_runtime_env(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        def _runtime_env(symbol, timeframe_minutes):
+            return {
+                "CTRADER_CFG_QUOTE": "x/quote.cfg",
+                "CTRADER_CFG_TRADE": "x/trade.cfg",
+                "CTRADER_DATA_DIR": "data/paper_XAUUSD_M240",
+            }
+
+        monkeypatch.setattr(ru, "_prepare_bot_runtime", _runtime_env)
+
+        captured = {}
+
+        def _fake_popen(*args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            proc = MagicMock()
+            proc.pid = 4321
+            return proc
+
+        monkeypatch.setattr(ru.subprocess, "Popen", _fake_popen)
+
+        pid = ru._launch_paper_bot("XAUUSD", 240, 41, 0.01, {"BASE": "1"}, None)
+
+        assert pid == 4321
+        assert captured["env"]["CTRADER_CFG_QUOTE"] == "x/quote.cfg"
+        assert captured["env"]["CTRADER_CFG_TRADE"] == "x/trade.cfg"
+        assert captured["env"]["CTRADER_DATA_DIR"] == "data/paper_XAUUSD_M240"
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +480,20 @@ class TestLaunchPaperBots:
 
         data = _read_universe(uni)
         assert _entry(data["instruments"], "GBPUSD", 30)["paper_pid"] == 1234
+
+    def test_clears_stale_pid_before_relaunch(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("XAUUSD", "PAPER", pid=9876, tf=30)
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+
+        with patch.object(ru, "_pid_alive", return_value=False), \
+             patch.object(ru, "_launch_paper_bot", return_value=2468):
+            result = ru.launch_paper_bots(registry, specs, {})
+
+        entry = _entry(result["instruments"], "XAUUSD", 30)
+        assert entry["paper_pid"] == 2468
+        assert entry["paper_started_at"] is not None
 
 
 # ---------------------------------------------------------------------------

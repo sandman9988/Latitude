@@ -69,6 +69,7 @@ LOG = logging.getLogger("run_universe")
 # Constants
 # ---------------------------------------------------------------------------
 
+_PROJECT_ROOT = Path(__file__).resolve().parent
 _UNIVERSE_PATH  = Path("data/universe.json")
 _SYMBOL_SPECS   = Path("config/symbol_specs.json")
 _ENV_PATH       = Path(".env")
@@ -76,6 +77,15 @@ _BOT_MODULE     = "src.core.ctrader_ddqn_paper"
 _STAGE_ORDER    = ["UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"]
 _PAPER_STAGE    = "PAPER"
 _WATCH_INTERVAL = 30   # seconds between supervisor polls
+_CFG_QUOTE_TEMPLATE = Path("config/ctrader_quote.cfg")
+_CFG_TRADE_TEMPLATE = Path("config/ctrader_trade.cfg")
+_RUNTIME_ROOT = Path("data/paper_runtime")
+_PROJECT_VENV_PYTHONS = (
+    _PROJECT_ROOT / ".venv/bin/python",
+    _PROJECT_ROOT / ".venv/bin/python3",
+    _PROJECT_ROOT / "venv/bin/python",
+    _PROJECT_ROOT / "venv/bin/python3",
+)
 
 # Paper-mode env defaults (mirror .env.example PAPER_MODE block)
 _PAPER_ENV_DEFAULTS: dict[str, str] = {
@@ -184,6 +194,68 @@ def _load_dotenv() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# FIX config/runtime isolation helpers
+# ---------------------------------------------------------------------------
+
+def _bot_slug(symbol: str, timeframe_minutes: int) -> str:
+    _symbol = re.sub(r"[^A-Z0-9]+", "_", str(symbol or "").upper()).strip("_") or "UNKNOWN"
+    return f"paper_{_symbol}_M{int(timeframe_minutes)}"
+
+
+def _write_isolated_fix_cfg(template_path: Path, output_path: Path, store_dir: Path, log_dir: Path) -> None:
+    text = template_path.read_text(encoding="utf-8")
+    lines: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("FileStorePath="):
+            lines.append(f"FileStorePath={store_dir.as_posix()}")
+        elif line.startswith("FileLogPath="):
+            lines.append(f"FileLogPath={log_dir.as_posix()}")
+        else:
+            lines.append(line)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _prepare_bot_runtime(symbol: str, timeframe_minutes: int) -> dict[str, str]:
+    slug = _bot_slug(symbol, timeframe_minutes)
+    runtime_root = _RUNTIME_ROOT / slug
+    cfg_dir = runtime_root / "config"
+    quote_cfg = cfg_dir / "ctrader_quote.cfg"
+    trade_cfg = cfg_dir / "ctrader_trade.cfg"
+    quote_store = Path("store") / slug / "QUOTE"
+    quote_log = Path("logs/fix") / slug / "QUOTE"
+    trade_store = Path("store") / slug / "TRADE"
+    trade_log = Path("logs/fix") / slug / "TRADE"
+
+    quote_store.mkdir(parents=True, exist_ok=True)
+    quote_log.mkdir(parents=True, exist_ok=True)
+    trade_store.mkdir(parents=True, exist_ok=True)
+    trade_log.mkdir(parents=True, exist_ok=True)
+
+    _write_isolated_fix_cfg(
+        _CFG_QUOTE_TEMPLATE,
+        quote_cfg,
+        store_dir=quote_store,
+        log_dir=quote_log,
+    )
+    _write_isolated_fix_cfg(
+        _CFG_TRADE_TEMPLATE,
+        trade_cfg,
+        store_dir=trade_store,
+        log_dir=trade_log,
+    )
+
+    data_dir = Path("data") / slug
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "CTRADER_CFG_QUOTE": quote_cfg.as_posix(),
+        "CTRADER_CFG_TRADE": trade_cfg.as_posix(),
+        "CTRADER_DATA_DIR": data_dir.as_posix(),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Process helpers
 # ---------------------------------------------------------------------------
 
@@ -205,6 +277,25 @@ def _pid_alive(pid: int | None) -> bool:
         return True  # ps unavailable — assume alive
 
 
+def _resolve_python_executable(base_env: dict[str, str]) -> str:
+    for candidate in _PROJECT_VENV_PYTHONS:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return candidate.as_posix()
+
+    env_python = str(base_env.get("VIRTUAL_ENV") or "").strip()
+    if env_python:
+        for suffix in ("bin/python", "bin/python3"):
+            candidate = Path(env_python) / suffix
+            if candidate.exists() and os.access(candidate, os.X_OK):
+                return candidate.as_posix()
+
+    explicit_python = str(base_env.get("PYTHON") or "").strip()
+    if explicit_python and Path(explicit_python).exists() and os.access(explicit_python, os.X_OK):
+        return explicit_python
+
+    return sys.executable
+
+
 def _launch_paper_bot(
     symbol: str,
     timeframe_minutes: int,
@@ -224,6 +315,8 @@ def _launch_paper_bot(
     Path("logs").mkdir(exist_ok=True)
     log_path = Path("logs") / f"paper_{symbol}_M{timeframe_minutes}.log"
 
+    runtime_env = _prepare_bot_runtime(symbol, timeframe_minutes)
+
     # Build env: dotenv+os.environ base  →  paper defaults  →  per-instrument
     env = {
         **base_env,
@@ -241,6 +334,7 @@ def _launch_paper_bot(
         "CTRADER_SYMBOL_ID":    str(symbol_id),
         "CTRADER_TIMEFRAME_MIN": str(timeframe_minutes),
         "CTRADER_QTY":          str(qty),
+        **runtime_env,
     }
     # Pass real starting equity when available so HUD balance reflects the
     # actual Pepperstone demo account (cTrader FIX doesn't expose it via
@@ -248,10 +342,11 @@ def _launch_paper_bot(
     if starting_equity is not None:
         env["CTRADER_STARTING_EQUITY"] = str(starting_equity)
 
-    cmd = [sys.executable, "-m", _BOT_MODULE]
+    python_exec = _resolve_python_executable(base_env)
+    cmd = [python_exec, "-m", _BOT_MODULE]
     LOG.info(
-        "Launching paper bot  %s M%d  →  %s  (symbol_id=%d, qty=%s)",
-        symbol, timeframe_minutes, log_path, symbol_id, qty,
+        "Launching paper bot  %s M%d  →  %s  (symbol_id=%d, qty=%s, python=%s)",
+        symbol, timeframe_minutes, log_path, symbol_id, qty, python_exec,
     )
 
     with open(log_path, "a") as log_fh:
@@ -328,6 +423,11 @@ def launch_paper_bots(
                 symbol, entry.get("timeframe_minutes", 0), pid,
             )
             continue
+        if pid:
+            LOG.warning("%s M%s — clearing stale paper_pid %s", symbol, entry.get("timeframe_minutes", "?"), pid)
+            entry["paper_pid"] = None
+            entry["paper_started_at"] = None
+            changed = True
 
         tf = entry.get("timeframe_minutes")
         if not tf:

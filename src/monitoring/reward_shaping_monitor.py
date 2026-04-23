@@ -95,8 +95,12 @@ class RewardShapingMonitor:
                 "risk_metrics_path", os.environ.get("REWARD_MONITOR_RISK_METRICS_PATH", "data/risk_metrics.json")
             )
         )
+        # Default output path is per-bot (symbol + timeframe keyed) so that
+        # concurrent bots do not clobber a shared file.  Callers can override
+        # via kwargs or REWARD_MONITOR_OUTPUT_PATH env var.
+        _default_output = f"data/reward_shaping_monitor_{self.symbol}_{self.timeframe}.json"
         self.output_path = Path(
-            self._legacy_kwargs.pop("output_path", os.environ.get("REWARD_MONITOR_OUTPUT_PATH", "data/reward_shaping_monitor.json"))
+            self._legacy_kwargs.pop("output_path", os.environ.get("REWARD_MONITOR_OUTPUT_PATH", _default_output))
         )
         self.last_run_ts = 0.0
         if self._legacy_kwargs:
@@ -224,6 +228,9 @@ class RewardShapingMonitor:
             return 0.0
         captures: list[float] = []
         for trade in trades:
+            if "capture_ratio" in trade:
+                captures.append(max(-1.0, min(1.0, float(trade.get("capture_ratio", 0.0) or 0.0))))
+                continue
             pnl = float(trade.get("pnl", 0.0) or 0.0)
             mfe = abs(float(trade.get("mfe", 0.0) or 0.0))
             denom = max(1e-9, mfe)

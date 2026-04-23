@@ -1,8 +1,8 @@
 # cTrader DDQN Bot - Documentation Index
 
-**Last Updated:** February 22, 2026  
+**Last Updated:** April 23, 2026  
 **Branch:** update-1.1-mfe-mae-tracking-v2  
-**System Status:** ✅ Operational — test suite green (2506 passed, 0 failed)
+**System Status:** ✅ Operational — test suite green
 
 ---
 
@@ -39,7 +39,7 @@ Core documentation that operators and developers reference frequently.
 
 | Document | Purpose | Audience | Freshness |
 |----------|---------|----------|-----------|
-| **[CURRENT_STATE.md](CURRENT_STATE.md)** | **Latest system status** | All | ✅ Feb 22 |
+| **[CURRENT_STATE.md](CURRENT_STATE.md)** | **Latest system status** | All | ✅ Apr 23 |
 | [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers | Current |
 | [MONITORING_GUIDE.md](MONITORING_GUIDE.md) | Health checks & alerts | Operators | Current |
 | [QUICKSTART.md](QUICKSTART.md) | Fast setup guide | New users | Current |
@@ -106,6 +106,10 @@ Day-to-day operational procedures.
 ---
 
 ## 🔄 Recent Changes
+
+### April 23, 2026 ✅ (HUD + docs sync)
+- **Updated:** HUD quick reference to 7-tab map, arrows/Tab navigation, dynamic RL floors in Training tab, market feed freshness in Market tab, and normalized capture notes in Trades tab
+- **Updated:** Root docs/instructions to reflect canonical timeframe labels (`M1/M5/M15/M30/M60/M240`)
 
 ### February 22, 2026 ✅ (Housekeeping)
 - **Fixed:** QuickFIX namespace-package type-annotation crash (`trade_manager_integration.py`) — 10 tests unblocked

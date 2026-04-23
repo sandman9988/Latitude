@@ -70,3 +70,20 @@ def test_compute_metrics_sets_unknown_timeframe_counter(tmp_path):
 
     assert hud._trade_log_unknown_timeframe_count == 1
     assert ("EURUSD", "M?", "live") in hud.metrics_cube
+
+
+def test_offline_status_normalized_accepts_completed_aliases():
+    hud = TabbedHUD()
+
+    assert hud._offline_status_normalized({"status": "completed"}) == "complete"
+    assert hud._offline_status_normalized({"status": "done"}) == "complete"
+    assert hud._offline_status_normalized({"status": "finished"}) == "complete"
+
+
+def test_offline_total_jobs_falls_back_to_results_length():
+    hud = TabbedHUD()
+    results = [{"symbol": "XAUUSD"}, {"symbol": "EURUSD"}, {"symbol": "BTCUSD"}]
+
+    assert hud._offline_total_jobs({"total_jobs": 0}, results) == 3
+    assert hud._offline_total_jobs({}, results) == 3
+    assert hud._offline_total_jobs({"total_jobs": 5}, results) == 5

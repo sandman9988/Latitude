@@ -6,6 +6,7 @@ _save_metrics details, and edge cases not in the original test file.
 
 import json
 import time
+
 import pytest
 
 from src.monitoring.production_monitor import (
@@ -115,7 +116,7 @@ class TestAlertDetails:
     def test_no_trade_alert_severity(self):
         mon = ProductionMonitor(alert_no_trade_hours=1.0, http_enabled=False)
         mon.update_metrics(last_trade_mins_ago=90)
-        assert any(a.severity == "warning" and a.category == "trade" for a in mon.active_alerts)
+        assert any(a.severity == "critical" and a.category == "trade" for a in mon.active_alerts)
 
     def test_drawdown_alert_severity(self):
         mon = ProductionMonitor(alert_drawdown_pct=0.05, http_enabled=False)

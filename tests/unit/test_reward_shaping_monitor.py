@@ -104,3 +104,17 @@ def test_mean_reverting_recommends_selectivity_and_wtl_penalty(tmp_path):
     assert "increase_selectivity_mean_reverting" in reasons
     assert "tighten_participation_mean_reverting" in reasons
     assert "penalize_winner_to_loser_paths" in reasons
+
+
+def test_avg_capture_prefers_normalized_capture_ratio(tmp_path):
+    monitor = RewardShapingMonitor(
+        symbol="XAUUSD",
+        timeframe="M5",
+        broker="default",
+        param_manager=LearnedParametersManager(persistence_path=tmp_path / "learned_parameters.json"),
+        trade_log_path=tmp_path / "missing_trade_log.jsonl",
+        decision_log_path=tmp_path / "missing_decision_log.json",
+        output_path=tmp_path / "reward_shaping_monitor.json",
+    )
+
+    assert monitor._avg_capture([{"pnl": 100.0, "mfe": 1.0, "capture_ratio": 0.25}]) == 0.25

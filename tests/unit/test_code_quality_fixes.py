@@ -138,6 +138,68 @@ class TestGetLiveQtyLogging:
         assert "Failed to read live qty" in mock_warn.call_args[0][0]
 
 
+class TestHarvesterCloseRewardUnits:
+    def test_close_reward_uses_point_pnl_against_point_mfe(self):
+        from src.core.ctrader_ddqn_paper import CTraderFixApp
+
+        bot = CTraderFixApp.__new__(CTraderFixApp)
+        bot.vol_cap = 0.05
+        bot.vpin_z_threshold = 2.5
+        bot.entry_var = 0.0
+        bot.entry_vpin_z = 0.0
+        bot.prev_harvester_state = np.array([1.0, 0.0], dtype=float)
+        bot.prev_exit_action = 1
+        bot.prev_mfe = 0.0
+        bot.prev_mae = 0.0
+        bot.bars = []
+        bot.entry_action = 1
+        bot.was_exploration_entry = False
+        bot.entry_imbalance = 0.0
+
+        class RewardSpy:
+            def __init__(self):
+                self.exit_pnl = None
+
+            def calculate_harvester_reward(self, **kwargs):
+                self.exit_pnl = kwargs["exit_pnl"]
+                return {"harvester_reward": -1.25}
+
+        reward_spy = RewardSpy()
+        bot.reward_shaper = reward_spy
+        harvester = MagicMock()
+        harvester.last_state = np.array([0.0, 1.0], dtype=float)
+        harvester.buffer = None
+        bot.policy = MagicMock()
+        bot.policy.harvester = harvester
+        bot.policy.current_regime = "TEST"
+        bot.policy.add_harvester_experience = MagicMock()
+        bot._bar_cache = MagicMock()
+
+        summary = {
+            "mfe": 0.004,
+            "mae": 0.001,
+            "winner_to_loser": False,
+            "bars_held": 5,
+            "bars_from_mfe_to_exit": 2,
+            "exit_time": "2026-04-23T00:00:00+00:00",
+        }
+
+        bot._add_harvester_experience_for_close(
+            summary=summary,
+            pnl=350.0,
+            entry_price=1.1000,
+            exit_price=1.1007,
+            pnl_pts=0.0007,
+            shaped_rewards={},
+            trigger_reward=0.0,
+        )
+
+        assert reward_spy.exit_pnl == pytest.approx(0.0007)
+        bot.policy.add_harvester_experience.assert_called_once()
+        _, kwargs = bot.policy.add_harvester_experience.call_args
+        assert kwargs["reward"] == pytest.approx(-1.25)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # DDQNNetwork optimizer load → logged
 # ══════════════════════════════════════════════════════════════════════════════
@@ -168,3 +230,56 @@ class TestDDQNOptimizerLoadLogging:
         assert net2.training_steps == 5
         # Should log warning about optimizer
         assert any("Skipping optimizer" in r.message for r in caplog.records)
+
+
+class TestLiveRiskTuner:
+    def test_updates_dynamic_floors_from_risk_manager(self):
+        from src.core.ctrader_ddqn_paper import CTraderFixApp
+
+        bot = CTraderFixApp.__new__(CTraderFixApp)
+        bot.entry_confidence = 0.72
+        bot._last_trigger_conf = 0.72
+        bot._last_harvester_conf = 0.61
+        bot._last_exit_confidence = 0.61
+        bot._entry_conf_dynamic_floor = 0.60
+        bot._exit_conf_dynamic_floor = 0.45
+        bot.symbol = "XAUUSD"
+        bot.timeframe_label = "M5"
+        bot.broker = "default"
+        bot.performance = MagicMock()
+        bot.performance.total_trades = 10
+        bot._estimate_account_equity = MagicMock(return_value=10025.0)
+        bot.param_manager = MagicMock()
+        bot.risk_manager = MagicMock()
+        bot.risk_manager.get_rl_recommended_thresholds.return_value = {
+            "entry_threshold": 0.66,
+            "exit_threshold": 0.50,
+            "reason": "test",
+        }
+
+        bot._update_risk_feedback_thresholds(pnl=15.0)
+
+        assert bot._entry_conf_dynamic_floor == pytest.approx(0.66)
+        assert bot._exit_conf_dynamic_floor == pytest.approx(0.50)
+        assert bot.risk_manager.update_decision_outcome.call_count == 3
+        bot.risk_manager.on_trade_complete.assert_called_once()
+        assert bot.param_manager.set_value.call_count >= 2
+
+    def test_exit_guard_blocks_close_below_dynamic_floor(self):
+        from src.core.ctrader_ddqn_paper import CTraderFixApp
+
+        bot = CTraderFixApp.__new__(CTraderFixApp)
+        bot._exit_conf_dynamic_floor = 0.55
+        bot._obc_max_loss_force_close = MagicMock(return_value=False)
+        bot._pending_closes = set()
+        bot.bars = []
+        bot.policy = MagicMock()
+        bot.policy.decide_exit.return_value = (1, 0.40)  # CLOSE, low confidence
+
+        action, conf, already = bot._obc_get_exit_action(
+            price=100.0, imbalance=0.0, depth_ratio=1.0, vpin_zscore=0.0, event_features={}
+        )
+
+        assert action == 0
+        assert conf == pytest.approx(0.40)
+        assert already is False

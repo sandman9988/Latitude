@@ -44,6 +44,15 @@ KURTOSIS_THRESHOLD_DEFAULT: float = KURTOSIS_BREAKER_THRESHOLD
 KURTOSIS_MIN_SAMPLES_DEFAULT: int = KURTOSIS_MIN_SAMPLES
 KURTOSIS_HISTORY_LIMIT: int = 100
 KURTOSIS_MIN_SAMPLE_SIZE: int = 4
+# Adaptive (quantile-based) kurtosis threshold — "low-hanging fruit" risk tuner.
+# The breaker learns the high-tail boundary of its *own* kurtosis readings
+# instead of relying on a global magic number.
+KURTOSIS_ADAPT_QUANTILE: float = 0.90
+KURTOSIS_ADAPT_MIN_READINGS: int = 50
+KURTOSIS_ADAPT_READING_LIMIT: int = 500
+KURTOSIS_ADAPT_EMA_ALPHA: float = 0.10
+KURTOSIS_ADAPT_MIN_BOUND: float = 2.5
+KURTOSIS_ADAPT_MAX_BOUND: float = 10.0
 DRAWDOWN_DEFAULT_THRESHOLDS: dict[float, float] = {0.05: 0.9, 0.10: 0.75, 0.15: 0.5, 0.20: 0.0}
 DRAWDOWN_COOLDOWN_MINUTES: int = 240
 CONSEC_LOSSES_DEFAULT_MAX: int = CONSEC_LOSSES_MAX
@@ -182,23 +191,72 @@ class KurtosisBreaker:
     High kurtosis = extreme moves more likely = danger
     """
 
-    def __init__(self, threshold: float = KURTOSIS_THRESHOLD_DEFAULT, min_samples: int = KURTOSIS_MIN_SAMPLES_DEFAULT):
+    def __init__(
+        self,
+        threshold: float = KURTOSIS_THRESHOLD_DEFAULT,
+        min_samples: int = KURTOSIS_MIN_SAMPLES_DEFAULT,
+        adaptive: bool = False,
+        adapt_quantile: float = KURTOSIS_ADAPT_QUANTILE,
+        adapt_min_readings: int = KURTOSIS_ADAPT_MIN_READINGS,
+        adapt_bounds: tuple[float, float] = (KURTOSIS_ADAPT_MIN_BOUND, KURTOSIS_ADAPT_MAX_BOUND),
+        adapt_ema_alpha: float = KURTOSIS_ADAPT_EMA_ALPHA,
+    ):
         """
         Args:
             threshold: Maximum acceptable kurtosis (normal distribution = 3)
-            min_samples: Minimum samples before breaker activates
+            min_samples: Minimum trade-return samples before breaker activates
+            adaptive: When True, the active trip threshold is learned from the
+                `adapt_quantile` (default 0.90) of this breaker's own kurtosis
+                readings. The seed ``threshold`` is used as a cold-start fallback
+                and EMA-smoothed toward the learned quantile.
+            adapt_quantile: Quantile of the kurtosis-reading distribution that
+                defines the trip threshold (0.90 = top-decile tail).
+            adapt_min_readings: Number of kurtosis readings required before the
+                learned threshold replaces the cold-start default.
+            adapt_bounds: (min, max) soft clamp for the learned threshold.
+            adapt_ema_alpha: Smoothing factor applied when updating the active
+                threshold toward the quantile target. Small alpha → less twitchy.
         """
         self.threshold = threshold
+        self._seed_threshold = threshold
         self.min_samples = min_samples
         self.returns: deque[float] = deque(maxlen=KURTOSIS_HISTORY_LIMIT)
         self.state = BreakerState(
             name="Kurtosis", threshold=threshold, cooldown_minutes=DEFAULT_BREAKER_COOLDOWN_MINUTES
         )
+        # --- Adaptive-quantile plumbing (low-hanging-fruit risk tuner) ---
+        self.adaptive: bool = bool(adaptive)
+        self._adapt_quantile: float = float(adapt_quantile)
+        self._adapt_min_readings: int = int(adapt_min_readings)
+        self._adapt_min_bound: float = float(adapt_bounds[0])
+        self._adapt_max_bound: float = float(adapt_bounds[1])
+        self._adapt_ema_alpha: float = float(adapt_ema_alpha)
+        self._kurtosis_readings: deque[float] = deque(maxlen=KURTOSIS_ADAPT_READING_LIMIT)
 
     def update(self, trade_return: float):
         """Add a trade return"""
         self.returns.append(trade_return)
         # deque(maxlen=...) handles eviction automatically
+
+    def _record_reading_and_adapt(self, kurtosis: float) -> None:
+        """Store a kurtosis reading; if adaptive, ease ``self.threshold`` toward
+        the configured quantile of recent readings.
+
+        Safety: only adapts after `adapt_min_readings` have accumulated, and the
+        target is soft-clamped to the configured bounds.  The EMA step prevents
+        a single outlier reading from flipping the breaker state.
+        """
+        if not np.isfinite(kurtosis) or kurtosis <= 0:
+            return
+        self._kurtosis_readings.append(float(kurtosis))
+        if not self.adaptive:
+            return
+        if len(self._kurtosis_readings) < self._adapt_min_readings:
+            return
+        target = float(np.quantile(list(self._kurtosis_readings), self._adapt_quantile))
+        target = max(self._adapt_min_bound, min(self._adapt_max_bound, target))
+        # EMA toward target (low alpha → slow drift, avoids oscillation)
+        self.threshold = (1.0 - self._adapt_ema_alpha) * self.threshold + self._adapt_ema_alpha * target
 
     def check(self) -> bool:
         """Check if breaker should trip"""
@@ -206,6 +264,7 @@ class KurtosisBreaker:
             return False
 
         kurtosis = self._calculate_kurtosis()
+        self._record_reading_and_adapt(kurtosis)
 
         if kurtosis > self.threshold:
             self.state.trip(
@@ -388,6 +447,8 @@ class CircuitBreakerManager:
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
         auto_close_on_trip: bool = False,
+        kurtosis_adaptive: bool = True,
+        kurtosis_persist_every: int = 10,
     ):
         """
         Initialize all circuit breakers.
@@ -399,6 +460,12 @@ class CircuitBreakerManager:
             max_consecutive_losses: Override for loss streak limit
             symbol/timeframe/broker: Context for learned parameters
             param_manager: LearnedParametersManager instance
+            kurtosis_adaptive: Enable quantile-based kurtosis threshold that
+                learns per (symbol, timeframe) from the breaker's own history.
+                The seed value from LearnedParameters is the cold-start fallback.
+            kurtosis_persist_every: Number of trades between writes of the
+                learned kurtosis threshold back to LearnedParameters (reduces
+                disk churn; set <=0 to disable persistence).
         """
         self.symbol = symbol
         self.timeframe = timeframe
@@ -420,7 +487,12 @@ class CircuitBreakerManager:
         self.max_consecutive_losses = int(round(self.max_consecutive_losses))
 
         self.sortino_breaker = SortinoBreaker(threshold=self.sortino_threshold)
-        self.kurtosis_breaker = KurtosisBreaker(threshold=self.kurtosis_threshold)
+        self.kurtosis_breaker = KurtosisBreaker(
+            threshold=self.kurtosis_threshold,
+            adaptive=bool(kurtosis_adaptive),
+        )
+        self._kurtosis_persist_every = int(kurtosis_persist_every)
+        self._kurtosis_trades_since_persist = 0
         self.drawdown_breaker = DrawdownBreaker(thresholds={**DRAWDOWN_DEFAULT_THRESHOLDS, self.max_drawdown: 0.0})
         self.consecutive_losses_breaker = ConsecutiveLossesBreaker(max_losses=self.max_consecutive_losses)
 
@@ -495,6 +567,43 @@ class CircuitBreakerManager:
         # Update win/loss streak
         self.consecutive_losses_breaker.update(is_win=pnl > 0)
 
+        # Persist adaptive kurtosis threshold back to LearnedParameters so the
+        # learned value survives restarts. Throttled by `kurtosis_persist_every`
+        # to avoid writing after every trade.
+        self._maybe_persist_kurtosis_threshold()
+
+    def _maybe_persist_kurtosis_threshold(self) -> None:
+        """Write the currently-learned kurtosis threshold to LearnedParameters.
+
+        Only runs when the kurtosis breaker is in adaptive mode AND a
+        param_manager is attached AND the throttle interval has elapsed.
+        Uses ``set_value`` (not ``update``) to bypass the momentum sigmoid —
+        we already smooth via the EMA inside the breaker.
+        """
+        if not self.param_manager:
+            return
+        if not getattr(self.kurtosis_breaker, "adaptive", False):
+            return
+        if self._kurtosis_persist_every <= 0:
+            return
+        self._kurtosis_trades_since_persist += 1
+        if self._kurtosis_trades_since_persist < self._kurtosis_persist_every:
+            return
+        self._kurtosis_trades_since_persist = 0
+        try:
+            learned = float(self.kurtosis_breaker.threshold)
+            self.param_manager.set_value(
+                self.symbol,
+                "kurtosis_threshold",
+                learned,
+                timeframe=self.timeframe,
+                broker=self.broker,
+            )
+            # Keep manager-level cache in sync for status/logging
+            self.kurtosis_threshold = learned
+        except (KeyError, ValueError, TypeError, RuntimeError) as exc:
+            LOG.debug("[CIRCUIT-BREAKERS] Failed to persist learned kurtosis threshold: %s", exc)
+
     def check_all(self) -> bool:
         """
         Check all circuit breakers
@@ -502,6 +611,9 @@ class CircuitBreakerManager:
         Returns:
             True if ANY breaker is tripped
         """
+        if self.is_manual_reset_cooldown_active():
+            return False
+
         any_tripped = False
 
         for breaker in self.breakers:
@@ -657,6 +769,8 @@ class CircuitBreakerManager:
             }),
             "kurtosis": _breaker_dict(self.kurtosis_breaker.state, {
                 "returns": list(self.kurtosis_breaker.returns),
+                "threshold": float(self.kurtosis_breaker.threshold),
+                "readings": list(getattr(self.kurtosis_breaker, "_kurtosis_readings", [])),
             }),
             "drawdown": _breaker_dict(self.drawdown_breaker.state, {
                 "current_drawdown": self.drawdown_breaker.current_drawdown,
@@ -713,6 +827,19 @@ class CircuitBreakerManager:
             if "kurtosis" in state:
                 _restore_breaker(self.kurtosis_breaker.state, state["kurtosis"])
                 self.kurtosis_breaker.returns = deque(state["kurtosis"].get("returns", []), maxlen=100)
+                # Restore adaptive-threshold plumbing if it was serialised.
+                _saved_thr = state["kurtosis"].get("threshold")
+                if _saved_thr is not None:
+                    try:
+                        self.kurtosis_breaker.threshold = float(_saved_thr)
+                    except (TypeError, ValueError):
+                        pass
+                _saved_readings = state["kurtosis"].get("readings", [])
+                if _saved_readings:
+                    self.kurtosis_breaker._kurtosis_readings = deque(
+                        (float(r) for r in _saved_readings if np.isfinite(r)),
+                        maxlen=KURTOSIS_ADAPT_READING_LIMIT,
+                    )
 
             # Restore drawdown breaker
             if "drawdown" in state:

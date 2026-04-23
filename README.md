@@ -1,6 +1,6 @@
 # cTrader DDQN Trading Bot
 
-A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network (DDQN) reinforcement learning with a dual-agent architecture (TriggerAgent + HarvesterAgent) to trade XAUUSD (Gold) on M5 timeframes.
+A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network (DDQN) reinforcement learning with a dual-agent architecture (TriggerAgent + HarvesterAgent) to trade XAUUSD (Gold) across a multi-timeframe fleet (M1, M5, M15, M30, M60, M240).
 
 ## 🚀 Quick Start
 
@@ -21,7 +21,7 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 
 **System Status & Recent Changes:**
 
-- 📄 [**CURRENT_STATE.md**](docs/CURRENT_STATE.md) - Latest fixes, parameters, and system health (updated Mar 8, 2026)
+- 📄 [**CURRENT_STATE.md**](docs/CURRENT_STATE.md) - Latest fixes, parameters, and system health
 - 📁 [**INDEX.md**](docs/INDEX.md) - Complete navigation index for all documentation files
 
 **Core Documentation:**
@@ -35,7 +35,7 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 ## Features
 
 - **Dual FIX Sessions**: Separate QUOTE and TRADE sessions for market data and order execution
-- **M5 Bar Building**: Constructs 5-minute candlestick bars from best bid/ask prices
+- **Timeframe-Aware Bar Building**: Constructs candlestick bars from best bid/ask prices using each bot's configured timeframe
 - **DDQN Policy**: Optional deep reinforcement learning model for trading decisions
 - **Fallback Strategy**: Simple moving average crossover strategy when no model is loaded
 - **Position Management**: Automatic position tracking and target-based order execution

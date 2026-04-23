@@ -120,6 +120,22 @@ class TestHarvesterQuality:
         )
         assert r["timing_penalty"] == pytest.approx(0.0)
 
+    def test_high_capture_reward_beats_weak_capture_penalty(self, shaper):
+        high = shaper.calculate_harvester_reward(
+            exit_pnl=0.0035, mfe=0.004, mae=0.0005,
+            was_wtl=False, bars_held=10,
+        )
+        weak = shaper.calculate_harvester_reward(
+            exit_pnl=0.0008, mfe=0.004, mae=0.0025,
+            was_wtl=False, bars_held=10,
+        )
+
+        assert high["capture_ratio"] == pytest.approx(0.875)
+        assert high["harvester_reward"] > 0
+        assert weak["capture_ratio"] == pytest.approx(0.2)
+        assert weak["harvester_reward"] < 0
+        assert high["harvester_reward"] > weak["harvester_reward"]
+
 
 # ---------------------------------------------------------------------------
 # Trigger reward – quality labels

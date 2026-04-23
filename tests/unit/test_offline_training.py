@@ -26,6 +26,7 @@ from src.training.historical_loader import (
     load_jsonl_cache,
     sliding_windows,
 )
+import train_offline as to
 from src.training.offline_trainer import TrainResult, z_omega
 
 
@@ -400,6 +401,25 @@ class TestBarExperienceCache:
         )
         rec = json.loads(cache_path.read_text().strip())
         assert rec["version"] == SCHEMA_VERSION
+
+
+class TestRetrainEligibility:
+
+    def test_threshold_mode_retries_below_threshold(self):
+        assert to._retrain_eligible({"z_omega": 0.9, "error": None}, threshold=1.0, negative_only=False)
+
+    def test_threshold_mode_skips_at_or_above_threshold(self):
+        assert not to._retrain_eligible({"z_omega": 1.0, "error": None}, threshold=1.0, negative_only=False)
+        assert not to._retrain_eligible({"z_omega": 1.2, "error": None}, threshold=1.0, negative_only=False)
+
+    def test_negative_only_mode_retries_only_negative(self):
+        assert to._retrain_eligible({"z_omega": -0.01, "error": None}, threshold=1.0, negative_only=True)
+        assert not to._retrain_eligible({"z_omega": 0.0, "error": None}, threshold=1.0, negative_only=True)
+        assert not to._retrain_eligible({"z_omega": 0.5, "error": None}, threshold=1.0, negative_only=True)
+
+    def test_never_retries_missing_or_errored_results(self):
+        assert not to._retrain_eligible(None, threshold=1.0, negative_only=False)
+        assert not to._retrain_eligible({"z_omega": -1.0, "error": "boom"}, threshold=1.0, negative_only=True)
 
 
 # ── discover_jobs (from train_offline) ────────────────────────────────────────
