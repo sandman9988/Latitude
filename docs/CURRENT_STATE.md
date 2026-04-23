@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** April 16, 2026 (runway net/gross refactor, calibration wiring, targeted validations)  
+**Last Updated:** April 23, 2026 (multi-timeframe paper fleet under universe watcher)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -9,17 +9,27 @@
 
 ## 🎯 Executive Summary
 
-XAUUSD M5 trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format, same RewardShaper). Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics. Defense-in-depth audit complete — max-loss enforcement hardened, paper fill bug fixed, circuit breaker reset fixed.
+XAUUSD trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode, running as a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) supervised by `run_universe.py --watch`. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format, same RewardShaper). Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics. Defense-in-depth audit complete — max-loss enforcement hardened, paper fill bug fixed, circuit breaker reset fixed.
 
 **Test Suite:** 2,221 passing, 0 skipped, 0 failures (~35 s)  
 **Production Lines:** ~41,300
 
 **Trading Status:**
 - **Symbol:** XAUUSD (Gold Spot)
-- **Timeframe:** M5 (5-minute bars)
+- **Timeframes:** M1, M5, M15, M30, M60, M240 (one bot per timeframe, isolated FIX sessions)
+- **Supervisor:** `run_universe.py --watch` (30 s poll, auto-restarts crashed bots)
+- **Registry:** `data/universe.json` (schema: `{"version": 1, "instruments": [ ... ]}`)
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
-- **Session:** QUOTE + TRADE dual FIX sessions
+- **Session:** QUOTE + TRADE dual FIX sessions (one pair per bot)
+
+**Fleet operations cheat-sheet:**
+```bash
+./run.sh universe       # (re)start fleet + supervisor
+./run.sh status         # list running bots / watcher
+./run.sh --hud-only     # attach TUI HUD (interactive terminal required)
+pkill -f run_universe ; pkill -f ctrader_ddqn_paper   # stop everything
+```
 
 ---
 

@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — cTrader DDQN Trading Bot
 
-> Last updated: 2026-04-16
+> Last updated: 2026-04-23
 > Read MASTER_HANDBOOK.md and docs/CURRENT_STATE.md before making structural changes.
 
 ---
@@ -8,7 +8,7 @@
 ## Project Identity
 
 Dual-agent DDQN reinforcement learning trading system connected to cTrader via FIX 4.4 protocol.
-Active paper trading XAUUSD M5, Pepperstone demo. Python 3.12, ~41 300 production lines, 2 221 tests passing. Validation remains green with a known log/environment-dependent correlation caveat for runway diagnostics.
+Active paper trading XAUUSD on a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) against a Pepperstone demo, supervised by `run_universe.py --watch`. Python 3.12, ~41 300 production lines, 2 221 tests passing. Validation remains green with a known log/environment-dependent correlation caveat for runway diagnostics.
 
 ---
 
@@ -141,6 +141,33 @@ When reading trade records for convergence, HUD should resolve runway points in 
 ### Stats epoch (`[e]` key)
 
 Configurable cutoff date stored in `data/stats_epoch.json`. Trades before the epoch are excluded from all Performance tab metrics (period rows, mode breakdown, trade quality, edge quality) but the raw `trade_log.jsonl` is never modified. Useful for excluding old losing periods that drag down current performance assessment.
+
+---
+
+## Operating the paper-bot fleet
+
+The paper-trading workload is a **fleet of per-timeframe bots** supervised by a single watcher. Each entry in `data/universe.json` (a list under `instruments`) becomes a dedicated `src.core.ctrader_ddqn_paper` process with an isolated FIX session directory and log file (`logs/paper_<SYMBOL>_M<TF>.log`).
+
+| Action                        | Command                                                            |
+| ----------------------------- | ------------------------------------------------------------------ |
+| Start / restart whole fleet   | `./run.sh universe`                                                |
+| Show running bots + watcher   | `./run.sh status`                                                  |
+| Kill everything               | `pkill -f run_universe ; pkill -f ctrader_ddqn_paper`              |
+| Attach HUD to running fleet   | `./run.sh --hud-only` (interactive terminal required)              |
+| Manually promote an instrument | `python3 run_universe.py --promote <SYMBOL> --timeframe <MIN>`    |
+
+Watcher semantics:
+
+- Polls every 30 s, re-launches any bot whose PID disappeared, clears stale `paper_pid` fields.
+- Adds new instruments from `data/universe.json` as they reach `stage: PAPER`.
+- Writes supervisor logs to `logs/run_universe.log`.
+- Runs bots with `start_new_session=True` so HUD/terminal signals do not propagate.
+
+Agent caveats:
+
+- The HUD (`src.monitoring.hud_tabbed`) is a **curses TUI** — it cannot be rendered from a non-interactive agent shell. Summarise from `./run.sh status`, `logs/paper_*.log`, and `data/universe.json` instead of trying to launch it in the background.
+- Do **not** edit `data/universe.json` as a dict — the canonical schema is `{"version": 1, "instruments": [ {...}, ... ]}` (list of entries). Any status/diagnostic helper must iterate the list.
+- Before stopping bots for a hotfix, prefer targeted `pkill -f "paper_<SYMBOL>_M<TF>"` when only one timeframe needs recycling; the watcher will relaunch it on the next poll.
 
 ---
 
