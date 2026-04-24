@@ -5226,15 +5226,16 @@ class CTraderFixApp(fix.Application):
             event_features=event_features,
         )
         _base_floor = float(getattr(self.policy.trigger, "confidence_floor", 0.55))
-        _cal_err = float(getattr(self, "_conf_calib_err_ema", 0.0) or 0.0)
-        _uplift = min(max(_cal_err - 0.20, 0.0), 0.15)
-        _runway_penalty = min(max(0.65 - float(getattr(self, "_runway_accuracy_ema", 0.5)), 0.0), 0.10)
-        _dyn_floor = max(_base_floor + _uplift + _runway_penalty, float(self._entry_conf_dynamic_floor or 0.0))
+        _dyn_floor, _guard_meta = self._compute_dynamic_entry_floor(_base_floor)
         if action in (ACTION_LONG, ACTION_SHORT) and confidence < _dyn_floor:
             LOG.info(
                 "[ENTRY_GUARD] blocked by dynamic floor: conf=%.3f < dyn_floor=%.3f "
-                "(base=%.3f calib_err=%.3f uplift=%.3f runway_penalty=%.3f rl_floor=%.3f)",
-                confidence, _dyn_floor, _base_floor, _cal_err, _uplift, _runway_penalty, self._entry_conf_dynamic_floor,
+                "(base=%.3f calib_err=%.3f uplift=%.3f runway_penalty=%.3f "
+                "rl_floor=%.3f rl_cap=%.3f trades=%d min_samples=%d)",
+                confidence, _dyn_floor, _base_floor,
+                _guard_meta["cal_err"], _guard_meta["uplift"], _guard_meta["runway_penalty"],
+                _guard_meta["rl_floor_raw"], _guard_meta["rl_floor_capped"],
+                _guard_meta["total_trades"], _guard_meta["min_samples"],
             )
             action = 0
             runway = 0.0
@@ -5266,6 +5267,45 @@ class CTraderFixApp(fix.Application):
             q_spread=getattr(self.policy.trigger, "_last_q_spread", 0.0),
         )
         self._obc_record_entry_state(action, confidence, runway, vpin_zscore, imbalance)
+
+    def _compute_dynamic_entry_floor(self, base_floor: float) -> tuple[float, dict]:
+        """Compute the runtime dynamic entry confidence floor.
+
+        The extra uplift/penalty terms are sample-gated to avoid overreacting
+        when calibration/runway metrics are still noisy.
+        """
+        total_trades = int(getattr(getattr(self, "performance", None), "total_trades", 0) or 0)
+        min_samples = max(1, int(round(self._lp_get("entry_guard_min_trade_samples", 40.0))))
+        cal_err = float(getattr(self, "_conf_calib_err_ema", 0.0) or 0.0)
+        runway_acc = float(getattr(self, "_runway_accuracy_ema", 0.5) or 0.5)
+
+        cal_start = self._lp_get("entry_guard_calib_err_start", 0.30)
+        uplift_cap = self._lp_get("entry_guard_calib_uplift_cap", 0.08)
+        runway_target = self._lp_get("entry_guard_runway_acc_target", 0.60)
+        runway_cap = self._lp_get("entry_guard_runway_penalty_cap", 0.05)
+        rl_extra_cap = self._lp_get("entry_guard_rl_floor_extra_cap", 0.10)
+
+        if total_trades < min_samples:
+            uplift = 0.0
+            runway_penalty = 0.0
+        else:
+            uplift = min(max(cal_err - cal_start, 0.0), max(0.0, uplift_cap))
+            runway_penalty = min(max(runway_target - runway_acc, 0.0), max(0.0, runway_cap))
+
+        rl_floor_raw = float(getattr(self, "_entry_conf_dynamic_floor", 0.0) or 0.0)
+        rl_floor_capped = min(rl_floor_raw, float(base_floor) + max(0.0, rl_extra_cap))
+        dyn_floor = max(float(base_floor) + uplift + runway_penalty, rl_floor_capped)
+
+        return float(dyn_floor), {
+            "cal_err": cal_err,
+            "uplift": uplift,
+            "runway_penalty": runway_penalty,
+            "runway_acc": runway_acc,
+            "rl_floor_raw": rl_floor_raw,
+            "rl_floor_capped": rl_floor_capped,
+            "total_trades": total_trades,
+            "min_samples": min_samples,
+        }
         self._obc_add_no_entry_experience(action)
 
         # ── 3. Gate checks — block execution but NOT experience recording ───

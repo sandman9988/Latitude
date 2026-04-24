@@ -2295,7 +2295,7 @@ class TabbedHUD:
         tf_label = r.get("label", f"M{r.get('timeframe_minutes', '?')}")
         jstatus = r.get("status", "queued")
         jcol, jbadge = self._offline_job_status(jstatus)
-        zo_str = self._offline_job_zo_str(r.get("z_omega"), jstatus)
+        zo_str = self._offline_job_zo_str(r.get("z_omega"), jstatus, r.get("val_trades"))
         detail = self._offline_job_detail(jstatus, r)
         row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}{_ANSI_RST}  {detail}  {zo_str}"
         if jstatus == "error" and r.get("error"):
@@ -2312,10 +2312,16 @@ class TabbedHUD:
             return _ANSI_Y, "running  "
         return _ANSI_DIM, "queued   "
 
-    def _offline_job_zo_str(self, zo: float | None, status: str) -> str:
+    def _offline_job_zo_str(
+        self, zo: float | None, status: str, val_trades: int | None = None
+    ) -> str:
         """Render ZOmega column for offline job row."""
         if zo is None or status != "done":
             return f"{_ANSI_DIM}{'—':>8}{_ANSI_RST}"
+        # ZOmega is intentionally forced to 0.0 by offline trainer when
+        # validation trades are insufficient (<5); show this explicitly.
+        if int(val_trades or 0) < 5:
+            return f"{_ANSI_DIM}{'n/a<5':>8}{_ANSI_RST}"
         if zo >= 1.0:
             zo_col = _ANSI_G
         elif zo >= Z_OMEGA_OFFLINE_WARM_MIN:

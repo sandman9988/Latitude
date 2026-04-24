@@ -15,6 +15,13 @@ from src.persistence.trade_log_reader import read_all_trades
 
 LOG = logging.getLogger(__name__)
 _CAPTURE_EFFICIENCY_FLOOR = 0.45
+_QUALITY_MIN_SHORT_TRADES = 20
+_QUALITY_MIN_BASELINE_TRADES = 80
+_QUALITY_PF_DROP_PCT = -0.40
+_QUALITY_PNL_PER_TRADE_DROP_PCT = -0.35
+_QUALITY_CAPTURE_DROP_PCT = -0.15
+_QUALITY_WINRATE_DROP_PCT = -0.06
+_QUALITY_TRADES_PER_DAY_SPIKE_PCT = 0.20
 
 
 def _parse_iso_ts(value: str | None) -> datetime | None:
@@ -81,6 +88,33 @@ class RewardShapingMonitor:
             "target_mean_reverting_participation", target_mean_reverting_participation
         )
         self.target_mean_reverting_participation = max(0.0, min(1.0, float(target_mean_reverting_participation)))
+        self.compare_short_window_hours = self._env_int(
+            "REWARD_MONITOR_COMPARE_SHORT_WINDOW_HOURS",
+            default=24,
+            min_value=6,
+            max_value=72,
+        )
+        self.compare_short_window_hours = int(
+            self._legacy_kwargs.pop("compare_short_window_hours", self.compare_short_window_hours)
+        )
+        self.compare_baseline_7d_days = self._env_int(
+            "REWARD_MONITOR_COMPARE_BASELINE_7D_DAYS",
+            default=7,
+            min_value=2,
+            max_value=30,
+        )
+        self.compare_baseline_7d_days = int(
+            self._legacy_kwargs.pop("compare_baseline_7d_days", self.compare_baseline_7d_days)
+        )
+        self.compare_baseline_30d_days = self._env_int(
+            "REWARD_MONITOR_COMPARE_BASELINE_30D_DAYS",
+            default=30,
+            min_value=7,
+            max_value=120,
+        )
+        self.compare_baseline_30d_days = int(
+            self._legacy_kwargs.pop("compare_baseline_30d_days", self.compare_baseline_30d_days)
+        )
 
         self.trade_log_path = Path(
             self._legacy_kwargs.pop("trade_log_path", os.environ.get("REWARD_MONITOR_TRADE_LOG_PATH", "data/trade_log.jsonl"))
@@ -105,6 +139,45 @@ class RewardShapingMonitor:
         self.last_run_ts = 0.0
         if self._legacy_kwargs:
             LOG.warning("[REWARD_MONITOR] Ignoring unsupported init kwargs: %s", sorted(self._legacy_kwargs.keys()))
+
+    def _timeframe_minutes(self) -> int | None:
+        text = str(self.timeframe or "").strip().upper()
+        if not text:
+            return None
+        if text.startswith("M") and text[1:].isdigit():
+            return int(text[1:])
+        if text.startswith("H") and text[1:].isdigit():
+            return int(text[1:]) * 60
+        if text == "D1":
+            return 1440
+        if text == "W1":
+            return 10080
+        return None
+
+    def _trade_matches_scope(self, trade: dict) -> bool:
+        sym = str(trade.get("symbol", "") or "").upper()
+        if sym != self.symbol.upper():
+            return False
+        target_tf = self._timeframe_minutes()
+        if target_tf is None:
+            return True
+        try:
+            tfm = int(trade.get("timeframe_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            tfm = 0
+        if tfm > 0:
+            return tfm == target_tf
+        tf_label = str(trade.get("timeframe", "") or "").strip().upper()
+        if tf_label:
+            if tf_label.startswith("M") and tf_label[1:].isdigit():
+                return int(tf_label[1:]) == target_tf
+            if tf_label.startswith("H") and tf_label[1:].isdigit():
+                return int(tf_label[1:]) * 60 == target_tf
+            if tf_label == "D1":
+                return target_tf == 1440
+            if tf_label == "W1":
+                return target_tf == 10080
+        return False
 
     def _env_int(self, key: str, default: int, min_value: int, max_value: int) -> int:
         raw = os.environ.get(key, "").strip()
@@ -140,7 +213,8 @@ class RewardShapingMonitor:
         now_ts = now_ts or time.time()
         now_dt = datetime.fromtimestamp(now_ts, tz=UTC)
         window_start = now_dt.timestamp() - 3600
-        trades = read_all_trades(self.trade_log_path)
+        all_trades = read_all_trades(self.trade_log_path)
+        trades = [t for t in all_trades if self._trade_matches_scope(t)]
         hourly_trades = [t for t in trades if self._trade_in_window(t, window_start)]
         opportunity_count = self._count_opportunities(window_start)
         regime = self._resolve_regime(current_regime)
@@ -148,12 +222,14 @@ class RewardShapingMonitor:
         trade_count = len(hourly_trades)
         avg_capture = self._avg_capture(hourly_trades)
         winner_to_loser_count = sum(1 for tr in hourly_trades if bool(tr.get("winner_to_loser", False)))
+        window_comparison = self._build_window_comparison(now_dt, trades)
         suggestions = self._build_suggestions(
             regime_bucket=regime_bucket,
             trade_count=trade_count,
             opportunity_count=opportunity_count,
             avg_capture=avg_capture,
             winner_to_loser_count=winner_to_loser_count,
+            window_comparison=window_comparison,
         )
         payload = {
             "timestamp": now_dt.isoformat(),
@@ -167,6 +243,7 @@ class RewardShapingMonitor:
             "winner_to_loser_count": winner_to_loser_count,
             "target_trending_participation": self.target_trending_participation,
             "target_mean_reverting_participation": self.target_mean_reverting_participation,
+            "window_comparison": window_comparison,
             "recommendations": [s.__dict__ for s in suggestions],
         }
         self._atomic_write(payload)
@@ -237,6 +314,72 @@ class RewardShapingMonitor:
             captures.append(max(-1.0, min(1.0, pnl / denom)))
         return float(sum(captures) / len(captures))
 
+    def _window_metrics(self, trades: list[dict]) -> dict[str, float]:
+        count = len(trades)
+        if count <= 0:
+            return {
+                "trades": 0,
+                "win_rate": 0.0,
+                "pnl_total": 0.0,
+                "pnl_per_trade": 0.0,
+                "profit_factor": 0.0,
+                "avg_capture_efficiency": 0.0,
+            }
+        pnl_values = [float(t.get("pnl", 0.0) or 0.0) for t in trades]
+        gross_profit = sum(v for v in pnl_values if v > 0.0)
+        gross_loss = sum(v for v in pnl_values if v < 0.0)
+        if gross_loss < 0.0:
+            profit_factor = gross_profit / abs(gross_loss)
+        elif gross_profit > 0.0:
+            # JSON payloads are written with allow_nan=False, so keep finite.
+            profit_factor = 999.0
+        else:
+            profit_factor = 0.0
+        wins = sum(1 for v in pnl_values if v > 0.0)
+        avg_capture = self._avg_capture(trades)
+        return {
+            "trades": float(count),
+            "win_rate": wins / count,
+            "pnl_total": sum(pnl_values),
+            "pnl_per_trade": sum(pnl_values) / count,
+            "profit_factor": profit_factor,
+            "avg_capture_efficiency": avg_capture,
+        }
+
+    @staticmethod
+    def _relative_change(current: float, baseline: float) -> float | None:
+        if baseline == 0.0:
+            return None
+        return (current - baseline) / abs(baseline)
+
+    def _build_window_comparison(self, now_dt: datetime, trades: list[dict]) -> dict:
+        short_start = now_dt.timestamp() - (self.compare_short_window_hours * 3600)
+        b7_start = now_dt.timestamp() - (self.compare_baseline_7d_days * 86400)
+        b30_start = now_dt.timestamp() - (self.compare_baseline_30d_days * 86400)
+        short_trades = [t for t in trades if self._trade_in_window(t, short_start)]
+        base7_trades = [t for t in trades if self._trade_in_window(t, b7_start)]
+        base30_trades = [t for t in trades if self._trade_in_window(t, b30_start)]
+        short_m = self._window_metrics(short_trades)
+        base7_m = self._window_metrics(base7_trades)
+        base30_m = self._window_metrics(base30_trades)
+
+        def _delta_map(base: dict[str, float]) -> dict[str, float | None]:
+            return {
+                k: self._relative_change(float(short_m.get(k, 0.0)), float(base.get(k, 0.0)))
+                for k in ("win_rate", "pnl_per_trade", "profit_factor", "avg_capture_efficiency")
+            }
+
+        return {
+            "short_window_hours": self.compare_short_window_hours,
+            "baseline_7d_days": self.compare_baseline_7d_days,
+            "baseline_30d_days": self.compare_baseline_30d_days,
+            "short_window": short_m,
+            "baseline_7d": base7_m,
+            "baseline_30d": base30_m,
+            "delta_vs_7d": _delta_map(base7_m),
+            "delta_vs_30d": _delta_map(base30_m),
+        }
+
     def _build_suggestions(
         self,
         regime_bucket: str,
@@ -244,6 +387,7 @@ class RewardShapingMonitor:
         opportunity_count: int,
         avg_capture: float,
         winner_to_loser_count: int,
+        window_comparison: dict | None = None,
     ) -> list[MonitorSuggestion]:
         out: list[MonitorSuggestion] = []
         if regime_bucket == "TRENDING":
@@ -270,10 +414,78 @@ class RewardShapingMonitor:
         if winner_to_loser_count > 0:
             out.append(self._suggest("reward_weight_wtl", 0.10, "penalize_winner_to_loser_paths"))
 
+        out.extend(self._build_quality_guard_suggestions(window_comparison))
+
         unique: dict[str, MonitorSuggestion] = {}
         for item in out:
-            unique[item.parameter] = item
+            existing = unique.get(item.parameter)
+            if existing is None:
+                unique[item.parameter] = item
+                continue
+            if abs(item.suggested - item.current) >= abs(existing.suggested - existing.current):
+                unique[item.parameter] = item
         return list(unique.values())
+
+    def _build_quality_guard_suggestions(self, window_comparison: dict | None) -> list[MonitorSuggestion]:
+        """Add conservative quality-guard adjustments from rolling window deltas."""
+        if not isinstance(window_comparison, dict):
+            return []
+        short = window_comparison.get("short_window", {}) or {}
+        b7 = window_comparison.get("baseline_7d", {}) or {}
+        d7 = window_comparison.get("delta_vs_7d", {}) or {}
+        d30 = window_comparison.get("delta_vs_30d", {}) or {}
+        short_trades = int(short.get("trades", 0) or 0)
+        base_trades = int(b7.get("trades", 0) or 0)
+        if short_trades < _QUALITY_MIN_SHORT_TRADES or base_trades < _QUALITY_MIN_BASELINE_TRADES:
+            return []
+
+        d_pf = d7.get("profit_factor")
+        d_ppt = d7.get("pnl_per_trade")
+        d_cap = d7.get("avg_capture_efficiency")
+        d_wr = d7.get("win_rate")
+        d_tpd = self._relative_change(
+            float(short.get("trades", 0.0) or 0.0),
+            float(b7.get("trades", 0.0) / max(1.0, float(window_comparison.get("baseline_7d_days", 7))) or 0.0),
+        )
+        out: list[MonitorSuggestion] = []
+
+        if (
+            isinstance(d_pf, (int, float))
+            and isinstance(d_ppt, (int, float))
+            and (
+                (d_pf <= _QUALITY_PF_DROP_PCT and d_ppt <= _QUALITY_PNL_PER_TRADE_DROP_PCT)
+                or d_ppt <= (_QUALITY_PNL_PER_TRADE_DROP_PCT - 0.20)
+            )
+        ):
+            out.append(self._suggest("entry_confidence_threshold", 0.03, "quality_guard_pf_pnl_drop"))
+            out.append(self._suggest("feasibility_threshold", 0.03, "quality_guard_pf_pnl_drop"))
+
+        if isinstance(d_cap, (int, float)) and d_cap <= _QUALITY_CAPTURE_DROP_PCT:
+            out.append(self._suggest("reward_weight_capture", 0.08, "quality_guard_capture_drop"))
+            out.append(self._suggest("reward_weight_opportunity", 0.05, "quality_guard_capture_drop"))
+
+        if (
+            isinstance(d_wr, (int, float))
+            and isinstance(d_tpd, (int, float))
+            and d_wr <= _QUALITY_WINRATE_DROP_PCT
+            and d_tpd >= _QUALITY_TRADES_PER_DAY_SPIKE_PCT
+        ):
+            out.append(self._suggest("entry_confidence_threshold", 0.02, "quality_guard_winrate_drop_with_overtrading"))
+
+        # If both 7d and 30d show strong improvement, gently relax selectivity.
+        if (
+            isinstance(d_pf, (int, float))
+            and isinstance(d_ppt, (int, float))
+            and isinstance(d30.get("profit_factor"), (int, float))
+            and isinstance(d30.get("pnl_per_trade"), (int, float))
+            and d_pf >= 0.35
+            and d_ppt >= 0.25
+            and d30.get("profit_factor") >= 0.20
+            and d30.get("pnl_per_trade") >= 0.15
+        ):
+            out.append(self._suggest("entry_confidence_threshold", -0.01, "quality_guard_sustained_improvement"))
+
+        return out
 
     def _suggest(self, param_name: str, delta: float, reason: str) -> MonitorSuggestion:
         current = float(

@@ -283,3 +283,48 @@ class TestLiveRiskTuner:
         assert action == 0
         assert conf == pytest.approx(0.40)
         assert already is False
+
+    def test_dynamic_entry_floor_is_sample_gated_and_caps_rl_floor(self):
+        from src.core.ctrader_ddqn_paper import CTraderFixApp
+
+        bot = CTraderFixApp.__new__(CTraderFixApp)
+        bot.performance = MagicMock()
+        bot.performance.total_trades = 5
+        bot._conf_calib_err_ema = 0.90
+        bot._runway_accuracy_ema = 0.20
+        bot._entry_conf_dynamic_floor = 0.90
+        bot._lp_get = lambda name, default: {
+            "entry_guard_min_trade_samples": 40.0,
+            "entry_guard_rl_floor_extra_cap": 0.10,
+        }.get(name, default)
+
+        dyn, meta = bot._compute_dynamic_entry_floor(0.70)
+
+        assert dyn == pytest.approx(0.80)
+        assert meta["uplift"] == pytest.approx(0.0)
+        assert meta["runway_penalty"] == pytest.approx(0.0)
+        assert meta["total_trades"] == 5
+
+    def test_dynamic_entry_floor_applies_capped_uplifts_after_min_samples(self):
+        from src.core.ctrader_ddqn_paper import CTraderFixApp
+
+        bot = CTraderFixApp.__new__(CTraderFixApp)
+        bot.performance = MagicMock()
+        bot.performance.total_trades = 120
+        bot._conf_calib_err_ema = 0.50
+        bot._runway_accuracy_ema = 0.40
+        bot._entry_conf_dynamic_floor = 0.75
+        bot._lp_get = lambda name, default: {
+            "entry_guard_min_trade_samples": 40.0,
+            "entry_guard_calib_err_start": 0.30,
+            "entry_guard_calib_uplift_cap": 0.08,
+            "entry_guard_runway_acc_target": 0.60,
+            "entry_guard_runway_penalty_cap": 0.05,
+            "entry_guard_rl_floor_extra_cap": 0.10,
+        }.get(name, default)
+
+        dyn, meta = bot._compute_dynamic_entry_floor(0.70)
+
+        assert meta["uplift"] == pytest.approx(0.08)
+        assert meta["runway_penalty"] == pytest.approx(0.05)
+        assert dyn == pytest.approx(0.83)

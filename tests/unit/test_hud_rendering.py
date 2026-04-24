@@ -494,6 +494,14 @@ class TestPlumbing:
 
         assert hud._trade_rows_per_page() == 40
 
+    def test_offline_job_zo_shows_na_when_validation_trades_insufficient(self, hud: TabbedHUD):
+        s = hud._offline_job_zo_str(0.0, "done", 3)
+        assert "n/a<5" in _strip_ansi(s)
+
+    def test_offline_job_zo_formats_value_when_validation_trades_sufficient(self, hud: TabbedHUD):
+        s = hud._offline_job_zo_str(1.2345, "done", 8)
+        assert "1.2345" in _strip_ansi(s)
+
     def test_trade_rows_per_page_keeps_small_terminal_minimum(self, hud: TabbedHUD):
         hud._term_height = lambda: 22  # type: ignore[method-assign]
 
