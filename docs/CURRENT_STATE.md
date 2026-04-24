@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** April 23, 2026 (multi-timeframe paper fleet under universe watcher)  
+**Last Updated:** April 24, 2026 (multi-timeframe paper fleet under universe watcher)  
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -157,7 +157,11 @@ Added `RewardShapingMonitor` for hourly monitoring and recommendation generation
 - Entry opportunities (`decision_log.json`)
 - Current regime (`risk_metrics.json` fallback)
 
-The monitor emits recommendations for participation/selectivity and reward-weight tuning with atomic writes to `data/reward_shaping_monitor.json`.
+The monitor emits recommendations for participation/selectivity and reward-weight tuning with atomic writes to per-bot files:
+
+- `data/reward_shaping_monitor_<SYMBOL>_<TF>.json`
+
+Current monitor logic is scoped per symbol/timeframe and exports rolling quality comparison blocks (24h vs 7d/30d) for adaptive decisions.
 
 ### Persistence + observability updates
 - Learned parameter specs expanded for new trigger/harvester/monitor controls

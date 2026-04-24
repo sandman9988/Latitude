@@ -72,6 +72,15 @@ Load via `ddqn_network.load_weights()` which handles both `.pt` and legacy `.npz
 - `MAX_LOSS_PER_TRADE_USD = 100.0` — hard per-trade cap checked on every tick
 - Duplicate fill guard in `trade_manager.py` — prevents paper fill + broker fill race condition
 - `GHOST_RECONCILE_COOLDOWN_BARS = 3` — blocks entry for 3 bars after ghost position reconciliation
+- Kurtosis uses a single action threshold path (circuit-breaker threshold, default 5.0); 3.0 remains alert/telemetry level
+
+## Reward monitor scope
+
+- `RewardShapingMonitor` operates per `symbol + timeframe + broker` scope.
+- Rolling quality comparison is exported per bot:
+  - short window default `24h`
+  - baselines default `7d` and `30d`
+- Quality-guard recommendations may adjust participation/selectivity and reward weights when 24h metrics materially degrade versus baselines.
 
 ---
 

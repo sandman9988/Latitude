@@ -187,7 +187,7 @@ Optional:
 	- `CTRADER_VOL_REF` - Reference realized vol for size scaling (default: 0.005)
 	- `CTRADER_VOL_CAP` - Block entries above this realized vol (default: 0.05)
 	- `CTRADER_RISK_BUDGET_USD` - Max USD risk per 1-sigma move per order (default: 50.0)
-	- `CTRADER_KURTOSIS_THRESHOLD` - Excess kurtosis threshold for circuit breaker (default: 3.0)
+	- `CTRADER_KURTOSIS_THRESHOLD` - Excess kurtosis circuit-breaker action threshold (default: 5.0)
 
 ### FIX Configuration
 
@@ -349,7 +349,7 @@ pip install -e .
 - Uses demo account credentials
 - Default quantity is 0.10 BTC/USD
 - Monitor positions manually
-- **Circuit breakers active**: Orders auto-cancelled on kurtosis > 3.0
+- **Circuit breakers active**: Orders auto-cancelled on excess kurtosis action threshold (default 5.0)
 - **VaR-based sizing**: Position sizes adapt to volatility regime
 - **Atomic persistence**: All parameter updates are crash-safe with CRC32
 - **Defensive programming**: NaN/Inf guards on all float operations
@@ -358,7 +358,11 @@ pip install -e .
 
 ### Kurtosis Circuit Breaker
 
-The bot monitors excess kurtosis (fat tail risk) and automatically cancels all pending orders when kurtosis exceeds the threshold (default: 3.0). This protects against trading in unstable market conditions.
+The bot monitors excess kurtosis (fat-tail risk) with two levels:
+- Alert level: 3.0 (telemetry/HUD warning)
+- Action level: 5.0 (circuit-breaker gate)
+
+The runtime entry gate follows the same circuit-breaker action threshold path (single source of truth).
 
 ### VaR Estimation
 
