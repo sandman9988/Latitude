@@ -988,6 +988,9 @@ class CTraderFixApp(fix.Application):
 
         # Restore circuit breaker state from previous session
         self.circuit_breakers.restore_state()
+        # Single-source threshold: keep VaR/kurtosis gate aligned to the
+        # circuit-breaker manager threshold (learned per symbol/timeframe).
+        self.kurtosis_monitor.threshold = self._active_kurtosis_threshold()
         LOG.info("[INIT] Circuit breakers: Sortino>=%.1f Kurtosis<=%.0f DD<=%.0f%% MaxLoss=%d",
             self.circuit_breakers.sortino_breaker.threshold,
             self.circuit_breakers.kurtosis_breaker.threshold,
@@ -5800,6 +5803,9 @@ class CTraderFixApp(fix.Application):
         """Check kurtosis, VaR, VPIN, and spread gates for a new position entry."""
         if self.cur_pos != 0 or desired == 0:
             return False
+        # Keep this gate threshold in lock-step with the circuit-breaker
+        # threshold so there is one action level across the bot.
+        self.kurtosis_monitor.threshold = self._active_kurtosis_threshold()
         LOG.debug("[FLOW-TRACE] Step 6a: Checking kurtosis breaker")
         if self.kurtosis_monitor.is_breaker_active:
             if self.paper_mode:
@@ -5818,6 +5824,13 @@ class CTraderFixApp(fix.Application):
                 return True
         LOG.debug("[FLOW-TRACE] Step 6a PASSED: Kurtosis OK")
         return self._obc_check_var_vpin_spread_gates(vpin_zscore, realized_vol)
+
+    def _active_kurtosis_threshold(self) -> float:
+        """Return the canonical kurtosis action threshold."""
+        try:
+            return float(self.circuit_breakers.kurtosis_breaker.threshold)
+        except Exception:
+            return float(getattr(self.kurtosis_monitor, "threshold", 5.0))
 
     def _obc_send_order(self, desired: int) -> None:
         """Compute order quantity and dispatch a market order."""
