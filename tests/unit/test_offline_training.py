@@ -22,7 +22,7 @@ from src.training.historical_loader import (
     load_jsonl_cache,
     sliding_windows,
 )
-from src.training.offline_trainer import z_omega
+from src.training.offline_trainer import OfflineTrainer, z_omega
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -729,3 +729,91 @@ class TestDiscoverJobs:
 
         assert len(windows) == 4
         assert all(len(window) >= 80 for window in windows)
+
+
+# ── OfflineTrainer new methods ────────────────────────────────────────────────
+
+def _make_bars(n: int = 200) -> list:
+    t0 = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
+    bars = []
+    for i in range(n):
+        t = t0 + timedelta(minutes=i * 5)
+        px = 90000.0 + i * 1.5
+        bars.append((t, px, px + 5, px - 5, px + 1, 0.5))
+    return bars
+
+
+class TestEvaluateRuntimeCheckpoint:
+    def test_returns_not_loaded_when_checkpoint_dir_empty(self, tmp_path):
+        bars = _make_bars(200)
+        trainer = OfflineTrainer(
+            symbol="XAUUSD",
+            timeframe_minutes=5,
+            bars=bars,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            train_split=0.8,
+        )
+        score, trades, loaded = trainer.evaluate_runtime_checkpoint(tmp_path / "empty_dir")
+        assert loaded is False
+        assert score == pytest.approx(0.0)
+        assert trades == 0
+
+    def test_returns_not_loaded_when_no_val_bars(self, tmp_path):
+        bars = _make_bars(10)
+        trainer = OfflineTrainer(
+            symbol="XAUUSD",
+            timeframe_minutes=5,
+            bars=bars,
+            checkpoint_dir=str(tmp_path / "ckpt"),
+            train_split=1.0,  # 100% train → empty val fold
+        )
+        score, _, loaded = trainer.evaluate_runtime_checkpoint(tmp_path)
+        assert loaded is False
+        assert score == pytest.approx(0.0)
+
+
+class TestRunFocusedReplay:
+    def test_no_op_when_windows_empty(self, tmp_path):
+        bars = _make_bars(200)
+        trainer = OfflineTrainer(
+            symbol="XAUUSD",
+            timeframe_minutes=5,
+            bars=bars,
+            checkpoint_dir=str(tmp_path),
+            focused_replay_windows=[],
+            focused_replay_passes=3,
+        )
+        from unittest.mock import MagicMock
+        steps, trades = trainer._run_focused_replay(MagicMock(), "test")
+        assert steps == 0
+        assert trades == 0
+
+    def test_no_op_when_passes_zero(self, tmp_path):
+        bars = _make_bars(200)
+        trainer = OfflineTrainer(
+            symbol="XAUUSD",
+            timeframe_minutes=5,
+            bars=bars,
+            checkpoint_dir=str(tmp_path),
+            focused_replay_windows=[bars[:90]],
+            focused_replay_passes=0,
+        )
+        from unittest.mock import MagicMock
+        steps, trades = trainer._run_focused_replay(MagicMock(), "test")
+        assert steps == 0
+        assert trades == 0
+
+    def test_no_op_when_window_too_short(self, tmp_path):
+        bars = _make_bars(200)
+        trainer = OfflineTrainer(
+            symbol="XAUUSD",
+            timeframe_minutes=5,
+            bars=bars,
+            checkpoint_dir=str(tmp_path),
+            focused_replay_windows=[bars[:10]],  # fewer than MIN_BARS_FOR_ENTRY=80
+            focused_replay_passes=2,
+        )
+        from unittest.mock import MagicMock
+        steps, trades = trainer._run_focused_replay(MagicMock(), "test")
+        assert steps == 0
+        assert trades == 0

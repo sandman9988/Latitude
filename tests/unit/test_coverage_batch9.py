@@ -4,7 +4,6 @@ Targets:
   - journaled_persistence: lines 320-321 (no journal to replay), 328 (blank line skip),
     372-373 (close exception)
   - order_book: lines 171, 173-174 (VPINCalculator.get_stats variance/std paths)
-  - ensemble_tracker: lines 207-209 (forward with PyTorch-like input)
   - ring_buffer: line 129 (negative index access)
 
 Dead code identified (not tested):

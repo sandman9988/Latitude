@@ -2884,11 +2884,11 @@ class CTraderFixApp(fix.Application):
     def _seed_derived_signals_from_bars(self) -> float:
         """Replay VaR, regime, and path geometry from current self.bars. Returns realized_vol."""
         bar_list = list(self.bars)
+        self._sync_kurtosis_monitor_threshold()
         for i in range(1, len(bar_list)):
             prev_c = bar_list[i - 1][4]
             curr_c = bar_list[i][4]
             if prev_c > 0:
-                self._sync_kurtosis_monitor_threshold()
                 self.var_estimator.update_return(SafeMath.safe_div(curr_c - prev_c, prev_c, 0.0))
         if hasattr(self.policy, "seed_regime_from_bars") and len(self.bars) >= MIN_BARS_FOR_REGIME_SEED:
             self.policy.seed_regime_from_bars(self.bars)
@@ -4450,8 +4450,14 @@ class CTraderFixApp(fix.Application):
             return
         try:
             win = bool(pnl > 0.0)
-            trigger_conf = float(getattr(self, "entry_confidence", getattr(self, "_last_trigger_conf", 0.5)) or 0.5)
-            exit_conf = float(getattr(self, "_last_exit_confidence", getattr(self, "_last_harvester_conf", 0.5)) or 0.5)
+            _tc = getattr(self, "entry_confidence", None)
+            if _tc is None:
+                _tc = getattr(self, "_last_trigger_conf", 0.5)
+            trigger_conf = float(_tc) if _tc is not None else 0.5
+            _ec = getattr(self, "_last_exit_confidence", None)
+            if _ec is None:
+                _ec = getattr(self, "_last_harvester_conf", 0.5)
+            exit_conf = float(_ec) if _ec is not None else 0.5
             rm.update_decision_outcome("entry", trigger_conf, True, win, "trigger")
             rm.update_decision_outcome("exit", exit_conf, True, win, "harvester")
             rm.update_decision_outcome("entry", 0.5 * (trigger_conf + exit_conf), True, win, "composite")

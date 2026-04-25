@@ -1,9 +1,11 @@
-# SYSTEM ARCHITECTURE & FLOW CHARTS
-## Adaptive Trading Bot - cTrader FIX Implementation
+# System Architecture
 
-**Version:** 3.0.0  
-**Date:** 2026-01-09  
-**Status:** ✅ Production Ready
+**Last Updated:** April 25, 2026
+**Status:** ✅ Production — test suite green
+**Audience:** Developers
+
+For design philosophy see [MASTER_HANDBOOK.md](../../MASTER_HANDBOOK.md).
+For quick start see [../QUICKSTART.md](../QUICKSTART.md).
 
 ---
 
@@ -52,7 +54,57 @@
 
 ---
 
-## DATA FLOW PIPELINE
+## Universe Supervisor & Per-Bot Isolation
+
+`run_universe.py --watch` manages a fleet of bots, one per `(symbol, timeframe_minutes)` entry in `data/universe.json`.
+
+```
+data/universe.json
+  ├── XAUUSD M1  stage=PAPER  weights_path=...
+  ├── XAUUSD M5  stage=PAPER  weights_path=...
+  └── XAUUSD M15 stage=PAPER  weights_path=...
+         │
+         ▼  run_universe.py --watch
+         │
+         ├── sync promoted weights into isolated checkpoint dir
+         │     data/paper_XAUUSD_M5/checkpoints/XAUUSD_M5/
+         │
+         ├── write isolated FIX configs
+         │     data/paper_XAUUSD_M5/fix/ctrader_quote.cfg
+         │     data/paper_XAUUSD_M5/fix/ctrader_trade.cfg
+         │
+         └── launch subprocess → src.core.ctrader_ddqn_paper
+               CTRADER_DATA_DIR=data/paper_XAUUSD_M5
+               log → logs/paper_XAUUSD_M5.log
+```
+
+**Broker topology** (set via `UNIVERSE_BROKER_TOPOLOGY`):
+
+| Mode | FIX ownership |
+| ---- | ------------- |
+| `isolated` (default) | Each bot owns its own QUOTE+TRADE pair |
+| `shared-symbol` | One QUOTE per symbol; TRADE isolated per timeframe |
+| `shared-account` | Single QUOTE+TRADE pair shared by all bots |
+
+### Per-Symbol/Per-Timeframe Scoping Rule
+
+Every runtime artefact is scoped by `(symbol, timeframe_minutes)`:
+
+| Artefact | Scoped path |
+| -------- | ----------- |
+| HUD data | `data/paper_XAUUSD_M5/production_metrics.json` |
+| Shared HUD copy | `data/production_metrics_XAUUSD_M5.json` |
+| Decision log | `data/paper_XAUUSD_M5/logs/audit/decisions.jsonl` |
+| Checkpoint | `data/paper_XAUUSD_M5/checkpoints/XAUUSD_M5/` |
+| Learned params key | `XAUUSD_M5_default` in `config/learned_parameters.json` |
+| Reward monitor | `data/reward_shaping_monitor_XAUUSD_M5.json` |
+| Circuit breakers | `data/paper_XAUUSD_M5/circuit_breakers.json` |
+
+The canonical H4 label is `M240` — there is no separate H4 runtime path.
+
+---
+
+## Data Flow Pipeline
 
 ```
 ╔══════════════════════════════════════════════════════════════════════╗
@@ -513,23 +565,18 @@ ctrader_trading_bot/
 │   ├── feature_engine.py               Technical indicators
 │   ├── path_geometry.py                Physics-based features
 │   ├── event_time_features.py          🆕 Session-relative time
-│   ├── regime_detector.py              Market regime classification
-│   └── time_features.py                Legacy time features
+│   └── regime_detector.py              Market regime classification
 │
 ├── AGENTS & POLICY
 │   ├── ddqn_network.py                 Neural network (DDQN)
 │   ├── trigger_agent.py                Entry specialist
 │   ├── harvester_agent.py              Exit specialist
-│   ├── dual_policy.py                  Combined policy
-│   └── agent_arena.py                  Multi-agent competition
+│   └── dual_policy.py                  Combined policy
 │
 ├── LEARNING & MEMORY
 │   ├── experience_buffer.py            Prioritized Experience Replay
 │   ├── reward_shaper.py                Asymmetric reward calculation
-│   ├── generalization_monitor.py       Overfitting detection
-│   ├── adaptive_regularization.py      🆕 Auto-adjust L2/dropout
-│   ├── early_stopping.py               Checkpoint management
-│   └── ensemble_tracker.py             Multi-agent tracking
+│   └── adaptive_regularization.py      🆕 Auto-adjust L2/dropout
 │
 ├── RISK & SAFETY
 │   ├── var_estimator.py                VaR-based position sizing
@@ -602,69 +649,68 @@ ctrader_trading_bot/
 
 ### Starting the Bot
 ```bash
-# With HUD
-bash start_bot_with_hud.sh
+# Universe supervisor (recommended)
+python run_universe.py --watch
 
-# Production mode
-bash run.sh
+# Single paper bot
+./run.sh --symbol XAUUSD --timeframe 5 --paper
 
-# Paper trading
-PAPER_MODE=1 python3 ctrader_ddqn_paper.py
+# HUD only
+./run.sh --hud-only
 ```
 
 ### Monitoring
+
 ```bash
-# Health check
-bash health_check.sh
+# Live per-bot log
+tail -f logs/paper_XAUUSD_M5.log
 
-# Live logs
-tail -f logs/bot_$(date +%Y%m%d).log
+# Fleet status
+cat data/universe.json | python -m json.tool
 
-# Performance metrics
-python3 performance_tracker.py --summary
+# HUD data for one bot
+cat data/production_metrics_XAUUSD_M5.json | python -m json.tool
 ```
 
 ### Emergency Procedures
+
 ```bash
-# Graceful shutdown
-pkill -SIGINT -f ctrader_ddqn_paper.py
+# Graceful shutdown of one bot
+pkill -SIGINT -f "ctrader_ddqn_paper.*XAUUSD.*5"
 
-# Force stop
-pkill -9 -f ctrader_ddqn_paper.py
+# Alt+K inside HUD — emergency kill-switch (closes positions, trips breakers)
 
-# Reset circuit breakers (use caution!)
-# Edit data/circuit_breaker_state.json
-# Or wait for cooldown period
+# Reset circuit breakers via HUD reset button, or:
+# Delete data/paper_XAUUSD_M5/circuit_breakers.json and restart
 ```
+
+See [../operations/DISASTER_RECOVERY_RUNBOOK.md](../operations/DISASTER_RECOVERY_RUNBOOK.md) for full emergency procedures.
 
 ---
 
-## VERSION HISTORY
+## Component Index (April 2026)
 
-### v3.0.0 (2026-01-09) - Current
-- ✅ Added safe_math.py for defensive operations
-- ✅ Added event_time_features.py for session awareness
-- ✅ Added circuit_breakers.py for safety shutdowns
-- ✅ Enhanced learned_parameters.py with asset-class scaling
-- ✅ Enhanced adaptive_regularization.py with auto-adjustment
-- ✅ Integrated all new components into main bot
-- ✅ Comprehensive testing and validation
-
-### v2.0.0 (2026-01-08)
-- Dual-agent architecture implemented
-- Experience replay with PER
-- Overfitting detection and prevention
-- Production deployment infrastructure
-
-### v1.0.0 (2025-12-XX)
-- Initial cTrader FIX integration
-- Basic DDQN implementation
-- Feature engineering pipeline
+| Component | File | Purpose |
+| --------- | ---- | ------- |
+| Main bot | `src/core/ctrader_ddqn_paper.py` | FIX event loop, bar close, RL decisions |
+| DualPolicy | `src/agents/dual_policy.py` | Wraps TriggerAgent + HarvesterAgent |
+| TriggerAgent | `src/agents/trigger_agent.py` | Entry LONG/SHORT/NO_ENTRY decisions |
+| HarvesterAgent | `src/agents/harvester_agent.py` | Exit timing and MFE/MAE tracking |
+| RiskManager | `src/risk/risk_manager.py` | Adaptive confidence threshold feedback |
+| CircuitBreakerManager | `src/risk/circuit_breakers.py` | Kurtosis/Sortino/Drawdown/Loss-streak gates |
+| VaREstimator | `src/risk/var_estimator.py` | Position sizing and kurtosis monitoring |
+| RewardShapingMonitor | `src/monitoring/reward_shaping_monitor.py` | Hourly quality-guard per (symbol, TF) |
+| HUD | `src/monitoring/hud_tabbed.py` | 7-tab live dashboard |
+| OfflineTrainer | `src/training/offline_trainer.py` | Per-(symbol, TF) ZΩ-evaluated training |
+| Universe supervisor | `run_universe.py` | Fleet launch, weight sync, broker topology |
+| LearnedParametersManager | `src/persistence/learned_parameters.py` | Per-bot adaptive thresholds |
+| PathGeometry | `src/risk/path_geometry.py` | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
+| EventTimeFeatureEngine | `src/features/event_time_features.py` | Session/event time features |
+| BrokerExecutionModel | `src/core/broker_execution_model.py` | Asymmetric slippage learning |
 
 ---
 
 **END OF SYSTEM ARCHITECTURE**
 
-For detailed component documentation, see individual source files.  
-For design philosophy, see MASTER_HANDBOOK.md.  
-For quick start, see README.md.
+For design philosophy see [../../MASTER_HANDBOOK.md](../../MASTER_HANDBOOK.md).
+For quick start see [../QUICKSTART.md](../QUICKSTART.md).

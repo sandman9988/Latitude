@@ -1,234 +1,169 @@
-# cTrader DDQN Bot - Documentation Index
+# cTrader DDQN Bot — Documentation Index
 
 **Last Updated:** April 25, 2026
-**Branch:** update-1.1-mfe-mae-tracking-v2  
-**System Status:** ✅ Operational — test suite green
+**Status:** ✅ Operational — test suite green
 
 ---
 
-## 📍 Quick Navigation
+## Quick Navigation
 
-### 🚀 **New Users Start Here**
-- [00_START_HERE.md](00_START_HERE.md) - Project overview and first steps
-- [QUICKSTART.md](QUICKSTART.md) - Get bot running in 15 minutes
-- [README.md](../README.md) - Root project documentation
+### New Users Start Here
 
-### 🔧 **Operators & Traders**
-- [CURRENT_STATE.md](CURRENT_STATE.md) - **READ THIS FIRST** - Latest system status, recent fixes, known issues
-- [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) - Production deployment guide
-- [MONITORING_GUIDE.md](MONITORING_GUIDE.md) - System health monitoring
-- [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) - Emergency procedures
+- [00_START_HERE.md](00_START_HERE.md) — Project overview and first steps
+- [QUICKSTART.md](QUICKSTART.md) — Get the bot running end-to-end
+- [README.md](../README.md) — Root project documentation
 
-### 💻 **Developers**
-- [../AGENTS.md](../AGENTS.md) - Coding-agent operating rules, source-of-truth constraints, and test commands
-- [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) - Authoritative system design & architecture
-- [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) - Technical architecture
-- [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Codebase organization
-- [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) - Parameter learning system
+### Operators & Traders
 
-### 📊 **Dual-Agent Architecture**
-- [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md) - TriggerAgent + HarvesterAgent workflow
-- [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) - Agent decision logic
-- [COMPOSITE_PROBABILITY_PREDICTOR.md](COMPOSITE_PROBABILITY_PREDICTOR.md) - Entry probability model
+- [CURRENT_STATE.md](CURRENT_STATE.md) — **READ THIS FIRST** — Latest status, recent fixes, known issues
+- [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) — Production deployment guide
+- [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) — Emergency procedures
+
+### Developers
+
+- [../AGENTS.md](../AGENTS.md) — Coding-agent operating rules, source-of-truth constraints, test commands
+- [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) — Authoritative system design & architecture
+- [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) — Technical architecture
+- [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) — Parameter learning system
+
+### Dual-Agent Architecture
+
+- [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md) — TriggerAgent + HarvesterAgent workflow
+- [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) — Agent decision logic
 
 ---
 
-## 📁 Documentation Structure
+## Documentation Structure
 
-### `/docs` (Root - High Priority)
-Core documentation that operators and developers reference frequently.
+### `/docs` (Root — Core)
 
 | Document | Purpose | Audience | Freshness |
-|----------|---------|----------|-----------|
-| **[CURRENT_STATE.md](CURRENT_STATE.md)** | **Latest system status** | All | ✅ Apr 25 |
+| -------- | ------- | -------- | --------- |
+| [CURRENT_STATE.md](CURRENT_STATE.md) | **Latest system status** | All | ✅ Apr 25 |
 | [../AGENTS.md](../AGENTS.md) | Coding-agent instructions and source-of-truth rules | Developers | ✅ Apr 25 |
-| [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers | Current |
-| [MONITORING_GUIDE.md](MONITORING_GUIDE.md) | Health checks & alerts | Operators | Current |
-| [QUICKSTART.md](QUICKSTART.md) | Fast setup guide | New users | Current |
+| [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers | ✅ Apr 25 |
+| [archive/REMOVED_LEGACY_CODE.md](archive/REMOVED_LEGACY_CODE.md) | Removed legacy-code manifest | Developers | ✅ Apr 25 |
+| [QUICKSTART.md](QUICKSTART.md) | End-to-end setup guide | New users | ✅ Apr 25 |
+| [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) | Offline→paper→live champion workflow | Developers | ✅ Apr 25 |
 
 ### `/docs/guides` (User Guides)
-Step-by-step instructions for common tasks.
 
 | Guide | Purpose |
-|-------|---------|
-| [DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) | Production deployment |
-| [PAPER_VS_LIVE_CONFIG.md](guides/PAPER_VS_LIVE_CONFIG.md) | Configuration strategies |
-| [ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) | Parameter tuning |
-| [TRADE_LOGGING_GUIDE.md](guides/TRADE_LOGGING_GUIDE.md) | Log analysis |
+| ----- | ------- |
+| [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) | Production deployment |
+| [guides/PAPER_VS_LIVE_CONFIG.md](guides/PAPER_VS_LIVE_CONFIG.md) | Configuration strategies |
+| [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) | Parameter tuning |
+| [guides/TRADE_LOGGING_GUIDE.md](guides/TRADE_LOGGING_GUIDE.md) | Trade log analysis |
 
 ### `/docs/architecture` (Technical Design)
-Low-level system architecture and flows.
 
 | Document | Purpose |
-|----------|---------|
-| [SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) | Overall system design |
-| [ORDER_EXECUTION_FLOW.md](architecture/ORDER_EXECUTION_FLOW.md) | Order routing |
-| [DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) | Agent decision logic |
-| [SYSTEM_FLOW.md](architecture/SYSTEM_FLOW.md) | Data flow diagrams |
+| -------- | ------- |
+| [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) | Overall system design |
+| [architecture/ORDER_EXECUTION_FLOW.md](architecture/ORDER_EXECUTION_FLOW.md) | Order routing |
+| [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) | Agent decision logic |
+| [architecture/FIX_GATEWAY_TOPOLOGY.md](architecture/FIX_GATEWAY_TOPOLOGY.md) | FIX session isolation and broker topology |
 
-### `/docs/operations` (Runbooks & Operations)
-Day-to-day operational procedures.
+### `/docs/operations` (Runbooks)
 
 | Runbook | Purpose |
-|---------|---------|
-| [DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) | Emergency procedures |
-| [HUD_QUICK_REFERENCE.md](operations/HUD_QUICK_REFERENCE.md) | Dashboard guide |
-| [RUNNING_WITH_LOGS.md](operations/RUNNING_WITH_LOGS.md) | Log configuration |
+| ------- | ------- |
+| [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) | Emergency procedures |
+| [operations/HUD_QUICK_REFERENCE.md](operations/HUD_QUICK_REFERENCE.md) | Dashboard guide |
+| [operations/RUNNING_WITH_LOGS.md](operations/RUNNING_WITH_LOGS.md) | Log configuration |
 
 ---
 
-## 🎯 Documentation by Use Case
+## Documentation by Use Case
 
 ### "I want to run the bot"
-1. [QUICKSTART.md](QUICKSTART.md) - Basic setup
-2. [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) - Production deployment
-3. [MONITORING_GUIDE.md](MONITORING_GUIDE.md) - Health monitoring
+
+1. [QUICKSTART.md](QUICKSTART.md) — setup and universe supervisor
+2. [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) — production deployment
+3. [operations/HUD_QUICK_REFERENCE.md](operations/HUD_QUICK_REFERENCE.md) — HUD navigation
 
 ### "How does it work?"
-1. [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) - Design philosophy
-2. [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) - Technical details
-3. [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md) - Dual-agent implementation
+
+1. [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) — design philosophy and RL architecture
+2. [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) — technical details
+3. [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md) — dual-agent implementation
 
 ### "Something went wrong!"
-1. **[CURRENT_STATE.md](CURRENT_STATE.md)** - Check known issues first
-2. [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) - Emergency procedures
-3. [MONITORING_GUIDE.md](MONITORING_GUIDE.md) - Diagnostic procedures
+
+1. [CURRENT_STATE.md](CURRENT_STATE.md) — check known issues first
+2. [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) — emergency procedures
 
 ### "I want to modify the code"
-1. [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Codebase layout
-2. [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Design principles
-3. [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) - Agent logic
-4. [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) - Parameter system
 
-### "I need to understand the parameters"
-1. [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) - Parameter learning
-2. **[CURRENT_STATE.md](CURRENT_STATE.md) - Section "Current Parameters"**
-3. [guides/PAPER_VS_LIVE_CONFIG.md](guides/PAPER_VS_LIVE_CONFIG.md) - Configuration strategies
+1. [../AGENTS.md](../AGENTS.md) — source-of-truth rules and test commands
+2. [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) — design principles
+3. [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) — agent logic
+4. [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) — parameter system
 
----
+### "I want to train and promote a model"
 
-## 🔄 Recent Changes
+1. [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) — full offline→paper pipeline
+2. [CURRENT_STATE.md](CURRENT_STATE.md) — current ZΩ scores and champion status
 
-### April 25, 2026 ✅ (offline champion guard + runtime checkpoint sync)
-- **Fixed:** Offline champion acceptance no longer scrapes stale `logs/train_offline.log`; guards come from `offline_champions.json` and `universe.json`
-- **Fixed:** `run_universe.py --watch` syncs promoted per-symbol/timeframe weights into isolated paper runtime checkpoint directories and restarts stale running bots
-- **Reconciled:** XAUUSD M5 promoted to accepted tournament candidate `ZOmega=1.5655` after beating live universe and evaluated incumbent guards
-- **Updated:** `AGENTS.md`, README, and training docs to require per-symbol/per-timeframe metrics, caches, decision logs, learned parameters, reward shaping, runway prediction, and checkpoints
-- **Added:** Weekend training setup/run scripts with guarded market-closed execution, tournament variants, focused capture replay, and retrain rounds
+### "I want to understand per-symbol/timeframe scoping"
 
-### April 23, 2026 ✅ (HUD + docs sync)
-- **Updated:** HUD quick reference to 7-tab map, arrows/Tab navigation, dynamic RL floors in Training tab, market feed freshness in Market tab, and normalized capture notes in Trades tab
-- **Updated:** Root docs/instructions to reflect canonical timeframe labels (`M1/M5/M15/M30/M60/M240`)
+> Every metric, parameter, checkpoint, decision log, cache, reward monitor output,
+> and HUD row is scoped by `(symbol, timeframe_minutes)`. The canonical H4 label
+> is `M240` — never a separate H4 runtime path.
 
-### February 22, 2026 ✅ (Housekeeping)
-- **Fixed:** QuickFIX namespace-package type-annotation crash (`trade_manager_integration.py`) — 10 tests unblocked
-- **Fixed:** Universe registry stage-demotion bug (`train_offline.py`) — LIVE/MICRO instruments no longer demoted to PAPER
-- **Updated:** CURRENT_STATE.md, INDEX.md, 00_START_HERE.md, DOCS_INDEX.md, README.md, PROJECT_STRUCTURE.md
-- **Tests:** 2506 passed, 3 skipped, 0 failures
-
-### February 20, 2026 ✅
-- **Fixed:** Log flood eliminated (24 LOG.info demoted to LOG.debug in ctrader_ddqn_paper.py)
-- **Fixed:** Model weight load verification now calls torch.load() (self_test.py)
-- **Fixed:** QuickFIX importable check added as CRITICAL self-test
-- **Fixed:** Circuit breaker schema key bug (is_tripped vs tripped)
-
-### February 14, 2026 ✅
-- **Created:** [CURRENT_STATE.md](CURRENT_STATE.md) - Comprehensive system status
-- **Fixed:** M1 stop loss scaling (0.40% → 0.12%, 67% risk reduction)
-- **Implemented:** Stop loss adaptive learning (mirrors TP learning)
-- **Verified:** Friction costs correctly applied in exits
-- **Enhanced:** Defensive programming (10 critical areas hardened)
+- See `AGENTS.md` § "Source-of-Truth Constraints" for the full rule set.
+- See `CURRENT_STATE.md` § "Offline Champion Source Of Truth" for the April 25 fix.
 
 ---
 
-## 📝 Documentation Standards
+## Recent Changes
 
-### Document Headers
-All docs should include:
+### April 25, 2026 — doc cleanup + code fixes
+
+- **Deleted:** 12 audit-artifact docs (AUDIT_SUMMARY, HUD_AUDIT_*, REMEDIATION_ACTION_PLAN, NEXT_STEPS, TICKET_TRACKING_*, FIX_EXECUTION_REPORT, COMPREHENSIVE_CODE_AUDIT)
+- **Archived:** 17 stale snapshot/design docs (Jan 2026 snapshots, RISK_MANAGER_COMPLETE, MONITORING_GUIDE, etc.) to `docs/archive/`
+- **Rewrote:** QUICKSTART.md — now reflects universe supervisor, per-bot isolation, broker topology
+- **Fixed:** `_sync_kurtosis_monitor_threshold()` called once before loop (not per-bar during preseed)
+- **Fixed:** Confidence falsy-zero guard in `_update_risk_feedback_thresholds`
+- **Fixed:** Float `==` comparison for kurtosis threshold restore
+- **Added:** Smoke tests for `evaluate_runtime_checkpoint` and `_run_focused_replay`
+- **Added:** `RiskManager` adaptive confidence threshold feedback (per closed trade)
+- **Added:** Scoped `RewardShapingMonitor` output — one JSON per `(symbol, TF)`
+- **Synced:** `run_universe.py` promoted weights into isolated paper bot checkpoint dirs
+
+### April 23, 2026 — HUD + docs sync
+
+- **Updated:** HUD quick reference to 7-tab map, arrows/Tab navigation
+- **Updated:** Canonical timeframe labels (`M1/M5/M15/M30/M60/M240`)
+
+### February 22, 2026 — housekeeping
+
+- **Fixed:** QuickFIX namespace-package type-annotation crash
+- **Fixed:** Universe registry stage-demotion bug (LIVE/MICRO no longer demoted)
+
+---
+
+## Documentation Standards
+
+Document headers should include:
+
 ```markdown
 # Title
 **Last Updated:** YYYY-MM-DD
-**Status:** [Active|Archived|Deprecated]
-**Audience:** [All|Operators|Developers|Traders]
+**Status:** Active | Archived
+**Audience:** All | Operators | Developers
 ```
 
-### Freshness Guidelines
-- **< 7 days:** Fresh, actively referenced
-- **7-30 days:** Current, review for updates
-- **30-90 days:** Aging, verify accuracy
-- **> 90 days:** Consider archiving if superseded
-
-### Archive Policy
-Obsolete documentation has been removed. Historical backups saved as compressed archives.
+Freshness guidelines: < 7 days = fresh; 7–30 days = current; > 90 days = archive if superseded.
 
 ---
 
-## 🗂 Deprecated / To Be Archived
-
-**Candidates for archival** (pending review):
-
-### Duplicate Coverage
-- `P0_FIXES_IMPLEMENTATION.md` vs `P0_FIXES_IMPLEMENTED.md` (prefer latter)
-- `PHASE1_SUMMARY.md` vs `PHASE2_SUMMARY.md` vs handbook (use handbook + quick refs)
-
-### Superseded by CURRENT_STATE.md
-- `DEFENSIVE_PROGRAMMING_ENHANCEMENTS.md` (Feb 14) → merged into CURRENT_STATE
-- `TRAINING_LOGIC_REVIEW.md` (Feb 14) → merged into CURRENT_STATE
-- `P0_FIXES_IMPLEMENTED.md` (Feb 14) → merged into CURRENT_STATE
-
-### Gap Analysis Redundancy
-Multiple gap analysis docs exist - consolidate into:
-- One historical gap analysis (archive)
-- Current gaps in CURRENT_STATE.md
-
----
-
-## 🔍 Finding Information
-
-### Full Text Search
-```bash
-# Search all docs
-grep -r "stop loss" docs/
-
-# Case-insensitive search
-grep -ri "epsilon" docs/
-
-# Find by topic
-grep -r "friction" docs/ -l  # List files only
-```
-
-### By Date
-```bash
-# Recently modified
-find docs -name "*.md" -mtime -7 -type f
-
-# Older than 30 days
-find docs -name "*.md" -mtime +30 -type f
-```
-
-### By Size
-```bash
-# Large docs (> 10KB)
-find docs -name "*.md" -size +10k -exec ls -lh {} \;
-```
-
----
-
-## 📞 Contact & Support
-
-- **Repository:** github.com/sandman9988/Latitude
-- **Branch:** update-1.1-mfe-mae-tracking-v2
-- **Issue Tracking:** See CURRENT_STATE.md "Known Issues" section
-
----
-
-## 📚 External References
+## External References
 
 - [cTrader FIX API Docs](https://help.ctrader.com/fix-api/)
 - [QuickFIX/Python](https://github.com/quickfix/quickfix)
-- [DDQN Paper](https://arxiv.org/abs/1509.06461) - van Hasselt et al.
-- [Reinforcement Learning: An Introduction](http://incompleteideas.net/book/) - Sutton & Barto
+- [DDQN Paper](https://arxiv.org/abs/1509.06461) — van Hasselt et al.
 
 ---
 
-**Navigation:** [🏠 Root](../README.md) | [📖 Current State](CURRENT_STATE.md) | [🚀 Quick Start](QUICKSTART.md) | [🔧 Operations](MONITORING_GUIDE.md)
+**Navigation:** [🏠 Root](../README.md) | [📄 Current State](CURRENT_STATE.md) | [🚀 Quick Start](QUICKSTART.md) | [🔧 Operations](operations/DISASTER_RECOVERY_RUNBOOK.md)

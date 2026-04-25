@@ -1,7 +1,7 @@
 # GitHub Copilot Instructions — cTrader DDQN Trading Bot
 
-> Last updated: 2026-04-23
-> Read MASTER_HANDBOOK.md and docs/CURRENT_STATE.md before making structural changes.
+> Last updated: 2026-04-25
+> Read AGENTS.md, MASTER_HANDBOOK.md, and docs/CURRENT_STATE.md before making structural changes.
 
 ---
 
@@ -210,7 +210,7 @@ Agent caveats:
 #   5    ensemble          positive (epistemic uncertainty bonus)
 ```
 
-Timing penalty is **result-based** (MAE/MFE drawdown ratio), NOT bar-based. This scales across timeframes (M5, H1, H4).
+Timing penalty is **result-based** (MAE/MFE drawdown ratio), NOT bar-based. This scales across timeframes (M5, M60, M240).
 Zero-MFE entries receive a penalty (-0.3), not neutral.
 Capture reward is magnitude-scaled: `min(mfe / baseline_mfe, 2.0)` with floor 0.3.
 Session quality multiplier: London/NY overlap ×1.3, solo session ×1.15, off-peak ×0.85.
@@ -249,10 +249,12 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 
 ## Deleted modules (do NOT recreate)
 
-These were removed as dead code on Mar 13, 2026. Do not recreate or reference them:
+These were removed as dead code and fully deleted from the active repository. Do not recreate or reference them:
 `agent_arena.py`, `cold_start_manager.py`, `early_stopping.py`, `ensemble_tracker.py`,
 `feedback_loop_breaker.py`, `generalization_monitor.py`, `parameter_staleness.py`,
 `feature_tournament.py`, `time_features.py`, `risk_aware_sac_manager.py`
+
+See `docs/archive/REMOVED_LEGACY_CODE.md` for the removal manifest.
 
 ---
 

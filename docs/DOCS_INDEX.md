@@ -1,49 +1,55 @@
-# 📚 Deployment & Operations Documentation Index
+# Deployment & Operations Documentation Index
 
 **Last Updated:** April 25, 2026
 **Purpose:** Quick navigation for deployment-related documents
 
 ---
 
-## 🚀 Start Here (Priority Order)
+## Start Here (Priority Order)
 
-### 1️⃣ Current System Status
-**[CURRENT_STATE.md](CURRENT_STATE.md)** — Single source of truth  
+### 1. Current System Status
+
+[CURRENT_STATE.md](CURRENT_STATE.md) — Single source of truth
+
 - Latest fixes and known issues
-- Current trading parameters
-- Test suite status (green)
+- Current trading parameters and ZΩ scores
 - Quick commands for operators
 
-### 2️⃣ Deployment Guide
-**[guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md)** — Production deployment  
+### 2. Deployment Guide
+
+[guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) — Production deployment
+
 - 3-step launch sequence
 - Bash commands ready to copy/paste
 - Troubleshooting section
 
-### 3️⃣ Strategy & Philosophy
-**[guides/PAPER_VS_LIVE_CONFIG.md](guides/PAPER_VS_LIVE_CONFIG.md)** — Configuration strategies  
+### 3. Strategy & Philosophy
+
+[guides/PAPER_VS_LIVE_CONFIG.md](guides/PAPER_VS_LIVE_CONFIG.md) — Configuration strategies
+
 - Why micro-positions over paper training
 - Three-phase deployment strategy
 - Environment variables reference
 
 ---
 
-## 📖 Core Documentation
+## Core Documentation
 
 | Document | Purpose | Audience |
-|----------|---------|----------|
+| -------- | ------- | -------- |
 | [CURRENT_STATE.md](CURRENT_STATE.md) | Latest status & fixes | All |
-| [QUICKSTART.md](QUICKSTART.md) | Get bot running in 15 min | New users |
+| [QUICKSTART.md](QUICKSTART.md) | End-to-end setup | New users |
 | [../AGENTS.md](../AGENTS.md) | Coding-agent instructions and source-of-truth rules | Developers |
 | [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers |
-| [MONITORING_GUIDE.md](MONITORING_GUIDE.md) | Health checks & alerts | Operators |
+| [archive/REMOVED_LEGACY_CODE.md](archive/REMOVED_LEGACY_CODE.md) | Removed legacy-code manifest | Developers |
+| [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) | Offline→paper→live pipeline | Developers |
 
 ---
 
-## 📂 Guides (`/docs/guides`)
+## Guides (`/docs/guides`)
 
 | Guide | Purpose |
-|-------|---------|
+| ----- | ------- |
 | [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) | Production deployment |
 | [guides/PAPER_VS_LIVE_CONFIG.md](guides/PAPER_VS_LIVE_CONFIG.md) | Configuration strategies |
 | [guides/ADAPTIVE_PARAMETERS_GUIDE.md](guides/ADAPTIVE_PARAMETERS_GUIDE.md) | Parameter tuning |
@@ -51,71 +57,76 @@
 
 ---
 
-## 🔧 Operations (`/docs/operations`)
+## Operations (`/docs/operations`)
 
 | Runbook | Purpose |
-|---------|---------|
+| ------- | ------- |
 | [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) | Emergency procedures |
 | [operations/HUD_QUICK_REFERENCE.md](operations/HUD_QUICK_REFERENCE.md) | Dashboard guide |
 | [operations/RUNNING_WITH_LOGS.md](operations/RUNNING_WITH_LOGS.md) | Log configuration |
 
 ---
 
-## 🏗 Architecture (`/docs/architecture`)
+## Architecture (`/docs/architecture`)
 
 | Document | Purpose |
-|----------|---------|
+| -------- | ------- |
 | [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) | Overall system design |
 | [architecture/ORDER_EXECUTION_FLOW.md](architecture/ORDER_EXECUTION_FLOW.md) | Order routing |
 | [architecture/DECISION_FLOW_VERIFICATION.md](architecture/DECISION_FLOW_VERIFICATION.md) | Agent decision logic |
-| [architecture/SYSTEM_FLOW.md](architecture/SYSTEM_FLOW.md) | Data flow diagrams |
-| [architecture/MULTI_POSITION_ANALYSIS.md](architecture/MULTI_POSITION_ANALYSIS.md) | Multi-position handling |
-| [architecture/MULTI_POSITION_IMPLEMENTATION.md](architecture/MULTI_POSITION_IMPLEMENTATION.md) | Implementation details |
+| [architecture/FIX_GATEWAY_TOPOLOGY.md](architecture/FIX_GATEWAY_TOPOLOGY.md) | FIX session isolation and broker topology |
 
 ---
 
-## 🛠 Execution Scripts
+## Execution Scripts
 
-| Script | Duration | Purpose |
-|--------|----------|---------|
-| `scripts/testing/phase0_validate_system.sh` | 2-4 hours | Paper validation before live |
-| `scripts/testing/quick_test.sh` | < 5 min | Fast sanity check |
-| `scripts/weekend_offline_training.sh` | Weekend | Guarded per-timeframe offline tournament training |
-| `scripts/setup_weekend_training.sh` | < 1 min | Install/update weekend training cron entry |
-| `run.sh` | Ongoing | Main bot launcher |
-| `scripts/monitoring/` | — | Monitoring dashboard suite |
+| Script | Purpose |
+| ------ | ------- |
+| `scripts/weekend_offline_training.sh` | Guarded per-timeframe offline tournament training |
+| `scripts/setup_weekend_training.sh` | Install/update weekend training cron entry |
+| `run.sh` | Main bot launcher |
 
-**Note:** `launch_micro_learning.sh` and `monitor_phase1.sh` are not yet created.
-See [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) for the equivalent manual launch commands.
+Usage shortcuts:
+
+```bash
+./run.sh weekend-train-setup   # install cron entry
+./run.sh weekend-train         # run manually (market-closed guard)
+./run.sh --hud-only            # open HUD against running bots
+python run_universe.py --watch # start universe supervisor
+```
 
 ---
 
-## 🎯 Use Case Lookup
+## Use Case Lookup
 
 ### "I want to run the bot"
-1. [QUICKSTART.md](QUICKSTART.md) — basic setup
+
+1. [QUICKSTART.md](QUICKSTART.md) — basic setup and universe supervisor
 2. [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) — production deployment
-3. [MONITORING_GUIDE.md](MONITORING_GUIDE.md) — health monitoring
+3. [operations/HUD_QUICK_REFERENCE.md](operations/HUD_QUICK_REFERENCE.md) — HUD navigation
 
 ### "Something went wrong!"
+
 1. [CURRENT_STATE.md](CURRENT_STATE.md) — check known issues first
 2. [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) — emergency procedures
-3. [MONITORING_GUIDE.md](MONITORING_GUIDE.md) — diagnosis
 
 ### "I want to understand the tech"
+
 1. [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) — RL theory & design
 2. [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) — technical deep dive
 3. [TRIGGER_HARVEST_WORKFLOW.md](TRIGGER_HARVEST_WORKFLOW.md) — dual-agent workflow
 
 ### "I want to scale up"
+
 1. Accumulate 500+ closed trades
-2. Check metrics: Sharpe > 1.5, Win Rate > 45%, WTL < 15%
+2. Verify metrics: Sharpe > 1.5, Win Rate > 45%, WTL < 15%
 3. Update `QTY` in environment and restart
 
 ### "I want to improve models over the weekend"
-1. Read [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) - Weekend Offline Champion Workflow
-2. Install cron with `./run.sh weekend-train-setup`
-3. Run manually with `./run.sh weekend-train` during the market-closed window
+
+1. Read [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) — weekend offline champion workflow
+2. Install cron: `./run.sh weekend-train-setup`
+3. Run manually: `./run.sh weekend-train` (exits if market is open)
 4. Verify accepted candidates in `data/checkpoints/offline_champions.json` and `data/universe.json`
 
 ---

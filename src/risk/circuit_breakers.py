@@ -836,7 +836,7 @@ class CircuitBreakerManager:
                 if _saved_thr is not None:
                     try:
                         saved_threshold = float(_saved_thr)
-                        if self.param_manager is None and self.kurtosis_threshold == MANAGER_DEFAULT_KURTOSIS:
+                        if self.param_manager is None and abs(self.kurtosis_threshold - MANAGER_DEFAULT_KURTOSIS) < SAFE_EPSILON:
                             self.kurtosis_breaker.threshold = saved_threshold
                         elif abs(saved_threshold - self.kurtosis_threshold) > SAFE_EPSILON:
                             LOG.info(

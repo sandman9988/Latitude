@@ -518,15 +518,15 @@ python scripts/generate_performance_report.py --last-7-days
 # - Agent confidence distribution
 ```
 
-#### Step 2: Check for Parameter Staleness
+#### Step 2: Check Learned Parameters
 ```bash
-# Run staleness detector
-python scripts/check_parameter_staleness.py
+# List scoped learned parameters
+python scripts/update_learned_params.py --list
 
 # Look for:
-# - Regime shift detected?
-# - Parameters drifting?
-# - Performance decay signal?
+# - Unexpected symbol/timeframe scope?
+# - Parameters drifting outside expected bounds?
+# - Recent update timestamps aligned with active bots?
 ```
 
 #### Step 3: Review Recent Trades

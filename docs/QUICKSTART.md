@@ -1,165 +1,162 @@
-# 🎉 Project Reorganization Complete!
+# Quick Start Guide
 
-## Summary
+**Last Updated:** April 25, 2026
+**Status:** Active
+**Audience:** All
 
-Your ctrader_trading_bot project has been successfully reorganized from a **cluttered root directory with 150+ files** to a **clean, professional structure**.
+---
 
-## What Changed
+## Prerequisites
 
-### Before
-```
-Root: 150+ files
-├── 40+ Python source files
-├── 30+ Markdown docs
-├── 15+ Test files  
-└── 150+ Log files scattered across multiple directories
-```
+- Python 3.12+, pip, git
+- cTrader account with FIX API credentials
+- `.env` file populated from `.env.example`
+- Historical OHLCV CSV for at least one symbol (e.g. XAUUSD M5)
 
-### After
-```
-Root: ~15 essential files
-├── src/          50 Python modules (organized by function)
-├── tests/        23 test files (organized by type)
-├── docs/         17 markdown docs (organized by category)
-├── logs/         Consolidated logging directory
-└── archive/      12 old/unused files
-```
+---
 
-## New Structure at a Glance
+## 1. Install dependencies
 
-```
-📦 ctrader_trading_bot/
-├── 📂 src/
-│   ├── agents/       # Agent implementations
-│   ├── core/         # Core trading system ⭐ Main bot here
-│   ├── risk/         # Risk management
-│   ├── features/     # Feature engineering
-│   ├── persistence/  # State management
-│   ├── monitoring/   # HUD and monitoring ⭐ HUD here
-│   └── utils/        # Utilities
-├── 📂 tests/
-│   ├── unit/         # Unit tests
-│   ├── integration/  # Integration tests
-│   └── validation/   # Validation tests
-├── 📂 docs/
-│   ├── architecture/ # System design
-│   ├── operations/   # Runbooks and guides
-│   └── gap_analysis/ # Gap tracking
-└── 📂 archive/       # Old/unused files
-```
-
-## Quick Start
-
-### 1. Launch the Bot
 ```bash
-# Auto-detect HUD based on terminal
-./run.sh
-
-# Force HUD mode
-./run.sh --with-hud
-
-# Bot only (no HUD)
-./run.sh --bot-only
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 2. Launch HUD Only (connect to running bot)
+---
+
+## 2. Configure credentials
+
+```bash
+cp .env.example .env
+# Edit .env: set CTRADER_ACCOUNT_ID, FIX_SENDER_COMP_ID, passwords, etc.
+```
+
+FIX session config lives in `config/ctrader_quote.cfg` and `config/ctrader_trade.cfg`.
+For universe mode the supervisor generates per-bot copies automatically.
+
+---
+
+## 3. Train a model offline
+
+```bash
+python train_offline.py \
+  --symbol XAUUSD \
+  --timeframe 5 \
+  --data data/XAUUSD_M5.csv \
+  --epochs 3
+```
+
+Accepts candidates with ZΩ ≥ 1.0 and writes them to `data/checkpoints/offline_champions.json`.
+
+Promote a champion to the live universe:
+
+```bash
+python train_offline.py --auto-promote --symbol XAUUSD --timeframe 5
+```
+
+This sets the entry's stage to `PAPER` in `data/universe.json` and records `weights_path`.
+
+---
+
+## 4. Run a single paper bot
+
+```bash
+./run.sh --symbol XAUUSD --timeframe 5 --paper
+```
+
+Runtime data for this bot lands in `data/paper_XAUUSD_M5/`.  
+HUD data, decision logs, and checkpoints are all scoped to that directory.
+
+---
+
+## 5. Run the universe supervisor (recommended)
+
+The supervisor launches and keeps alive a paper bot for every `PAPER`-stage entry in `data/universe.json`:
+
+```bash
+python run_universe.py --watch
+```
+
+Each bot is **fully isolated** per `(symbol, timeframe_minutes)`:
+
+| Resource | Path |
+| -------- | ---- |
+| FIX config | `data/paper_XAUUSD_M5/fix/` |
+| Checkpoint | `data/paper_XAUUSD_M5/checkpoints/XAUUSD_M5/` |
+| HUD data | `data/paper_XAUUSD_M5/` |
+| Log | `logs/paper_XAUUSD_M5.log` |
+
+Promoted weights are synced from `universe.json → weights_path` into the bot's runtime checkpoint dir before each launch. If a running bot's weights go stale it is restarted automatically.
+
+**Broker topology** (`UNIVERSE_BROKER_TOPOLOGY` env var):
+
+| Mode | Behaviour |
+| ---- | --------- |
+| `isolated` (default) | Each bot owns its own QUOTE+TRADE FIX session pair |
+| `shared-symbol` | One QUOTE session shared per symbol; TRADE sessions isolated per TF |
+| `shared-account` | Single QUOTE+TRADE pair shared across all bots |
+
+```bash
+# Example: transitional guard — one direct-FIX owner per account
+python run_universe.py --watch --broker-topology shared-account
+```
+
+---
+
+## 6. Open the HUD
+
 ```bash
 ./run.sh --hud-only
 ```
 
-### 3. Run Tests
-```bash
-# All tests
-pytest tests/
+The HUD auto-discovers all running bots by reading scoped JSON files
+(`production_metrics_XAUUSD_M5.json`, `order_book_XAUUSD_M5.json`, etc.) from `data/`.
 
-# Unit tests
-pytest tests/unit/
-
-# Integration tests
-pytest tests/integration/
-
-# Validation tests
-pytest tests/validation/
-```
-
-### 4. Verify Everything Works
-```bash
-# Test imports
-python3 -c "from src.core.ctrader_ddqn_paper import CTraderFixApp; print('✓ Imports OK')"
-
-# Check structure
-cat TREE_VIEW.txt
-```
-
-## Key Files
-
-| File | Location | Purpose |
-|------|----------|---------|
-| **Main Bot** | `src/core/ctrader_ddqn_paper.py` | Core trading bot |
-| **HUD** | `src/monitoring/hud_tabbed.py` | Tabbed monitoring interface |
-| **Risk Manager** | `src/risk/risk_manager.py` | Risk management system |
-| **Launcher** | `run.sh` | Main launch script |
-| **Documentation** | `docs/MASTER_HANDBOOK.md` | Comprehensive handbook |
-
-## Documentation
-
-- 📖 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Detailed structure guide
-- 📖 [REORGANIZATION_SUMMARY.md](REORGANIZATION_SUMMARY.md) - Full reorganization report
-- 📖 [TREE_VIEW.txt](TREE_VIEW.txt) - Visual tree view
-- 📖 [docs/MASTER_HANDBOOK.md](docs/MASTER_HANDBOOK.md) - Main handbook
-- 📖 [docs/operations/HUD_QUICK_REFERENCE.md](docs/operations/HUD_QUICK_REFERENCE.md) - HUD guide
-
-## Important Notes
-
-### ⚠️ Import Paths Changed
-
-**Old (won't work anymore):**
-```python
-from hud_tabbed import TabbedHUD
-from risk_manager import RiskManager
-```
-
-**New (correct):**
-```python
-from src.monitoring.hud_tabbed import TabbedHUD
-from src.risk.risk_manager import RiskManager
-```
-
-### ✅ What's Working
-
-- ✅ All source code organized in `src/`
-- ✅ All tests organized in `tests/`
-- ✅ All docs organized in `docs/`
-- ✅ Logs consolidated in `logs/`
-- ✅ `run.sh` updated to use new paths
-- ✅ Service file updated
-- ✅ Python package structure with `__init__.py` files
-
-### 📊 Statistics
-
-- **Files Moved:** 90+
-- **Directories Created:** 17
-- **Logs Archived:** 150+
-- **Root Cleanup:** 90% reduction (150+ → ~15 files)
-- **Organization:** Flat → 3-4 level hierarchy
-
-## Next Steps
-
-1. ✅ **Done:** Project reorganized
-2. ⏭️ **Next:** Test the bot: `./run.sh --with-hud`
-3. ⏭️ **Next:** Run test suite: `pytest tests/`
-4. ⏭️ **Next:** Update any external scripts
-5. ⏭️ **Next:** Commit changes to Git
-
-## Need Help?
-
-- View structure: `cat TREE_VIEW.txt`
-- Read docs: `docs/MASTER_HANDBOOK.md`
-- Check operations guide: `docs/operations/RUNNING_WITH_LOGS.md`
-- Review HUD guide: `docs/operations/HUD_QUICK_REFERENCE.md`
+- **Tab / Shift-Tab** — switch bot view
+- **Alt+K** — emergency kill-switch for the focused bot (independent of bar close)
+- 7 tabs: Overview · Market · Performance · Trades · Training · Agents · System
 
 ---
 
-**Status:** ✅ Complete  
-**Date:** 2026-01-11  
-**Result:** Clean, professional project structure
+## 7. Run the test suite
+
+```bash
+python -m pytest tests/ -q
+```
+
+---
+
+## 8. Weekend offline training
+
+```bash
+./run.sh weekend-train-setup   # installs cron entry (market-closed guard included)
+./run.sh weekend-train         # run manually (safe: exits if market is open)
+```
+
+See [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) for the full champion acceptance workflow.
+
+---
+
+## Key paths
+
+| Path | Purpose |
+| ---- | ------- |
+| `data/universe.json` | Fleet registry — stage, z_omega, weights_path per (symbol, TF) |
+| `data/checkpoints/offline_champions.json` | Offline training acceptance guard (source of truth) |
+| `data/paper_XAUUSD_M5/` | Runtime data dir for this bot |
+| `data/paper_XAUUSD_M5/logs/audit/decisions.jsonl` | Per-bot decision audit log |
+| `config/learned_parameters.json` | Adaptive thresholds, keyed `XAUUSD_M5_default` |
+| `data/reward_shaping_monitor_XAUUSD_M5.json` | Hourly quality-guard output for this bot |
+| `logs/paper_XAUUSD_M5.log` | Per-bot process log |
+
+---
+
+## Scoping rule
+
+> Every metric, parameter, checkpoint, decision log, cache, and reward monitor output
+> is scoped by `(symbol, timeframe_minutes)`.  The canonical label for H4 is `M240` —
+> never a separate H4 runtime path.
+
+---
+
+**Navigation:** [🏠 Root](../README.md) | [📖 Index](INDEX.md) | [📄 Current State](CURRENT_STATE.md) | [🔧 Training Guide](TRAINING_TO_PRODUCTION_GUIDE.md)

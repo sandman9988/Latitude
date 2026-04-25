@@ -100,7 +100,7 @@ A **fully adaptive, self-learning trading intelligence using Deep Reinforcement 
 - Supp3 Key Differentiators
 
 | Traditional EA / Bot | This RL DDQN System |
-|---------------------|---------------------|
+| --- | --- |
 | Hardcoded parameters | Learned parameters via RL with soft bounds |
 | Single strategy | Competing DDQN agents with performance allocation |
 | Static risk | Dynamic VaR with multi-factor adjustment |
@@ -173,7 +173,7 @@ A **fully adaptive, self-learning trading intelligence using Deep Reinforcement 
 ### 1.2 Key Differentiators
 
 | Traditional EA | This System |
-|----------------|-------------|
+| --- | --- |
 | Hardcoded parameters | Learned parameters with soft bounds |
 | Single strategy | Competing agents with allocation |
 | Static risk | Dynamic VaR with multi-factor adjustment |
@@ -397,7 +397,7 @@ Regime Classification:
 ### 4.1 Defensive Programming Framework
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `safe_math.py` | NaN/Inf protection, safe division, clamping | ✅ IMPLEMENTED (85 lines) |
 | `safe_utils.py` | Time utils, validation, array helpers | ✅ IMPLEMENTED (147 lines) |
 | `ring_buffer.py` | Circular buffer with O(1) stats | ✅ IMPLEMENTED (265 lines) |
@@ -412,7 +412,7 @@ Regime Classification:
 ### 4.2 Broker & Instrument Abstraction
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `SymbolSpec.py` | Complete broker abstraction | ✅ IN trade_manager.py (887 lines) |
 | `friction_costs.py` | Spread + slippage + swap + commission | ✅ IMPLEMENTED (295 lines) |
 | `feature_engine.py` | Log-returns, BPS normalization | ✅ IMPLEMENTED (305 lines) |
@@ -421,7 +421,7 @@ Regime Classification:
 ### 4.3 Learned Parameters System
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `learned_parameters.py` | Adaptive parameters with soft bounds | ✅ IMPLEMENTED (387 lines) |
 | `AdaptiveParameter` class | Individual parameter with momentum update | ✅ IMPLEMENTED |
 | `SymbolParameterSet` class | Per symbol × timeframe parameters | ✅ IMPLEMENTED |
@@ -429,7 +429,7 @@ Regime Classification:
 ### 4.6 Production Safety Infrastructure (🆕 P0 CRITICAL GAPS - COMPLETE)
 
 | Component | Purpose | Status (Python) |
-|-----------|---------|--------|
+| --- | --- | --- |
 | `journaled_persistence.py` | Write-Ahead Log for crash recovery | ✅ IMPLEMENTED (416 lines) |
 | `reward_integrity_monitor.py` | Anti-gaming detection | ✅ IMPLEMENTED (413 lines) |
 | `feedback_loop_breaker.py` | Detect/prevent feedback loops | ❌ REMOVED (dead code, Mar 2026) |
@@ -437,7 +437,7 @@ Regime Classification:
 | `production_monitor.py` | Real-time metrics + HTTP API | ✅ IMPLEMENTED (318 lines) |
 | `tests/test_reward_calculations.py` | Unit tests for reward functions | ✅ IMPLEMENTED (480 lines, 15 tests) |
 | `tests/test_p0_integration.py` | Integration tests for P0 safety | ✅ IMPLEMENTED (464 lines, 11 tests) |
-| `docs/DISASTER_RECOVERY_RUNBOOK.md` | Operations playbook | ✅ DOCUMENTED |
+| `docs/operations/DISASTER_RECOVERY_RUNBOOK.md` | Operations playbook | ✅ DOCUMENTED |
 
 **Summary:** All 7 P0 critical gaps addressed. System ready for graduated production deployment.
 **Test Status:** 2,195 passing, 0 skipped (as of 2026-03-14)
@@ -448,7 +448,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.4 Agent Architecture
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `src/agents/trigger_agent.py` | Entry specialist (Trigger Agent) | ✅ IMPLEMENTED (968 lines) |
 | `src/agents/harvester_agent.py` | Exit specialist (Harvester Agent) | ✅ IMPLEMENTED (1,136 lines) |
 | `src/core/ddqn_network.py` | Double DQN with PyTorch | ✅ IMPLEMENTED (481 lines) |
@@ -459,7 +459,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.5 Multi-Position Support (🆕 PYTHON ENHANCEMENT)
 
 | Feature | Purpose | Status (Python) |
-|---------|---------|--------|
+| --- | --- | --- |
 | Position-keyed tracking | Multiple concurrent positions | ✅ IMPLEMENTED |
 | Per-position MFE/MAE | Independent tracking per position | ✅ IMPLEMENTED |
 | Per-position path recording | Separate path for each position | ✅ IMPLEMENTED |
@@ -478,13 +478,13 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.6 Original MQL Components (For Reference)
 
 | File | Purpose | Original MQL Status |
-|------|---------|--------|
+| --- | --- | --- |
 | `CExperienceBuffer.mqh` | Enhanced experience with staleness | ⏳ PENDING |
 
 ### 4.7 Overfitting Detection & Regularization
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `generalization_monitor.py` | Train-live gap, distribution shift | ❌ REMOVED (dead code, Mar 2026) |
 | `adaptive_regularization.py` | Dynamic L2, dropout, LR adjustment | ✅ IMPLEMENTED (329 lines) |
 | `early_stopping.py` | Checkpoint/restore on degradation | ❌ REMOVED (dead code, Mar 2026) |
@@ -493,7 +493,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.8 Reward Shaping
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `src/core/reward_shaper.py` | Asymmetric, component-based rewards (5 dims) | ✅ IMPLEMENTED (823 lines) |
 | `src/core/activity_monitor.py` | No-trade prevention, exploration | ✅ IMPLEMENTED |
 | Counterfactual analysis | What-if reward adjustment | ✅ IN harvester_agent.py |
@@ -502,7 +502,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.9 Feature Engineering
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `event_time_features.py` | Event-relative time features | ✅ IMPLEMENTED (185 lines) |
 | `time_features.py` | Session-aware time encoding | ❌ REMOVED (superseded by event_time_features.py) |
 | `feature_tournament.py` | Survival tournament for selection | ❌ REMOVED (dead code, Mar 2026) |
@@ -517,7 +517,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.10 Performance Tracking
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `performance_tracker.py` | Multi-dimensional hierarchical tracking | ✅ IMPLEMENTED (455 lines) |
 | `trade_analyzer.py` | Trade analysis & statistics | ✅ IMPLEMENTED (220 lines) |
 | `trade_exporter.py` | Export trades to JSON/CSV | ✅ IMPLEMENTED (115 lines) |
@@ -525,7 +525,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.11 Risk Management
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `var_estimator.py` | Dynamic VaR with multi-factor adjustment | ✅ IMPLEMENTED (412 lines) |
 | `circuit_breakers.py` | Sortino, Kurtosis, VPIN breakers | ✅ IMPLEMENTED (372 lines) |
 | Position sizing | VaR-based sizing | ✅ IN ctrader_ddqn_paper.py |
@@ -534,7 +534,7 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 ### 4.12 Production Safety (🆕 P0 CRITICAL - ALL COMPLETE)
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `feedback_loop_breaker.py` | Escape from degraded states | ❌ REMOVED (dead code, Mar 2026) |
 | `journaled_persistence.py` | Write-ahead log for crash recovery | ✅ IMPLEMENTED (416 lines) |
 | `cold_start_manager.py` | Graduated warm-up protocol | ❌ REMOVED (dead code, Mar 2026) |
@@ -543,16 +543,16 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 | `reward_integrity_monitor.py` | Detect reward hacking | ✅ IMPLEMENTED (413 lines) |
 | `production_monitor.py` | Real-time metrics + HTTP API | ✅ IMPLEMENTED (318 lines) |
 
-**All 7 P0 gaps addressed.** See `docs/P0_IMPLEMENTATION_SUMMARY.md` for details.
-
-**All 7 P0 gaps addressed.** See `docs/P0_IMPLEMENTATION_SUMMARY.md` for details.
+**All 7 P0 gaps addressed.**
 
 ### 4.13 Monitoring & HUD
 
 | File | Purpose | Status |
-|------|---------|--------|
-| `src/monitoring/hud_tabbed.py` | Terminal HUD — 7 tabs, curses UI (3,855 lines) | ✅ IMPLEMENTED |
+| --- | --- | --- |
+| `src/monitoring/hud_tabbed.py` | Terminal HUD — 7 tabs, curses UI | ✅ IMPLEMENTED |
 | `src/monitoring/startup_selftest.py` | 17-check self-test at startup | ✅ IMPLEMENTED |
+| `src/monitoring/reward_shaping_monitor.py` | Hourly quality-guard monitor | ✅ IMPLEMENTED |
+| `src/monitoring/production_monitor.py` | Real-time metrics export | ✅ IMPLEMENTED |
 
 **HUD tabs (7):**
 - **[O] Overview** — startup self-test results (17 checks), live quote, VaR, risk budget, regime ζ, circuit-breaker status, P&L summary
@@ -566,10 +566,29 @@ See `docs/P0_IMPLEMENTATION_SUMMARY.md` and `docs/P0_INTEGRATION_TEST_STATUS.md`
 **Startup Self-Test (17 checks):**
 Runs at boot; exports pass/fail JSON to `data/startup_selftest.json`. Checks cover: FIX sessions, position reconciliation, VaR estimator, circuit breakers, reward shaper dims, IS weight correctness, min-hold guard, disk persistence, network weight load, feature pipeline, regime detector, order book, trade log, and more.
 
+**RewardShapingMonitor** (`src/monitoring/reward_shaping_monitor.py`):
+
+Runs hourly (configurable via `REWARD_MONITOR_INTERVAL_SECONDS`). Reads `trade_log.jsonl` and
+the per-bot `decisions.jsonl` and emits a scoped quality-guard JSON:
+
+```text
+data/reward_shaping_monitor_XAUUSD_M5.json
+```
+
+Key outputs:
+
+- Rolling comparison blocks: last 24 h vs 7-day and 30-day baselines
+- Profit-factor, PnL/trade, capture rate, win rate, payoff ratio deltas
+- `no_entry_pressure` signal (fraction of NO_ENTRY bars) — flags over-gating
+- Recommendations: tighten/relax `participation_rate` and reward shape weights
+
+All paths, trade filtering, and decision-log scoping are keyed by `(symbol, timeframe_minutes)`.
+Concurrent bots write to separate files and never clobber each other.
+
 ### 4.14 Platform Integration (cTrader/FIX Protocol)
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `trade_manager.py` | Centralized order & position management | ✅ IMPLEMENTED (887 lines) |
 | `trade_manager_example.py` | Integration wrapper for main bot | ✅ IMPLEMENTED (~900 lines) |
 | `trade_manager_safety.py` | Safety utilities for order validation | ✅ IMPLEMENTED (147 lines) |
@@ -588,7 +607,7 @@ Runs at boot; exports pass/fail JSON to `data/startup_selftest.json`. Checks cov
 ### 4.14 Path Analysis & Geometry
 
 | File | Purpose | Status (Python) |
-|------|---------|--------|
+| --- | --- | --- |
 | `path_geometry.py` | 5 geometric metrics for trades | ✅ IMPLEMENTED (172 lines) |
 | Path recording | M1 OHLC capture | ✅ IN trade_manager_example.py |
 | MFE/MAE tracking | Per-position excursions | ✅ IN trade_manager_example.py |
@@ -609,7 +628,7 @@ Runs at boot; exports pass/fail JSON to `data/startup_selftest.json`. Checks cov
 ### 5.2 Component Status Matrix
 
 | Category | Components | Implemented | % Complete | Status |
-|----------|-----------|-------------|------------|--------|
+| --- | --- | --- | --- | --- |
 | **Core Safety & Defensive Programming** | 10 | 10 | 100% | ✅ |
 | **Broker Abstraction & Costs** | 4 | 4 | 100% | ✅ Slippage model implemented |
 | **Neural Network & Learning** | 6 | 6 | 100% | ✅ |
@@ -760,7 +779,7 @@ Trigger now learns that entering into informed order flow is a bad decision, not
 
 **Already-correct wiring confirmed (no changes needed):**
 | Stat | Mechanism | Location |
-|------|-----------|----------|
+| --- | --- | --- |
 | Kurtosis → VaR | `kurtosis_mult = 1 + max(0,(k-1)/3)` | `var_estimator.py` |
 | VPIN-z → VaR inflation | `vpin_mult = 1 + max(0, vpin_z/2)` | `var_estimator.py` |
 | Feasibility → entry hard gate | threshold check blocks entry | `trigger_agent.py:314` |
@@ -865,7 +884,7 @@ PHASE 6: Validation                   [⏳ PENDING]
 ### 6.1 Why These Choices?
 
 | Decision | Choice | Rationale |
-|----------|--------|-----------|
+| --- | --- | --- |
 | **Dual Agent** | Trigger + Harvester | Entry and exit are different skills; specialization improves learning |
 | **Normalization** | Log-returns + BPS | Instrument-agnostic, additive across time, handles scale differences |
 | **Parameters** | Learned with soft bounds | No magic numbers; tanh clamping allows adaptation while preventing extremes |
@@ -904,7 +923,7 @@ PHASE 6: Validation                   [⏳ PENDING]
 ### 7.1 Critical Gaps (Must Fix Before Live)
 
 | Gap | Risk | Mitigation |
-|-----|------|------------|
+| --- | --- | --- |
 | **Correlation blindness** | All positions move together in crisis | Dynamic correlation with stress adjustment |
 | **Feedback loops** | System gets stuck in degraded state | FeedbackLoopBreaker with forced reset |
 | **Broker execution** | Asymmetric slippage not modeled | BrokerExecutionModel with learned asymmetry |
@@ -913,7 +932,7 @@ PHASE 6: Validation                   [⏳ PENDING]
 ### 7.2 High Severity Gaps
 
 | Gap | Risk | Mitigation |
-|-----|------|------------|
+| --- | --- | --- |
 | **Reward hacking** | Agent games reward, not profit | RewardIntegrityMonitor comparing reward vs actual P&L |
 | **Parameter staleness** | Old parameters wrong for new regime | ParameterStaleness with accelerated relearning |
 | **Cold start** | No data, bad initial trades | ColdStartManager with graduated phases |
@@ -923,7 +942,7 @@ PHASE 6: Validation                   [⏳ PENDING]
 ### 7.3 Medium Severity Gaps
 
 | Gap | Risk | Mitigation |
-|-----|------|------------|
+| --- | --- | --- |
 | **Hyperparameter sensitivity** | Small changes break system | Sensitivity analysis + documented safe ranges |
 | **Computational bottlenecks** | Can't keep up with fast markets | ComputationBudget with priority scheduling |
 | **Feature engineering gaps** | Missing important signals | Tournament re-run quarterly + add candidates |
@@ -1514,7 +1533,7 @@ Live Trading (Minimum 3 months at minimal size):
 ## 12. GLOSSARY
 
 | Term | Definition |
-|------|------------|
+| --- | --- |
 | **BPS** | Basis points (1/100 of 1%) |
 | **MFE** | Maximum Favorable Excursion - best unrealized P&L during trade |
 | **MAE** | Maximum Adverse Excursion - worst unrealized P&L during trade |
@@ -1579,7 +1598,7 @@ Now      : Paper trading XAUUSD M5 — DDQN accumulating corrected experience
 ### 13.3 Known Issues / Tech Debt
 
 | Issue | Severity | Notes |
-|-------|----------|-------|
+| --- | --- | --- |
 | L2/imbalance always 0 | MEDIUM | VPIN veto/tilt features inactive until broker L2 feed wired |
 | Mode breakdown missing ~999 trades | MEDIUM | Old trades have empty `trading_mode`; use stats epoch to focus on recent |
 | Harvester Q-values converging | LOW | Self-healing via min-hold + corrected rewards; monitor ticks_held in HUD |

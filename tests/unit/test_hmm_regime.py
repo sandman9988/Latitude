@@ -1,5 +1,6 @@
 """Tests for src.features.hmm_regime – HMMRegimeDetector."""
 
+import importlib.util
 import numpy as np
 import pytest
 
@@ -11,6 +12,9 @@ from src.features.hmm_regime import (
     RUNWAY_MULT_TRENDING,
     HMMRegimeDetector,
 )
+
+HMMLEARN_AVAILABLE = importlib.util.find_spec("hmmlearn") is not None
+requires_hmmlearn = pytest.mark.skipif(not HMMLEARN_AVAILABLE, reason="hmmlearn optional dependency not installed")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,6 +84,7 @@ class TestHMMFitting:
             det.add_price(p)
         assert det._hmm_fitted is False
 
+    @requires_hmmlearn
     def test_fits_with_enough_observations(self):
         det = HMMRegimeDetector(window_size=50, update_interval=5)
         _feed_prices(det, _trending_prices(80))
@@ -111,6 +116,7 @@ class TestBlendedMultiplier:
         blended = det.get_blended_runway_multiplier()
         assert RUNWAY_MULT_MEAN_REVERTING <= blended <= RUNWAY_MULT_TRENDING
 
+    @requires_hmmlearn
     def test_blended_is_weighted_sum(self):
         """Multiplier should be the dot product of probs and multiplier map."""
         det = HMMRegimeDetector(window_size=50, update_interval=5)
@@ -132,6 +138,7 @@ class TestRegimeInfo:
         assert info["hmm_fitted"] is False
         assert "hmm_probs" not in info
 
+    @requires_hmmlearn
     def test_info_after_fit(self):
         det = HMMRegimeDetector(window_size=50, update_interval=5)
         _feed_prices(det, _trending_prices(80))
@@ -182,6 +189,7 @@ class TestHMMEdgeCases:
         probs = det.get_regime_probabilities()
         assert len(probs) == HMM_N_STATES
 
+    @requires_hmmlearn
     def test_mixed_regime_prices(self):
         """Feeding trending then mean-reverting data should update posteriors."""
         det = HMMRegimeDetector(window_size=50, update_interval=5)
