@@ -178,6 +178,12 @@ class RollingVariance:
         n = len(self.buffer)
 
         if self.buffer.is_full():
+            # Defensive: Check buffer isn't empty (corrupted state)
+            if n < 1:
+                LOG.error("Buffer marked full but has 0 elements (corrupted state)")
+                self._reset()
+                return
+
             # Remove oldest value using reverse Welford's
             old_value = self.buffer[0]
 
@@ -211,14 +217,21 @@ class RollingVariance:
             self.variance = 0.0
             self.std = 0.0
 
+    def _reset(self):
+        """Reset tracker to initial state (for recovery from corrupted state)."""
+        self.buffer = RingBuffer(self.period)
+        self.mean = 0.0
+        self.m2 = 0.0
+        self.variance = 0.0
+        self.std = 0.0
+
     def is_ready(self) -> bool:
         """Check if enough samples for valid variance."""
         return len(self.buffer) >= self.min_periods
 
     def __repr__(self) -> str:
         return (
-            f"RollingVariance(period={self.period}, mean={self.mean:.6f}, "
-            f"std={self.std:.6f}, ready={self.is_ready()})"
+            f"RollingVariance(period={self.period}, mean={self.mean:.6f}, std={self.std:.6f}, ready={self.is_ready()})"
         )
 
 
@@ -452,8 +465,8 @@ if __name__ == "__main__":
     naive_time = time.perf_counter() - start
 
     speedup = naive_time / ring_time
-    print(f"    Ring buffer: {ring_time*1000:.2f} ms")
-    print(f"    Naive O(N):  {naive_time*1000:.2f} ms")
+    print(f"    Ring buffer: {ring_time * 1000:.2f} ms")
+    print(f"    Naive O(N):  {naive_time * 1000:.2f} ms")
     print(f"    ✓ Speedup: {speedup:.2f}x faster")
 
     if speedup < MIN_SPEEDUP_EXPECTED:

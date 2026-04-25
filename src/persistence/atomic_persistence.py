@@ -65,6 +65,15 @@ class AtomicPersistence:
                 # Calculate CRC32
                 crc32 = zlib.crc32(json_bytes) & 0xFFFFFFFF
 
+                # Defensive: Verify CRC calculation isn't consistently returning 0 (empty data bug)
+                if crc32 == 0:
+                    logger.warning("CRC32 is 0 for %s (might be empty data, proceeding)", filename)
+
+                # Validate CRC32 is in expected range
+                if not isinstance(crc32, int) or crc32 < 0 or crc32 > 0xFFFFFFFF:
+                    logger.error("Invalid CRC32 value: %s for %s", crc32, filename)
+                    raise ValueError(f"CRC32 calculation failed: {crc32}")
+
                 # Create envelope with CRC
                 envelope_data: dict[str, Any] = {
                     "crc32": crc32,
@@ -191,17 +200,29 @@ class AtomicPersistence:
             return False
 
     def _cleanup_old_backups(self, target_path: Path) -> None:
-        """Keep only MAX_BACKUPS most recent backups"""
+        """Keep only MAX_BACKUPS most recent backups with error recovery."""
         try:
             pattern = f"{target_path.name}.*.bak"
-            backup_list = sorted(target_path.parent.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+            backup_files = sorted(target_path.parent.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
 
-            # Remove old backups
-            for backup in backup_list[self.MAX_BACKUPS :]:
-                backup.unlink()
-                logger.debug("Deleted old backup: %s", backup.name)
+            deleted_count = 0
+            error_count = 0
 
-        except OSError as e:
+            for backup in backup_files[self.MAX_BACKUPS :]:
+                try:
+                    backup.unlink()
+                    deleted_count += 1
+                    logger.debug("Deleted old backup: %s", backup.name)
+                except OSError as e:
+                    logger.warning("Failed to delete backup %s: %s", backup.name, e)
+                    error_count += 1
+
+            if deleted_count > 0:
+                logger.info("Cleaned up %d old backups", deleted_count)
+            if error_count > 0:
+                logger.warning("Failed to clean up %d backups (permission denied?)", error_count)
+
+        except Exception as e:
             logger.warning("Backup cleanup failed: %s", e)
 
     def _restore_from_backup(self, filename: str) -> dict[str, Any] | None:
@@ -262,25 +283,45 @@ class JournaledPersistence(AtomicPersistence):
         self._recover_from_journal()
 
     def _recover_from_journal(self) -> None:
-        """Replay uncommitted journal entries on startup"""
+        """Replay uncommitted journal entries on startup with error recovery."""
         if not self.journal_path.exists():
             return
 
+        uncommitted_count = 0
+        error_count = 0
+
         try:
             with open(self.journal_path, encoding="utf-8") as journal_f:
-                for line in journal_f:
-                    entry = json.loads(line.strip())
-                    if not entry.get("committed", False):
-                        logger.warning("Replaying uncommitted: %s", entry)
-                        # Could implement replay logic here
+                for line_no, line in enumerate(journal_f, 1):
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+
+                    try:
+                        entry = json.loads(stripped)
+                        if not entry.get("committed", False):
+                            logger.warning("Replaying uncommitted entry %d: %s", line_no, entry)
+                            uncommitted_count += 1
+                            # Could implement replay logic here
+                    except json.JSONDecodeError as e:
+                        logger.error("Malformed journal entry %d: %s (skipping)", line_no, e)
+                        error_count += 1
+                        continue
 
             # Archive old journal
             timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             archive_path = self.base_dir / f"{self.journal_path.name}.{timestamp}.old"
-            shutil.move(self.journal_path, archive_path)
-            logger.info("Archived old journal: %s", archive_path.name)
 
-        except (OSError, json.JSONDecodeError) as e:
+            if uncommitted_count > 0 or error_count > 0:
+                logger.info("Journal recovery: %d uncommitted, %d errors", uncommitted_count, error_count)
+
+            try:
+                shutil.move(self.journal_path, archive_path)
+                logger.info("Archived old journal: %s", archive_path.name)
+            except OSError as e:
+                logger.warning("Failed to archive journal: %s", e)
+
+        except OSError as e:
             logger.error("Journal recovery failed: %s", e)
 
     def _journal_write(self, operation: str, filename: str, data_hash: int | None = None) -> bool:

@@ -156,27 +156,37 @@ class SortinoBreaker:
         return False
 
     def _calculate_sortino(self) -> float:
-        """Calculate Sortino ratio"""
+        """Calculate Sortino ratio with robust edge case handling."""
         if not self.returns:
             return 0.0
 
         returns = np.array(self.returns)
+
+        # Validate returns are finite
+        if not np.all(np.isfinite(returns)):
+            LOG.warning("Non-finite returns in Sortino calculation")
+            return 0.0
+
         mean_return = np.mean(returns)
 
         # Downside deviation (only negative returns)
         downside_returns = returns[returns < 0]
+
+        # If no losses, this is excellent - use high but finite sentinel
+        # to avoid Inf comparison issues (inf < threshold is always False)
         if len(downside_returns) == 0:
-            return float("inf")  # No losses = infinite Sortino
+            return 100.0  # High but finite sentinel for "all wins"
 
         downside_dev = np.std(downside_returns)
 
         if downside_dev < SAFE_EPSILON:
-            return float("inf")
+            return 100.0  # Also return finite sentinel for near-zero downside
 
         # Sortino ratio equals mean divided by downside deviation
         sortino = SafeMath.safe_div(mean_return, downside_dev, 0.0)
 
-        return sortino
+        # Cap at 100 to avoid Inf
+        return min(sortino, 100.0)
 
     def get_current_sortino(self) -> float:
         """Get current Sortino ratio"""
@@ -287,15 +297,33 @@ class KurtosisBreaker:
             return 0.0
 
         returns = np.array(self.returns)
+
+        # Validate returns are finite
+        if not np.all(np.isfinite(returns)):
+            LOG.warning("Non-finite returns in kurtosis calculation")
+            return 0.0
+
         mean = np.mean(returns)
         std = np.std(returns, ddof=1)
 
         if std < SAFE_EPSILON:
-            return 0.0
+            return 0.0  # Flat distribution, kurtosis is normal
 
         # Standardized fourth moment
         z = (returns - mean) / std
-        kurtosis = np.mean(z**4)
+        z_4 = np.power(z, 4)
+
+        # Validate z^4 values are finite
+        if not np.all(np.isfinite(z_4)):
+            LOG.warning("Non-finite z^4 in kurtosis calculation")
+            return 0.0
+
+        kurtosis = np.mean(z_4)
+
+        # Validate final result
+        if not np.isfinite(kurtosis):
+            LOG.error("Kurtosis calculation produced non-finite result")
+            return 0.0
 
         # Fisher's definition (excess kurtosis, normal = 0)
         # Adjust for bias
@@ -335,19 +363,51 @@ class DrawdownBreaker:
             cooldown_minutes=DRAWDOWN_COOLDOWN_MINUTES,  # 4 hour cooldown
         )
 
-    def update(self, equity: float):
-        """Update with current equity"""
-        if not SafeMath.is_valid(equity) or equity <= 0:
-            return
+    def update(self, equity: float) -> bool:
+        """Update with current equity and track drawdown.
 
-        self.current_equity = equity
+        Returns:
+            True if update successful, False if validation failed
+        """
+        import math
 
-        # Update peak
-        self.peak_equity = max(self.peak_equity, equity)
+        # Validate input type and value
+        if equity is None or not isinstance(equity, (int, float)):
+            LOG.error("[DRAWDOWN] Invalid equity type: %s", type(equity))
+            return False
 
-        # Calculate drawdown using safe division to avoid zero denominators
-        drawdown_numerator = self.peak_equity - equity
+        if not math.isfinite(float(equity)):
+            LOG.error("[DRAWDOWN] Non-finite equity: %s", equity)
+            return False
+
+        equity_f = float(equity)
+
+        if equity_f <= 0:
+            LOG.debug("[DRAWDOWN] Non-positive equity: %.2f", equity_f)
+            return False
+
+        self.current_equity = equity_f
+
+        # Initialize peak on first valid update
+        if self.peak_equity <= 0:
+            self.peak_equity = equity_f
+            self.current_drawdown = 0.0
+            return True
+
+        # Track peak
+        if equity_f > self.peak_equity:
+            self.peak_equity = equity_f
+
+        # Calculate drawdown
+        drawdown_numerator = self.peak_equity - equity_f
         self.current_drawdown = SafeMath.safe_div(drawdown_numerator, self.peak_equity, 0.0)
+
+        # Validate result is in valid range
+        if not 0.0 <= self.current_drawdown <= 1.0:
+            LOG.warning("[DRAWDOWN] Drawdown out of range: %.4f", self.current_drawdown)
+            self.current_drawdown = max(0.0, min(1.0, self.current_drawdown))
+
+        return True
 
     def check(self) -> bool:
         """Check if breaker should trip"""
@@ -523,30 +583,50 @@ class CircuitBreakerManager:
 
     def _resolve_param(self, name: str, explicit_value: float | None, default: float):
         """Resolve breaker thresholds with override → learned → default."""
+        import math
+
         if explicit_value is not None:
             try:
-                return float(explicit_value), "explicit"
-            except (TypeError, ValueError):
-                LOG.warning(
-                    "[CIRCUIT-BREAKERS] Invalid explicit override for %s (%s) - using default %.3f",
+                val = float(explicit_value)
+                if not math.isfinite(val):
+                    raise ValueError(f"Non-finite value: {val}")
+                return val, "explicit"
+            except (TypeError, ValueError) as e:
+                LOG.error(
+                    "[CIRCUIT-BREAKERS] Invalid explicit override for %s (%s) - using default %.3f: %s",
                     name,
                     explicit_value,
                     default,
+                    e,
                 )
                 return float(default), "default"
+
         if self.param_manager is not None:
             try:
                 value = self.param_manager.get(
                     self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default
                 )
-                return float(value), "learned"
-            except (KeyError, ValueError, TypeError, RuntimeError) as exc:
-                LOG.debug(
-                    "[CIRCUIT-BREAKERS] Failed to fetch %s via LearnedParameters (%s) - using default %.3f",
+                val = float(value)
+                if not math.isfinite(val):
+                    raise ValueError(f"Non-finite learned value: {val}")
+                LOG.info(
+                    "[CIRCUIT-BREAKERS] Using learned %s=%.3f for %s/%s",
                     name,
+                    val,
+                    self.symbol,
+                    self.timeframe,
+                )
+                return val, "learned"
+            except (KeyError, ValueError, TypeError, RuntimeError) as exc:
+                LOG.warning(
+                    "[CIRCUIT-BREAKERS] Failed to fetch learned %s for %s/%s (%s) - using default %.3f",
+                    name,
+                    self.symbol,
+                    self.timeframe,
                     exc,
                     default,
                 )
+
         return float(default), "default"
 
     def update_trade(self, pnl: float, equity: float):
@@ -764,21 +844,33 @@ class CircuitBreakerManager:
 
         state = {
             "timestamp": _time.time(),
-            "sortino": _breaker_dict(self.sortino_breaker.state, {
-                "returns": list(self.sortino_breaker.returns),
-            }),
-            "kurtosis": _breaker_dict(self.kurtosis_breaker.state, {
-                "returns": list(self.kurtosis_breaker.returns),
-                "threshold": float(self.kurtosis_breaker.threshold),
-                "readings": list(getattr(self.kurtosis_breaker, "_kurtosis_readings", [])),
-            }),
-            "drawdown": _breaker_dict(self.drawdown_breaker.state, {
-                "current_drawdown": self.drawdown_breaker.current_drawdown,
-                "peak_equity": self.drawdown_breaker.peak_equity,
-            }),
-            "consecutive_losses": _breaker_dict(self.consecutive_losses_breaker.state, {
-                "consecutive_losses": self.consecutive_losses_breaker.consecutive_losses,
-            }),
+            "sortino": _breaker_dict(
+                self.sortino_breaker.state,
+                {
+                    "returns": list(self.sortino_breaker.returns),
+                },
+            ),
+            "kurtosis": _breaker_dict(
+                self.kurtosis_breaker.state,
+                {
+                    "returns": list(self.kurtosis_breaker.returns),
+                    "threshold": float(self.kurtosis_breaker.threshold),
+                    "readings": list(getattr(self.kurtosis_breaker, "_kurtosis_readings", [])),
+                },
+            ),
+            "drawdown": _breaker_dict(
+                self.drawdown_breaker.state,
+                {
+                    "current_drawdown": self.drawdown_breaker.current_drawdown,
+                    "peak_equity": self.drawdown_breaker.peak_equity,
+                },
+            ),
+            "consecutive_losses": _breaker_dict(
+                self.consecutive_losses_breaker.state,
+                {
+                    "consecutive_losses": self.consecutive_losses_breaker.consecutive_losses,
+                },
+            ),
             "manual_reset_cooldown_until": (
                 self.manual_reset_cooldown_until.isoformat() if self.manual_reset_cooldown_until else None
             ),
@@ -836,7 +928,10 @@ class CircuitBreakerManager:
                 if _saved_thr is not None:
                     try:
                         saved_threshold = float(_saved_thr)
-                        if self.param_manager is None and abs(self.kurtosis_threshold - MANAGER_DEFAULT_KURTOSIS) < SAFE_EPSILON:
+                        if (
+                            self.param_manager is None
+                            and abs(self.kurtosis_threshold - MANAGER_DEFAULT_KURTOSIS) < SAFE_EPSILON
+                        ):
                             self.kurtosis_breaker.threshold = saved_threshold
                         elif abs(saved_threshold - self.kurtosis_threshold) > SAFE_EPSILON:
                             LOG.info(
@@ -866,7 +961,9 @@ class CircuitBreakerManager:
             # Restore consecutive losses breaker
             if "consecutive_losses" in state:
                 _restore_breaker(self.consecutive_losses_breaker.state, state["consecutive_losses"])
-                self.consecutive_losses_breaker.consecutive_losses = state["consecutive_losses"].get("consecutive_losses", 0)
+                self.consecutive_losses_breaker.consecutive_losses = state["consecutive_losses"].get(
+                    "consecutive_losses", 0
+                )
 
             _mr_until = state.get("manual_reset_cooldown_until")
             self.manual_reset_cooldown_until = None
@@ -980,7 +1077,7 @@ if __name__ == "__main__":
         tripped = consecutive_demo.check()
 
         result_str = "WIN " if result_is_win else "LOSS"
-        print(f"  Trade {i+1}: {result_str} | Consecutive losses: {count} | Tripped: {tripped}")
+        print(f"  Trade {i + 1}: {result_str} | Consecutive losses: {count} | Tripped: {tripped}")
 
     # Test 5: Circuit Breaker Manager
     print("\n[Test 5] Circuit Breaker Manager")
@@ -1002,7 +1099,7 @@ if __name__ == "__main__":
     ]
 
     for i, (trade_pnl, trade_equity) in enumerate(demo_trades):
-        print(f"\nTrade {i+1}: P&L=${trade_pnl:+4.0f} | Equity=${trade_equity:.0f}")
+        print(f"\nTrade {i + 1}: P&L=${trade_pnl:+4.0f} | Equity=${trade_equity:.0f}")
 
         manager_demo.update_trade(trade_pnl / 100, trade_equity)  # Normalize PnL
         manager_demo.check_all()

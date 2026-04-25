@@ -40,9 +40,11 @@ fix44: Any
 try:
     import quickfix as _fix  # type: ignore[import-not-found]
     import quickfix44 as _fix44  # type: ignore[import-not-found]
+
     fix = _fix
     fix44 = _fix44
 except ImportError:
+
     def _make_stub(name: str):
         """Return a lightweight stub class for FIX field/message types."""
         return type(
@@ -58,8 +60,10 @@ except ImportError:
 
     class _FixStub:
         """Stub namespace – quickfix C-extension not installed."""
+
         def __getattr__(self, name):  # noqa: D105 – instance
             return _make_stub(name)
+
         __class_getitem__ = classmethod(lambda cls, item: None)
 
     class _Fix44Stub:
@@ -169,13 +173,43 @@ class Order:
     def __init__(self, clord_id, symbol, side, ord_type, quantity, price=None, instrument_digits=2):  # noqa: PLR0913
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
+        # Validate required inputs
+        if not clord_id:
+            raise ValueError("clord_id is required")
+        if not symbol:
+            raise ValueError("symbol is required")
+        if not isinstance(side, Side):
+            raise ValueError(f"Invalid side: {side} (must be Side enum)")
+        if not isinstance(ord_type, OrdType):
+            raise ValueError(f"Invalid ord_type: {ord_type} (must be OrdType enum)")
+        if not isinstance(instrument_digits, int) or not 0 <= instrument_digits <= 10:
+            raise ValueError(f"Invalid instrument_digits: {instrument_digits} (must be int 0-10)")
+
         self.clord_id = clord_id
         self.symbol = symbol
         self.side = side
         self.ord_type = ord_type
         self.instrument_digits = instrument_digits
-        self.quantity = SafeMath.to_decimal(quantity, instrument_digits)
-        self.price = SafeMath.to_decimal(price, instrument_digits) if price is not None else None
+
+        # Convert quantity with validation
+        try:
+            self.quantity = SafeMath.to_decimal(quantity, instrument_digits)
+            if self.quantity <= 0:
+                raise ValueError(f"Quantity must be positive: {quantity}")
+        except Exception as e:
+            raise ValueError(f"Invalid quantity '{quantity}': {e}") from e
+
+        # Convert price with validation (optional for market orders)
+        if price is not None:
+            try:
+                self.price = SafeMath.to_decimal(price, instrument_digits)
+                if self.price <= 0:
+                    raise ValueError(f"Price must be positive: {price}")
+            except Exception as e:
+                raise ValueError(f"Invalid price '{price}': {e}") from e
+        else:
+            self.price = None
+
         self.order_id = None
         self.position_ticket = None
         self.status = OrderStatus.PENDING_NEW
@@ -299,24 +333,71 @@ class Position:
         self.pos_maint_rpt_id = pos_id
         self.updated_at = utc_now()
 
-    def update_from_fill(self, side, filled_qty, _avg_price):
-        from src.utils.safe_math import SafeMath  # noqa: PLC0415
+    def update_from_fill(self, side, filled_qty, _avg_price) -> bool:
+        """Update position from fill with atomic state transition.
 
-        filled_qty = SafeMath.to_decimal(filled_qty, self.instrument_digits)
-        if side == Side.BUY:
-            self.long_qty += filled_qty
-        else:
-            self.short_qty += filled_qty
-        self.net_qty = SafeMath.quantize(self.long_qty - self.short_qty, self.instrument_digits)
-        self.updated_at = utc_now()
-        LOG.info(
-            "[POSITION] Updated from fill: %s %s → net=%s (long=%s, short=%s)",
-            side.name,
-            str(filled_qty),
-            str(self.net_qty),
-            str(self.long_qty),
-            str(self.short_qty),
-        )
+        Returns:
+            True if position was updated successfully, False if validation failed
+        """
+        try:
+            # Convert and validate filled_qty
+            filled_qty_dec = SafeMath.to_decimal(filled_qty, self.instrument_digits)
+
+            # Validate filled_qty is positive and finite
+            if filled_qty_dec <= 0:
+                LOG.error("[POSITION] Invalid filled_qty: %s (must be positive)", filled_qty_dec)
+                return False
+
+            # Calculate new state first (no side effects)
+            if side == Side.BUY:
+                new_long = SafeMath.quantize(self.long_qty + filled_qty_dec, self.instrument_digits)
+                new_short = self.short_qty
+            else:
+                new_long = self.long_qty
+                new_short = SafeMath.quantize(self.short_qty + filled_qty_dec, self.instrument_digits)
+
+            new_net = SafeMath.quantize(new_long - new_short, self.instrument_digits)
+
+            # Validate new state - check for non-finite values
+            if not all(self._is_valid_decimal(v) for v in [new_long, new_short, new_net]):
+                LOG.error(
+                    "[POSITION] Invalid position state after fill: long=%s, short=%s, net=%s",
+                    new_long,
+                    new_short,
+                    new_net,
+                )
+                return False
+
+            # Atomic commit - all state changes happen together
+            self.long_qty = new_long
+            self.short_qty = new_short
+            self.net_qty = new_net
+            self.updated_at = utc_now()
+
+            LOG.info(
+                "[POSITION] Updated from fill: %s %s → net=%s (long=%s, short=%s)",
+                side.name,
+                str(filled_qty_dec),
+                str(self.net_qty),
+                str(self.long_qty),
+                str(self.short_qty),
+            )
+            return True
+
+        except Exception as e:
+            LOG.error("[POSITION] Fill update failed: %s (position unchanged)", e)
+            return False
+
+    def _is_valid_decimal(self, value) -> bool:
+        """Check if a Decimal value is valid and finite."""
+        try:
+            # Check for NaN/Inf - Decimal doesn't have is_finite, check string representation
+            s = str(value).lower()
+            if "nan" in s or "inf" in s or "snan" in s:
+                return False
+            return True
+        except Exception:
+            return False
 
     def seed(self, net_qty, _entry_price=0.0):
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
@@ -914,7 +995,9 @@ class TradeManager:
         if fill_price <= 0:
             LOG.error(
                 "[PAPER] Invalid fill price for %s: bid=%.5f ask=%.5f",
-                side.name, bid, ask,
+                side.name,
+                bid,
+                ask,
             )
             return
 

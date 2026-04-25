@@ -273,7 +273,7 @@ class ExperienceBuffer:
         done: bool,
         regime: int = RegimeSampling.UNKNOWN,
         zeta: float | None = None,
-    ):
+    ) -> bool:
         """Add experience to buffer.
 
         Args:
@@ -284,29 +284,62 @@ class ExperienceBuffer:
             done: True if terminal state
             regime: RegimeSampling enum value
             zeta: Damping ratio at time of experience (uses current_zeta if None)
+
+        Returns:
+            True if experience was added, False if validation failed
         """
         # Defensive: Validate inputs
         if not isinstance(state, np.ndarray) or not isinstance(next_state, np.ndarray):
-            LOG.warning("Invalid state type: state=%s, next_state=%s", type(state), type(next_state))
-            return
+            LOG.error(
+                "Invalid state type: state=%s, next_state=%s (experience not added)", type(state), type(next_state)
+            )
+            return False
 
         if state.size == 0 or next_state.size == 0:
-            LOG.warning("Empty state vectors")
-            return
+            LOG.error("Empty state vectors (experience not added)")
+            return False
 
         if not math.isfinite(reward):
-            LOG.warning("Non-finite reward: %.4f", reward)
-            return
+            LOG.error("Non-finite reward: %.4f (experience not added)", reward)
+            return False
 
         if action not in (0, 1, 2):
-            LOG.warning("Invalid action: %d", action)
-            return
+            LOG.error("Invalid action: %d (experience not added)", action)
+            return False
+
+        # Validate regime is a valid enum value
+        try:
+            regime_enum = RegimeSampling(regime)
+        except ValueError:
+            LOG.error("Invalid regime value: %d (must be 0-3, experience not added)", regime)
+            return False
 
         # Convert to float16 for memory efficiency (50% reduction) if enabled
         # This is transparent to the caller - states are converted back to float32 during sampling
+        # Validate precision loss for critical features
         if self._use_float16:
-            state_stored = state.astype(np.float16)
-            next_state_stored = next_state.astype(np.float16)
+            state_f16 = state.astype(np.float16)
+            next_state_f16 = next_state.astype(np.float16)
+
+            # Check for precision loss (float16 has ~3 decimal digits of precision)
+            # Round-trip conversion to detect catastrophic loss
+            state_roundtrip = state_f16.astype(np.float32)
+            next_state_roundtrip = next_state_f16.astype(np.float32)
+
+            state_loss = np.max(np.abs(state - state_roundtrip))
+            next_state_loss = np.max(np.abs(next_state - next_state_roundtrip))
+
+            # Threshold: 0.001 is ~0.1% loss, acceptable for most features
+            # Log warning but still proceed - float16 is an optimization, not critical
+            if state_loss > 0.001 or next_state_loss > 0.001:
+                LOG.debug(
+                    "Float16 precision loss detected: state_loss=%.6f, next_state_loss=%.6f",
+                    state_loss,
+                    next_state_loss,
+                )
+
+            state_stored = state_f16
+            next_state_stored = next_state_f16
         else:
             state_stored = state.copy()
             next_state_stored = next_state.copy()
@@ -347,6 +380,8 @@ class ExperienceBuffer:
 
         if self.total_added % 1000 == 0:
             LOG.info("ExperienceBuffer: added %d experiences (size=%d)", self.total_added, self.tree.n_entries)
+
+        return True
 
     def sample(self, batch_size: int = 64) -> dict | None:
         """Sample batch of experiences with prioritized sampling.

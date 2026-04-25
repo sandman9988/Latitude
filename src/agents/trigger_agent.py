@@ -46,15 +46,15 @@ LOG = logging.getLogger(__name__)
 
 MIN_FEATURE_COLS = 3
 IMBALANCE_INDEX = 4
-VOL_Z_INDEX = 3           # state array column index for vol_z
-VPIN_Z_INDEX = 5          # state array column index for vpin_z
+VOL_Z_INDEX = 3  # state array column index for vol_z
+VPIN_Z_INDEX = 5  # state array column index for vpin_z
 TILT_SCALE = 0.1
 PAPER_EPSILON = 0.15
 PAPER_BASE_THRESHOLD = 0.15
 LIVE_BASE_THRESHOLD = 0.3
-_UTILIZATION_BAD_THRESHOLD: float = 0.3   # utilization below this is a bad entry
-_UTILIZATION_OUTLIER_LOW: float = 0.2     # below this is an outlier (too poor)
-_UTILIZATION_OUTLIER_HIGH: float = 2.0    # above this is an outlier (excessive)
+_UTILIZATION_BAD_THRESHOLD: float = 0.3  # utilization below this is a bad entry
+_UTILIZATION_OUTLIER_LOW: float = 0.2  # below this is an outlier (too poor)
+_UTILIZATION_OUTLIER_HIGH: float = 2.0  # above this is an outlier (excessive)
 _RUNWAY_ERROR_HUBER_K: float = 1.0
 _ZERO_MFE_FLOOR_FRAC: float = 1e-7
 PREDICTED_RUNWAY_FALLBACK = 0.0015
@@ -62,13 +62,13 @@ Q_RUNWAY_MIN = 0.0010
 Q_RUNWAY_MAX = 0.0050
 Q_RUNWAY_MAX_Q = 3.0
 FALLBACK_VOL_SCALE_QUIET: float = 0.70  # Runway scale during below-average volatility
-FALLBACK_VOL_SCALE_HOT: float = 1.50    # Runway scale during above-average volatility
+FALLBACK_VOL_SCALE_HOT: float = 1.50  # Runway scale during above-average volatility
 
 # ── EWMA runway calibration constants ──────────────────────────────────
-RUNWAY_CAL_N_BUCKETS: int = 5            # Q-value buckets for calibration
+RUNWAY_CAL_N_BUCKETS: int = 5  # Q-value buckets for calibration
 RUNWAY_CAL_Q_EDGES: list[float] = [0.0, 0.6, 1.2, 1.8, 2.4, 3.0]  # Bucket boundaries
-RUNWAY_CAL_ALPHA: float = 0.15           # EWMA smoothing factor (higher = faster adaptation)
-RUNWAY_CAL_MIN_SAMPLES: int = 3          # Minimum samples before using calibrated value
+RUNWAY_CAL_ALPHA: float = 0.15  # EWMA smoothing factor (higher = faster adaptation)
+RUNWAY_CAL_MIN_SAMPLES: int = 3  # Minimum samples before using calibrated value
 RUNWAY_GATING_MIN_TOTAL_SAMPLES: int = 20
 RUNWAY_GATING_MIN_ACTIVE_BUCKETS: int = 2
 RUNWAY_CAL_ALPHA_MIN: float = 0.05
@@ -230,8 +230,14 @@ class TriggerAgent(AgentTrainingMixin):
         # Log consolidated initialization
         mode_str = "TRAINING" if (self.disable_gates or self.paper_mode) else "LIVE"
         training_str = f"online_learn={enable_training}" if enable_training else "no_training"
-        LOG.info("[TRIGGER] Init: %s ε=%.2f→%.2f decay=%.4f | %s",
-            mode_str, self.epsilon, self.epsilon_end, self.epsilon_decay, training_str)
+        LOG.info(
+            "[TRIGGER] Init: %s ε=%.2f→%.2f decay=%.4f | %s",
+            mode_str,
+            self.epsilon,
+            self.epsilon_end,
+            self.epsilon_decay,
+            training_str,
+        )
 
         # Try to load model if path specified
         model_path = os.environ.get("DDQN_TRIGGER_MODEL", "").strip()
@@ -255,9 +261,6 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for trigger agent."""
-        from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
-
-        _ = Conv1dQNet
         self._load_torch_model(model_path, n_actions=3, tag="TRIGGER")
 
     def _try_training_decision(self) -> tuple[int, float, float] | None:
@@ -275,7 +278,9 @@ class TriggerAgent(AgentTrainingMixin):
             action = random.choices([0, 1, 2], weights=[2, 1, 1])[0]
             LOG.info(
                 "[TRIGGER] EXPLORE: random action=%d (ε=%.3f, bars_flat=%d)",
-                action, self.epsilon, self.bars_since_trade,
+                action,
+                self.epsilon,
+                self.bars_since_trade,
             )
             self._decay_epsilon()
             if action != 0:
@@ -312,7 +317,11 @@ class TriggerAgent(AgentTrainingMixin):
             self.last_predicted_runway_net = float(predicted_runway)
             LOG.debug(
                 "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, gross=%.4f, net=%.4f",
-                q_values, action, confidence, gross_runway, predicted_runway,
+                q_values,
+                action,
+                confidence,
+                gross_runway,
+                predicted_runway,
             )
         else:
             action, confidence, gross_runway = self._fallback_decide(state, regime_threshold_adj)
@@ -375,7 +384,7 @@ class TriggerAgent(AgentTrainingMixin):
         self.last_state = state.copy()
         LOG.debug(
             "[TRIGGER-DIAG] decide() called: state_shape=%s, setting last_state for experience buffers",
-            state.shape if hasattr(state, 'shape') else 'unknown',
+            state.shape if hasattr(state, "shape") else "unknown",
         )
 
         if self._should_block_for_position(current_position):
@@ -464,8 +473,14 @@ class TriggerAgent(AgentTrainingMixin):
 
             LOG.debug(
                 "[TRIGGER] Q=%s action=%d raw_p=%.3f calib_p=%.3f be=%.3f gross=%.4f K=%.4f net=%.4f",
-                q_values, action, raw_prob, calibrated_prob,
-                breakeven_prob, gross_runway, friction_cost, predicted_runway,
+                q_values,
+                action,
+                raw_prob,
+                calibrated_prob,
+                breakeven_prob,
+                gross_runway,
+                friction_cost,
+                predicted_runway,
             )
 
             self._decay_epsilon()
@@ -568,7 +583,7 @@ class TriggerAgent(AgentTrainingMixin):
         regimes (ζ ≥ 0.7) the policy is less reliable and more exploration
         is beneficial — decay is slowed proportionally to ζ.
         """
-        zeta = getattr(self, '_current_zeta', 0.5)
+        zeta = getattr(self, "_current_zeta", 0.5)
         # regime_factor: 1.0 in trending, ramps to 0.5 as ζ rises above 0.7
         regime_factor = 1.0 if zeta < 0.7 else max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
         # Slow the per-step decay: effective_decay approaches 1.0 (no decay)
@@ -576,9 +591,7 @@ class TriggerAgent(AgentTrainingMixin):
         effective_decay = 1.0 - (1.0 - self.epsilon_decay) * regime_factor
         self.epsilon = max(self.epsilon_end, self.epsilon * effective_decay)
 
-    def _fallback_decide(
-        self, state: np.ndarray, regime_threshold_adj: float = 0.0
-    ) -> tuple[int, float, float]:
+    def _fallback_decide(self, state: np.ndarray, regime_threshold_adj: float = 0.0) -> tuple[int, float, float]:
         """Multi-factor fallback entry decision with dynamic confidence and vol-scaled runway.
 
         Improvements over the legacy single-factor MA-diff crossover:
@@ -667,10 +680,7 @@ class TriggerAgent(AgentTrainingMixin):
     def _vpin_allows(self, direction: int, vpin_z: float) -> bool:
         """Return True if VPIN does not veto the fallback entry."""
         vpin_veto = 2.0
-        return not (
-            (direction == 1 and vpin_z < -vpin_veto)
-            or (direction == -1 and vpin_z > vpin_veto)
-        )
+        return not ((direction == 1 and vpin_z < -vpin_veto) or (direction == -1 and vpin_z > vpin_veto))
 
     def _fallback_confidence(self, direction: int, ret1_ok: bool, ret5_ok: bool, vpin_z: float) -> float:
         """Compute fallback confidence based on confirmation factors."""
@@ -836,9 +846,7 @@ class TriggerAgent(AgentTrainingMixin):
             self._runway_step_alpha[bucket] = base_alpha
         else:
             alpha = self._runway_step_alpha[bucket]
-            self._runway_cal_ewma[bucket] = (
-                alpha * actual_mfe_frac + (1 - alpha) * self._runway_cal_ewma[bucket]
-            )
+            self._runway_cal_ewma[bucket] = alpha * actual_mfe_frac + (1 - alpha) * self._runway_cal_ewma[bucket]
 
         if predicted_runway > 0:
             error = actual_mfe_frac - predicted_runway
@@ -906,8 +914,11 @@ class TriggerAgent(AgentTrainingMixin):
             if step_alpha and len(step_alpha) == RUNWAY_CAL_N_BUCKETS:
                 self._runway_step_alpha = [float(v) for v in step_alpha]
             total = sum(self._runway_cal_counts)
-            LOG.info("[TRIGGER] Restored runway calibration: %d total samples across %d buckets",
-                     total, sum(1 for c in self._runway_cal_counts if c > 0))
+            LOG.info(
+                "[TRIGGER] Restored runway calibration: %d total samples across %d buckets",
+                total,
+                sum(1 for c in self._runway_cal_counts if c > 0),
+            )
         if "platt_a" in state:
             self.platt_a = float(state["platt_a"])
             self.platt_b = float(state.get("platt_b", 0.0))
@@ -982,14 +993,18 @@ class TriggerAgent(AgentTrainingMixin):
         trade_success = actual_mfe_frac >= (predicted_runway * 0.5)
         return 1.0 if trade_success else 0.0
 
-    def _update_platt_from_trade(self, entry_confidence: float, outcome: float, raw_confidence: float | None = None) -> None:
+    def _update_platt_from_trade(
+        self, entry_confidence: float, outcome: float, raw_confidence: float | None = None
+    ) -> None:
         """Update Platt calibration parameters from trade outcome."""
         if not (self.enable_training and hasattr(self, "platt_a")):
             return
         predicted_prob = float(entry_confidence)
         self.update_platt_params(predicted_prob, outcome, raw_prob=raw_confidence)
 
-    def _update_confidence_from_trade(self, utilization: float, actual_mfe: float = 0.0, entry_price: float = 0.0) -> None:
+    def _update_confidence_from_trade(
+        self, utilization: float, actual_mfe: float = 0.0, entry_price: float = 0.0
+    ) -> None:
         """Update confidence_floor and related parameters using utilization."""
         if self.param_manager is None:
             return
@@ -1060,7 +1075,7 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _extra_training_stats(self) -> dict:
         """Trigger-specific stats appended by the mixin."""
-        zeta = getattr(self, '_current_zeta', 0.5)
+        zeta = getattr(self, "_current_zeta", 0.5)
         regime_factor = 1.0 if zeta < 0.7 else max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
         runway_total_samples = self._runway_cal_total_samples()
         runway_active_buckets = self._runway_cal_active_buckets()
@@ -1074,7 +1089,9 @@ class TriggerAgent(AgentTrainingMixin):
             "runway_cal_active_buckets": runway_active_buckets,
             "runway_predictor_reliable": runway_predictor_reliable,
             "runway_mean_abs_error": float(np.mean(self._runway_err_abs_ewma)) if self._runway_err_abs_ewma else 0.0,
-            "runway_alpha_mean": float(np.mean(self._runway_step_alpha)) if self._runway_step_alpha else RUNWAY_CAL_ALPHA,
+            "runway_alpha_mean": float(np.mean(self._runway_step_alpha))
+            if self._runway_step_alpha
+            else RUNWAY_CAL_ALPHA,
             "last_predicted_runway_gross": float(getattr(self, "last_predicted_runway_gross", 0.0)),
             "last_predicted_runway_net": float(getattr(self, "last_predicted_runway_net", 0.0)),
         }
@@ -1111,8 +1128,6 @@ if __name__ == "__main__":
     print("\n[TEST 3] Entry decision (already in position)")
     action, conf, runway = trigger.decide(state, current_position=1)
     assert action == 0  # NO_ENTRY
-    from src.utils.safe_math import SafeMath
-
     assert SafeMath.is_zero(conf)
     assert SafeMath.is_zero(runway)
     print("✓ Correctly blocks entry when position exists")

@@ -86,11 +86,28 @@ class BotPersistenceManager:
         model_file = models_dir / f"{agent_type}_agent_{agent_idx}.pt"
         meta_file = models_dir / f"{agent_type}_agent_{agent_idx}_meta.json"
 
+        temp_file = model_file.with_suffix(".pt.tmp")
+
         try:
             # Save model weights with atomic tmp file
-            temp_file = model_file.with_suffix(".pt.tmp")
             torch.save(model_state, temp_file)
-            temp_file.replace(model_file)  # Atomic rename
+
+            # Verify temp file was created
+            if not temp_file.exists():
+                LOG.error("[PERSISTENCE] Temp file not created after torch.save")
+                return False
+
+            # Atomic rename with cleanup on failure
+            try:
+                temp_file.replace(model_file)
+            except OSError as replace_err:
+                LOG.error("[PERSISTENCE] Failed to replace %s with %s: %s", model_file, temp_file, replace_err)
+                # Clean up orphaned temp file
+                import contextlib
+
+                with contextlib.suppress(OSError):
+                    temp_file.unlink()
+                return False
 
             # Save metadata
             if metadata is None:
@@ -107,11 +124,16 @@ class BotPersistenceManager:
 
             self.persistence.save_json(metadata, str(meta_file.relative_to(self.base_dir)))
 
-            LOG.info(f"[PERSISTENCE] Saved {agent_type} agent {agent_idx} model: " f"{symbol}/{timeframe}")
+            LOG.info(f"[PERSISTENCE] Saved {agent_type} agent {agent_idx} model: {symbol}/{timeframe}")
             return True
 
         except Exception as e:
             LOG.error(f"[PERSISTENCE] Failed to save model: {e}")
+            # Clean up temp file on any error
+            import contextlib
+
+            with contextlib.suppress(OSError):
+                temp_file.unlink()
             return False
 
     def load_agent_model(self, agent_type: str, agent_idx: int, symbol: str, timeframe: str) -> dict[str, Any] | None:
@@ -121,12 +143,12 @@ class BotPersistenceManager:
         model_file = models_dir / f"{agent_type}_agent_{agent_idx}.pt"
 
         if not model_file.exists():
-            LOG.warning(f"[PERSISTENCE] Model not found: {agent_type} {agent_idx} " f"for {symbol}/{timeframe}")
+            LOG.warning(f"[PERSISTENCE] Model not found: {agent_type} {agent_idx} for {symbol}/{timeframe}")
             return None
 
         try:
             state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
-            LOG.info(f"[PERSISTENCE] Loaded {agent_type} agent {agent_idx}: " f"{symbol}/{timeframe}")
+            LOG.info(f"[PERSISTENCE] Loaded {agent_type} agent {agent_idx}: {symbol}/{timeframe}")
             return state_dict
         except Exception as e:
             LOG.error(f"[PERSISTENCE] Failed to load model: {e}")
@@ -157,10 +179,10 @@ class BotPersistenceManager:
 
         # Add metadata
         stats["_metadata"] = {
-        "session_id": session_id,
-        "symbol": symbol,
-        "timeframe": timeframe,
-        "saved_at": datetime.now(UTC).isoformat() + "Z",
+            "session_id": session_id,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "saved_at": datetime.now(UTC).isoformat() + "Z",
         }
 
         success = self.persistence.save_json(stats, str((stats_dir / session_file).relative_to(self.base_dir)))
@@ -340,7 +362,7 @@ class BotPersistenceManager:
         success = self.persistence.save_json(state, str(checkpoint_file.relative_to(self.base_dir)))
 
         if success:
-            LOG.info(f"[PERSISTENCE] Saved checkpoint '{checkpoint_name}': " f"{symbol}/{timeframe}")
+            LOG.info(f"[PERSISTENCE] Saved checkpoint '{checkpoint_name}': {symbol}/{timeframe}")
 
         return success
 
@@ -351,7 +373,7 @@ class BotPersistenceManager:
         checkpoint_file = checkpoint_dir / f"checkpoint_{checkpoint_name}.json"
 
         if not checkpoint_file.exists():
-            LOG.warning(f"[PERSISTENCE] Checkpoint not found: {checkpoint_name} " f"for {symbol}/{timeframe}")
+            LOG.warning(f"[PERSISTENCE] Checkpoint not found: {checkpoint_name} for {symbol}/{timeframe}")
             return None
 
         return self.persistence.load_json(str(checkpoint_file.relative_to(self.base_dir)))

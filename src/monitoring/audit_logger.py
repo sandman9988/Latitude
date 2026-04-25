@@ -210,7 +210,12 @@ class DecisionLogger:
         self.timeframe_minutes = timeframe_minutes
 
     def log_decision(  # noqa: PLR0913
-        self, agent: str, decision: str, confidence: float, context: dict[str, Any], reasoning: dict[str, Any] = None,
+        self,
+        agent: str,
+        decision: str,
+        confidence: float,
+        context: dict[str, Any],
+        reasoning: dict[str, Any] = None,
         trade_id: str | None = None,
         position_id: list[str] | None = None,
     ):
@@ -225,35 +230,39 @@ class DecisionLogger:
             reasoning: Features/factors that influenced decision
             trade_id: Correlation ID linking entry → hold(s) → close for one trade
         """
-        entry = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "session": getattr(self, "session_id", None),
-            "trading_mode": getattr(self, "trading_mode", "live"),
-            "agent": agent,
-            "decision": decision,
-            "confidence": float(confidence),
-            "context": context,
-            "reasoning": reasoning or {},
-        }
-        symbol = getattr(self, "symbol", None)
-        timeframe = getattr(self, "timeframe", None)
-        timeframe_minutes = getattr(self, "timeframe_minutes", None)
-        if symbol:
-            entry["symbol"] = symbol
-        if timeframe:
-            entry["timeframe"] = timeframe
-        if timeframe_minutes is not None:
-            entry["timeframe_minutes"] = timeframe_minutes
-        if trade_id is not None:
-            entry["trade_id"] = trade_id
-        if position_id is not None:
-            entry["position_id"] = position_id if isinstance(position_id, list) else [position_id]
+        # Build entry while holding lock to ensure atomic write from perspective of other threads
+        with self.lock:
+            entry = {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "session": getattr(self, "session_id", None),
+                "trading_mode": getattr(self, "trading_mode", "live"),
+                "agent": agent,
+                "decision": decision,
+                "confidence": float(confidence),
+                "context": context,
+                "reasoning": reasoning or {},
+            }
+            symbol = getattr(self, "symbol", None)
+            timeframe = getattr(self, "timeframe", None)
+            timeframe_minutes = getattr(self, "timeframe_minutes", None)
+            if symbol:
+                entry["symbol"] = symbol
+            if timeframe:
+                entry["timeframe"] = timeframe
+            if timeframe_minutes is not None:
+                entry["timeframe_minutes"] = timeframe_minutes
+            if trade_id is not None:
+                entry["trade_id"] = trade_id
+            if position_id is not None:
+                entry["position_id"] = position_id if isinstance(position_id, list) else [position_id]
 
-        try:
-            with self.lock, open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, default=str) + "\n")
-        except Exception as e:
-            LOG.error("[DECISION] Failed to write decision log: %s", e)
+            # Serialize once, write once (atomic from perspective of other threads)
+            try:
+                with open(self.log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, default=str) + "\n")
+                    f.flush()
+            except Exception as e:
+                LOG.error("[DECISION] Failed to write decision log: %s", e)
 
     def log_trigger_decision(  # noqa: PLR0913
         self,
@@ -318,9 +327,9 @@ class DecisionLogger:
         """
         if not in_position:
             LOG.error(
-                "[DECISION] BUG: log_harvester_decision called while FLAT "
-                "(decision=%s trade_id=%s) — suppressed",
-                decision, trade_id,
+                "[DECISION] BUG: log_harvester_decision called while FLAT (decision=%s trade_id=%s) — suppressed",
+                decision,
+                trade_id,
             )
             return
         self.log_decision(

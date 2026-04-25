@@ -163,10 +163,20 @@ class HarvesterAgent(AgentTrainingMixin):
         if model_path:
             self._load_model(model_path)
 
-        LOG.info("[HARVESTER] Init: training=%s | buffer=%dk min=%d",
-            enable_training, buffer_capacity // 1000, self.min_experiences)
+        LOG.info(
+            "[HARVESTER] Init: training=%s | buffer=%dk min=%d",
+            enable_training,
+            buffer_capacity // 1000,
+            self.min_experiences,
+        )
 
         self._init_exit_thresholds()
+
+        # Pre-allocated state buffers for memory efficiency (reduces allocations from 3/tick to 0)
+        # Lazy-initialized on first call to _build_full_state()
+        self._combined_state: np.ndarray | None = None  # Combined market + position features
+        self._pos_features: np.ndarray | None = None  # Position features buffer (window, 3)
+        self._state_dim: int | None = None  # Cached state dimension
 
         # Granular close reason for the last exit decision (read by DualPolicy / TradeManager).
         self.last_close_reason: str = ""
@@ -185,9 +195,6 @@ class HarvesterAgent(AgentTrainingMixin):
 
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for harvester agent."""
-        from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
-
-        _ = Conv1dQNet
         self._load_torch_model(model_path, n_actions=2, tag="HARVESTER")
 
     def _check_emergency_stop_loss(self, mae: float, entry_price: float) -> tuple[bool, tuple[int, float] | None]:
@@ -432,7 +439,12 @@ class HarvesterAgent(AgentTrainingMixin):
         # Always build & record the state we see — needed for experience replay
         # regardless of which gate fires (emergency stop, min-hold, etc.).
         full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
-        self.last_state = full_state.copy()
+        # Only copy when training is enabled (experience buffer needs ownership).
+        # In inference mode, we can reuse the pre-allocated buffer directly.
+        if self.enable_training:
+            self.last_state = full_state.copy()
+        else:
+            self.last_state = full_state
         self.last_close_reason = ""  # reset for this decision cycle
 
         # Emergency stop loss check (always executed, not subject to min-hold)
@@ -481,7 +493,11 @@ class HarvesterAgent(AgentTrainingMixin):
         if ticks_held > effective_hard_stop_ticks:
             LOG.warning(
                 "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d ticks (%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
-                ticks_held, effective_hard_stop_ticks, effective_hard_stop_bars, zeta, regime_hold_mult,
+                ticks_held,
+                effective_hard_stop_ticks,
+                effective_hard_stop_bars,
+                zeta,
+                regime_hold_mult,
             )
             self.last_close_reason = "hard_time_stop"
             return 1, 1.0  # CLOSE with full confidence
@@ -501,7 +517,11 @@ class HarvesterAgent(AgentTrainingMixin):
             if self._check_soft_time_stop(ticks_held, mfe_pct, current_profit_pct, net_profit_pct):
                 LOG.info(
                     "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d ticks (%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
-                    ticks_held, effective_soft_stop_ticks, effective_soft_stop_bars, zeta, regime_hold_mult,
+                    ticks_held,
+                    effective_soft_stop_ticks,
+                    effective_soft_stop_bars,
+                    zeta,
+                    regime_hold_mult,
                 )
                 self.last_close_reason = "soft_time_stop"
                 return 1, 0.9  # CLOSE with high confidence
@@ -550,6 +570,9 @@ class HarvesterAgent(AgentTrainingMixin):
     ) -> np.ndarray:
         """Build full state vector with market features + position stats.
 
+        Uses pre-allocated buffers to reduce allocations from 3/tick to 0.
+        Buffers are lazy-initialized on first call.
+
         Args:
             market_state: Market features (window, n_market_features)
             mfe: Maximum favorable excursion (absolute price)
@@ -565,8 +588,25 @@ class HarvesterAgent(AgentTrainingMixin):
         mfe_norm = (mfe / entry_price) * PCT_SCALE
         mae_norm = (mae / entry_price) * PCT_SCALE
         ticks_held_norm = min(ticks_held / TICKS_HELD_NORM_DENOM, 1.0)
-        position_features = np.full((market_state.shape[0], 3), [mfe_norm, mae_norm, ticks_held_norm], dtype=np.float32)
-        return np.hstack([market_state, position_features])
+
+        # Lazy initialization of pre-allocated buffers
+        if self._combined_state is None:
+            state_dim = market_state.shape[1] + 3  # market features + position features
+            self._combined_state = np.empty((market_state.shape[0], state_dim), dtype=np.float32)
+            self._pos_features = np.empty((market_state.shape[0], 3), dtype=np.float32)
+            self._state_dim = state_dim
+
+        # Type narrow assertions (buffers are initialized after the check above)
+        assert self._combined_state is not None
+        assert self._pos_features is not None
+
+        # Use pre-allocated buffers to avoid per-tick allocations
+        self._pos_features[:, 0] = mfe_norm
+        self._pos_features[:, 1] = mae_norm
+        self._pos_features[:, 2] = ticks_held_norm
+        np.copyto(self._combined_state[:, : market_state.shape[1]], market_state)
+        np.copyto(self._combined_state[:, market_state.shape[1] :], self._pos_features)
+        return self._combined_state
 
     def _check_stop_loss(self, mae_pct: float) -> bool:
         """Check if stop loss is triggered."""
@@ -833,15 +873,11 @@ class HarvesterAgent(AgentTrainingMixin):
         self.capture_decay_min_mfe_pct = self._get_param(
             "harvester_capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT * timeframe_scale
         )
-        self.capture_decay_threshold = self._get_param(
-            "harvester_capture_decay_threshold", CAPTURE_DECAY_THRESHOLD
-        )
+        self.capture_decay_threshold = self._get_param("harvester_capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)
         self.micro_winner_giveback_pct = self._get_param(
             "harvester_micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT
         )
-        self.early_adverse_mae_pct = self._get_param(
-            "harvester_early_adverse_mae_pct", 0.22 * timeframe_scale
-        )
+        self.early_adverse_mae_pct = self._get_param("harvester_early_adverse_mae_pct", 0.22 * timeframe_scale)
         self.early_adverse_mfe_ceiling_pct = self._get_param(
             "harvester_early_adverse_mfe_ceiling_pct", 0.08 * timeframe_scale
         )
@@ -984,8 +1020,11 @@ class HarvesterAgent(AgentTrainingMixin):
         try:
             profit_gradient = self._profit_target_gradient(capture_ratio, was_wtl)
             new_tp = self.param_manager.update(
-                self.symbol, "harvester_profit_target_pct", profit_gradient,
-                timeframe=self.timeframe, broker=self.broker,
+                self.symbol,
+                "harvester_profit_target_pct",
+                profit_gradient,
+                timeframe=self.timeframe,
+                broker=self.broker,
             )
             self.profit_target_pct = new_tp * self._get_timeframe_scale()
 
@@ -1000,7 +1039,9 @@ class HarvesterAgent(AgentTrainingMixin):
                 )
                 LOG.debug(
                     "[HARVESTER] Updated trailing distance: %.4f%% (floor=%.4f ceiling=%.4f)",
-                    self.trailing_stop_distance_pct, trail_floor, trail_ceiling,
+                    self.trailing_stop_distance_pct,
+                    trail_floor,
+                    trail_ceiling,
                 )
 
             if was_wtl:
@@ -1027,8 +1068,11 @@ class HarvesterAgent(AgentTrainingMixin):
             sl_gradient = self._sl_gradient(was_wtl)
             if abs(sl_gradient) > FLOAT_EPSILON:
                 new_sl = self.param_manager.update(
-                    self.symbol, "harvester_stop_loss_pct", sl_gradient,
-                    timeframe=self.timeframe, broker=self.broker,
+                    self.symbol,
+                    "harvester_stop_loss_pct",
+                    sl_gradient,
+                    timeframe=self.timeframe,
+                    broker=self.broker,
                 )
                 self.stop_loss_pct = new_sl * self._get_timeframe_scale()
                 LOG.info("[HARVESTER] Updated stop loss: %.4f%% (gradient=%.3f)", self.stop_loss_pct, sl_gradient)
@@ -1052,7 +1096,8 @@ class HarvesterAgent(AgentTrainingMixin):
             self.param_manager.save()
             LOG.info(
                 "[HARVESTER] Updated profit target: %.2f%% (gradient=%.3f, saved to disk)",
-                self.profit_target_pct, profit_gradient,
+                self.profit_target_pct,
+                profit_gradient,
             )
 
         except (AttributeError, ValueError, TypeError, OSError) as exc:
@@ -1063,7 +1108,7 @@ class HarvesterAgent(AgentTrainingMixin):
 
     def _extra_training_stats(self) -> dict:
         """Harvester-specific stats appended by the mixin."""
-        zeta = getattr(self, '_last_zeta', 0.5)
+        zeta = getattr(self, "_last_zeta", 0.5)
         if zeta < 0.5:
             regime_hold_mult = 1.5
         elif zeta < 0.7:
@@ -1076,7 +1121,9 @@ class HarvesterAgent(AgentTrainingMixin):
             "current_zeta": zeta,
             "capture_decay_threshold": float(getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)),
             "micro_winner_giveback_pct": float(getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)),
-            "micro_winner_mfe_threshold_pct": float(getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT)),
+            "micro_winner_mfe_threshold_pct": float(
+                getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT)
+            ),
             "micro_trend_relief": float(self._get_param("harvester_micro_trend_relief", 0.35)),
         }
 

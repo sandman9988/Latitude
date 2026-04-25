@@ -4,9 +4,12 @@ Defensive programming layer for numerical operations
 Prevents NaN/Inf crashes and provides validated operations
 """
 
+import logging
 import math
 
 import numpy as np
+
+LOG = logging.getLogger(__name__)
 
 # Constants
 SAFE_EPSILON = 1e-10
@@ -24,25 +27,86 @@ class SafeMath:
 
     @staticmethod
     def to_decimal(value, digits: int):
-        """Convert value to Decimal with instrument-specific digits."""
+        """Convert value to Decimal with instrument-specific digits.
+
+        Args:
+            value: Numeric value to convert
+            digits: Number of decimal places (0-10)
+
+        Returns:
+            Decimal value quantized to specified digits
+
+        Raises:
+            ValueError: If value is NaN/Inf or digits out of range
+        """
         from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
+        # Validate digits range
+        if not isinstance(digits, int) or not 0 <= digits <= 10:
+            LOG.error("Invalid digits: %s (must be 0-10)", digits)
+            raise ValueError(f"Invalid digits: {digits} (must be 0-10)")
+
+        # Handle None
+        if value is None:
+            LOG.error("to_decimal received None value")
+            raise ValueError("value is None")
+
+        # Check for NaN/Inf before conversion
+        if isinstance(value, (float, int, np.floating, np.integer)):
+            if not math.isfinite(float(value)):
+                LOG.error("Non-finite value in to_decimal: %s", value)
+                raise ValueError(f"Non-finite value: {value}")
 
         try:
             dec = Decimal(str(value))
+
+            # Validate result is finite
+            if not dec.is_finite():
+                LOG.error("Decimal conversion produced non-finite result: %s", dec)
+                raise ValueError(f"Decimal conversion produced non-finite result: {dec}")
+
             quant = Decimal("1").scaleb(-digits)
-            return dec.quantize(quant, rounding=ROUND_HALF_UP)
-        except (InvalidOperation, ValueError, TypeError):
-            return Decimal("0").quantize(Decimal("1").scaleb(-digits))
+            result = dec.quantize(quant, rounding=ROUND_HALF_UP)
+            return result
+
+        except (InvalidOperation, ValueError, TypeError, OverflowError) as e:
+            LOG.error("to_decimal failed for value=%s, digits=%d: %s", value, digits, e)
+            raise
 
     @staticmethod
     def quantize(value, digits: int):
-        """Quantize an existing Decimal to instrument-specific digits."""
+        """Quantize an existing Decimal to instrument-specific digits.
+
+        Args:
+            value: Decimal value to quantize
+            digits: Number of decimal places (0-10)
+
+        Returns:
+            Quantized Decimal value
+
+        Raises:
+            ValueError: If digits out of range
+        """
         from decimal import ROUND_HALF_UP, Decimal, InvalidOperation  # noqa: PLC0415
+
+        # Validate digits range
+        if not isinstance(digits, int) or not 0 <= digits <= 10:
+            LOG.error("Invalid digits: %s (must be 0-10)", digits)
+            raise ValueError(f"Invalid digits: {digits} (must be 0-10)")
 
         try:
             quant = Decimal("1").scaleb(-digits)
-            return Decimal(value).quantize(quant, rounding=ROUND_HALF_UP)
-        except (InvalidOperation, ValueError, TypeError):
+            result = Decimal(value).quantize(quant, rounding=ROUND_HALF_UP)
+
+            # Validate result is finite
+            if not result.is_finite():
+                LOG.error("Quantize produced non-finite result: %s", result)
+                return Decimal("0").quantize(quant)
+
+            return result
+
+        except (InvalidOperation, ValueError, TypeError) as e:
+            LOG.error("quantize failed for value=%s, digits=%d: %s", value, digits, e)
             return Decimal("0").quantize(Decimal("1").scaleb(-digits))
 
     @staticmethod
@@ -95,57 +159,82 @@ class SafeMath:
 
     @staticmethod
     def safe_div(a: float, b: float, default: float = 0.0) -> float:
-        """Division with zero protection"""
+        """Division with zero protection and logging."""
         if abs(b) < SAFE_DIV_MIN:
+            LOG.debug("safe_div: denominator %.2e below threshold, returning default", b)
             return default
         result = a / b
-        return result if SafeMath.is_valid(result) else default
+        if not SafeMath.is_valid(result):
+            LOG.warning("Non-finite result from div(%.4f, %.4f)", a, b)
+            return default
+        return result
 
     @staticmethod
     def safe_log(x: float, default: float = 0.0) -> float:
-        """Logarithm with negative/zero protection"""
+        """Logarithm with negative/zero protection and logging."""
         if x <= SAFE_SMALL:
+            LOG.debug("safe_log: input %.6f below threshold, returning default", x)
             return default
         result = math.log(x)
-        return result if SafeMath.is_valid(result) else default
+        if not SafeMath.is_valid(result):
+            LOG.warning("Non-finite result from log(%.6f)", x)
+            return default
+        return result
 
     @staticmethod
     def safe_log1p(x: float, default: float = 0.0) -> float:
-        """Log(1+x) with protection"""
+        """Log(1+x) with protection and logging."""
         if x <= -1.0:
+            LOG.debug("safe_log1p: input %.6f <= -1.0, returning default", x)
             return default
         result = math.log1p(x)
-        return result if SafeMath.is_valid(result) else default
+        if not SafeMath.is_valid(result):
+            LOG.warning("Non-finite result from log1p(%.6f)", x)
+            return default
+        return result
 
     @staticmethod
     def safe_sqrt(x: float, default: float = 0.0) -> float:
-        """Square root with negative protection"""
+        """Square root with negative protection and logging."""
         if x < 0:
+            LOG.debug("safe_sqrt: negative input %.6f, returning default", x)
             return default
         result = math.sqrt(x)
-        return result if SafeMath.is_valid(result) else default
+        if not SafeMath.is_valid(result):
+            LOG.warning("Non-finite result from sqrt(%.6f)", x)
+            return default
+        return result
 
     @staticmethod
     def safe_pow(base: float, exp: float, default: float = 0.0) -> float:
-        """Power with overflow protection"""
+        """Power with overflow protection and logging."""
         try:
             # Prevent overflow
             if abs(exp * math.log(abs(base) + SAFE_SMALL)) > LOG_OVERFLOW_GUARD:
+                LOG.debug("safe_pow overflow guard triggered: base=%.4f, exp=%.4f", base, exp)
                 return default
             result = math.pow(base, exp)
-            return result if SafeMath.is_valid(result) else default
-        except (ValueError, OverflowError):
+            if not SafeMath.is_valid(result):
+                LOG.warning("Non-finite result from pow(%.4f, %.4f)", base, exp)
+                return default
+            return result
+        except (ValueError, OverflowError) as e:
+            LOG.debug("Overflow/error in safe_pow(%.4f, %.4f): %s", base, exp, e)
             return default
 
     @staticmethod
     def safe_exp(x: float, default: float = 0.0) -> float:
-        """Exponential with overflow protection"""
+        """Exponential with overflow protection and logging."""
         if x > EXP_UPPER_GUARD:  # e^100 is huge
+            LOG.debug("safe_exp: input %.4f above upper guard, returning default", x)
             return default
         if x < EXP_LOWER_GUARD:  # e^-100 is tiny
             return 0.0
         result = math.exp(x)
-        return result if SafeMath.is_valid(result) else default
+        if not SafeMath.is_valid(result):
+            LOG.warning("Non-finite result from exp(%.4f)", x)
+            return default
+        return result
 
     @staticmethod
     def clamp(x: float, min_val: float, max_val: float) -> float:
@@ -211,15 +300,45 @@ class SafeMath:
 
     @staticmethod
     def safe_percentile(values, percentile: float, default: float = 0.0) -> float:
-        """Percentile with NaN-skip and empty-list protection."""
+        """Percentile with NaN-skip and empty-list protection.
+
+        Args:
+            values: Array of values
+            percentile: Percentile to compute (0-100)
+            default: Default value if calculation fails
+
+        Returns:
+            Percentile value or default
+        """
+        # Validate percentile range
+        if not 0 <= percentile <= 100:
+            LOG.error("Invalid percentile: %.1f (must be 0-100)", percentile)
+            return default
+
         try:
             arr = np.asarray(values, dtype=float)
+
+            # Remove NaN values
             clean = arr[~np.isnan(arr)]
+
             if clean.size == 0:
+                LOG.debug("No valid values for percentile calculation")
                 return default
+
             result = float(np.percentile(clean, percentile))
-            return result if SafeMath.is_valid(result) else default
-        except Exception:
+
+            # Validate result
+            if not np.isfinite(result):
+                LOG.warning("Percentile calculation produced non-finite result")
+                return default
+
+            return result
+
+        except (ValueError, TypeError) as e:
+            LOG.warning("Percentile calculation failed: %s", e)
+            return default
+        except Exception as e:
+            LOG.error("Unexpected error in percentile calculation: %s", e)
             return default
 
     @staticmethod

@@ -36,7 +36,6 @@ LOG = logging.getLogger(__name__)
 
 
 class TestHarvesterInit:
-
     def test_default_init(self):
         ha = HarvesterAgent(window=64, n_features=10)
         assert ha.window == 64
@@ -73,7 +72,6 @@ class TestHarvesterInit:
 
 
 class TestTimeframeScale:
-
     def test_m1_timeframe(self):
         ha = HarvesterAgent(window=64, n_features=10, timeframe="M1")
         assert ha._get_timeframe_scale() == pytest.approx(0.3)
@@ -97,7 +95,6 @@ class TestTimeframeScale:
 
 
 class TestFallbackStrategy:
-
     def test_stop_loss_triggered(self):
         ha = HarvesterAgent(window=64, n_features=10)
         entry_price = 100.0
@@ -159,7 +156,8 @@ class TestFallbackStrategy:
         ticks = ha._bars_to_ticks(ha.hard_time_stop_bars) + 10
         action, conf = ha.decide(
             market_state=market_state,
-            mfe=0.5, mae=0.0,
+            mfe=0.5,
+            mae=0.0,
             ticks_held=ticks,
             entry_price=100.0,
         )
@@ -173,7 +171,6 @@ class TestFallbackStrategy:
 
 
 class TestBuildFullState:
-
     def test_basic_state_concatenation(self):
         ha = HarvesterAgent(window=64, n_features=10)
         market_state = rng.standard_normal((64, 7)).astype(np.float32)
@@ -214,7 +211,6 @@ class TestBuildFullState:
 
 
 class TestFrictionCost:
-
     def test_default_friction_no_calculator(self):
         ha = HarvesterAgent(window=64, n_features=10)
         pct = ha.get_friction_cost_pct(entry_price=100000.0)
@@ -248,7 +244,6 @@ class TestFrictionCost:
 
 
 class TestHarvesterSoftmax:
-
     def test_softmax_sums_to_one(self):
         ha = HarvesterAgent(window=64, n_features=10)
         probs = ha._softmax(np.array([1.0, 2.0]))
@@ -266,7 +261,6 @@ class TestHarvesterSoftmax:
 
 
 class TestHarvesterDecide:
-
     def test_decide_fallback_mode(self):
         ha = HarvesterAgent(window=64, n_features=10)
         market_state = rng.standard_normal((64, 7)).astype(np.float32)
@@ -344,12 +338,135 @@ class TestHarvesterDecide:
 
 
 # ---------------------------------------------------------------------------
+# Pre-allocated state buffers
+# ---------------------------------------------------------------------------
+
+
+class TestPreAllocatedStateBuffers:
+    """Tests for memory optimization via pre-allocated state buffers."""
+
+    def test_buffers_initialized_on_first_call(self):
+        """Buffers should be None until first _build_full_state call."""
+        ha = HarvesterAgent(window=64, n_features=10)
+        assert ha._combined_state is None
+        assert ha._pos_features is None
+        assert ha._state_dim is None
+
+    def test_buffers_allocated_on_first_call(self):
+        """Buffers should be allocated after first _build_full_state call."""
+        ha = HarvesterAgent(window=64, n_features=10)
+        market_state = rng.standard_normal((64, 7)).astype(np.float32)
+        full_state = ha._build_full_state(market_state, mfe=50.0, mae=10.0, ticks_held=30, entry_price=1000.0)
+
+        assert ha._combined_state is not None
+        assert ha._pos_features is not None
+        assert ha._state_dim == 10  # 7 market + 3 position
+        assert full_state.shape == (64, 10)
+
+    def test_buffers_reused_across_calls(self):
+        """Same buffer objects should be reused across multiple calls."""
+        ha = HarvesterAgent(window=64, n_features=10)
+        market_state1 = rng.standard_normal((64, 7)).astype(np.float32)
+        market_state2 = rng.standard_normal((64, 7)).astype(np.float32)
+
+        # First call allocates buffers
+        full_state1 = ha._build_full_state(market_state1, mfe=50.0, mae=10.0, ticks_held=30, entry_price=1000.0)
+        buffer_id_1 = id(ha._combined_state)
+        pos_buffer_id_1 = id(ha._pos_features)
+
+        # Second call reuses buffers
+        full_state2 = ha._build_full_state(market_state2, mfe=60.0, mae=5.0, ticks_held=40, entry_price=1000.0)
+        buffer_id_2 = id(ha._combined_state)
+        pos_buffer_id_2 = id(ha._pos_features)
+
+        assert buffer_id_1 == buffer_id_2, "Combined state buffer should be reused"
+        assert pos_buffer_id_1 == pos_buffer_id_2, "Position features buffer should be reused"
+
+    def test_return_value_is_same_object_as_buffer(self):
+        """Returned array should be the same object as the internal buffer."""
+        ha = HarvesterAgent(window=64, n_features=10)
+        market_state = rng.standard_normal((64, 7)).astype(np.float32)
+
+        full_state = ha._build_full_state(market_state, mfe=50.0, mae=10.0, ticks_held=30, entry_price=1000.0)
+
+        # The returned array should be the same object as the internal buffer
+        assert full_state is ha._combined_state
+
+    def test_position_features_populated_correctly(self):
+        """Position features should be correctly computed and placed in buffer."""
+        ha = HarvesterAgent(window=64, n_features=10)
+        market_state = np.zeros((64, 7), dtype=np.float32)
+        entry_price = 1000.0
+        mfe = 50.0
+        mae = 10.0
+        ticks = 50
+
+        full_state = ha._build_full_state(market_state, mfe, mae, ticks, entry_price)
+
+        # Check position features in last 3 columns
+        mfe_norm = (mfe / entry_price) * PCT_SCALE
+        mae_norm = (mae / entry_price) * PCT_SCALE
+        ticks_norm = min(ticks / 100.0, 1.0)
+
+        assert abs(full_state[0, 7] - mfe_norm) < 1e-4
+        assert abs(full_state[0, 8] - mae_norm) < 1e-4
+        assert abs(full_state[0, 9] - ticks_norm) < 1e-4
+
+    def test_market_state_copied_correctly(self):
+        """Market state should be correctly copied to combined buffer."""
+        ha = HarvesterAgent(window=64, n_features=10)
+        market_state = rng.standard_normal((64, 7)).astype(np.float32)
+
+        full_state = ha._build_full_state(market_state, mfe=50.0, mae=10.0, ticks_held=30, entry_price=1000.0)
+
+        # First 7 columns should match market_state
+        np.testing.assert_array_almost_equal(full_state[:, :7], market_state)
+
+    def test_inference_mode_no_copy(self):
+        """In inference mode (training disabled), last_state should reference buffer directly."""
+        ha = HarvesterAgent(window=64, n_features=10, enable_training=False)
+        market_state = rng.standard_normal((64, 7)).astype(np.float32)
+
+        # Call decide to trigger state building
+        action, conf = ha.decide(
+            market_state=market_state,
+            mfe=50.0,
+            mae=10.0,
+            ticks_held=10,
+            entry_price=1000.0,
+            current_price=1005.0,
+            direction=1,
+        )
+
+        # In inference mode, last_state should be the same object as the internal buffer
+        assert ha.last_state is ha._combined_state, "In inference mode, last_state should reference buffer directly"
+
+    def test_training_mode_makes_copy(self):
+        """In training mode, last_state should be a copy of the buffer."""
+        ha = HarvesterAgent(window=64, n_features=10, enable_training=True)
+        market_state = rng.standard_normal((64, 7)).astype(np.float32)
+
+        # Call decide to trigger state building
+        action, conf = ha.decide(
+            market_state=market_state,
+            mfe=50.0,
+            mae=10.0,
+            ticks_held=10,
+            entry_price=1000.0,
+            current_price=1005.0,
+            direction=1,
+        )
+
+        # In training mode, last_state should be a copy (different object)
+        assert ha.last_state is not ha._combined_state, "In training mode, last_state should be a copy"
+
+
+# ---------------------------------------------------------------------------
 # Update from trade
 # ---------------------------------------------------------------------------
 
 
 class TestHarvesterUpdateFromTrade:
-
     def test_update_no_param_manager(self):
         ha = HarvesterAgent(window=64, n_features=10)
         ha.param_manager = None
@@ -395,7 +512,6 @@ class TestHarvesterUpdateFromTrade:
 
 
 class TestHarvesterTraining:
-
     def test_add_experience_no_buffer(self):
         ha = HarvesterAgent(window=64, n_features=10, enable_training=False)
         state = np.zeros((64, 10), dtype=np.float32)
