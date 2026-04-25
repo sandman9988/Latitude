@@ -230,6 +230,46 @@ Agent caveats:
 - All divisions: use `src/utils/safe_math.py` safe_div helpers
 - Test new functions with pytest in `tests/unit/` or `tests/integration/`
 
+### Type annotations and error prevention
+
+**Type annotations:**
+- Always use `dict[str, Any]` instead of bare `dict` for return types and parameters
+- Always use `list[dict[str, Any]]` instead of bare `list` for JSON-like data
+- Always use `deque[Any]` or `deque[SpecificType]` instead of bare `deque`
+- Use `float | None` instead of `float = None` for optional float parameters
+- Use `dict[str, Any] | None` instead of `dict = None` for optional dict parameters
+
+**NumPy type conversions:**
+- Wrap `np.all()`, `np.any()` results with `bool()` when returning Python `bool`
+- Wrap numpy float results with `float()` when returning Python `float`
+- Example: `return bool(np.all(np.isfinite(x)))` not `return np.all(np.isfinite(x))`
+
+**Mixin pattern:**
+- Declare mixin instance attributes at class level with default values
+- Use `None`, `False`, `0`, `""` as defaults that are overwritten by host class
+- Example: `ddqn: DDQNNetwork | None = None` not just `ddqn: DDQNNetwork`
+
+**None checks:**
+- Add assertions for None checks before accessing attributes: `assert self.ddqn is not None`
+- Use local variables with `cast()` for repeated access to potentially-None values
+- Initialize all instance variables in `__init__` with default values
+
+**Import organization:**
+- Imports at top-level only, except for optional dependencies (use local import with try/except)
+- Use `from typing import Any, cast` when needed for type annotations
+- Use `import math` at module level, not inside functions
+
+**Decimal handling:**
+- Use `SafeMath.to_decimal()` for all price/quantity conversions
+- Validate `digits` parameter is 0-10 before use
+- Check for NaN/Inf before Decimal conversion (raises ValueError now)
+- Use `float()` when passing Decimal to functions expecting float
+
+**JSON-like data:**
+- Use `dict[str, Any]` for any JSON-like structure
+- Use `list[dict[str, Any]]` for lists of JSON objects
+- Use `Any` for values that can be multiple types (string, number, bool, null)
+
 ### Decision log entries
 
 - Every entry must include: `timestamp` (ISO), `session`, `trading_mode`, `agent`, `decision`, `confidence`
@@ -320,3 +360,10 @@ See `docs/CURRENT_STATE.md` § "Paper → Live Roadmap" for full readiness matri
 - Do not add `LOG.info()` for per-bar diagnostics — use `LOG.debug()`
 - Do not use bar-based timing penalties in rewards — use result-based (MAE/MFE ratio); bar counts don't scale across timeframes
 - Do not call `path_geometry.update()` from HUD or snapshot code — read `.last` to avoid double-update corruption
+- Do not use bare `dict`, `list`, or `deque` in type annotations — always specify type arguments (e.g., `dict[str, Any]`, `list[dict[str, Any]]`, `deque[Any]`)
+- Do not return numpy types directly — wrap `np.all()`, `np.any()` with `bool()`, and numpy floats with `float()`
+- Do not leave mixin attributes undeclared — always declare with default values at class level
+- Do not use `import math` inside functions — import at module level
+- Do not access potentially-None attributes without assertion — add `assert self.ddqn is not None` before use
+- Do not use `float = None` for optional parameters — use `float | None = None`
+- Do not pass `Decimal` to functions expecting `float` — convert with `float()` first
