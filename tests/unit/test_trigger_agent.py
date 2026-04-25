@@ -465,7 +465,7 @@ class TestEWMARunwayCalibration:
         from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
         ta = TriggerAgent(window=64, n_features=7)
         # Simulate entries with Q=1.0 (bucket 1: [0.6, 1.2])
-        for i in range(RUNWAY_CAL_MIN_SAMPLES + 1):
+        for _i in range(RUNWAY_CAL_MIN_SAMPLES + 1):
             ta._last_entry_q = 1.0  # Simulate Q at entry
             ta._q_to_runway(1.0)  # Sets _last_entry_q
             # Simulate trade close with actual MFE (fractional)

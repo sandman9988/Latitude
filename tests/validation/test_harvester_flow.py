@@ -6,8 +6,8 @@ Tests the complete flow from entry → in-position → exit decision → logging
 """
 
 import sys
-from datetime import datetime, timezone
 from collections import deque
+from datetime import UTC, datetime
 
 
 # Mock the necessary imports
@@ -75,13 +75,13 @@ def test_entry_to_exit_flow():
 
     for i in range(10):
         # Create mock bar
-        t = datetime.now(timezone.utc)
+        t = datetime.now(UTC)
         o = base_price + i * 10
         h = o + 20
-        l = o - 15
+        lo = o - 15
         c = o + 5
 
-        bars.append((t, o, h, l, c))
+        bars.append((t, o, h, lo, c))
 
         # Decision logic (simulating on_bar_close)
         action = None

@@ -84,7 +84,7 @@ class TestSpreadTrackerDefensive:
         """Insufficient data and zero current spread returns inf."""
         tracker = SpreadTracker()
         # Add some spreads but fewer than MIN_SPREAD_SAMPLES
-        for i in range(10):
+        for _i in range(10):
             tracker.update(100.0, 102.0, pip_size=1.0)
         assert len(tracker.spreads) < MIN_SPREAD_SAMPLES
 
@@ -222,9 +222,11 @@ class TestFrictionCalculatorDefensive:
     @pytest.fixture()
     def calc(self, tmp_path):
         """Create FrictionCalculator without relying on config file."""
-        with patch("src.risk.friction_costs.FrictionCalculator._load_symbol_specs_from_config"):
-            with patch("src.risk.friction_costs.FrictionCalculator._load_learned_parameters"):
-                fc = FrictionCalculator(symbol="XAUUSD", symbol_id=10026)
+        with (
+            patch("src.risk.friction_costs.FrictionCalculator._load_symbol_specs_from_config"),
+            patch("src.risk.friction_costs.FrictionCalculator._load_learned_parameters"),
+        ):
+            fc = FrictionCalculator(symbol="XAUUSD", symbol_id=10026)
         return fc
 
     def test_normalize_quantity_invalid_input(self, calc):

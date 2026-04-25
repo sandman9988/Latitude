@@ -94,7 +94,7 @@ class TestSortinoBreaker:
 
     def test_history_limit(self):
         sb = SortinoBreaker()
-        for i in range(200):
+        for _i in range(200):
             sb.update(0.001)
         assert len(sb.returns) <= 100
 

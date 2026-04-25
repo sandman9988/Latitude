@@ -13,6 +13,7 @@ Tests:
 """
 
 import datetime as dt
+import sys
 from datetime import UTC
 
 
@@ -116,26 +117,26 @@ def test_bar_closure_timing():
 
     result = bb.update(t1 + dt.timedelta(minutes=10), 105.0)
     assert result is None, "Tick at 10:10 should not close bar"
-    print(f"  Tick at 10:10:00 - bar still open")
+    print("  Tick at 10:10:00 - bar still open")
 
     result = bb.update(t1 + dt.timedelta(minutes=14, seconds=59), 102.0)
     assert result is None, "Tick at 10:14:59 should not close bar"
-    print(f"  Tick at 10:14:59 - bar still open")
+    print("  Tick at 10:14:59 - bar still open")
 
     # Bar 2: 10:15 - 10:29:59 (this should close Bar 1)
     t2 = dt.datetime(2026, 1, 11, 10, 15, 0, tzinfo=UTC)
     result = bb.update(t2, 103.0)
     assert result is not None, "Tick at 10:15:00 should close previous bar"
 
-    closed_time, o, h, l, c = result
+    closed_time, o, h, lo, c = result
     assert closed_time == dt.datetime(
         2026, 1, 11, 10, 0, 0, tzinfo=UTC
     ), f"Closed bar timestamp should be 10:00, got {closed_time}"
     assert o == pytest.approx(100.0), f"Closed bar O should be 100.0, got {o}"
     assert h == pytest.approx(105.0), f"Closed bar H should be 105.0, got {h}"
-    assert l == pytest.approx(100.0), f"Closed bar L should be 100.0, got {l}"
+    assert lo == pytest.approx(100.0), f"Closed bar L should be 100.0, got {lo}"
     assert c == pytest.approx(102.0), f"Closed bar C should be 102.0, got {c}"
-    print(f"  ✓ Bar closed at 10:15:00: O={o} H={h} L={l} C={c}")
+    print(f"  ✓ Bar closed at 10:15:00: O={o} H={h} L={lo} C={c}")
 
     # Verify new bar started
     assert bb.bucket == dt.datetime(2026, 1, 11, 10, 15, 0, tzinfo=UTC), "New bar should start at 10:15:00"
@@ -256,12 +257,12 @@ def test_data_integrity_across_bars():
 
     # Verify Bar 1 closed correctly
     assert result is not None, "Bar 1 should be closed"
-    closed_time, o, h, l, c = result
+    closed_time, o, h, lo, c = result
     assert o == pytest.approx(100.0), f"Bar 1 O should be 100.0, got {o}"
     assert h == pytest.approx(110.0), f"Bar 1 H should be 110.0, got {h}"
-    assert l == pytest.approx(95.0), f"Bar 1 L should be 95.0, got {l}"
+    assert lo == pytest.approx(95.0), f"Bar 1 L should be 95.0, got {lo}"
     assert c == pytest.approx(105.0), f"Bar 1 C should be 105.0, got {c}"
-    print(f"  ✓ Bar 1 closed correctly: O={o} H={h} L={l} C={c}")
+    print(f"  ✓ Bar 1 closed correctly: O={o} H={h} L={lo} C={c}")
 
     # Verify Bar 2 started fresh (no contamination from Bar 1)
     assert bb.o == pytest.approx(200.0), f"Bar 2 O should be 200.0, got {bb.o}"
@@ -380,4 +381,4 @@ def run_all_tests():
 
 
 if __name__ == "__main__":
-    exit(run_all_tests())
+    sys.exit(run_all_tests())

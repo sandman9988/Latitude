@@ -1,6 +1,7 @@
 """Tests for src.features.hmm_regime – HMMRegimeDetector."""
 
 import importlib.util
+
 import numpy as np
 import pytest
 

@@ -4090,7 +4090,6 @@ class CTraderFixApp(fix.Application):
 
         # Use specialized harvester reward (capture + WTL + MFE-development)
         # instead of the generic 6-component total_reward.
-        from datetime import datetime
         _exit_time = summary.get("exit_time", "")
         if not _exit_time:
             _exit_time = datetime.now(dt.UTC).isoformat()

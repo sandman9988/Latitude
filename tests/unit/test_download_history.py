@@ -74,9 +74,8 @@ class TestGetCred:
             assert dch._get_cred("MY_KEY", tokens, None) == "from_file"
 
     def test_raises_when_missing(self):
-        with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(SystemExit, match="Missing credential"):
-                dch._get_cred("MISSING_KEY", {}, None)
+        with patch.dict(os.environ, {}, clear=True), pytest.raises(SystemExit, match="Missing credential"):
+            dch._get_cred("MISSING_KEY", {}, None)
 
 
 # ---------------------------------------------------------------------------

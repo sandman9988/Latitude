@@ -77,13 +77,13 @@ class TestDDQNNetworkInit:
 
     def test_target_network_initialized_as_copy(self):
         net = DDQNNetwork(state_dim=5, n_actions=2, seed=42)
-        for p_on, p_tgt in zip(net.online.parameters(), net.target.parameters()):
+        for p_on, p_tgt in zip(net.online.parameters(), net.target.parameters(), strict=False):
             assert torch.equal(p_on, p_tgt)
 
     def test_seed_reproducibility(self):
         net1 = DDQNNetwork(state_dim=5, n_actions=2, seed=99)
         net2 = DDQNNetwork(state_dim=5, n_actions=2, seed=99)
-        for p1, p2 in zip(net1.online.parameters(), net2.online.parameters()):
+        for p1, p2 in zip(net1.online.parameters(), net2.online.parameters(), strict=False):
             assert torch.equal(p1, p2)
 
     def test_target_in_eval_mode(self):
@@ -102,7 +102,7 @@ class TestForwardPredict:
         state = rng.standard_normal(4).astype(np.float32)
         q = net.predict(state)
         assert q.shape == (3,)
-        assert q.dtype == np.float32 or q.dtype == np.float64
+        assert q.dtype in (np.float32, np.float64)
 
     def test_predict_batch_states(self, net):
         states = rng.standard_normal((8, 4)).astype(np.float32)
@@ -185,7 +185,7 @@ class TestTrainBatch:
         net.train_batch(**batch)
         any_changed = any(
             not torch.equal(p_before, p_after)
-            for p_before, p_after in zip(params_before, net.online.parameters())
+            for p_before, p_after in zip(params_before, net.online.parameters(), strict=False)
         )
         assert any_changed, "Online weights should change after training"
 
@@ -196,7 +196,7 @@ class TestTrainBatch:
         net.train_batch(**batch)
         any_changed = any(
             not torch.equal(p_before, p_after)
-            for p_before, p_after in zip(target_before, net.target.parameters())
+            for p_before, p_after in zip(target_before, net.target.parameters(), strict=False)
         )
         assert any_changed, "Target weights should shift via soft update"
 
@@ -250,7 +250,7 @@ class TestHardUpdate:
         )
         net.hard_update_target()
         # Now they should match exactly
-        for p_on, p_tgt in zip(net.online.parameters(), net.target.parameters()):
+        for p_on, p_tgt in zip(net.online.parameters(), net.target.parameters(), strict=False):
             assert torch.equal(p_on, p_tgt)
 
 
@@ -274,9 +274,9 @@ class TestSaveLoadWeights:
 
         net2 = DDQNNetwork(state_dim=4, n_actions=3, seed=99)
         net2.load_weights(filepath)
-        for p1, p2 in zip(net.online.parameters(), net2.online.parameters()):
+        for p1, p2 in zip(net.online.parameters(), net2.online.parameters(), strict=False):
             assert torch.equal(p1, p2)
-        for p1, p2 in zip(net.target.parameters(), net2.target.parameters()):
+        for p1, p2 in zip(net.target.parameters(), net2.target.parameters(), strict=False):
             assert torch.equal(p1, p2)
         assert net.training_steps == net2.training_steps
 
@@ -285,7 +285,7 @@ class TestSaveLoadWeights:
         params_before = [p.clone() for p in net.online.parameters()]
         net.load_weights(str(tmp_path / "no_such_file.pt"))
         # Weights unchanged
-        for p_before, p_now in zip(params_before, net.online.parameters()):
+        for p_before, p_now in zip(params_before, net.online.parameters(), strict=False):
             assert torch.equal(p_before, p_now)
 
     def test_save_creates_directories(self, tmp_path):

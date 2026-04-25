@@ -21,7 +21,7 @@ def verify_on_bar_close_sequence():
 
     print("\n📍 Source: ctrader_ddqn_paper.py :: on_bar_close() (starting ~line 2268)")
     print("\nMethod signature: def on_bar_close(self, bar)")
-    print(f"  Input: bar = (timestamp, open, high, low, close)")
+    print("  Input: bar = (timestamp, open, high, low, close)")
 
     # Actual code flow from ctrader_ddqn_paper.py
     steps = [
@@ -253,7 +253,7 @@ def verify_on_bar_close_sequence():
         print(f"{'='*80}")
         print(f"📍 Line: {step['line']}")
         print(f"✅ Verified: {step['verified']}")
-        print(f"\n💻 CODE:")
+        print("\n💻 CODE:")
         for line in step["code"].split("\n"):
             print(f"    {line}")
         print(f"\n📥 DATA IN:  {step['data_in']}")
@@ -308,15 +308,15 @@ def verify_on_bar_close_sequence():
       ├─ Step 10: Realized volatility
       ├─ Step 11: Event-time features
       └─ Step 13: Circuit breaker status (may halt before step 14)
-    
+
     Step 18 (Order Execution) DEPENDS ON:
       ├─ Step 14: Agent decision (desired position)
       ├─ Step 7:  VaR estimate (position sizing)
       └─ Step 13: Circuit breakers (must be OK)
-    
+
     Step 12 (Training) DEPENDS ON:
       └─ Step 16: Experience buffers (from previous bars)
-    
+
     Step 19 (HUD Export) DEPENDS ON:
       └─ ALL previous steps (aggregates entire system state)
     """
@@ -343,14 +343,14 @@ def verify_on_bar_close_sequence():
        • Step 16: Experience storage
        • Step 17: Decision log export
        • Step 19: HUD data export
-    
+
     ⚙️  CONDITIONAL execution (depends on state):
        • Step 3:  Log bar (every 10 bars)
        • Step 4:  Auto-save (every 50 bars)
        • Step 8:  Path recording (only if position open)
        • Step 12: Training (every training_interval bars)
        • Step 18: Order execution (only if desired != cur_pos)
-    
+
     🚫 EARLY RETURN conditions (skip remaining steps):
        • Step 13: Circuit breakers tripped → halt trading
        • Step 14: Depth check fails → skip entry decision
@@ -369,7 +369,7 @@ def verify_on_bar_close_sequence():
     ✅ Required vs conditional steps classified
     ✅ Early return conditions identified
     ✅ Critical safety checks (circuit breakers) before trading
-    
+
     📊 Step Distribution:
        • Feature Calculation:  Steps 7, 9, 10, 11 (4 steps)
        • Safety Checks:        Steps 6, 13 (2 steps)
@@ -378,12 +378,12 @@ def verify_on_bar_close_sequence():
        • Logging/Monitoring:   Steps 3, 5, 15, 17, 19 (5 steps)
        • Execution:            Step 18 (1 step)
        • Housekeeping:         Steps 1, 2, 4, 8 (4 steps)
-    
+
     🎯 Key Insight:
        The on_bar_close() pipeline is DETERMINISTIC and REPRODUCIBLE.
        Given the same input bar and system state, the exact same sequence
        of operations will execute with the same data flowing through.
-    
+
     ⚠️  Note on Step Count Discrepancy:
        Original documentation listed 16 steps, but detailed code review
        reveals 19 distinct operations. The additional steps are:

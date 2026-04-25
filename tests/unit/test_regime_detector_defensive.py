@@ -311,7 +311,7 @@ class TestAddPriceIntegration:
         det = RegimeDetector(window_size=20, update_interval=1)
         rng = np.random.default_rng(42)
         price = 100.0
-        for i in range(25):
+        for _i in range(25):
             price += rng.normal(0.5, 0.3)  # Uptrend
             regime, zeta = det.add_price(price)
         # After filling window, regime should have been updated

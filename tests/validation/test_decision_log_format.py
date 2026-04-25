@@ -7,8 +7,8 @@ Verify that decision log captures all harvester metrics correctly.
 This test directly simulates position tracking + harvester exit decisions
 without relying on trigger entry signals.
 """
-import sys
 import json
+import sys
 from pathlib import Path
 
 print("=" * 70)
@@ -102,7 +102,7 @@ print(f"✓ bars_held increments correctly: {bars_values}" if bars_increases els
 # Check exit signal
 exit_signals = [e["details"]["exit_action"] for e in decision_log]
 has_exit = 1 in exit_signals
-print(f"✓ Exit signal detected (action=1 at bar 4)" if has_exit else "✗ No exit signal")
+print("✓ Exit signal detected (action=1 at bar 4)" if has_exit else "✗ No exit signal")
 
 # Final result
 print("\n" + "=" * 70)

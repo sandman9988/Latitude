@@ -95,7 +95,7 @@ def test_rl_q_learning():
 
     print("\n1. Simulate learning from winning trades")
     # Simulate 20 successful trades
-    for i in range(20):
+    for _i in range(20):
         risk_mgr.total_trades += 1
         risk_mgr.winning_trades += 1
         risk_mgr.total_pnl += 10.0
@@ -117,7 +117,7 @@ def test_rl_q_learning():
     print(f"   Reason: {rl_rec['reason']}")
 
     print("\n3. Simulate learning from losing streak")
-    for i in range(15):
+    for _i in range(15):
         risk_mgr.total_trades += 1
         risk_mgr.total_pnl -= 10.0
         risk_mgr.update_decision_outcome(
@@ -156,7 +156,7 @@ def test_correlation_breakdown_detection():
     print("\n1. Normal market: Independent asset returns")
     # Simulate 3 uncorrelated assets
     rng = np.random.default_rng(42)
-    for i in range(50):
+    for _i in range(50):
         risk_mgr.update_returns("BTCUSD", rng.normal(0, 0.01))
         risk_mgr.update_returns("ETHUSD", rng.normal(0, 0.015))
         risk_mgr.update_returns("XRPUSD", rng.normal(0, 0.02))
@@ -304,12 +304,12 @@ def test_integrated_risk_assessment():
         risk_mgr.update_decision_outcome("entry", 0.9, True, False)  # Overconfident
 
     # Add correlation data
-    for i in range(50):
+    for _i in range(50):
         risk_mgr.update_returns("BTCUSD", rng.normal(0, 0.01))
         risk_mgr.update_returns("ETHUSD", rng.normal(0, 0.015))
 
     # Add RL data
-    for i in range(15):
+    for _i in range(15):
         risk_mgr.total_trades += 1
         risk_mgr.winning_trades += 10  # Good win rate
         risk_mgr.update_decision_outcome("entry", 0.75, True, True)

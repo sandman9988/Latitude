@@ -41,7 +41,7 @@ class TestJournaledPersistenceRemainingGaps:
         assert replayed == []
 
         # Reopen journal_file so close() doesn't error
-        j.journal_file = open(journal_path, "a", buffering=1, encoding="utf-8")
+        j.journal_file = open(journal_path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
         j.close()
 
     # Line 328: blank line during replay → continue (skip)
@@ -107,7 +107,7 @@ class TestVPINCalculatorGetStatsEdges:
         from src.core.order_book import VPINCalculator
 
         calc = VPINCalculator(bucket_volume=10.0, window=5)
-        for i in range(55):
+        for _i in range(55):
             calc.update(volume=10.0, side="BUY")
 
         stats = calc.get_stats()

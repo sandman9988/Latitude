@@ -16,7 +16,7 @@ Uses LearnedParametersManager for DRY compliance.
 """
 
 import math
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 from src.monitoring.activity_monitor import ActivityMonitor, CounterfactualAnalyzer
@@ -178,8 +178,6 @@ class RewardShaper:
         if not exit_time or self._event_engine is None:
             return 1.0
         try:
-            from datetime import datetime
-
             dt = datetime.fromisoformat(exit_time.replace("Z", "+00:00")) if isinstance(exit_time, str) else exit_time
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=UTC)

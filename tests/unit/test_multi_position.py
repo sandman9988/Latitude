@@ -49,13 +49,10 @@ class MockPosition:
 
         # Update MFE/MAE
         # MFE = Maximum Favorable Excursion (highest profit seen)
-        if self.unrealized_pnl > self.mfe:
-            self.mfe = self.unrealized_pnl
+        self.mfe = max(self.mfe, self.unrealized_pnl)
         # MAE = Maximum Adverse Excursion (lowest profit / highest loss seen)
         # Initialize MAE on first update if not yet set
-        if self.mae == 0.0 and self.unrealized_pnl != 0.0:
-            self.mae = self.unrealized_pnl
-        elif self.unrealized_pnl < self.mae:
+        if self.mae == 0.0 and self.unrealized_pnl != 0.0 or self.unrealized_pnl < self.mae:
             self.mae = self.unrealized_pnl
 
 

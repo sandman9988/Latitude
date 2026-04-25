@@ -66,17 +66,17 @@ class TestTypeChecks:
         assert SafeMath.is_valid(float("-inf")) is False
 
     def test_is_valid_array(self):
-        assert SafeMath.is_valid(np.array([1.0, 2.0])) == True
-        assert SafeMath.is_valid(np.array([1.0, np.nan])) == False
-        assert SafeMath.is_valid(np.array([1.0, np.inf])) == False
+        assert SafeMath.is_valid(np.array([1.0, 2.0]))
+        assert not SafeMath.is_valid(np.array([1.0, np.nan]))
+        assert not SafeMath.is_valid(np.array([1.0, np.inf]))
 
     def test_is_nan_float(self):
         assert SafeMath.is_nan(float("nan")) is True
         assert SafeMath.is_nan(1.0) is False
 
     def test_is_nan_array(self):
-        assert SafeMath.is_nan(np.array([1.0, np.nan])) == True
-        assert SafeMath.is_nan(np.array([1.0, 2.0])) == False
+        assert SafeMath.is_nan(np.array([1.0, np.nan]))
+        assert not SafeMath.is_nan(np.array([1.0, 2.0]))
 
     def test_is_inf_float(self):
         assert SafeMath.is_inf(float("inf")) is True
@@ -84,8 +84,8 @@ class TestTypeChecks:
         assert SafeMath.is_inf(1.0) is False
 
     def test_is_inf_array(self):
-        assert SafeMath.is_inf(np.array([1.0, np.inf])) == True
-        assert SafeMath.is_inf(np.array([1.0, 2.0])) == False
+        assert SafeMath.is_inf(np.array([1.0, np.inf]))
+        assert not SafeMath.is_inf(np.array([1.0, 2.0]))
 
     def test_is_zero(self):
         assert SafeMath.is_zero(0.0) is True

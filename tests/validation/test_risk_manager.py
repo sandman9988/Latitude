@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 from src.risk.circuit_breakers import CircuitBreakerManager
-from src.risk.risk_manager import RiskManager, RiskAssessment
-from src.risk.var_estimator import VaREstimator, RegimeType
+from src.risk.risk_manager import RiskAssessment, RiskManager
+from src.risk.var_estimator import RegimeType, VaREstimator
 
 rng = np.random.default_rng(42)
 

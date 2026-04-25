@@ -173,7 +173,7 @@ def test_ring_buffer_basic_operations():
         buffer.push(float(i))
 
     assert buffer.size() == 3, "Buffer should have 3 elements"
-    assert buffer.is_full() == False, "Buffer should not be full"
+    assert not buffer.is_full(), "Buffer should not be full"
 
     # Check mean
     mean = buffer.mean()
@@ -199,7 +199,7 @@ def test_ring_buffer_overflow():
     buffer.push(2.0)
     buffer.push(3.0)
 
-    assert buffer.is_full() == True, "Buffer should be full"
+    assert buffer.is_full(), "Buffer should be full"
 
     # Overflow - should evict oldest
     buffer.push(4.0)
@@ -240,7 +240,7 @@ def test_circuit_breaker_max_loss():
         volatility=0.015,
     )
 
-    assert result["all_clear"] == True, "Small loss should not trip breaker"
+    assert result["all_clear"], "Small loss should not trip breaker"
 
     # Large loss - should trip
     result = breakers.check_all(
@@ -250,7 +250,7 @@ def test_circuit_breaker_max_loss():
         volatility=0.015,
     )
 
-    assert result["all_clear"] == False, "Large loss should trip breaker"
+    assert not result["all_clear"], "Large loss should trip breaker"
     assert "max_loss_day" in result["tripped"], "Should trip max_loss_day breaker"
 
     LOG.info("✓ Circuit breaker max loss test passed")
@@ -279,7 +279,7 @@ def test_circuit_breaker_drawdown():
         volatility=0.015,
     )
 
-    assert result["all_clear"] == False, "Large drawdown should trip breaker"
+    assert not result["all_clear"], "Large drawdown should trip breaker"
 
     LOG.info("✓ Circuit breaker drawdown test passed")
 
@@ -373,11 +373,11 @@ def test_non_repaint_bar_zero_discipline():
 
     # Try to access Bar[0] - should be safe
     is_safe = guards.is_bar_closed(bar_num)
-    assert is_safe == True, "Bar should be marked as closed"
+    assert is_safe, "Bar should be marked as closed"
 
     # Try to access Bar[0] before close - should not be safe
     is_safe = guards.is_bar_closed(bar_num + 1)
-    assert is_safe == False, "Future bar should not be closed"
+    assert not is_safe, "Future bar should not be closed"
 
     LOG.info("✓ Non-repaint Bar[0] discipline enforced")
 

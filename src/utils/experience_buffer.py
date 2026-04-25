@@ -77,8 +77,8 @@ RNG: Generator = default_rng(42)
 #   M5  → 1.5 × 96 bars  × 5 min × 60  = 43 200 s
 #   H1  → 1.5 × 8 bars   × 60 min × 60 = 43 200 s
 #   D1  → 1.5 × 1 bar    × 1440 min × 60 = 129 600 s (≈ 1.5 days, appropriate)
-TRADING_SESSION_MINUTES: float = 480.0   # one FX intraday session (8 h)
-HALFLIFE_SESSIONS: float = 1.5           # 50% decay after 1.5 sessions
+TRADING_SESSION_MINUTES: float = 480.0  # one FX intraday session (8 h)
+HALFLIFE_SESSIONS: float = 1.5  # 50% decay after 1.5 sessions
 
 
 def staleness_halflife_for_timeframe(
@@ -105,7 +105,6 @@ def staleness_halflife_for_timeframe(
     """
     session_bars = session_minutes / max(1, timeframe_minutes)
     return n_sessions * session_bars * timeframe_minutes * 60.0
-
 
 
 class RegimeSampling(IntEnum):
@@ -141,6 +140,7 @@ class ExperienceBuffer:
     - Staleness decay (old experiences lose priority)
     - Regime-aware weighting (prioritize current regime)
     - Efficient O(log n) sampling via SumTree
+    - Float16 storage for memory efficiency (50% reduction)
     """
 
     def __init__(  # noqa: PLR0913
@@ -154,6 +154,7 @@ class ExperienceBuffer:
         epsilon: float = 0.01,
         seed: int | None = None,
         timeframe_minutes: int = 5,
+        use_float16: bool | None = None,  # None = auto-detect from AMD_OPTS
     ):
         """Initialize experience buffer.
 
@@ -197,13 +198,25 @@ class ExperienceBuffer:
         self.current_regime: RegimeSampling = RegimeSampling.UNKNOWN
         self.current_zeta: float = 1.0  # Current damping ratio for continuous boost
 
+        # Float16 storage for memory efficiency (50% reduction on AMD GPUs)
+        # Auto-detect from AMD_OPTS if not specified
+        if use_float16 is None:
+            try:
+                from src.core.ddqn_network import AMD_OPTS
+
+                self._use_float16 = AMD_OPTS.get("is_amd", False)
+            except ImportError:
+                self._use_float16 = False
+        else:
+            self._use_float16 = use_float16
+
         # Stats
         self.total_added = 0
         self.total_sampled = 0
 
         LOG.info(
             "ExperienceBuffer initialized: capacity=%d, alpha=%.2f, beta=%.2f, "
-            "staleness_halflife=%.0fs (tf=%dmin, %.1f sessions), regime_boost=%.2f",
+            "staleness_halflife=%.0fs (tf=%dmin, %.1f sessions), regime_boost=%.2f, float16=%s",
             capacity,
             alpha,
             beta,
@@ -211,6 +224,7 @@ class ExperienceBuffer:
             timeframe_minutes,
             self.staleness_halflife / max(1.0, TRADING_SESSION_MINUTES * 60),
             regime_boost,
+            self._use_float16,
         )
 
     def set_current_regime(self, regime: int):
@@ -288,12 +302,21 @@ class ExperienceBuffer:
             LOG.warning("Invalid action: %d", action)
             return
 
+        # Convert to float16 for memory efficiency (50% reduction) if enabled
+        # This is transparent to the caller - states are converted back to float32 during sampling
+        if self._use_float16:
+            state_stored = state.astype(np.float16)
+            next_state_stored = next_state.astype(np.float16)
+        else:
+            state_stored = state.copy()
+            next_state_stored = next_state.copy()
+
         # Create experience
         exp = Experience(
-            state=state.copy(),  # Copy to avoid reference issues
+            state=state_stored,  # Stored in float16 if enabled
             action=action,
             reward=reward,
-            next_state=next_state.copy(),
+            next_state=next_state_stored,
             done=done,
             timestamp=time.time(),
             regime=RegimeSampling(regime),
@@ -387,7 +410,7 @@ class ExperienceBuffer:
             # experience and the current market condition.  Experiences from
             # a similar regime get a stronger boost than those from a very
             # different regime.
-            zeta_similarity = max(0.0, 1.0 - abs(getattr(exp, 'zeta', self.current_zeta) - self.current_zeta))
+            zeta_similarity = max(0.0, 1.0 - abs(getattr(exp, "zeta", self.current_zeta) - self.current_zeta))
             regime_weight = 1.0 + (self.regime_boost - 1.0) * zeta_similarity
             adjusted_priority = max(priority * staleness_weight * regime_weight, self.epsilon)
             tree_idx = data_idx + self.tree.capacity - 1
@@ -412,6 +435,8 @@ class ExperienceBuffer:
             return None
 
         # Convert to numpy arrays
+        # If states were stored in float16, convert back to float32 for training
+        # (BF16 training will handle precision conversion via autocast)
         states = np.asarray(states_list, dtype=np.float32)
         actions = np.asarray(actions_list, dtype=np.int32)
         rewards = np.asarray(rewards_list, dtype=np.float32)
@@ -555,7 +580,8 @@ class ExperienceBuffer:
             # ".npz" — otherwise the data lands in tmp_xxx.npz.tmp.npz while
             # os.replace renames the empty original, producing a 0-byte file.
             fd, tmp_path = tempfile.mkstemp(
-                suffix=".npz", dir=str(dest.parent),
+                suffix=".npz",
+                dir=str(dest.parent),
             )
             os.close(fd)
             try:

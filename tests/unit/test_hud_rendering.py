@@ -159,7 +159,7 @@ def _extract_table(frame: str, header_regex: str) -> tuple[str, list[str], list[
                 bare = _strip_ansi(lines[j])
                 if not bare.strip():
                     break
-                if set(bare.strip()) <= {"─", "\u2500"}:
+                if set(bare.strip()) <= {"─"}:
                     seps.append(lines[j])
                 else:
                     rows.append(lines[j])
@@ -326,7 +326,7 @@ class TestNoDuplicateRows:
             bare = _strip_ansi(ln)
             if not bare.strip():
                 break
-            if set(bare.strip()) <= {"─", "\u2500"}:
+            if set(bare.strip()) <= {"─"}:
                 continue
             # Row: "  EURUSD    M60    LIVE    ..."
             m = re.match(r"\s+([A-Z]+)\s+(M\d+)\s+([A-Z]+)\s+", bare)

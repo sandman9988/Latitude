@@ -255,7 +255,7 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for trigger agent."""
-        from src.core.ddqn_network import Conv1dQNet
+        from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
 
         _ = Conv1dQNet
         self._load_torch_model(model_path, n_actions=3, tag="TRIGGER")

@@ -56,7 +56,7 @@ class TestKurtosisMonitor:
 
     def test_update_below_min_sample(self):
         km = KurtosisMonitor()
-        for i in range(MIN_KURTOSIS_SAMPLE - 1):
+        for _i in range(MIN_KURTOSIS_SAMPLE - 1):
             k, breaker = km.update(0.01)
         assert k == pytest.approx(0.0)
         assert not breaker

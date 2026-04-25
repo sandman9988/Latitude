@@ -12,6 +12,8 @@ Comprehensive testing of all calculations, statistics, and probabilities:
 6. Statistical aggregations
 """
 
+import sys
+
 import numpy as np
 
 from src.risk.circuit_breakers import CircuitBreakerManager
@@ -31,9 +33,9 @@ class TestProbabilityMath:
 
         # Scenario: 70% confidence predictions
         # Add 10 predictions: 7 wins, 3 losses = 70% actual
-        for i in range(7):
+        for _i in range(7):
             rm.update_decision_outcome("entry", 0.70, True, True, "trigger")
-        for i in range(3):
+        for _i in range(3):
             rm.update_decision_outcome("entry", 0.70, True, False, "trigger")
 
         calib = rm.get_probability_calibration("trigger")
@@ -60,9 +62,9 @@ class TestProbabilityMath:
         )
 
         # Scenario: 90% confidence but only 50% win rate (overconfident)
-        for i in range(5):
+        for _i in range(5):
             rm.update_decision_outcome("entry", 0.90, True, True, "harvester")
-        for i in range(5):
+        for _i in range(5):
             rm.update_decision_outcome("entry", 0.90, True, False, "harvester")
 
         calib = rm.get_probability_calibration("harvester")
@@ -532,7 +534,7 @@ def test_all_calculations():
         for class_name, method_name, error in failed_tests:
             print(f"  - {class_name}.{method_name}")
             print(f"    {error}")
-        assert False, f"{len(failed_tests)} mathematical verification(s) failed"
+        raise AssertionError(f"{len(failed_tests)} mathematical verification(s) failed")
     else:
         print("\n✓ ALL MATHEMATICAL VERIFICATIONS PASSED")
 
@@ -540,6 +542,6 @@ def test_all_calculations():
 if __name__ == "__main__":
     try:
         test_all_calculations()
-        exit(0)
+        sys.exit(0)
     except (AssertionError, Exception):
-        exit(1)
+        sys.exit(1)

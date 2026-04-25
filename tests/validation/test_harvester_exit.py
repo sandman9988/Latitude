@@ -9,6 +9,7 @@ Verify that harvester generates exit signals when thresholds are hit:
 4. Hard time stop (80 bars)
 """
 import sys
+
 import numpy as np
 
 # Import harvester

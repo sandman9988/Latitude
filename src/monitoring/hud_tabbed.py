@@ -18,6 +18,7 @@ Note: Ctrl+C is ignored to prevent accidental termination when copying text.
 """
 
 import contextlib
+import glob as _glob
 import io
 import json
 import logging
@@ -43,6 +44,7 @@ from src.constants import (
     TRIGGER_BUFFER_CAPACITY,
 )
 from src.persistence.trade_log_reader import CachedTradeLogReader
+from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
 
 LOG = logging.getLogger(__name__)
 
@@ -152,8 +154,112 @@ _QTY_FLOOR: float = 1e-9               # guard division in qty-usage ratio
 # Signal synthesis imbalance direction hint
 _IMBALANCE_DIRECTION_HINT: float = 0.1  # |imbalance| > 0.1 used for directional hint
 
+# Mouse event button codes (xterm SGR encoding)
+_MOUSE_WHEEL_UP: int = 64
+_MOUSE_WHEEL_DOWN: int = 65
+_TAB_BAR_ROW: int = 10
 
-from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
+# Terminal width breakpoints for label set selection
+_TERM_WIDTH_FULL: int = 104
+_TERM_WIDTH_MEDIUM: int = 85
+_SCROLLBAR_MIN_WIDTH: int = 20
+
+# Time unit constants
+_SECS_PER_MIN: int = 60
+_SECS_PER_HOUR: int = 3600
+_SECS_PER_DAY: int = 86400
+_MINS_PER_DAY: int = 1440
+
+# Progress bar colour thresholds (fill fraction 0–1)
+_PP_BAR_GREEN_FRAC: float = 0.5
+_PP_BAR_YELLOW_FRAC: float = 0.2
+
+# Reconnect / error count thresholds
+_RECONNECT_WARN_COUNT: int = 5
+_ERR_COUNT_WARN: int = 5
+
+# Offline job: minimum validation trades before ZOmega is meaningful
+_OFFLINE_MIN_VAL_TRADES: int = 5
+
+# Adaptive tau (target network update rate) colour bands
+_TAU_HIGH: float = 0.003
+_TAU_LOW: float = 0.001
+
+# Regime epsilon-factor colour bands
+_REGIME_FACTOR_HEALTHY: float = 0.9
+_REGIME_FACTOR_WARN: float = 0.7
+
+# Dynamic entry floor colour bands (trigger agent)
+_ENTRY_FLOOR_GOOD: float = 0.75
+_ENTRY_FLOOR_WARN: float = 0.85
+
+# Dynamic exit floor colour bands (harvester agent)
+_EXIT_FLOOR_GOOD: float = 0.65
+_EXIT_FLOOR_WARN: float = 0.80
+
+# Regime hold-multiplier warning threshold (harvester)
+_HOLD_MULT_WARN: float = 0.9
+
+# Memory and error display thresholds
+_MEM_HIGH_PCT: float = 80.0
+_MEM_WARN_PCT: float = 60.0
+
+# Open-position display cap (shows first N, then ellipsis)
+_MAX_DISPLAY_POSITIONS: int = 8
+
+# Bot label column width (matches :<13 format spec throughout)
+_BOT_LABEL_MAX: int = 13
+
+# Win / loss streak colour bands
+_WIN_STREAK_GOOD: int = 3
+_LOSS_STREAK_WARN: int = 5
+_LOSS_STREAK_GOOD: int = 3
+
+# Winner-to-loser percentage thresholds
+_W2L_PCT_WARN: float = 15.0
+_W2L_PCT_GOOD: float = 5.0
+
+# Capture ratio colour bands (excursion efficiency)
+_CAP_RATIO_GOOD: float = 0.60
+_CAP_RATIO_WARN: float = 0.40
+
+# Confidence calibration gap threshold (win − loss confidence)
+_CAL_GAP_GOOD: float = 0.05
+
+# Runway-utilisation warning threshold (prediction convergence)
+_RUNWAY_UTIL_WARN: float = 0.7
+
+# Prediction error percentage colour bands
+_ERR_PCT_GOOD: float = 25.0
+_ERR_PCT_WARN: float = 50.0
+
+# Decision-log feasibility colour thresholds (compact display)
+_DEC_FEAS_GOOD: float = 0.6
+_DEC_FEAS_WARN: float = 0.3
+
+# Reward weight visual range (adaptive weights tab)
+_WEIGHT_NORMAL_LOW: float = 0.8
+_WEIGHT_NORMAL_HIGH: float = 1.2
+_WEIGHT_TIGHT_LOW: float = 0.5
+_WEIGHT_TIGHT_HIGH: float = 1.5
+
+# Jerk (dγ/dt) warning threshold
+_JERK_WARN: float = 0.1
+
+# Order-book depth ratio colour bands
+_DEPTH_RATIO_GOOD: float = 0.8
+_DEPTH_RATIO_WARN: float = 0.5
+
+# Vol-ratio deviation threshold
+_VOL_RATIO_DRIFT: float = 0.5
+
+# Trade cache refresh interval (seconds)
+_TRADE_CACHE_TTL: float = 5.0
+
+# Trades tab display thresholds
+_COMPACT_TRADES_THRESHOLD: int = 6
+_TRADES_SEP_THRESHOLD: int = 8
+_WIN_RATE_NEUTRAL: int = 50
 
 
 def _hud_period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
@@ -1242,7 +1348,6 @@ class TabbedHUD:
 
         # Aggregate position files from all running bots (each writes a per-symbol file).
         # Display the first non-FLAT position found; fall back to singleton file if none.
-        import glob as _glob
         _pos_files = sorted(
             _glob.glob(str(self.data_dir / "current_position_*.json")),
             key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0,

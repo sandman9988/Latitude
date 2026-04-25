@@ -17,13 +17,12 @@ Tests:
     4. desired is never None after exit decision (invariant)
     5. Close produces correct delta direction for SHORT and LONG positions
 """
-import numpy as np
-import pytest
 from collections import deque
 from datetime import datetime, timedelta
 
-from src.agents.dual_policy import DualPolicy
+import pytest
 
+from src.agents.dual_policy import DualPolicy
 
 # ---------------------------------------------------------------------------
 # Helpers

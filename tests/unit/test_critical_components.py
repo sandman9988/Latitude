@@ -34,7 +34,7 @@ def test_reward_integrity_monitor_correlation():
 
     # Simulate 100 trades with good correlation
     rng = np.random.default_rng(42)
-    for i in range(100):
+    for _i in range(100):
         pnl = rng.standard_normal() * 100  # Random P&L
         reward = pnl * 0.8 + rng.standard_normal() * 20  # Correlated reward with noise
 
@@ -61,7 +61,7 @@ def test_reward_integrity_monitor_gaming_detection():
 
     # Simulate gaming: positive rewards but negative P&L
     rng = np.random.default_rng(42)
-    for i in range(100):
+    for _i in range(100):
         pnl = rng.standard_normal() * 100 - 50  # Negative-biased P&L
         reward = abs(rng.standard_normal() * 50 + 100)  # Always positive rewards (gaming!)
 
@@ -150,7 +150,7 @@ def test_broker_execution_model_regime_impact():
 
     # Verify ordering: TRANSITIONAL > TRENDING > MEAN_REVERTING
     assert slippages[0] > slippages[1] > slippages[2], (
-        f"Regime impact ordering incorrect: {list(zip(regimes, slippages))}"
+        f"Regime impact ordering incorrect: {list(zip(regimes, slippages, strict=False))}"
     )
 
     LOG.info("✓ Regime impact verified: TRANSITIONAL > TRENDING > MEAN_REVERTING")

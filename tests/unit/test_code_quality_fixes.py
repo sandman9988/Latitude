@@ -293,10 +293,10 @@ class TestLiveRiskTuner:
         bot._conf_calib_err_ema = 0.90
         bot._runway_accuracy_ema = 0.20
         bot._entry_conf_dynamic_floor = 0.90
-        bot._lp_get = lambda name, default: {
+        bot._lp_get = {
             "entry_guard_min_trade_samples": 40.0,
             "entry_guard_rl_floor_extra_cap": 0.10,
-        }.get(name, default)
+        }.get
 
         dyn, meta = bot._compute_dynamic_entry_floor(0.70)
 
@@ -314,14 +314,14 @@ class TestLiveRiskTuner:
         bot._conf_calib_err_ema = 0.50
         bot._runway_accuracy_ema = 0.40
         bot._entry_conf_dynamic_floor = 0.75
-        bot._lp_get = lambda name, default: {
+        bot._lp_get = {
             "entry_guard_min_trade_samples": 40.0,
             "entry_guard_calib_err_start": 0.30,
             "entry_guard_calib_uplift_cap": 0.08,
             "entry_guard_runway_acc_target": 0.60,
             "entry_guard_runway_penalty_cap": 0.05,
             "entry_guard_rl_floor_extra_cap": 0.10,
-        }.get(name, default)
+        }.get
 
         dyn, meta = bot._compute_dynamic_entry_floor(0.70)
 

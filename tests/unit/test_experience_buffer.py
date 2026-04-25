@@ -360,5 +360,5 @@ class TestStalenessHalflife:
         assert buf.staleness_halflife == pytest.approx(86_400.0)
 
     def test_constants_exported(self):
-        assert TRADING_SESSION_MINUTES == pytest.approx(480.0)
-        assert HALFLIFE_SESSIONS == pytest.approx(1.5)
+        assert pytest.approx(480.0) == TRADING_SESSION_MINUTES
+        assert pytest.approx(1.5) == HALFLIFE_SESSIONS

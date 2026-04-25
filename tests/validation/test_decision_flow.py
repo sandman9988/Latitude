@@ -18,7 +18,7 @@ def test_decision_log_structure():
 
     # Simulate bar data
     t = dt.datetime(2026, 1, 10, 16, 30, tzinfo=dt.UTC)
-    o, h, l, c = 90500.0, 90550.0, 90480.0, 90520.0
+    o, h, lo, c = 90500.0, 90550.0, 90480.0, 90520.0
 
     # Simulate decision variables (as they would be in on_bar_close)
     action = 1  # LONG
@@ -40,7 +40,7 @@ def test_decision_log_structure():
         "details": {
             "open": o,
             "high": h,
-            "low": l,
+            "low": lo,
             "close": c,
             "cur_pos": 0,
             "desired": desired if "desired" in locals() else None,
@@ -69,7 +69,7 @@ def test_decision_log_structure():
     print(f"✓ Written test decision log to {test_log_path}")
 
     # Verify it can be read back
-    with open(test_log_path, "r", encoding="utf-8") as f:
+    with open(test_log_path, encoding="utf-8") as f:
         loaded = json.load(f)
 
     assert len(loaded) == 1, "Should have 1 entry"
@@ -196,14 +196,14 @@ def test_bar_builder():
     closed = builder.update(t4, 90510.0)
     assert closed is not None, "First update in new minute should close previous bar"
 
-    bar_time, o, h, l, c = closed
+    bar_time, o, h, lo, c = closed
     assert bar_time == dt.datetime(2026, 1, 10, 16, 30, tzinfo=dt.UTC), "Bar time should be 16:30"
     assert o == pytest.approx(90500.0), "Open should be first price"
     assert h == pytest.approx(90520.0), "High should be max price"
-    assert l == pytest.approx(90490.0), "Low should be min price"
+    assert lo == pytest.approx(90490.0), "Low should be min price"
     assert c == pytest.approx(90490.0), "Close should be last price before bar close"
 
-    print(f"  ✓ Bar closed: {bar_time} O={o} H={h} L={l} C={c}")
+    print(f"  ✓ Bar closed: {bar_time} O={o} H={h} L={lo} C={c}")
     print("✓ BarBuilder logic validated")
 
 
@@ -217,7 +217,7 @@ def test_hud_integration():
         test_decision_log_structure()
 
     # Read decision log (as HUD would)
-    with open(test_log_path, "r", encoding="utf-8") as f:
+    with open(test_log_path, encoding="utf-8") as f:
         entries = json.load(f)
 
     print(f"  ✓ Read {len(entries)} entries from decision log")
@@ -227,7 +227,7 @@ def test_hud_integration():
         entry = entries[-1]
         details = entry["details"]
 
-        print(f"\n  Latest Decision:")
+        print("\n  Latest Decision:")
         print(f"    Timestamp: {entry['timestamp']}")
         print(
             f"    OHLC: {details['open']:.2f} / {details['high']:.2f} / {details['low']:.2f} / {details['close']:.2f}"
@@ -259,7 +259,7 @@ def main():
     passed = 0
     failed = 0
 
-    for name, test_func in tests:
+    for _name, test_func in tests:
         try:
             result = test_func()
             if result:

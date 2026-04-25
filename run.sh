@@ -106,6 +106,56 @@ load_dotenv() {
     fi
 }
 
+# Check for AMD GPU and load ROCm optimizations if applicable
+# This should be called after load_dotenv()
+
+# Load ROCm environment for AMD GPUs
+load_rocm_env() {
+    local rocm_env_file="${SCRIPT_DIR}/config/rocm_env.sh"
+
+    # Check if AMD GPU is present
+    local is_amd=0
+    if command -v rocm-smi &>/dev/null; then
+        if rocm-smi --showid 2>/dev/null | grep -qi "amd\|radeon\|gfx"; then
+            is_amd=1
+        fi
+    fi
+
+    # Also check via PyTorch if available
+    if [ "$is_amd" -eq 0 ] && command -v python3 &>/dev/null; then
+        is_amd=$(python3 -c "
+import sys
+try:
+    import torch
+    if torch.cuda.is_available():
+        name = torch.cuda.get_device_name(0).upper()
+        if any(x in name for x in ['AMD', 'RADEON', 'RX', 'NAVI', 'GFX']):
+            print('1')
+            sys.exit(0)
+except: pass
+print('0')
+" 2>/dev/null || echo "0")
+    fi
+
+    if [ "$is_amd" -eq 1 ]; then
+        log "${GREEN}✓ AMD GPU detected - loading ROCm optimizations${NC}"
+        if [ -f "$rocm_env_file" ]; then
+            # shellcheck disable=SC1091
+            source "$rocm_env_file"
+            log "${GREEN}✓ ROCm environment configured${NC}"
+        else
+            log "${YELLOW}⚠ config/rocm_env.sh not found - using defaults${NC}"
+            # Set essential ROCm variables
+            export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.0.2}"
+            export MIOPEN_FIND_MODE="${MIOPEN_FIND_MODE:-1}"
+            export USE_MIOPEN="${USE_MIOPEN:-1}"
+            export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+        fi
+    else
+        log "${BLUE}ℹ NVIDIA/other GPU - skipping ROCm config${NC}"
+    fi
+}
+
 # Check required environment variables
 check_env() {
     local missing=0
@@ -118,9 +168,9 @@ check_env() {
         "QTY"
         "TIMEFRAME_MINUTES"
     )
-    
+
     log "${BLUE}Checking environment variables...${NC}"
-    
+
     for var in "${required_vars[@]}"; do
         if [ -z "${!var:-}" ]; then
             log "${RED}✗ Missing: $var${NC}"
@@ -134,7 +184,7 @@ check_env() {
             fi
         fi
     done
-    
+
     if [ $missing -eq 1 ]; then
         log ""
         log "${RED}ERROR: Missing required environment variables${NC}"
@@ -143,7 +193,7 @@ check_env() {
         log "  nano .env  # or use your preferred editor"
         exit 1
     fi
-    
+
     log "${GREEN}✓ All required environment variables are set${NC}"
 }
 
@@ -159,11 +209,11 @@ activate_venv() {
         log "${GREEN}✓ Activating virtual environment${NC}"
         # shellcheck disable=SC1091
         source .venv/bin/activate
-        
+
         # Verify Python version
         python_version=$(python3 --version 2>&1 | awk '{print $2}')
         log "${GREEN}  Python version: $python_version${NC}"
-        
+
         # Check for required modules
         if ! python3 -c "import quickfix" 2>/dev/null; then
             log "${RED}✗ quickfix module not found in venv${NC}"
@@ -183,7 +233,7 @@ activate_venv() {
         }
         # shellcheck disable=SC1091
         source .venv/bin/activate
-        
+
         log "${YELLOW}  Installing requirements...${NC}"
         pip install -q --upgrade pip
         pip install -q -r requirements.txt || {
@@ -197,13 +247,13 @@ activate_venv() {
 # Check configuration files exist
 check_configs() {
     log "${BLUE}Checking configuration files...${NC}"
-    
+
     if [ ! -f "${CTRADER_CFG_QUOTE}" ]; then
         log "${RED}✗ Quote config not found: ${CTRADER_CFG_QUOTE}${NC}"
         exit 1
     fi
     log "${GREEN}✓ Quote config: ${CTRADER_CFG_QUOTE}${NC}"
-    
+
     if [ ! -f "${CTRADER_CFG_TRADE}" ]; then
         log "${RED}✗ Trade config not found: ${CTRADER_CFG_TRADE}${NC}"
         exit 1
@@ -803,29 +853,32 @@ main() {
     log "  cTrader DDQN Trading Bot - Startup"
     log "=========================================="
     log ""
-    
+
     # Load environment
     if ! load_dotenv; then
         exit 1
     fi
     apply_pending_profile
     apply_defaults
-    
+
     # Validate environment
     check_env
-    
+
     # Setup Python
     activate_venv
-    
+
+    # Load ROCm environment for AMD GPUs (after venv activation for Python detection)
+    load_rocm_env
+
     # Check configs
     check_configs
-    
+
     # Setup directories
     setup_logging
-    
+
     # Cleanup
     cleanup_old_processes
-    
+
     # Display configuration
     log ""
     log "${GREEN}Configuration:${NC}"
@@ -843,7 +896,7 @@ main() {
     log ""
     log "=========================================="
     log ""
-    
+
     # Run the bot
     exec python3 -m src.core.ctrader_ddqn_paper "$@"
 }

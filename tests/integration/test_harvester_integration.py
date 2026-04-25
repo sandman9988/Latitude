@@ -62,8 +62,8 @@ def simulate_trading_session():
         timestamp = base_time + timedelta(minutes=15 * bar_idx)
 
         # Add bar to history
-        o, h, l, c = price, price + 5, price - 5, price
-        bars.append([timestamp.timestamp(), o, h, l, c, 1000.0, bar_idx])
+        o, h, lo, c = price, price + 5, price - 5, price
+        bars.append([timestamp.timestamp(), o, h, lo, c, 1000.0, bar_idx])
 
         # Determine position state
         cur_pos = policy.current_position
@@ -123,7 +123,7 @@ def simulate_trading_session():
             "details": {
                 "open": o,
                 "high": h,
-                "low": l,
+                "low": lo,
                 "close": c,
                 "cur_pos": cur_pos,
                 "action": action,

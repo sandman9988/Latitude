@@ -74,7 +74,7 @@ class TestDecisionLoggerWriteError:
 
     def test_log_decision_write_error_via_mock(self, logger):
         """Mock open to raise an IOError during log_decision."""
-        with patch("builtins.open", side_effect=IOError("disk full")):
+        with patch("builtins.open", side_effect=OSError("disk full")):
             # Should not raise
             logger.log_decision(
                 agent="TriggerAgent",

@@ -25,7 +25,7 @@ Live log test (skipped if logs/audit/decisions.jsonl does not exist):
 """
 from __future__ import annotations
 
-import io
+import contextlib
 import json
 import logging
 import threading
@@ -45,13 +45,11 @@ LIVE_LOG = Path("logs/audit/decisions.jsonl")
 def _load_jsonl(path: Path) -> list[dict]:
     entries = []
     with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for raw_line in f:
+            line = raw_line.strip()
             if line:
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
     return entries
 
 
@@ -245,21 +243,20 @@ def check_invariants(entries: list[dict]) -> list[str]:
                             f"[{sid}] NO_ENTRY carries trade_id={tid} @{ts}"
                         )
 
-            elif agent == "HarvesterAgent":
-                if decision in ("HOLD", "CLOSE"):
-                    if decision == "CLOSE" and tid and tid in closed_trade_ids:
-                        continue
+            elif agent == "HarvesterAgent" and decision in ("HOLD", "CLOSE"):
+                if decision == "CLOSE" and tid and tid in closed_trade_ids:
+                    continue
 
-                    # Invariant 2: harvester entry without prior trigger entry
-                    # (recovered trades have rcv_ prefix — don't flag those)
-                    if tid and not tid.startswith("rcv_") and tid not in open_trades:
-                        violations.append(
-                            f"[{sid}] {decision} has trade_id={tid} @{ts} "
-                            f"but no matching LONG/SHORT entry found"
-                        )
-                    if decision == "CLOSE" and tid and tid in open_trades:
-                        closed_trade_ids.add(tid)
-                        del open_trades[tid]
+                # Invariant 2: harvester entry without prior trigger entry
+                # (recovered trades have rcv_ prefix — don't flag those)
+                if tid and not tid.startswith("rcv_") and tid not in open_trades:
+                    violations.append(
+                        f"[{sid}] {decision} has trade_id={tid} @{ts} "
+                        f"but no matching LONG/SHORT entry found"
+                    )
+                if decision == "CLOSE" and tid and tid in open_trades:
+                    closed_trade_ids.add(tid)
+                    del open_trades[tid]
 
         # Invariant 1: every open trade must eventually close
         # (only flag non-recovered trades; recovered ones may still be open)

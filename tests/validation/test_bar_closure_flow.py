@@ -34,7 +34,7 @@ def trace_bar_closure_events():
         102.0,  # close
     )
 
-    print(f"\nCLOSED BAR DATA:")
+    print("\nCLOSED BAR DATA:")
     print(f"  Timestamp: {closed_bar[0]}")
     print(f"  OHLC: O={closed_bar[1]} H={closed_bar[2]} L={closed_bar[3]} C={closed_bar[4]}")
 
@@ -153,15 +153,15 @@ def trace_bar_closure_events():
         print(f"STEP {event['step']}: {event['name']}")
         print(f"{'='*80}")
         print(f"📍 Line: {event['line']}")
-        print(f"\n💻 CODE:")
+        print("\n💻 CODE:")
         for line in event["code"].split("\n"):
             print(f"    {line}")
-        print(f"\n📝 DESCRIPTION:")
+        print("\n📝 DESCRIPTION:")
         print(f"    {event['description']}")
-        print(f"\n🎯 IMPACT:")
+        print("\n🎯 IMPACT:")
         print(f"    {event['impact']}")
         if "details" in event:
-            print(f"\n🔍 DETAILS:")
+            print("\n🔍 DETAILS:")
             for detail in event["details"]:
                 print(f"    {detail}")
 
@@ -263,13 +263,13 @@ def trace_bar_closure_events():
     • M5  (5-minute):   ~288 closures/day    (every 5 minutes)
     • M15 (15-minute):  ~96 closures/day     (every 15 minutes)
     • H1  (1-hour):     ~24 closures/day     (every hour)
-    
+
     Each closure triggers:
     • Feature computation: ~2-5ms
     • Agent decisions: ~1-2ms each
     • Risk checks: ~1ms
     • Total overhead: ~5-10ms per bar
-    
+
     Between bar closures (during bar building):
     • Ticks update MFE/MAE: ~0.1ms per tick
     • VPIN calculations: ~0.2ms per tick
@@ -290,12 +290,12 @@ def trace_bar_closure_events():
     ✅ The system is event-driven, not tick-driven
     ✅ Feature calculation is bar-synchronized
     ✅ Orders are only submitted at bar close (not on ticks)
-    
+
     🚫 What does NOT happen on bar closure:
     • No position reconciliation (happens on ExecutionReport)
     • No quote updates (happens on MarketDataSnapshotFullRefresh)
     • No FIX protocol messages sent (except orders)
-    
+
     ⚠️  Critical for understanding:
     The bot makes decisions ONCE per bar, not continuously!
     This is by design to prevent overtrading and maintain discipline.

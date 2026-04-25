@@ -11,6 +11,7 @@ agent's predicted vs actual outcomes and becomes the main risk management tool.
 """
 
 import numpy as np
+
 from src.risk.circuit_breakers import CircuitBreakerManager
 from src.risk.risk_manager import RiskManager
 from src.risk.var_estimator import VaREstimator
@@ -46,7 +47,7 @@ def test_per_agent_calibration():
     trigger_calib = risk_mgr.get_probability_calibration("trigger")
     if 0.7 in trigger_calib:
         c = trigger_calib[0.7]
-        print(f"\n   TriggerAgent 70% bucket:")
+        print("\n   TriggerAgent 70% bucket:")
         print(f"   Predicted: {c.predicted_success_rate:.1%}")
         print(f"   Actual: {c.actual_success_rate:.1%}")
         print(f"   Error: {c.calibration_error:.1%}")
@@ -69,7 +70,7 @@ def test_per_agent_calibration():
     harvester_calib = risk_mgr.get_probability_calibration("harvester")
     if 0.9 in harvester_calib:
         c = harvester_calib[0.9]
-        print(f"\n   HarvesterAgent 90% bucket:")
+        print("\n   HarvesterAgent 90% bucket:")
         print(f"   Predicted: {c.predicted_success_rate:.1%}")
         print(f"   Actual: {c.actual_success_rate:.1%}")
         print(f"   Error: {c.calibration_error:.1%}")
@@ -125,13 +126,13 @@ def test_composite_probability_predictor():
     print("\n2. Get composite predictor")
     composite = risk_mgr.get_composite_probability_predictor()
 
-    print(f"\n   COMPOSITE ANALYSIS:")
-    print(f"   ==================")
-    print(f"   TriggerAgent:")
+    print("\n   COMPOSITE ANALYSIS:")
+    print("   ==================")
+    print("   TriggerAgent:")
     print(f"   - Overall accuracy: {composite.trigger_overall_accuracy:.1%}")
     print(f"   - Buckets calibrated: {len(composite.trigger_calibration)}")
 
-    print(f"\n   HarvesterAgent:")
+    print("\n   HarvesterAgent:")
     print(f"   - Overall accuracy: {composite.harvester_overall_accuracy:.1%}")
     print(f"   - Buckets calibrated: {len(composite.harvester_calibration)}")
 
@@ -180,11 +181,11 @@ def test_composite_in_risk_assessment():
     print("\n1. Create scenario with different agent performance")
 
     # TriggerAgent: Good performance
-    for i in range(20):
+    for _i in range(20):
         risk_mgr.update_decision_outcome("entry", 0.75, True, True, "trigger")  # 100% win
 
     # HarvesterAgent: Poor performance
-    for i in range(20):
+    for _i in range(20):
         risk_mgr.update_decision_outcome("exit", 0.75, True, False, "harvester")  # 0% win
 
     print("   TriggerAgent: 20 wins")
@@ -201,7 +202,7 @@ def test_composite_in_risk_assessment():
 
     # Verify composite predictor is included
     assert assessment.composite_predictor is not None
-    print(f"\n3. Composite predictor in assessment:")
+    print("\n3. Composite predictor in assessment:")
     print(f"   Trigger accuracy: {assessment.composite_predictor.trigger_overall_accuracy:.1%}")
     print(f"   Harvester accuracy: {assessment.composite_predictor.harvester_overall_accuracy:.1%}")
     print(f"   Best agent: {assessment.composite_predictor.best_calibrated_agent}")

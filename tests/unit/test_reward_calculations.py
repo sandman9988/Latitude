@@ -393,7 +393,7 @@ def test_reward_pnl_correlation():
     pnls = []
 
     # Simulate 300 trades (enough for stable correlation estimate)
-    for i in range(300):
+    for _i in range(300):
         # Random MFE between 0 and 200
         actual_mfe = rng.uniform(0, 200)
 

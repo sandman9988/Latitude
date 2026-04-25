@@ -731,7 +731,7 @@ def _variant_args(args, variant: TrainingVariant, defer_candidate_deploy: bool):
 def _candidate_seed(base_seed: int | None, candidate_id: str, job: Job) -> int | None:
     if base_seed is None:
         return None
-    token = f"{candidate_id}:{job.symbol}:{job.timeframe_minutes}:{base_seed}".encode("utf-8")
+    token = f"{candidate_id}:{job.symbol}:{job.timeframe_minutes}:{base_seed}".encode()
     return (int(base_seed) + zlib.crc32(token)) % 2_147_483_647
 
 
