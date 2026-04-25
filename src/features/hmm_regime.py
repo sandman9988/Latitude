@@ -47,11 +47,11 @@ LOG = logging.getLogger(__name__)
 
 # ── HMM configuration ────────────────────────────────────────────────────────
 HMM_N_STATES: int = 3
-HMM_MIN_OBSERVATIONS: int = 30          # Minimum returns before first HMM fit
-HMM_REFIT_INTERVAL: int = 50            # Re-fit every N new observations
-HMM_MAX_HISTORY: int = 500              # Cap rolling window to prevent slow fits
-HMM_FIT_ITERATIONS: int = 20            # EM iterations (fast convergence is fine)
-HMM_COVARIANCE_TYPE: str = "full"       # "full" works well with 1D observations
+HMM_MIN_OBSERVATIONS: int = 30  # Minimum returns before first HMM fit
+HMM_REFIT_INTERVAL: int = 50  # Re-fit every N new observations
+HMM_MAX_HISTORY: int = 500  # Cap rolling window to prevent slow fits
+HMM_FIT_ITERATIONS: int = 20  # EM iterations (fast convergence is fine)
+HMM_COVARIANCE_TYPE: str = "full"  # "full" works well with 1D observations
 
 
 class HMMRegimeDetector(RegimeDetector):
@@ -84,15 +84,22 @@ class HMMRegimeDetector(RegimeDetector):
         self._state_probs: np.ndarray = np.array([0.0, 0.0, 1.0])  # Start as "unknown" → neutral
 
         # Multiplier map (indexed by labelled state: 0=trending, 1=mean_rev, 2=neutral)
-        self._multiplier_map: np.ndarray = np.array([
-            RUNWAY_MULT_TRENDING,       # State 0: Trending
-            RUNWAY_MULT_MEAN_REVERTING,  # State 1: Mean-reverting
-            RUNWAY_MULT_NEUTRAL,         # State 2: Neutral / Low-activity
-        ], dtype=np.float64)
+        self._multiplier_map: np.ndarray = np.array(
+            [
+                RUNWAY_MULT_TRENDING,  # State 0: Trending
+                RUNWAY_MULT_MEAN_REVERTING,  # State 1: Mean-reverting
+                RUNWAY_MULT_NEUTRAL,  # State 2: Neutral / Low-activity
+            ],
+            dtype=np.float64,
+        )
 
         self._prev_price: float | None = None
-        LOG.info("[HMM_REGIME] Initialized: n_states=%d, min_obs=%d, refit_every=%d",
-                 HMM_N_STATES, HMM_MIN_OBSERVATIONS, HMM_REFIT_INTERVAL)
+        LOG.info(
+            "[HMM_REGIME] Initialized: n_states=%d, min_obs=%d, refit_every=%d",
+            HMM_N_STATES,
+            HMM_MIN_OBSERVATIONS,
+            HMM_REFIT_INTERVAL,
+        )
 
     def add_price(self, price: float) -> tuple:
         """Add price, update both VR regime and HMM posteriors."""
@@ -126,7 +133,13 @@ class HMMRegimeDetector(RegimeDetector):
         self._hmm_obs_since_fit = 0
 
     def _fit_hmm(self) -> None:
-        """Fit a GaussianHMM to the accumulated returns."""
+        """Fit a GaussianHMM to the accumulated returns.
+
+        Includes defensive checks for:
+        - Constant returns (zero variance) - HMM would fail
+        - NaN/Inf values - would corrupt the model
+        - Minimum variance threshold - numerical stability
+        """
         try:
             from hmmlearn.hmm import GaussianHMM  # noqa: PLC0415
         except ImportError:
@@ -134,6 +147,17 @@ class HMMRegimeDetector(RegimeDetector):
             return
 
         returns = np.array(self._hmm_returns, dtype=np.float64).reshape(-1, 1)
+
+        # Defensive: Check for constant returns (zero variance)
+        returns_std = np.std(returns)
+        if returns_std < 1e-10:
+            LOG.warning("[HMM_REGIME] Returns have near-zero variance (std=%.2e), skipping fit", returns_std)
+            return
+
+        # Defensive: Check for NaN/Inf values
+        if not np.all(np.isfinite(returns)):
+            LOG.warning("[HMM_REGIME] Non-finite values in returns, skipping fit")
+            return
 
         try:
             model = GaussianHMM(
@@ -167,6 +191,8 @@ class HMMRegimeDetector(RegimeDetector):
         - State with highest abs(mean) → Trending (momentum signal)
         - State with highest variance and small mean → Mean-reverting (volatile, no direction)
         - Remaining → Neutral / Low-activity
+
+        Includes validation for degenerate covariance matrices.
         """
         model = self._hmm_model
         if model is None:
@@ -176,6 +202,11 @@ class HMMRegimeDetector(RegimeDetector):
         variances = model.covars_.flatten()  # For "full" 1D, shape is (n, 1, 1)
         if variances.ndim > 1:
             variances = np.array([model.covars_[i][0, 0] for i in range(HMM_N_STATES)])
+
+        # Defensive: Check for degenerate covariance (NaN/Inf)
+        if not np.all(np.isfinite(variances)):
+            LOG.warning("[HMM_REGIME] Non-finite variances in HMM, keeping previous labels")
+            return
 
         abs_means = np.abs(means)
 
@@ -211,10 +242,18 @@ class HMMRegimeDetector(RegimeDetector):
             raw_probs = posteriors[-1]
 
             # Remap to semantic order: [p_trending, p_mean_rev, p_neutral]
-            semantic_probs = np.zeros(HMM_N_STATES)
+            self._state_probs = np.zeros(HMM_N_STATES)
             for raw_idx in range(HMM_N_STATES):
                 semantic_idx = self._state_labels[raw_idx]
-                semantic_probs[semantic_idx] += raw_probs[raw_idx]
+                self._state_probs[semantic_idx] += raw_probs[raw_idx]
+
+            # Defensive: Normalize probabilities to ensure sum = 1.0
+            prob_sum = np.sum(self._state_probs)
+            if prob_sum > 0:
+                self._state_probs = self._state_probs / prob_sum
+            else:
+                # Fallback to uniform distribution
+                self._state_probs = np.ones(HMM_N_STATES) / HMM_N_STATES
 
             self._state_probs = semantic_probs
         except Exception as exc:
@@ -243,11 +282,21 @@ class HMMRegimeDetector(RegimeDetector):
             float in range [RUNWAY_MULT_MEAN_REVERTING, RUNWAY_MULT_TRENDING]
                   i.e. typically [0.7, 1.3]
         """
-        if not self._hmm_fitted:
-            # Fall back to discrete VR multiplier until HMM is ready
-            return self.get_regime_multiplier()
 
-        return float(np.dot(self._state_probs, self._multiplier_map))
+        def get_blended_runway_multiplier(self) -> float:
+            """Get blended runway multiplier from HMM state probabilities.
+
+            Returns parent class multiplier if HMM not fitted or probabilities are invalid.
+            """
+            if not self._hmm_fitted:
+                return self.get_regime_multiplier()
+
+            # Defensive: Check for NaN in state probabilities
+            if not np.all(np.isfinite(self._state_probs)):
+                LOG.warning("[HMM_REGIME] NaN in state probabilities, using VR multiplier")
+                return self.get_regime_multiplier()
+
+            return float(np.dot(self._state_probs, self._multiplier_map))
 
     def get_regime_info(self) -> dict:
         """Extended regime info including HMM posterior probabilities."""

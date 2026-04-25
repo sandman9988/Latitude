@@ -23,6 +23,7 @@ Performance Optimization:
 """
 
 import logging
+import threading
 from collections import deque
 from typing import Literal
 
@@ -51,7 +52,7 @@ RUNWAY_MULT_NEUTRAL: float = 1.0
 # works for XAUUSD ($5000), EURUSD (1.08), BTC ($90k), etc.
 # Previously this was -0.0002 / +0.0003 (raw price) which only worked for
 # EURUSD-scale instruments.
-REGIME_ADJ_TRENDING: float = -0.15   # 15% easier to trigger in trending regime
+REGIME_ADJ_TRENDING: float = -0.15  # 15% easier to trigger in trending regime
 REGIME_ADJ_MEAN_REVERTING: float = 0.15  # 15% harder to trigger in choppy regime
 REGIME_ADJ_NEUTRAL: float = 0.0
 
@@ -95,6 +96,9 @@ class RegimeDetector:
         self.bars_since_update = 0
         self.total_updates: int = 0  # How many times regime has been recalculated
 
+        # Thread safety for fleet operation (multiple timeframes accessing shared state)
+        self._cache_lock = threading.Lock()
+
         # Performance cache
         self._cache_invalidated: bool = True
         self._cached_var_1: float | None = None
@@ -117,6 +121,9 @@ class RegimeDetector:
         """
         Add new price and update regime detection.
 
+        Thread-safe for fleet operation where multiple timeframes may
+        access the detector concurrently.
+
         Args:
             price: Current close price
 
@@ -128,19 +135,14 @@ class RegimeDetector:
             LOG.warning("[REGIME] Invalid price: %s. Skipping.", price)
             return self.current_regime, self.current_zeta
 
-        # Add to rolling buffer
-        self.price_buffer.append(price)
-        # deque(maxlen=...) auto-evicts oldest
+        with self._cache_lock:
+            self.price_buffer.append(price)
+            self._cache_invalidated = True
+            self.bars_since_update += 1
 
-        # Performance: Invalidate cache
-        self._cache_invalidated = True  # attribute defined in __init__
-
-        self.bars_since_update += 1
-
-        # Performance optimization: Only recalculate every N bars
-        if self.bars_since_update >= self.update_interval and len(self.price_buffer) >= self.window_size:
-            self._update_regime()
-            self.bars_since_update = 0
+            if self.bars_since_update >= self.update_interval and len(self.price_buffer) >= self.window_size:
+                self._update_regime()
+                self.bars_since_update = 0
 
         return self.current_regime, self.current_zeta
 
