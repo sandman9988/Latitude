@@ -30,10 +30,10 @@ def softmax(x: np.ndarray, temperature: float = 1.0) -> np.ndarray:
 
 
 # ── Confidence computation constants ─────────────────────────────────────────
-_TEMP_MAX: float = 1.0        # Starting softmax temperature (exploration)
-_TEMP_MIN: float = 0.5        # Minimum temperature (exploitation)
-_TEMP_DECAY_STEPS: int = 5000 # Steps to fully decay temperature
-_ADV_SCALE: float = 3.0       # Sigmoid scaling for advantage-based confidence
+_TEMP_MAX: float = 1.0  # Starting softmax temperature (exploration)
+_TEMP_MIN: float = 0.5  # Minimum temperature (exploitation)
+_TEMP_DECAY_STEPS: int = 5000  # Steps to fully decay temperature
+_ADV_SCALE: float = 3.0  # Sigmoid scaling for advantage-based confidence
 _SOFTMAX_WEIGHT: float = 0.5  # Blend weight for softmax vs advantage confidence
 
 
@@ -103,7 +103,28 @@ class AgentTrainingMixin:
       - _AGENT_TAG            (str, e.g. "TRIGGER" or "HARVESTER")
     """
 
-    _AGENT_TAG: str = "AGENT"        # overridden by each subclass
+    # Class constant overridden by each subclass
+    _AGENT_TAG: str = "AGENT"
+
+    # Instance attributes initialized by mixin methods or host class
+    # (default values satisfy type checker while allowing mixin pattern)
+    torch: Any = None  # torch module (lazy import in _load_torch_model)
+    model: Any = None  # Conv1dQNet model
+    use_torch: bool = False
+    param_manager: Any = None  # LearnedParametersManager
+    window: int = 0
+    n_features: int = 0
+    symbol: str = ""
+    timeframe: str = ""
+    timeframe_minutes: int = 0
+    broker: str = ""
+    enable_training: bool = False
+    buffer: Any = None  # ExperienceBuffer
+    min_experiences: int = 0
+    batch_size: int = 0
+    training_steps: int = 0
+    last_state: np.ndarray | None = None
+    ddqn: Any = None  # DDQNNetwork
 
     def _get_param(self, name: str, default: float) -> float:
         """Load a learned parameter if available; otherwise return default."""
@@ -198,7 +219,11 @@ class AgentTrainingMixin:
         from src.utils.experience_buffer import ExperienceBuffer  # noqa: PLC0415
 
         self.enable_training = enable_training
-        self.buffer = ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes) if enable_training else None
+        self.buffer = (
+            ExperienceBuffer(capacity=buffer_capacity, timeframe_minutes=self.timeframe_minutes)
+            if enable_training
+            else None
+        )
         self.min_experiences = min_experiences
         self.batch_size = batch_size
         self.training_steps = 0
@@ -226,36 +251,46 @@ class AgentTrainingMixin:
         reward: float,
         next_state: np.ndarray,
         done: bool,
-        regime: str | None = None,
+        regime: int | None = None,
     ) -> None:
         """Store a transition in the replay buffer."""
         if not self.enable_training or self.buffer is None:
             LOG.info(
                 "[DIAG] %s.add_experience: SKIPPED — enable_training=%s, buffer=%s",
-                self._AGENT_TAG, self.enable_training, self.buffer is not None,
+                self._AGENT_TAG,
+                self.enable_training,
+                self.buffer is not None,
             )
             return
 
         buf_before = self.buffer.tree.n_entries
+        from src.utils.experience_buffer import RegimeSampling  # noqa: PLC0415
+
+        # Convert None to UNKNOWN regime (default int value)
+        regime_int = regime if regime is not None else RegimeSampling.UNKNOWN
         self.buffer.add(
             state=state,
             action=action,
             reward=reward,
             next_state=next_state,
             done=done,
-            regime=regime,
+            regime=regime_int,
         )
         buf_after = self.buffer.tree.n_entries
 
         LOG.info(
-            "[DIAG] %s.add_experience: action=%d, reward=%.4f, "
-            "buffer_before=%d, buffer_after=%d, total_added=%d",
-            self._AGENT_TAG, action, reward, buf_before, buf_after, self.buffer.total_added,
+            "[DIAG] %s.add_experience: action=%d, reward=%.4f, buffer_before=%d, buffer_after=%d, total_added=%d",
+            self._AGENT_TAG,
+            action,
+            reward,
+            buf_before,
+            buf_after,
+            self.buffer.total_added,
         )
 
     # ── train_step ────────────────────────────────────────────────────────────
 
-    def train_step(self) -> dict | None:
+    def train_step(self) -> dict[str, Any] | None:
         """Perform one training step using prioritised experience replay.
 
         Returns:
@@ -360,7 +395,7 @@ class AgentTrainingMixin:
 
     # ── _train_step_torch ─────────────────────────────────────────────────────
 
-    def _train_step_torch(self, batch: dict) -> dict:
+    def _train_step_torch(self, batch: dict[str, Any]) -> dict[str, Any]:
         """Training step when use_torch=True (PyTorch model loaded from disk)."""
         buffer = self.buffer
         if self.ddqn is not None and buffer is not None:
@@ -396,7 +431,7 @@ class AgentTrainingMixin:
 
     # ── get_training_stats ────────────────────────────────────────────────────
 
-    def get_training_stats(self) -> dict:
+    def get_training_stats(self) -> dict[str, Any]:
         """Get training statistics for monitoring."""
         if not self.enable_training or self.buffer is None:
             return {"enabled": False}
@@ -417,6 +452,6 @@ class AgentTrainingMixin:
         stats.update(self._extra_training_stats())
         return stats
 
-    def _extra_training_stats(self) -> dict:
+    def _extra_training_stats(self) -> dict[str, Any]:
         """Override in subclass to add agent-specific stats keys."""
         return {}

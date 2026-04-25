@@ -50,11 +50,22 @@ import os
 import time
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Any
 
 import numpy as np
 from numpy.random import Generator, default_rng
 
 from src.utils.sum_tree import SumTree
+
+# Try to import AMD opts for float16 auto-detection (AMD GPU optimization)
+# Use lowercase variable to avoid "constant redefinition" linter error
+try:
+    from src.core.ddqn_network import AMD_OPTS as _amd_opts
+
+    _amd_opts_available = True
+except ImportError:
+    _amd_opts = {}
+    _amd_opts_available = False
 
 LOG = logging.getLogger(__name__)
 RNG: Generator = default_rng(42)
@@ -199,14 +210,9 @@ class ExperienceBuffer:
         self.current_zeta: float = 1.0  # Current damping ratio for continuous boost
 
         # Float16 storage for memory efficiency (50% reduction on AMD GPUs)
-        # Auto-detect from AMD_OPTS if not specified
+        # Auto-detect from AMD opts if not specified
         if use_float16 is None:
-            try:
-                from src.core.ddqn_network import AMD_OPTS
-
-                self._use_float16 = AMD_OPTS.get("is_amd", False)
-            except ImportError:
-                self._use_float16 = False
+            self._use_float16 = _amd_opts.get("is_amd", False) if _amd_opts_available else False
         else:
             self._use_float16 = use_float16
 
@@ -314,6 +320,9 @@ class ExperienceBuffer:
             LOG.error("Invalid regime value: %d (must be 0-3, experience not added)", regime)
             return False
 
+        # Use validated regime_enum (stored for regime-aware weighting)
+        validated_regime = regime_enum
+
         # Convert to float16 for memory efficiency (50% reduction) if enabled
         # This is transparent to the caller - states are converted back to float32 during sampling
         # Validate precision loss for critical features
@@ -352,7 +361,7 @@ class ExperienceBuffer:
             next_state=next_state_stored,
             done=done,
             timestamp=time.time(),
-            regime=RegimeSampling(regime),
+            regime=validated_regime,  # Use validated enum
             priority=1.0,  # Will be updated during training
             zeta=zeta if zeta is not None else self.current_zeta,
         )
@@ -383,7 +392,7 @@ class ExperienceBuffer:
 
         return True
 
-    def sample(self, batch_size: int = 64) -> dict | None:
+    def sample(self, batch_size: int = 64) -> dict[str, Any] | None:
         """Sample batch of experiences with prioritized sampling.
 
         Args:
@@ -542,7 +551,7 @@ class ExperienceBuffer:
         """
         return self.tree.n_entries
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         """Get buffer statistics for monitoring.
 
         Returns:

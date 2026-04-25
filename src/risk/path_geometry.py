@@ -17,6 +17,7 @@ From C# Skeleton: AdaptiveRL_cTrader_Skeleton_v0_1/Core/PathGeometry.cs
 
 import logging
 from collections import deque
+from typing import Any
 
 import numpy as np
 
@@ -26,9 +27,9 @@ from src.utils.safe_math import SafeMath
 MIN_BARS_FOR_GEOMETRY: int = 3  # Need at least 3 bars for derivatives
 
 # Multi-horizon volatility ratio constants
-VOL_RATIO_BLEND_WEIGHT: float = 0.30    # How much vol_ratio adjusts runway (0=ignore, 1=full)
-VOL_RATIO_NEUTRAL: float = 1.0          # Vol ratio at which no adjustment is made
-VOL_RATIO_RUNWAY_SCALE: float = 50.0    # Original C# skeleton constant for 1/(1+scale*sigma)
+VOL_RATIO_BLEND_WEIGHT: float = 0.30  # How much vol_ratio adjusts runway (0=ignore, 1=full)
+VOL_RATIO_NEUTRAL: float = 1.0  # Vol ratio at which no adjustment is made
+VOL_RATIO_RUNWAY_SCALE: float = 50.0  # Original C# skeleton constant for 1/(1+scale*sigma)
 
 LOG = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class PathGeometry:
 
     def update(
         self,
-        bars: deque,
+        bars: deque[tuple[Any, ...]],
         sigma: float,
         sigma_long: float = 0.0,
     ) -> dict[str, float]:
@@ -128,8 +129,7 @@ class PathGeometry:
             vol_ratio = SafeMath.safe_div(sigma, sigma_long, VOL_RATIO_NEUTRAL)
             # Adjustment: ratio=1 → 1.0, ratio=2 → 0.7, ratio=0.5 → 1.15
             # Clamped to [0.5, 1.5] to prevent extreme adjustments.
-            vol_adj = max(0.5, min(1.5,
-                1.0 - VOL_RATIO_BLEND_WEIGHT * (vol_ratio - VOL_RATIO_NEUTRAL)))
+            vol_adj = max(0.5, min(1.5, 1.0 - VOL_RATIO_BLEND_WEIGHT * (vol_ratio - VOL_RATIO_NEUTRAL)))
             runway = base_runway * vol_adj
         else:
             runway = base_runway

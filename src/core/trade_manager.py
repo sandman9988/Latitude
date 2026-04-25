@@ -27,6 +27,8 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable
+from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 
@@ -170,7 +172,16 @@ class OrdType(Enum):
 class Order:
     """Represents a FIX order with full lifecycle tracking, using SafeMath for precision"""
 
-    def __init__(self, clord_id, symbol, side, ord_type, quantity, price=None, instrument_digits=2):  # noqa: PLR0913
+    def __init__(
+        self,
+        clord_id: str,
+        symbol: str,
+        side: Side,
+        ord_type: OrdType,
+        quantity: float | Decimal,
+        price: float | Decimal | None = None,
+        instrument_digits: int = 2,
+    ):  # noqa: PLR0913
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         # Validate required inputs
@@ -185,15 +196,15 @@ class Order:
         if not isinstance(instrument_digits, int) or not 0 <= instrument_digits <= 10:
             raise ValueError(f"Invalid instrument_digits: {instrument_digits} (must be int 0-10)")
 
-        self.clord_id = clord_id
-        self.symbol = symbol
-        self.side = side
-        self.ord_type = ord_type
-        self.instrument_digits = instrument_digits
+        self.clord_id: str = clord_id
+        self.symbol: str = symbol
+        self.side: Side = side
+        self.ord_type: OrdType = ord_type
+        self.instrument_digits: int = instrument_digits
 
         # Convert quantity with validation
         try:
-            self.quantity = SafeMath.to_decimal(quantity, instrument_digits)
+            self.quantity: Decimal = SafeMath.to_decimal(quantity, instrument_digits)
             if self.quantity <= 0:
                 raise ValueError(f"Quantity must be positive: {quantity}")
         except Exception as e:
@@ -202,25 +213,25 @@ class Order:
         # Convert price with validation (optional for market orders)
         if price is not None:
             try:
-                self.price = SafeMath.to_decimal(price, instrument_digits)
+                self.price: Decimal | None = SafeMath.to_decimal(price, instrument_digits)
                 if self.price <= 0:
                     raise ValueError(f"Price must be positive: {price}")
             except Exception as e:
                 raise ValueError(f"Invalid price '{price}': {e}") from e
         else:
-            self.price = None
+            self.price: Decimal | None = None
 
-        self.order_id = None
-        self.position_ticket = None
-        self.status = OrderStatus.PENDING_NEW
-        self.filled_qty = SafeMath.to_decimal(0.0, instrument_digits)
-        self.avg_price = SafeMath.to_decimal(0.0, instrument_digits)
-        self.last_qty = SafeMath.to_decimal(0.0, instrument_digits)
-        self.last_px = SafeMath.to_decimal(0.0, instrument_digits)
-        self.created_at = utc_now()
-        self.updated_at = utc_now()
-        self.filled_at = None
-        self.reject_reason = None
+        self.order_id: str | None = None
+        self.position_ticket: str | None = None
+        self.status: OrderStatus = OrderStatus.PENDING_NEW
+        self.filled_qty: Decimal = SafeMath.to_decimal(0.0, instrument_digits)
+        self.avg_price: Decimal = SafeMath.to_decimal(0.0, instrument_digits)
+        self.last_qty: Decimal = SafeMath.to_decimal(0.0, instrument_digits)
+        self.last_px: Decimal = SafeMath.to_decimal(0.0, instrument_digits)
+        self.created_at: datetime = utc_now()
+        self.updated_at: datetime = utc_now()
+        self.filled_at: datetime | None = None
+        self.reject_reason: str | None = None
 
     def is_terminal(self):
         return self.status in (
@@ -269,7 +280,7 @@ class Order:
         }
 
     @classmethod
-    def from_dict(cls, data, instrument_digits=2):
+    def from_dict(cls, data: dict[str, Any], instrument_digits: int = 2):
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         order = cls(
@@ -292,8 +303,6 @@ class Order:
         order.avg_price = SafeMath.to_decimal(str(data.get("avg_price", 0.0)), instrument_digits)
         order.last_qty = SafeMath.to_decimal(str(data.get("last_qty", 0.0)), instrument_digits)
         order.last_px = SafeMath.to_decimal(str(data.get("last_px", 0.0)), instrument_digits)
-        from datetime import datetime  # noqa: PLC0415
-
         order.created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else utc_now()
         order.updated_at = datetime.fromisoformat(data["updated_at"]) if data.get("updated_at") else utc_now()
         order.filled_at = datetime.fromisoformat(data["filled_at"]) if data.get("filled_at") else None
@@ -306,25 +315,25 @@ class Position:
 
     def __init__(  # noqa: PLR0913
         self,
-        symbol,
-        long_qty=0.0,
-        short_qty=0.0,
-        net_qty=0.0,
-        pos_maint_rpt_id=None,
+        symbol: str,
+        long_qty: float | Decimal = 0.0,
+        short_qty: float | Decimal = 0.0,
+        net_qty: float | Decimal = 0.0,
+        pos_maint_rpt_id: str | None = None,
         updated_at=None,
-        instrument_digits=2,
+        instrument_digits: int = 2,
     ):
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         self.symbol = symbol
         self.instrument_digits = instrument_digits
-        self.long_qty = SafeMath.to_decimal(long_qty, instrument_digits)
-        self.short_qty = SafeMath.to_decimal(short_qty, instrument_digits)
-        self.net_qty = SafeMath.to_decimal(net_qty, instrument_digits)
-        self.pos_maint_rpt_id = pos_maint_rpt_id
+        self.long_qty: Decimal = SafeMath.to_decimal(long_qty, instrument_digits)
+        self.short_qty: Decimal = SafeMath.to_decimal(short_qty, instrument_digits)
+        self.net_qty: Decimal = SafeMath.to_decimal(net_qty, instrument_digits)
+        self.pos_maint_rpt_id: str | None = pos_maint_rpt_id
         self.updated_at = updated_at if updated_at else utc_now()
 
-    def update_from_report(self, long_qty, short_qty, pos_id=None):
+    def update_from_report(self, long_qty: float | Decimal, short_qty: float | Decimal, pos_id: str | None = None):
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         self.long_qty = SafeMath.to_decimal(long_qty, self.instrument_digits)
@@ -333,7 +342,7 @@ class Position:
         self.pos_maint_rpt_id = pos_id
         self.updated_at = utc_now()
 
-    def update_from_fill(self, side, filled_qty, _avg_price) -> bool:
+    def update_from_fill(self, side: Side, filled_qty: float | Decimal, _avg_price: float | Decimal) -> bool:
         """Update position from fill with atomic state transition.
 
         Returns:
@@ -399,7 +408,7 @@ class Position:
         except Exception:
             return False
 
-    def seed(self, net_qty, _entry_price=0.0):
+    def seed(self, net_qty: float | Decimal, _entry_price: float = 0.0):
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         net_qty = SafeMath.to_decimal(net_qty, self.instrument_digits)
@@ -434,13 +443,11 @@ class Position:
         }
 
     @classmethod
-    def from_dict(cls, data, instrument_digits=2):
+    def from_dict(cls, data: dict[str, Any], instrument_digits: int = 2):
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
-        updated_at = None
+        updated_at: datetime | None = None
         if data.get("updated_at"):
-            from datetime import datetime  # noqa: PLC0415
-
             try:
                 updated_at = datetime.fromisoformat(data["updated_at"])
             except (ValueError, TypeError):
@@ -486,7 +493,7 @@ class TradeManager:
 
     def __init__(  # noqa: PLR0913
         self,
-        session_id: fix.SessionID,
+        session_id: Any,  # fix.SessionID - quickfix doesn't have type stubs
         symbol_id: int,
         on_fill_callback: Callable[[Order], None] | None = None,
         on_reject_callback: Callable[[Order], None] | None = None,
@@ -535,17 +542,17 @@ class TradeManager:
 
         # FIX P1-8: Position request tracking with retry logic
         self.pos_req_id: str | None = None
-        self.pending_position_requests: dict[str, dict] = {}  # req_id -> metadata
+        self.pending_position_requests: dict[str, dict[str, Any]] = {}  # req_id -> metadata
         self.position_request_timeout = 5.0  # seconds
         self.position_request_max_retries = 3
 
         # P0 FIX: Order timeout tracking (prevent "lost in flight" orders)
-        self.pending_orders: dict[str, dict] = {}  # clord_id -> {submitted_at, retries}
+        self.pending_orders: dict[str, dict[str, Any]] = {}  # clord_id -> {submitted_at, retries}
         self.order_ack_timeout = 10.0  # seconds before querying status
         self.order_ack_max_retries = 3  # max status queries
 
         # Execution history (for debugging)
-        self.exec_reports: deque[dict] = deque(maxlen=100)
+        self.exec_reports: deque[dict[str, Any]] = deque(maxlen=100)
 
         LOG.info(
             "[TRADEMGR] Initialized for symbol=%s session=%s paper_mode=%s",
@@ -1009,10 +1016,10 @@ class TradeManager:
 
             # Update order state
             order.status = OrderStatus.FILLED
-            order.filled_qty = quantity
-            order.avg_price = fill_price
-            order.last_qty = quantity
-            order.last_px = fill_price
+            order.filled_qty = SafeMath.to_decimal(quantity, self.position.instrument_digits)
+            order.avg_price = SafeMath.to_decimal(fill_price, self.position.instrument_digits)
+            order.last_qty = SafeMath.to_decimal(quantity, self.position.instrument_digits)
+            order.last_px = SafeMath.to_decimal(fill_price, self.position.instrument_digits)
             order.order_id = paper_order_id
             order.position_ticket = paper_ticket
             order.filled_at = utc_now()
@@ -1051,8 +1058,8 @@ class TradeManager:
             # Audit log: Paper fill
             self.audit.log_order_fill(
                 order_id=order.clord_id,
-                fill_price=fill_price,
-                fill_qty=quantity,
+                fill_price=float(fill_price),
+                fill_qty=float(quantity),
                 ticket=paper_ticket,
                 fill_id=paper_order_id,
             )
@@ -1064,7 +1071,7 @@ class TradeManager:
             except Exception as e:
                 LOG.error("[PAPER] Error in fill callback: %s", e, exc_info=True)
 
-    def _resolve_exec_report(self, msg: fix.Message) -> tuple | None:
+    def _resolve_exec_report(self, msg: Any) -> tuple[Any, ...] | None:
         """Extract and validate required ExecutionReport fields.
 
         Returns (clord_id, exec_type_str, ord_status_str, order) or None if invalid.
@@ -1095,13 +1102,14 @@ class TradeManager:
 
         return clord_id, exec_type_field.getValue(), ord_status_field.getValue(), order
 
-    def _populate_order_from_execution(self, msg: fix.Message, order, clord_id: str) -> None:
+    def _populate_order_from_execution(self, msg: Any, order: Order, clord_id: str) -> None:
         """Update order with optional fields from an ExecutionReport message."""
         order_id_field = fix.OrderID()
         if msg.isSetField(order_id_field):
             msg.getField(order_id_field)
-            order.order_id = order_id_field.getValue()
-            self.broker_orders[order.order_id] = clord_id
+            order_id = order_id_field.getValue()
+            order.order_id = order_id
+            self.broker_orders[order_id] = clord_id
 
         pos_ticket_field = fix.StringField(721)
         if msg.isSetField(pos_ticket_field):
@@ -1110,7 +1118,7 @@ class TradeManager:
             LOG.debug("[TRADEMGR] Position ticket: %s", order.position_ticket)
             ticket = order.position_ticket
             if ticket is not None:
-                self.audit.log_ticket_assigned(ticket=ticket, position_id=None, order_id=clord_id)
+                self.audit.log_ticket_assigned(ticket=ticket, position_id=ticket, order_id=clord_id)
 
         cum_qty_field = fix.CumQty()
         if msg.isSetField(cum_qty_field):
@@ -1132,7 +1140,7 @@ class TradeManager:
             msg.getField(last_px_field)
             order.last_px = SafeMath.to_decimal(last_px_field.getValue(), self.position.instrument_digits)
 
-    def on_execution_report(self, msg: fix.Message):
+    def on_execution_report(self, msg: Any):
         """
         Process ExecutionReport (35=8) from FIX session.
 
@@ -1265,8 +1273,8 @@ class TradeManager:
         # Audit log: Order fill
         self.audit.log_order_fill(
             order_id=order.clord_id,
-            fill_price=order.avg_price,
-            fill_qty=order.filled_qty,
+            fill_price=float(order.avg_price),
+            fill_qty=float(order.filled_qty),
             ticket=order.position_ticket or "UNKNOWN",
             fill_id=order.order_id or "UNKNOWN",
         )
@@ -1285,7 +1293,7 @@ class TradeManager:
         # Audit log: Order cancellation
         self.audit.log_order_cancel(order_id=order.clord_id, reason="User/system cancellation")
 
-    def _handle_rejected(self, order: Order, msg: fix.Message):
+    def _handle_rejected(self, order: Order, msg: Any) -> None:
         """Handle ExecType=8 (Rejected) - Order rejected"""
         # Extract reject reason
         text_field = fix.Text()
@@ -1417,7 +1425,7 @@ class TradeManager:
         for req_id in req_ids:
             self._check_position_request_timeout(req_id)
 
-    def on_position_report(self, msg: fix.Message):
+    def on_position_report(self, msg: Any):
         """
         Process PositionReport (35=AP) from FIX session.
 
@@ -1508,7 +1516,7 @@ class TradeManager:
         """Get all filled orders"""
         return [o for o in self.orders.values() if o.status == OrderStatus.FILLED]
 
-    def get_statistics(self) -> dict:
+    def get_statistics(self) -> dict[str, Any]:
         """Get order statistics"""
         total_orders = len(self.orders)
         filled = len([o for o in self.orders.values() if o.status == OrderStatus.FILLED])
@@ -1566,8 +1574,8 @@ class TradeManager:
                 continue
             self._handle_order_timeout(clord_id, pending_info, elapsed)
 
-    def _handle_order_timeout(self, clord_id: str, pending_info: dict, elapsed: float) -> None:
-        retries = pending_info["retries"]
+    def _handle_order_timeout(self, clord_id: str, pending_info: dict[str, Any], elapsed: float) -> None:
+        retries: Any = pending_info["retries"]
         if retries >= self.order_ack_max_retries:
             self._finalize_timed_out_order(clord_id, retries, elapsed)
             return

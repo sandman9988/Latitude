@@ -7,19 +7,19 @@ instead of hand-rolling their own line-by-line JSON parsing.  This avoids
 
 from __future__ import annotations
 
-import contextlib
 import fcntl
 import json
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 LOG = logging.getLogger(__name__)
 
 _DEFAULT_PATH = Path(os.environ.get("CTRADER_DATA_DIR", "data")) / "trade_log.jsonl"
 
 
-def read_all_trades(path: Path | str = _DEFAULT_PATH) -> list[dict]:
+def read_all_trades(path: Path | str = _DEFAULT_PATH) -> list[dict[str, Any]]:
     """Read every valid JSONL line from the trade log.
 
     Uses file locking to prevent corruption during concurrent writes.
@@ -31,7 +31,7 @@ def read_all_trades(path: Path | str = _DEFAULT_PATH) -> list[dict]:
     path = Path(path)
     if not path.exists():
         return []
-    trades: list[dict] = []
+    trades: list[dict[str, Any]] = []
     try:
         with open(path, encoding="utf-8") as fh:
             # Acquire shared lock (non-blocking readers, exclusive writers)
@@ -69,7 +69,7 @@ def read_recent_trades(
     path: Path | str = _DEFAULT_PATH,
     max_lines: int = 50,
     buf_size: int = 64 * 1024,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Read up to *max_lines* completed trades from the tail of the log.
 
     Uses a seek-from-end strategy to avoid reading the entire file.
@@ -89,12 +89,12 @@ def read_recent_trades(
         return []
     try:
         with open(path, "rb") as fh:
-            fh.seek(0, 2)
+            _ = fh.seek(0, 2)
             file_size = fh.tell()
             if file_size == 0:
                 return []
             read_bytes = min(file_size, buf_size)
-            fh.seek(-read_bytes, 2)
+            _ = fh.seek(-read_bytes, 2)
             raw_bytes = fh.read(read_bytes)
 
             # Decode with proper error handling
@@ -109,7 +109,7 @@ def read_recent_trades(
         return []
 
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()][-max_lines:]
-    trades: list[dict] = []
+    trades: list[dict[str, Any]] = []
     for line_no, line in enumerate(lines, 1):
         try:
             rec = json.loads(line)
@@ -133,12 +133,12 @@ class CachedTradeLogReader:
     """
 
     def __init__(self, path: Path | str = _DEFAULT_PATH) -> None:
-        self._path = Path(path)
+        self._path: Path = Path(path)
         self._mtime: float = 0.0
-        self._trades: list[dict] = []
+        self._trades: list[dict[str, Any]] = []
 
     @property
-    def trades(self) -> list[dict]:
+    def trades(self) -> list[dict[str, Any]]:
         """Return cached trades, re-parsing only if the file changed."""
         self._refresh()
         return self._trades
@@ -177,7 +177,7 @@ class CachedTradeLogReader:
         self._mtime = 0.0
 
 
-def read_all_trades_validated(path: Path | str = _DEFAULT_PATH) -> tuple[list[dict], list[str]]:
+def read_all_trades_validated(path: Path | str = _DEFAULT_PATH) -> tuple[list[dict[str, Any]], list[str]]:
     """Read trades with validation of chronological order.
 
     Returns:
@@ -189,7 +189,7 @@ def read_all_trades_validated(path: Path | str = _DEFAULT_PATH) -> tuple[list[di
     last_entry_time: float | None = None
     seen_ids: set[str] = set()
 
-    validated_trades: list[dict] = []
+    validated_trades: list[dict[str, Any]] = []
     for i, trade in enumerate(trades):
         # Check required fields
         if not trade.get("entry_time") or not trade.get("exit_time"):

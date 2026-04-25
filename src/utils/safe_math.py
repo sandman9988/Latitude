@@ -113,21 +113,21 @@ class SafeMath:
     def is_valid(x: float | np.ndarray) -> bool:
         """Check if value is valid (not NaN or Inf)"""
         if isinstance(x, np.ndarray):
-            return np.all(np.isfinite(x))
+            return bool(np.all(np.isfinite(x)))
         return math.isfinite(x)
 
     @staticmethod
     def is_nan(x: float | np.ndarray) -> bool:
         """Check if value is NaN"""
         if isinstance(x, np.ndarray):
-            return np.any(np.isnan(x))
+            return bool(np.any(np.isnan(x)))
         return math.isnan(x)
 
     @staticmethod
     def is_inf(x: float | np.ndarray) -> bool:
         """Check if value is Inf"""
         if isinstance(x, np.ndarray):
-            return np.any(np.isinf(x))
+            return bool(np.any(np.isinf(x)))
         return math.isinf(x)
 
     @staticmethod
@@ -479,7 +479,9 @@ def safe_array_operation(arr: np.ndarray, operation: str, default: float = 0.0) 
 
     try:
         result = operations[operation](arr)
-        return result if SafeMath.is_valid(result) else default
+        if SafeMath.is_valid(float(result)):
+            return float(result)
+        return default
     except Exception:
         return default
 

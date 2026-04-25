@@ -24,7 +24,7 @@ Phase 3.5: Online Learning
 import logging
 import os
 import random
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -180,6 +180,7 @@ class TriggerAgent(AgentTrainingMixin):
         self._last_q_spread: float = 0.0  # Q-value advantage (best - second-best)
         self.last_predicted_runway_gross: float = 0.0
         self.last_predicted_runway_net: float = 0.0
+        self._current_zeta: float = 0.5  # Regime damping ratio, updated each decide()
 
         # Phase 2: Gating strategy
         # Paper mode keeps feasibility gate disabled, but confidence floor remains active.
@@ -885,7 +886,7 @@ class TriggerAgent(AgentTrainingMixin):
         )
         self._last_entry_q = None
 
-    def get_calibration_state(self) -> dict:
+    def get_calibration_state(self) -> dict[str, Any]:
         """Export runway calibration + Platt params for checkpoint persistence."""
         return {
             "runway_cal_ewma": list(self._runway_cal_ewma),
@@ -897,7 +898,7 @@ class TriggerAgent(AgentTrainingMixin):
             "platt_b": self.platt_b,
         }
 
-    def load_calibration_state(self, state: dict) -> bool:
+    def load_calibration_state(self, state: dict[str, Any]) -> bool:
         """Restore runway calibration + Platt params from checkpoint."""
         ewma = state.get("runway_cal_ewma")
         counts = state.get("runway_cal_counts")
@@ -1073,7 +1074,7 @@ class TriggerAgent(AgentTrainingMixin):
     # add_experience, train_step, _train_step_torch, get_training_stats
     # are inherited from AgentTrainingMixin.
 
-    def _extra_training_stats(self) -> dict:
+    def _extra_training_stats(self) -> dict[str, Any]:
         """Trigger-specific stats appended by the mixin."""
         zeta = getattr(self, "_current_zeta", 0.5)
         regime_factor = 1.0 if zeta < 0.7 else max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))

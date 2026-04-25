@@ -424,7 +424,7 @@ class TradeAuditLogger:
         )
 
     def log_error(
-        self, error_type: str, error_message: str, context: dict | None = None, ticket: str | None = None
+        self, error_type: str, error_message: str, context: dict[str, Any] | None = None, ticket: str | None = None
     ):
         """Log trade-related error."""
         self._write_entry(

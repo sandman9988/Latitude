@@ -14,12 +14,13 @@ Implements multiple circuit breakers to halt trading when risk escalates:
 
 import json
 import logging
+import math
 import time as _time
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
@@ -111,6 +112,7 @@ class ManagedBreaker(Protocol):
 
     def check(self) -> bool:
         """Return True when the breaker trips."""
+        ...
 
 
 class SortinoBreaker:
@@ -183,7 +185,8 @@ class SortinoBreaker:
             return 100.0  # Also return finite sentinel for near-zero downside
 
         # Sortino ratio equals mean divided by downside deviation
-        sortino = SafeMath.safe_div(mean_return, downside_dev, 0.0)
+        # Convert numpy floats to Python floats for type compatibility
+        sortino = SafeMath.safe_div(float(mean_return), float(downside_dev), 0.0)
 
         # Cap at 100 to avoid Inf
         return min(sortino, 100.0)
@@ -369,13 +372,7 @@ class DrawdownBreaker:
         Returns:
             True if update successful, False if validation failed
         """
-        import math
-
-        # Validate input type and value
-        if equity is None or not isinstance(equity, (int, float)):
-            LOG.error("[DRAWDOWN] Invalid equity type: %s", type(equity))
-            return False
-
+        # Validate input value (type is already enforced by signature)
         if not math.isfinite(float(equity)):
             LOG.error("[DRAWDOWN] Non-finite equity: %s", equity)
             return False
@@ -583,8 +580,6 @@ class CircuitBreakerManager:
 
     def _resolve_param(self, name: str, explicit_value: float | None, default: float):
         """Resolve breaker thresholds with override → learned → default."""
-        import math
-
         if explicit_value is not None:
             try:
                 val = float(explicit_value)
@@ -793,7 +788,7 @@ class CircuitBreakerManager:
         # Apply drawdown-based reduction
         return self.drawdown_breaker.get_size_multiplier()
 
-    def get_status(self) -> dict:
+    def get_status(self) -> dict[str, Any]:
         """Get comprehensive status"""
         return {
             "any_tripped": self.is_any_tripped(),
@@ -829,8 +824,8 @@ class CircuitBreakerManager:
             filepath: Path to save state file
         """
 
-        def _breaker_dict(breaker_state: BreakerState, extra: dict | None = None) -> dict:
-            d = {
+        def _breaker_dict(breaker_state: BreakerState, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+            d: dict[str, Any] = {
                 "is_tripped": breaker_state.is_tripped,
                 "trip_time": breaker_state.trip_time.isoformat() if breaker_state.trip_time else None,
                 "trip_reason": breaker_state.trip_reason,
@@ -896,7 +891,7 @@ class CircuitBreakerManager:
             with open(filepath) as f:
                 state = json.load(f)
 
-            def _restore_breaker(breaker_state: BreakerState, saved: dict) -> None:
+            def _restore_breaker(breaker_state: BreakerState, saved: dict[str, Any]) -> None:
                 breaker_state.is_tripped = saved.get("is_tripped", False)
                 _tt = saved.get("trip_time")
                 if isinstance(_tt, str):

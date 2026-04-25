@@ -23,6 +23,7 @@ Phase 3.5: Online Learning
 
 import logging
 import os
+from typing import Any
 
 import numpy as np
 
@@ -193,6 +194,10 @@ class HarvesterAgent(AgentTrainingMixin):
         # Approximate market tick cadence used to convert bar-based limits to ticks.
         self.ticks_per_minute = float(os.environ.get("HARVESTER_TICKS_PER_MINUTE", str(DEFAULT_TICKS_PER_MINUTE)))
 
+        # Initialize tracking attributes for stats exposure
+        self._last_zeta: float = 0.5
+        self._last_ticks_held: int = 0
+
     def _load_model(self, model_path: str):
         """Load PyTorch DDQN model for harvester agent."""
         self._load_torch_model(model_path, n_actions=2, tag="HARVESTER")
@@ -337,6 +342,7 @@ class HarvesterAgent(AgentTrainingMixin):
         Returns:
             (action, confidence)
         """
+        assert self.ddqn is not None, "DDQN network must be initialized for _decide_with_ddqn"
         flat_state = full_state.reshape(1, -1).astype(np.float64)
         q_values = self.ddqn.predict(flat_state).flatten()  # flatten (1,N) → (N,)
         action = int(np.argmax(q_values))
@@ -372,7 +378,9 @@ class HarvesterAgent(AgentTrainingMixin):
         # Delegate to the single source of truth for state construction
         full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
 
-        # Model-based decision
+        # Model-based decision - assert torch and model are initialized
+        assert self.torch is not None, "PyTorch must be initialized for _decide_with_torch"
+        assert self.model is not None, "Model must be loaded for _decide_with_torch"
         with self.torch.no_grad():
             t = self.torch.from_numpy(full_state).unsqueeze(0).float()
             q_values = self.model(t).squeeze(0).numpy()
@@ -451,6 +459,7 @@ class HarvesterAgent(AgentTrainingMixin):
         should_exit, exit_decision = self._check_emergency_stop_loss(mae, entry_price)
         if should_exit:
             self.last_close_reason = "emergency_stop"
+            assert exit_decision is not None, "exit_decision must be set when should_exit is True"
             return exit_decision
 
         if self._check_early_adverse_exit(mfe, mae, ticks_held, entry_price):
@@ -1106,7 +1115,7 @@ class HarvesterAgent(AgentTrainingMixin):
     # add_experience, train_step, _train_step_torch, get_training_stats
     # are inherited from AgentTrainingMixin.
 
-    def _extra_training_stats(self) -> dict:
+    def _extra_training_stats(self) -> dict[str, Any]:
         """Harvester-specific stats appended by the mixin."""
         zeta = getattr(self, "_last_zeta", 0.5)
         if zeta < 0.5:

@@ -8,7 +8,7 @@ Organized by instrument, timeframe, and session
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -207,7 +207,7 @@ class BotPersistenceManager:
         cumulative_file = stats_dir / "cumulative_stats.json"
 
         # Load existing cumulative stats
-        existing = self.persistence.load_json(str(cumulative_file.relative_to(self.base_dir)))
+        existing: dict[str, Any] | None = self.persistence.load_json(str(cumulative_file.relative_to(self.base_dir)))
 
         if existing is None:
             existing = {
@@ -268,8 +268,8 @@ class BotPersistenceManager:
         cumulative_dir.mkdir(exist_ok=True)
 
         # Aggregate by instrument
-        by_instrument = {}
-        by_timeframe = {}
+        by_instrument: dict[str, Any] = {}
+        by_timeframe: dict[str, Any] = {}
         total_stats = {
             "total_instruments": 0,
             "total_timeframes": 0,
@@ -284,29 +284,37 @@ class BotPersistenceManager:
 
             # By instrument
             if symbol not in by_instrument:
-                by_instrument[symbol] = {
-                    "symbol": symbol,
-                    "timeframes": [],
-                    "total_trades": 0,
-                    "total_pnl": 0.0,
-                }
+                by_instrument[symbol] = cast(
+                    dict[str, Any],
+                    {
+                        "symbol": symbol,
+                        "timeframes": [],
+                        "total_trades": 0,
+                        "total_pnl": 0.0,
+                    },
+                )
 
-            by_instrument[symbol]["timeframes"].append(timeframe)
-            by_instrument[symbol]["total_trades"] += inst.get("total_trades", 0)
-            by_instrument[symbol]["total_pnl"] += inst.get("total_pnl", 0.0)
+            inst_data = cast(dict[str, Any], by_instrument[symbol])
+            inst_data["timeframes"].append(timeframe)
+            inst_data["total_trades"] += inst.get("total_trades", 0)
+            inst_data["total_pnl"] += inst.get("total_pnl", 0.0)
 
             # By timeframe
             if timeframe not in by_timeframe:
-                by_timeframe[timeframe] = {
-                    "timeframe": timeframe,
-                    "instruments": [],
-                    "total_trades": 0,
-                    "total_pnl": 0.0,
-                }
+                by_timeframe[timeframe] = cast(
+                    dict[str, Any],
+                    {
+                        "timeframe": timeframe,
+                        "instruments": [],
+                        "total_trades": 0,
+                        "total_pnl": 0.0,
+                    },
+                )
 
-            by_timeframe[timeframe]["instruments"].append(symbol)
-            by_timeframe[timeframe]["total_trades"] += inst.get("total_trades", 0)
-            by_timeframe[timeframe]["total_pnl"] += inst.get("total_pnl", 0.0)
+            tf_data = cast(dict[str, Any], by_timeframe[timeframe])
+            tf_data["instruments"].append(symbol)
+            tf_data["total_trades"] += inst.get("total_trades", 0)
+            tf_data["total_pnl"] += inst.get("total_pnl", 0.0)
 
             # Totals
             total_stats["total_trades"] += inst.get("total_trades", 0)
@@ -409,7 +417,7 @@ class BotPersistenceManager:
 
     def get_storage_summary(self) -> dict[str, Any]:
         """Get summary of stored data"""
-        summary = {
+        summary: dict[str, Any] = {
             "base_dir": str(self.base_dir),
             "instruments": {},
             "total_models": 0,

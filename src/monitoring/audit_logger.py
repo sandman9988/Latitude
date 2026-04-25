@@ -75,7 +75,7 @@ class TransactionLogger:
         except Exception as e:
             LOG.error("[AUDIT] Failed to write transaction log: %s", e)
 
-    def log_order_submit(self, order_id: str, side: str, quantity: float, price: float = None):
+    def log_order_submit(self, order_id: str, side: str, quantity: float, price: float | None = None):
         """Log order submission."""
         self.log_event(
             "ORDER_SUBMIT",
@@ -87,7 +87,7 @@ class TransactionLogger:
             },
         )
 
-    def log_order_fill(self, order_id: str, fill_price: float, fill_qty: float, position_id: str = None):
+    def log_order_fill(self, order_id: str, fill_price: float, fill_qty: float, position_id: str | None = None):
         """Log order fill."""
         self.log_event(
             "ORDER_FILL",
@@ -146,7 +146,7 @@ class TransactionLogger:
             severity="WARNING" if tripped else "INFO",
         )
 
-    def log_session_event(self, session_type: str, event: str, details: dict = None):
+    def log_session_event(self, session_type: str, event: str, details: dict[str, Any] | None = None):
         """Log FIX session event (logon/logout/disconnect)."""
         self.log_event(
             "SESSION_EVENT",
@@ -215,7 +215,7 @@ class DecisionLogger:
         decision: str,
         confidence: float,
         context: dict[str, Any],
-        reasoning: dict[str, Any] = None,
+        reasoning: dict[str, Any] | None = None,
         trade_id: str | None = None,
         position_id: list[str] | None = None,
     ):
@@ -414,7 +414,7 @@ if __name__ == "__main__":
             entry_price=100000.0,
             mfe=75.0,
             mae=25.0,
-            bars_held=10,
+            ticks_held=10,
             unrealized_pnl=50.0,
             capture_ratio=0.67,
         )
