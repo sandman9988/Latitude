@@ -9,7 +9,6 @@ from src.monitoring.activity_monitor import (
     CounterfactualAnalyzer,
 )
 
-
 # ---------------------------------------------------------------------------
 # ActivityMonitor
 # ---------------------------------------------------------------------------

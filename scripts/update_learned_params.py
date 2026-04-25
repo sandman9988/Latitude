@@ -1,110 +1,114 @@
--
-def update_file(filepath: str, param_name: str, value: float, instrument: str = "XAUUSD_M5_default"):
-    """Update a parameter in one file with CRC32 validation."""
-    with open(filepath, "r") as f:
-        data = json.load(f)
+#!/usr/bin/env python3
+"""List or update learned parameters for one scoped bot.
 
-    # Check if instrument exists
-    if instrument not in data["data"]["instruments"]:
-        print(f"✗ {filepath}: {instrument} not found")
-        return False
+The learned-parameter store is keyed by ``symbol_timeframe_broker``.  This
+script intentionally refuses to create a missing instrument key so an operator
+cannot accidentally tune M5 while intending to tune M1.
+"""
 
-    # Check if parameter exists
-    params = data["data"]["instruments"][instrument]["params"]
-    if param_name not in params:
-        print(f"✗ {filepath}: {param_name} not found")
-        return False
+from __future__ import annotations
 
-    # Get old value
-    old_value = params[param_name]["value"]
+import argparse
+import sys
+from pathlib import Path
 
-    # Update value
-    params[param_name]["value"] = value
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-    # Update timestamp
-    data["timestamp"] = datetime.now(timezone.utc).isoformat()
+from src.persistence.learned_parameters import LearnedParametersManager  # noqa: E402
 
-    # Recalculate CRC32
-    data["crc32"] = calculate_crc32(data["data"])
-
-    # Save
-    with open(filepath, "w") as f:
-        json.dump(data, f, indent=2)
-
-    print(f"✓ {filepath}")
-    print(f"  {param_name}: {old_value} → {value}")
-    print(f"  CRC32: {data['crc32']}")
-    return True
+INSTRUMENT_KEY_PARTS = 3
 
 
-def list_parameters(filepath: str = "data/learned_parameters.json", instrument: str = "XAUUSD_M5_default"):
-    """List all parameters in the file."""
-    with open(filepath, "r") as f:
-        data = json.load(f)
+def _split_instrument_key(key: str) -> tuple[str, str, str]:
+    parts = str(key or "").rsplit("_", 2)
+    if len(parts) != INSTRUMENT_KEY_PARTS or not all(parts):
+        raise ValueError("instrument must look like SYMBOL_M5_default")
+    return parts[0], parts[1], parts[2]
 
-    if instrument not in data["data"]["instruments"]:
-        print(f"Instrument {instrument} not found")
-        return
 
-    params = data["data"]["instruments"][instrument]["params"]
+def _instrument_key(args: argparse.Namespace) -> str:
+    if args.instrument:
+        return args.instrument
+    return f"{args.symbol}_{args.timeframe}_{args.broker}"
 
-    print(f"\nParameters in {instrument}:")
+
+def _load_manager(path: Path) -> LearnedParametersManager:
+    return LearnedParametersManager(persistence_path=path)
+
+
+def list_parameters(path: Path, instrument_key: str) -> int:
+    manager = _load_manager(path)
+    instrument = manager.instruments.get(instrument_key)
+    if instrument is None:
+        print(f"{path}: instrument not found: {instrument_key}")
+        return 1
+
+    print(f"\n{path} :: {instrument_key}")
     print("-" * 80)
-
-    # Group by category
-    categories = {"Harvester": [], "Risk": [], "Other": []}
-
-    for name, param_data in sorted(params.items()):
-        value = param_data["value"]
-        if name.startswith("harvester_"):
-            categories["Harvester"].append((name, value))
-        elif any(x in name for x in ["risk", "var", "drawdown"]):
-            categories["Risk"].append((name, value))
-        else:
-            categories["Other"].append((name, value))
-
-    for category, items in categories.items():
-        if items:
-            print(f"\n{category}:")
-            for name, value in items:
-                print(f"  {name:40s} = {value}")
+    for name in sorted(instrument.params):
+        param = instrument.params[name]
+        print(f"{name:42s} = {param.value}")
+    return 0
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Update learned parameters with CRC32 validation")
+def update_parameter(path: Path, instrument_key: str, param_name: str, value: float) -> int:
+    manager = _load_manager(path)
+    instrument = manager.instruments.get(instrument_key)
+    if instrument is None:
+        print(f"{path}: instrument not found: {instrument_key}")
+        return 1
+    if param_name not in instrument.params:
+        print(f"{path}: parameter not found in {instrument_key}: {param_name}")
+        return 1
+
+    symbol, timeframe, broker = _split_instrument_key(instrument_key)
+    old_value = instrument.params[param_name].value
+    new_value = manager.set_value(symbol, param_name, value, timeframe=timeframe, broker=broker)
+    manager.save()
+    print(f"{path}: {instrument_key}.{param_name} {old_value} -> {new_value}")
+    return 0
+
+
+def _matching_files(path: Path, include_backups: bool) -> list[Path]:
+    if not include_backups:
+        return [path]
+    return sorted(path.parent.glob(f"{path.name}*"))
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--file", type=Path, default=Path("data/learned_parameters.json"))
+    parser.add_argument("--instrument", help="Full key, e.g. XAUUSD_M5_default")
+    parser.add_argument("--symbol", default="XAUUSD")
+    parser.add_argument("--timeframe", default="M5")
+    parser.add_argument("--broker", default="default")
     parser.add_argument("--param", help="Parameter name to update")
-    parser.add_argument("--value", type=float, help="New value")
-    parser.add_argument("--instrument", default="XAUUSD_M5_default", help="Instrument key")
-    parser.add_argument("--all-files", action="store_true", help="Update all files including backups")
-    parser.add_argument("--list", action="store_true", help="List all parameters")
+    parser.add_argument("--value", type=float, help="New parameter value")
+    parser.add_argument("--list", action="store_true", help="List parameters for the scoped instrument")
+    parser.add_argument("--all-files", action="store_true", help="Also update matching backup files")
+    return parser.parse_args()
 
-    args = parser.parse_args()
+
+def main() -> int:
+    args = parse_args()
+    path = args.file
+    instrument_key = _instrument_key(args)
 
     if args.list:
-        list_parameters()
-        return
+        return list_parameters(path, instrument_key)
 
     if not args.param or args.value is None:
-        parser.print_help()
-        return
+        print("--param and --value are required unless --list is used")
+        return 2
 
-    if args.all_files:
-        # Update all files
-        files = sorted(glob.glob("data/learned_parameters.json*"))
-        print(f"Updating {len(files)} files...")
-        print()
-
-        success_count = 0
-        for filepath in files:
-            if update_file(filepath, args.param, args.value, args.instrument):
-                success_count += 1
-            print()
-
-        print(f"Updated {success_count}/{len(files)} files successfully")
-    else:
-        # Update main file only
-        update_file("data/learned_parameters.json", args.param, args.value, args.instrument)
+    rc = 0
+    for file_path in _matching_files(path, args.all_files):
+        if file_path.is_file():
+            rc = max(rc, update_parameter(file_path, instrument_key, args.param, args.value))
+    return rc
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

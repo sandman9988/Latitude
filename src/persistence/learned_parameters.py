@@ -19,6 +19,7 @@ Version: 1.0.0
 """
 
 import logging
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -232,7 +233,9 @@ class LearnedParametersManager:
             persistence_path: Where to save/load parameters
         """
         self.instruments: dict[str, InstrumentParameters] = {}
-        self.persistence_path = persistence_path or Path("data/learned_parameters.json")
+        self.persistence_path = persistence_path or Path(
+            os.environ.get("CTRADER_DATA_DIR", "data")
+        ) / "learned_parameters.json"
         self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Atomic persistence (with CRC32 and backups)

@@ -48,7 +48,7 @@ def test_probability_calibration():
     calib = risk_mgr.get_probability_calibration()
     if 0.7 in calib:
         c = calib[0.7]
-        print(f"\n2. Calibration for 70% confidence bucket:")
+        print("\n2. Calibration for 70% confidence bucket:")
         print(f"   Predicted: {c.predicted_success_rate:.1%}")
         print(f"   Actual: {c.actual_success_rate:.1%}")
         print(f"   Error: {c.calibration_error:.1%}")
@@ -182,7 +182,7 @@ def test_correlation_breakdown_detection():
 
     breakdown_crash = risk_mgr.check_correlation_breakdown(current_time=200.0)
     if breakdown_crash:
-        print(f"\n   🚨 CRASH DETECTED:")
+        print("\n   🚨 CRASH DETECTED:")
         print(f"   Avg Correlation: {breakdown_crash.avg_correlation:.3f}")
         print(f"   Max Correlation: {breakdown_crash.max_correlation:.3f}")
         print(f"   Flash Crash Risk: {breakdown_crash.flash_crash_risk}")
@@ -269,7 +269,7 @@ def test_capital_allocation_by_correlation():
         total_capital=10000.0,
     )
 
-    print(f"   Equal allocation (no correlation data):")
+    print("   Equal allocation (no correlation data):")
     for sym, amount in allocation_equal.items():
         print(f"   {sym}: ${amount:.2f}")
 
@@ -327,14 +327,14 @@ def test_integrated_risk_assessment():
 
     # Check RL recommendations
     if assessment.rl_recommended_thresholds:
-        print(f"\n   RL Recommendations:")
+        print("\n   RL Recommendations:")
         print(f"   Entry: {assessment.rl_recommended_thresholds['entry_threshold']:.2f}")
         print(f"   Exit: {assessment.rl_recommended_thresholds['exit_threshold']:.2f}")
         print(f"   Confidence: {assessment.rl_recommended_thresholds['confidence']:.2f}")
 
     # Check calibration
     if assessment.probability_calibration:
-        print(f"\n   Probability Calibration:")
+        print("\n   Probability Calibration:")
         for bucket, calib in assessment.probability_calibration.items():
             status = "✓" if calib.is_well_calibrated else "✗"
             print(
@@ -344,7 +344,7 @@ def test_integrated_risk_assessment():
 
     # Check correlation
     if assessment.correlation_status:
-        print(f"\n   Correlation Status:")
+        print("\n   Correlation Status:")
         print(f"   Avg: {assessment.correlation_status.avg_correlation:.3f}")
         print(f"   Risk: {assessment.correlation_status.flash_crash_risk}")
 

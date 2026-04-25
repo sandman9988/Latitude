@@ -17,7 +17,6 @@ This test suite ensures:
 
 import logging
 import sys
-from typing import Dict
 
 import numpy as np
 
@@ -71,7 +70,7 @@ def calculate_trigger_reward_with_wtl_penalty(
     actual_pnl: float,
     baseline_mfe: float = 100.0,
     wtl_penalty: float = 2.0,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     Full TriggerAgent reward with WTL (Worse Than Leaving) penalty.
 
@@ -149,7 +148,7 @@ def calculate_harvester_close_reward(
     exit_profit: float,
     mfe_achieved: float,
     mae_achieved: float,
-) -> Dict[str, float]:
+) -> dict[str, float]:
     """
     HarvesterAgent CLOSE reward based on realized capture.
 
@@ -158,10 +157,7 @@ def calculate_harvester_close_reward(
     2. Risk efficiency (exit profit relative to MAE)
     """
     # Component 1: Profit capture
-    if mfe_achieved > 0:
-        capture_ratio = exit_profit / mfe_achieved
-    else:
-        capture_ratio = 0.0
+    capture_ratio = exit_profit / mfe_achieved if mfe_achieved > 0 else 0.0
 
     # Capture ratio → reward mapping
     # 1.0 (perfect exit at MFE) → +2.0

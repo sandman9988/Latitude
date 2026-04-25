@@ -9,6 +9,7 @@ from lifetime trade history without a trusted session-start boundary.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -24,6 +25,38 @@ if str(ROOT) not in sys.path:
 
 from src.persistence.trade_log_reader import read_all_trades  # noqa: E402
 from src.utils.metrics_calculator import period_metrics  # noqa: E402
+
+_TF_TO_MINUTES = {
+    "M1": 1,
+    "M5": 5,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H2": 120,
+    "H4": 240,
+    "H8": 480,
+    "H12": 720,
+    "D1": 1440,
+    "W1": 10080,
+}
+
+
+def _tf_to_minutes(value: str | None) -> int | None:
+    if not value:
+        return None
+    text = str(value).strip().upper()
+    if text.startswith("M") and text[1:].isdigit():
+        return int(text[1:])
+    if text in _TF_TO_MINUTES:
+        return _TF_TO_MINUTES[text]
+    return None
+
+
+def _tf_label(minutes: int | None) -> str:
+    if not minutes:
+        return ""
+    reverse = {v: k for k, v in _TF_TO_MINUTES.items()}
+    return reverse.get(int(minutes), f"M{int(minutes)}")
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -49,10 +82,8 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.replace(tmp, path)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -73,19 +104,29 @@ def _close_or_entry_dt(trade: dict[str, Any]) -> datetime | None:
     return _parse_dt(trade.get("exit_time") or trade.get("entry_time"))
 
 
-def build_performance_snapshot(
+def build_performance_snapshot(  # noqa: PLR0913
     trades: list[dict[str, Any]],
     *,
     trading_mode: str,
     starting_equity: float,
+    symbol: str | None = None,
+    timeframe_minutes: int | None = None,
+    broker: str = "default",
+    source: str = "trade_log.jsonl",
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the same rolling performance snapshot the paper bot writes."""
     now = now or datetime.now(UTC)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=UTC)
-    else:
-        now = now.astimezone(UTC)
+    now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
+    trades = [
+        trade for trade in trades
+        if trade_matches_scope(
+            trade,
+            trading_mode=trading_mode,
+            symbol=symbol,
+            timeframe_minutes=timeframe_minutes,
+        )
+    ]
 
     cutoff_24h = now - timedelta(hours=24)
     cutoff_7d = now - timedelta(days=7)
@@ -108,15 +149,27 @@ def build_performance_snapshot(
     def calc(period_trades: list[dict[str, Any]]) -> dict[str, Any]:
         return period_metrics(period_trades, starting_equity=starting_equity)
 
-    return {
+    snapshot = {
         "trading_mode": trading_mode,
         "rebuilt_at": now.isoformat(),
-        "source": "trade_log.jsonl",
+        "source": source,
         "daily": calc(daily),
         "weekly": calc(weekly),
         "monthly": calc(monthly),
         "lifetime": calc(trades),
     }
+    if symbol and timeframe_minutes:
+        snapshot.update(
+            {
+                "symbol": symbol.upper(),
+                "timeframe": _tf_label(timeframe_minutes),
+                "timeframe_minutes": int(timeframe_minutes),
+                "broker": broker,
+            }
+        )
+    else:
+        snapshot["scope"] = "portfolio"
+    return snapshot
 
 
 def build_epoch_metrics(
@@ -171,26 +224,78 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--trade-log", type=Path, default=None)
     parser.add_argument("--trading-mode", default="paper", choices=("paper", "live"))
+    parser.add_argument("--symbol", help="Rebuild one symbol/timeframe scope, e.g. XAUUSD")
+    parser.add_argument("--timeframe", help="Rebuild one timeframe scope, e.g. M5, H1, D1")
+    parser.add_argument("--broker", default="default")
     parser.add_argument("--starting-equity", type=float, default=10_000.0)
     parser.add_argument("--write", action="store_true", help="Write rebuilt JSON files.")
     return parser.parse_args()
 
 
+def trade_matches_scope(
+    trade: dict[str, Any],
+    *,
+    trading_mode: str,
+    symbol: str | None = None,
+    timeframe_minutes: int | None = None,
+) -> bool:
+    mode = str(trade.get("trading_mode", "") or "").strip().lower()
+    if mode in ("paper", "live") and mode != trading_mode:
+        return False
+
+    if symbol:
+        trade_symbol = str(trade.get("symbol", "") or "").upper()
+        if trade_symbol and trade_symbol != symbol.upper():
+            return False
+
+    if timeframe_minutes:
+        try:
+            trade_tf = int(trade.get("timeframe_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            trade_tf = 0
+        if trade_tf > 0:
+            return trade_tf == int(timeframe_minutes)
+        return _tf_to_minutes(str(trade.get("timeframe", "") or "")) == int(timeframe_minutes)
+
+    return True
+
+
 def main() -> int:
     args = parse_args()
+    if bool(args.symbol) != bool(args.timeframe):
+        print("--symbol and --timeframe must be supplied together")
+        return 2
+    timeframe_minutes = _tf_to_minutes(args.timeframe)
+    if args.timeframe and timeframe_minutes is None:
+        print(f"Unsupported timeframe: {args.timeframe}")
+        return 2
+
     data_dir = args.data_dir
     trade_log = args.trade_log or (data_dir / "trade_log.jsonl")
     trades = read_all_trades(trade_log)
+    scoped_trades = [
+        trade for trade in trades
+        if trade_matches_scope(
+            trade,
+            trading_mode=args.trading_mode,
+            symbol=args.symbol,
+            timeframe_minutes=timeframe_minutes,
+        )
+    ]
     now = datetime.now(UTC)
 
     snapshot = build_performance_snapshot(
-        trades,
+        scoped_trades,
         trading_mode=args.trading_mode,
         starting_equity=args.starting_equity,
+        symbol=args.symbol,
+        timeframe_minutes=timeframe_minutes,
+        broker=args.broker,
+        source=str(trade_log),
         now=now,
     )
     epoch = build_epoch_metrics(
-        trades,
+        scoped_trades,
         epoch_path=data_dir / "stats_epoch.json",
         starting_equity=args.starting_equity,
         now=now,
@@ -200,7 +305,10 @@ def main() -> int:
         json.dumps(
             {
                 "trade_log": str(trade_log),
-                "trades": len(trades),
+                "trades": len(scoped_trades),
+                "trades_unfiltered": len(trades),
+                "symbol": args.symbol,
+                "timeframe_minutes": timeframe_minutes,
                 "performance_lifetime_pnl": snapshot["lifetime"]["total_pnl"],
                 "performance_lifetime_capture": snapshot["lifetime"]["avg_capture_ratio"],
                 "epoch_included_trades": epoch["included_trades"] if epoch else None,
@@ -215,8 +323,9 @@ def main() -> int:
     if not args.write:
         return 0
 
-    perf_path = data_dir / "performance_snapshot.json"
-    epoch_path = data_dir / "stats_epoch_metrics.json"
+    suffix = f"_{args.symbol.upper()}_M{timeframe_minutes}" if args.symbol and timeframe_minutes else ""
+    perf_path = data_dir / f"performance_snapshot{suffix}.json"
+    epoch_path = data_dir / f"stats_epoch_metrics{suffix}.json"
     perf_backup = _backup(perf_path)
     epoch_backup = _backup(epoch_path)
     _atomic_write_json(perf_path, snapshot)

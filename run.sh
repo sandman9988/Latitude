@@ -26,7 +26,7 @@ log() {
 HUD_MODE="auto"           # auto|on|off
 HUD_ONLY=0                 # --hud-only flag
 INTERNAL_BOT_DAEMON=0      # internal recursive call flag
-COMMAND=""                 # train|pipeline|universe|production|live-train|status|monitor|monitor-setup|help
+COMMAND=""                 # train|pipeline|universe|production|live-train|status|monitor|monitor-setup|weekend-train|weekend-train-setup|help
 declare -a FORWARDED_ARGS=()
 BOT_LAUNCHER_PID=""
 HUD_INTERRUPTED=0
@@ -69,6 +69,12 @@ parse_args() {
                 ;;
             monitor-setup|--monitor-setup)
                 COMMAND="monitor-setup"
+                ;;
+            weekend-train|--weekend-train)
+                COMMAND="weekend-train"
+                ;;
+            weekend-train-setup|--weekend-train-setup)
+                COMMAND="weekend-train-setup"
                 ;;
             help|--help|-h)
                 COMMAND="help"
@@ -277,6 +283,9 @@ wait_for_bot_process() {
 }
 
 seed_hud_state() {
+    if compgen -G "data/performance_snapshot_*_M*.json" >/dev/null; then
+        return
+    fi
     if [[ -f "data/performance_snapshot.json" ]]; then
         return
     fi
@@ -314,6 +323,14 @@ for filename, data in payload.items():
         json.dump(data, handle, indent=2)
 PY
     log "${GREEN}✓ Default HUD state created${NC}"
+}
+
+start_universe_watcher() {
+    if command -v setsid >/dev/null 2>&1; then
+        setsid python3 run_universe.py --watch >> logs/run_universe.log 2>&1 &
+    else
+        nohup python3 run_universe.py --watch >> logs/run_universe.log 2>&1 &
+    fi
 }
 
 apply_pending_profile() {
@@ -521,6 +538,8 @@ help_flow() {
     echo -e "  status            show running processes and universe.json summary"
     echo -e "  monitor           run one market open/close check (as cron does)"
     echo -e "  monitor-setup     install/update cron entry for market monitoring"
+    echo -e "  weekend-train     guarded accept-if-better offline training, all cached TFs"
+    echo -e "  weekend-train-setup install/update Saturday weekend training cron entry"
     echo -e ""
     echo -e "${BLUE}Override env vars for train/pipeline:${NC}"
     echo -e "  SYMBOLS=\"XAUUSD\"          single symbol"
@@ -528,12 +547,16 @@ help_flow() {
     echo -e "  THRESHOLD=1.5             stricter Z-Omega gate"
     echo -e "  EPOCHS=5                  training passes per dataset"
     echo -e "  WORKERS=4                 parallel workers"
+    echo -e "  WEEKEND_TRAIN_EPOCHS=3    weekend training passes per cache"
+    echo -e "  WEEKEND_TRAIN_FORCE=1     bypass weekend market-close guard manually"
     echo -e ""
     echo -e "${BLUE}Examples:${NC}"
     echo -e "  ./run.sh"
     echo -e "  ./run.sh production"
     echo -e "  ./run.sh live-train"
     echo -e "  ./run.sh pipeline"
+    echo -e "  ./run.sh weekend-train"
+    echo -e "  ./run.sh weekend-train-setup"
     echo -e "  SYMBOLS=\"XAUUSD\" TIMEFRAMES=\"M240\" ./run.sh train"
     echo -e "  ./run.sh status"
     echo -e ""
@@ -573,17 +596,20 @@ universe_flow() {
     activate_venv
     log ""
     log "${YELLOW}Stopping any existing universe watcher...${NC}"
-    pkill -f run_universe 2>/dev/null || true
+    pkill -f "run_universe.py --watch" 2>/dev/null || true
+    sleep 1
+    mkdir -p logs
+    log "${YELLOW}Stopping tracked/orphan paper bots for a clean restart...${NC}"
+    python3 run_universe.py --stop-all >> logs/run_universe.log 2>&1 || true
     sleep 1
     log "${GREEN}Starting universe watcher (paper trading supervisor)...${NC}"
-    mkdir -p logs
-    nohup python3 run_universe.py --watch >> logs/run_universe.log 2>&1 &
+    start_universe_watcher
     UPID=$!
     sleep 3
     if kill -0 "$UPID" 2>/dev/null; then
         log "${GREEN}✓ Universe watcher started (PID: ${UPID})${NC}"
         log "  Log: logs/run_universe.log"
-        log "  Stop: pkill -f run_universe"
+        log "  Stop: pkill -f 'run_universe.py --watch'"
         log ""
         log "${BLUE}Recent log:${NC}"
         tail -8 logs/run_universe.log 2>/dev/null || true
@@ -701,6 +727,22 @@ monitor_setup_flow() {
         chmod +x "$SCRIPT_DIR/scripts/setup_market_monitor.sh"
     fi
     exec bash "$SCRIPT_DIR/scripts/setup_market_monitor.sh"
+}
+
+weekend_train_flow() {
+    # Run guarded offline training only during the weekend market-close window.
+    if [[ ! -x "$SCRIPT_DIR/scripts/weekend_offline_training.sh" ]]; then
+        chmod +x "$SCRIPT_DIR/scripts/weekend_offline_training.sh"
+    fi
+    exec bash "$SCRIPT_DIR/scripts/weekend_offline_training.sh" "${FORWARDED_ARGS[@]}"
+}
+
+weekend_train_setup_flow() {
+    # Install (or update) the cron entry for guarded weekend offline training.
+    if [[ ! -x "$SCRIPT_DIR/scripts/setup_weekend_training.sh" ]]; then
+        chmod +x "$SCRIPT_DIR/scripts/setup_weekend_training.sh"
+    fi
+    exec bash "$SCRIPT_DIR/scripts/setup_weekend_training.sh"
 }
 
 hud_only_flow() {
@@ -821,6 +863,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             live-train)     live_train_flow    ;;
             monitor)        monitor_flow       ;;
             monitor-setup)  monitor_setup_flow ;;
+            weekend-train)  weekend_train_flow ;;
+            weekend-train-setup) weekend_train_setup_flow ;;
             help)           help_flow          ;;
         esac
     elif [[ $HUD_ONLY -eq 1 ]]; then

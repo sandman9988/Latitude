@@ -19,8 +19,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import quickfix as fix
 import quickfix44 as fix44
 
-from src.core.trade_manager import Side
-
 
 def close_positions(symbol_id: int, quantity: float, side_to_close: str):
     """

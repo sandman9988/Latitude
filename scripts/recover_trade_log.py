@@ -17,9 +17,8 @@ Usage:
 
 import argparse
 import json
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 LOG_FILE = Path("logs/trade_recovery.log")
 
@@ -55,7 +54,7 @@ def analyze_trade_log():
     print("📊 TRADE LOG ANALYSIS")
     print("=" * 80)
     print(f"\nTotal trades: {len(trades)}")
-    print(f"\nData Quality Issues:")
+    print("\nData Quality Issues:")
     print(f"  • NULL entry_time: {len(null_entry_times)} trades")
     if null_entry_times:
         print(f"    Indices: {null_entry_times[:10]} {'...' if len(null_entry_times) > 10 else ''}")
@@ -65,7 +64,7 @@ def analyze_trade_log():
     if recalc_trades:
         orig_pnl = sum(t.get("pnl_original", 0) for t in trades if "pnl_original" in t)
         curr_pnl = sum(t.get("pnl", 0) for t in trades)
-        print(f"\n  • PnL Variance:")
+        print("\n  • PnL Variance:")
         print(f"    Original total: ${orig_pnl:.2f}")
         print(f"    Current total:  ${curr_pnl:.2f}")
         print(f"    Difference:     ${abs(curr_pnl - orig_pnl):.2f}")
@@ -73,7 +72,7 @@ def analyze_trade_log():
     print("\n" + "=" * 80)
 
 
-def estimate_entry_time(trade: dict) -> Optional[str]:
+def estimate_entry_time(trade: dict) -> str | None:
     """
     Estimate entry_time from exit_time and typical trade duration.
 
@@ -95,10 +94,7 @@ def estimate_entry_time(trade: dict) -> Optional[str]:
 
     # Estimate duration based on trade outcome
     is_winner = trade.get("winner_to_loser", False)
-    if is_winner:
-        est_duration_mins = 20  # Winners average ~20 min
-    else:
-        est_duration_mins = 8  # Losers average ~8 min
+    est_duration_mins = 20 if is_winner else 8  # Winners average ~20 min, losers ~8 min
 
     entry_dt = exit_dt - timedelta(minutes=est_duration_mins)
     return entry_dt.isoformat()
@@ -174,9 +170,9 @@ def verify_pnl_recalculation():
 
     if unreasonable_changes:
         print(f"\n⚠️  Found {len(unreasonable_changes)} trades with suspicious changes (>100%):")
-        for trade, orig, curr, pct in unreasonable_changes[:5]:
+        for _trade, orig, curr, pct in unreasonable_changes[:5]:
             print(f"   Trade: Original ${orig:.2f} → Current ${curr:.2f} ({pct:.0f}% change)")
-        print(f"\n📝 These may require manual review. See data/trade_log.jsonl for details.")
+        print("\n📝 These may require manual review. See data/trade_log.jsonl for details.")
     else:
         print(f"\n✓ All {len(recalc_trades)} recalculated trades have reasonable changes (<100%)")
 

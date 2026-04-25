@@ -7,28 +7,22 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
-import textwrap
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
+import train_offline as to
 from src.training.historical_loader import (
     _detect_columns,
     _parse_datetime,
-    _sort_and_dedupe,
     bars_to_deque,
     load_csv,
     load_jsonl_cache,
     sliding_windows,
 )
-import train_offline as to
-from src.training.offline_trainer import TrainResult, z_omega
-
+from src.training.offline_trainer import z_omega
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -178,10 +172,10 @@ class TestLoadCSV:
 
         bars = load_csv(str(f))
         assert len(bars) == 30
-        # Each bar is (datetime, o, h, l, c, spread_pts)
-        t, o, h, l, c, sp = bars[0]
+        # Each bar is (datetime, o, h, low, c, spread_pts)
+        t, o, h, low, c, sp = bars[0]
         assert isinstance(t, datetime)
-        assert h >= l
+        assert h >= low
         assert sp == 0.0  # no spread column in this fixture
 
     def test_max_bars_truncation(self, tmp_path):
@@ -354,7 +348,7 @@ class TestBarExperienceCache:
         )
 
         assert cache_path.exists()
-        lines = [l for l in cache_path.read_text().splitlines() if l.strip()]
+        lines = [line for line in cache_path.read_text().splitlines() if line.strip()]
         assert len(lines) == 1
 
         rec = json.loads(lines[0])
@@ -391,7 +385,7 @@ class TestBarExperienceCache:
         assert cache._entry_bars_snapshot is None
 
     def test_schema_version_in_record(self, tmp_path):
-        from src.training.bar_experience_cache import BarExperienceCache, SCHEMA_VERSION
+        from src.training.bar_experience_cache import SCHEMA_VERSION, BarExperienceCache
         cache_path = tmp_path / "cache.jsonl"
         cache = BarExperienceCache(cache_file=str(cache_path))
         cache.record_trade(
@@ -401,6 +395,14 @@ class TestBarExperienceCache:
         )
         rec = json.loads(cache_path.read_text().strip())
         assert rec["version"] == SCHEMA_VERSION
+
+    def test_default_cache_path_uses_runtime_dir_and_scope(self, tmp_path, monkeypatch):
+        from src.training.bar_experience_cache import BarExperienceCache
+
+        monkeypatch.setenv("CTRADER_DATA_DIR", str(tmp_path / "runtime"))
+        cache = BarExperienceCache(symbol="XAU/USD", timeframe_minutes=15, enabled=False)
+
+        assert cache.cache_file == tmp_path / "runtime" / "training_cache_XAU-USD_M15.jsonl"
 
 
 class TestRetrainEligibility:
@@ -412,6 +414,13 @@ class TestRetrainEligibility:
         assert not to._retrain_eligible({"z_omega": 1.0, "error": None}, threshold=1.0, negative_only=False)
         assert not to._retrain_eligible({"z_omega": 1.2, "error": None}, threshold=1.0, negative_only=False)
 
+    def test_retries_rejected_candidate_even_above_threshold(self):
+        assert to._retrain_eligible(
+            {"z_omega": 1.2, "accepted": False, "error": None},
+            threshold=1.0,
+            negative_only=False,
+        )
+
     def test_negative_only_mode_retries_only_negative(self):
         assert to._retrain_eligible({"z_omega": -0.01, "error": None}, threshold=1.0, negative_only=True)
         assert not to._retrain_eligible({"z_omega": 0.0, "error": None}, threshold=1.0, negative_only=True)
@@ -420,6 +429,208 @@ class TestRetrainEligibility:
     def test_never_retries_missing_or_errored_results(self):
         assert not to._retrain_eligible(None, threshold=1.0, negative_only=False)
         assert not to._retrain_eligible({"z_omega": -1.0, "error": "boom"}, threshold=1.0, negative_only=True)
+
+
+class TestOfflineAcceptance:
+
+    def test_bot_checkpoint_dir_is_scoped(self, tmp_path):
+        path = to._bot_checkpoint_dir(tmp_path / "ckpt", "XAU/USD+", 15)
+        assert path == tmp_path / "ckpt" / "XAU_USD_M15"
+
+    def test_candidate_checkpoint_dir_can_isolate_tournament_variants(self, tmp_path):
+        path = to._candidate_checkpoint_dir(tmp_path / "ckpt", "XAUUSD", 5, "fresh/long")
+        assert path == tmp_path / "ckpt" / "XAUUSD_M5" / "fresh_long"
+
+    def test_select_best_skips_rejected_candidates(self):
+        best = to.select_best([
+            {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
+            {"symbol": "XAUUSD", "timeframe_minutes": 15, "z_omega": 2.0, "accepted": True},
+        ])
+        assert best["XAUUSD"]["timeframe_minutes"] == 15
+
+    def test_select_best_per_bot_keeps_timeframes_separate(self):
+        best = to.select_best_per_bot([
+            {"symbol": "XAUUSD", "timeframe_minutes": 1, "z_omega": 3.0, "accepted": True},
+            {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 1.6, "accepted": True},
+            {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
+        ])
+
+        assert best[("XAUUSD", 1)]["z_omega"] == 3.0
+        assert best[("XAUUSD", 5)]["z_omega"] == 1.6
+
+    def test_copy_best_weights_preserves_timeframe_in_name(self, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
+        trigger = source / "trigger_ddqn_weights.pt"
+        harvester = source / "harvester_ddqn_weights.pt"
+        trigger.write_bytes(b"trigger")
+        harvester.write_bytes(b"harvester")
+
+        dest = tmp_path / "best"
+        to.copy_best_weights(
+            {
+                ("XAUUSD", 5): {
+                    "symbol": "XAUUSD",
+                    "timeframe_minutes": 5,
+                    "z_omega": 1.6,
+                    "accepted_weights_path": f"{trigger};{harvester}",
+                }
+            },
+            dest,
+        )
+
+        assert (dest / "XAUUSD_M5_trigger_offline.pt").read_bytes() == b"trigger"
+        assert (dest / "XAUUSD_M5_harvester_offline.pt").read_bytes() == b"harvester"
+
+    def test_acceptance_requires_beating_champion_when_champion_is_stricter(self):
+        decision = to._decide_acceptance(
+            candidate_score=1.1022,
+            incumbent_score=1.0242,
+            incumbent_loaded=True,
+            champion_score=1.6088,
+            acceptance_margin=0.0,
+        )
+        assert not decision.accepted
+        assert decision.reason == "candidate_not_better_than_champion"
+        assert decision.guard_z_omega == pytest.approx(1.6088)
+
+    def test_acceptance_uses_incumbent_when_incumbent_is_stricter(self):
+        decision = to._decide_acceptance(
+            candidate_score=1.25,
+            incumbent_score=1.2,
+            incumbent_loaded=True,
+            champion_score=1.1,
+            acceptance_margin=0.0,
+        )
+        assert decision.accepted
+        assert decision.reason == "candidate_better_than_incumbent"
+
+    def test_load_offline_champion_ignores_stale_training_logs(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "checkpoints").mkdir(parents=True)
+        (tmp_path / "logs").mkdir()
+        (tmp_path / "logs" / "train_offline.log").write_text(
+            "2026-04-25 [INFO] train_offline: [MAIN] XAUUSD_M5 done -- ZOmega=9.9999 trades=99\n",
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "universe.json").write_text(
+            json.dumps({
+                "version": 1,
+                "instruments": [{
+                    "symbol": "XAUUSD",
+                    "timeframe_minutes": 5,
+                    "z_omega": 0.8793465150180925,
+                }],
+            }),
+            encoding="utf-8",
+        )
+
+        score, source = to._load_offline_champion("data/checkpoints", "XAUUSD", 5)
+
+        assert score == pytest.approx(0.8793465150180925)
+        assert source == "data/universe.json"
+
+    def test_load_offline_champion_prefers_registry_over_universe(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        ckpt = tmp_path / "data" / "checkpoints"
+        ckpt.mkdir(parents=True)
+        (ckpt / "offline_champions.json").write_text(
+            json.dumps({
+                "version": 1,
+                "champions": {
+                    "XAUUSD_M5": {
+                        "symbol": "XAUUSD",
+                        "timeframe_minutes": 5,
+                        "z_omega": 1.6088,
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        (tmp_path / "data" / "universe.json").write_text(
+            json.dumps({
+                "version": 1,
+                "instruments": [{
+                    "symbol": "XAUUSD",
+                    "timeframe_minutes": 5,
+                    "z_omega": 0.8793465150180925,
+                }],
+            }),
+            encoding="utf-8",
+        )
+
+        score, source = to._load_offline_champion("data/checkpoints", "XAUUSD", 5)
+
+        assert score == pytest.approx(1.6088)
+        assert source == "data/checkpoints/offline_champions.json"
+
+    def test_copy_candidate_to_runtime_uses_live_checkpoint_names(self, tmp_path):
+        cand = tmp_path / "candidate"
+        cand.mkdir()
+        trigger = cand / "XAUUSD_M5_trigger_offline.pt"
+        harvester = cand / "XAUUSD_M5_harvester_offline.pt"
+        trigger.write_bytes(b"trigger")
+        harvester.write_bytes(b"harvester")
+
+        runtime = tmp_path / "ckpt" / "XAUUSD_M5"
+        copied = to._copy_candidate_to_runtime(f"{trigger};{harvester}", runtime)
+
+        assert sorted(Path(p).name for p in copied) == ["harvester_ddqn_weights.pt", "trigger_ddqn_weights.pt"]
+        assert (runtime / "trigger_ddqn_weights.pt").read_bytes() == b"trigger"
+        assert (runtime / "harvester_ddqn_weights.pt").read_bytes() == b"harvester"
+
+    def test_deferred_candidate_deploy_copies_selected_variant_to_runtime(self, tmp_path):
+        cand = tmp_path / "candidate"
+        cand.mkdir()
+        trigger = cand / "XAUUSD_M5_trigger_offline.pt"
+        harvester = cand / "XAUUSD_M5_harvester_offline.pt"
+        trigger.write_bytes(b"trigger")
+        harvester.write_bytes(b"harvester")
+
+        result = {
+            "symbol": "XAUUSD",
+            "timeframe_minutes": 5,
+            "accepted": True,
+            "weights_path": f"{trigger};{harvester}",
+            "candidate_id": "fresh_long",
+        }
+
+        assert to._deploy_candidate_result(result, tmp_path / "ckpt")
+        runtime = tmp_path / "ckpt" / "XAUUSD_M5"
+        assert (runtime / "trigger_ddqn_weights.pt").read_bytes() == b"trigger"
+        assert (runtime / "harvester_ddqn_weights.pt").read_bytes() == b"harvester"
+        assert result["accepted_weights_path"]
+        assert result["candidate_deploy_deferred"] is False
+
+    def test_training_variants_are_bounded_and_unique(self):
+        args = type("Args", (), {
+            "tournament_variants": 6,
+            "n_epochs": 3,
+            "train_every": 4,
+            "epsilon_start": 0.4,
+            "epsilon_end": 0.05,
+            "penalty_scale": 1.0,
+            "focused_cap_passes": 2,
+            "warm_start": True,
+        })()
+
+        variants = to._build_training_variants(args)
+
+        assert len(variants) == 6
+        assert variants[0].name == "base"
+        assert len({v.name for v in variants}) == 6
+        assert any(not v.warm_start for v in variants)
+        assert all(v.n_epochs >= 3 for v in variants)
+
+    def test_candidate_seed_is_stable_per_job_and_variant(self, tmp_path):
+        job = to.Job("XAUUSD", 5, tmp_path / "XAUUSD_M5.jsonl", "jsonl")
+
+        seed_a = to._candidate_seed(123, "offline_candidate_base", job)
+        seed_b = to._candidate_seed(123, "offline_candidate_base", job)
+        seed_c = to._candidate_seed(123, "offline_candidate_fresh", job)
+
+        assert seed_a == seed_b
+        assert seed_a != seed_c
 
 
 # ── discover_jobs (from train_offline) ────────────────────────────────────────
@@ -434,6 +645,24 @@ class TestDiscoverJobs:
         assert len(jobs) == 1
         assert jobs[0].symbol == "XAUUSD"
         assert jobs[0].timeframe_minutes == 5
+
+    def test_detect_symbol_from_scoped_training_cache_filename(self, tmp_path):
+        from train_offline import discover_jobs
+        f = tmp_path / "training_cache_XAUUSD_M15.jsonl"
+        f.write_text('{"entry_bars": []}\n')
+        jobs = discover_jobs([str(tmp_path)])
+        assert len(jobs) == 1
+        assert jobs[0].symbol == "XAUUSD"
+        assert jobs[0].timeframe_minutes == 15
+
+    def test_detect_m_minutes_from_scoped_training_cache_filename(self, tmp_path):
+        from train_offline import discover_jobs
+        f = tmp_path / "training_cache_XAUUSD_M240.jsonl"
+        f.write_text('{"entry_bars": []}\n')
+        jobs = discover_jobs([str(tmp_path)])
+        assert len(jobs) == 1
+        assert jobs[0].symbol == "XAUUSD"
+        assert jobs[0].timeframe_minutes == 240
 
     def test_symbol_filter(self, tmp_path):
         from train_offline import discover_jobs
@@ -453,3 +682,50 @@ class TestDiscoverJobs:
         from train_offline import discover_jobs
         jobs = discover_jobs(["/nonexistent/path"])
         assert jobs == []
+
+    def test_duplicate_jsonl_caches_are_merged_for_same_bot(self, tmp_path):
+        from train_offline import discover_jobs
+
+        root = tmp_path / "training_cache_XAUUSD_M1.jsonl"
+        paper_dir = tmp_path / "paper_XAUUSD_M1"
+        paper_dir.mkdir()
+        paper = paper_dir / "training_cache_XAUUSD_M1.jsonl"
+        root.write_text('{"entry_bars": []}\n' * 45)
+        paper.write_text('{"entry_bars": []}\n' * 10)
+
+        jobs = discover_jobs([str(paper), str(root)])
+
+        assert len(jobs) == 1
+        assert jobs[0].bars_file == root
+        assert set(jobs[0].source_files) == {root, paper}
+        good, errors = to.preflight_check(jobs, min_rows=50)
+        assert good == jobs
+        assert errors == []
+
+    def test_focused_cap_replay_selects_weekly_best_and_worst(self, tmp_path):
+        cache = tmp_path / "training_cache_XAUUSD_M5.jsonl"
+        now = datetime.now(UTC)
+        lines = []
+        for idx in range(8):
+            bars = []
+            for bar_idx in range(80):
+                ts = now - timedelta(minutes=(idx * 100 + bar_idx) * 5)
+                px = 4800.0 + idx + bar_idx * 0.01
+                bars.append([ts.isoformat(), px, px + 0.5, px - 0.5, px + 0.1])
+            ratio = idx - 3
+            lines.append(json.dumps({
+                "version": 1,
+                "ts_recorded": (now - timedelta(hours=idx)).isoformat(),
+                "symbol": "XAUUSD",
+                "timeframe_minutes": 5,
+                "pnl_pts": float(ratio),
+                "mfe": 1.0,
+                "entry_bars": bars,
+                "exit_bars": bars[-5:],
+            }))
+        cache.write_text("\n".join(lines) + "\n")
+
+        windows = to._load_focused_cap_replay_windows([str(cache)], "XAUUSD", 5, 7.0, 2)
+
+        assert len(windows) == 4
+        assert all(len(window) >= 80 for window in windows)

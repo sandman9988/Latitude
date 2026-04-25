@@ -10,15 +10,15 @@ Tests the actual API of core safety components:
 """
 
 import logging
+import os
 import sys
 import tempfile
-import os
 
 import numpy as np
 
-from src.utils.safe_math import SafeMath
-from src.utils.ring_buffer import RingBuffer, RollingStats
 from src.persistence.atomic_persistence import AtomicPersistence
+from src.utils.ring_buffer import RingBuffer, RollingStats
+from src.utils.safe_math import SafeMath
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)

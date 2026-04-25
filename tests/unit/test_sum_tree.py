@@ -4,7 +4,7 @@ import pytest
 
 import numpy as np
 
-from src.utils.sum_tree import SumTree, PrioritizedReplayBuffer
+from src.utils.sum_tree import PrioritizedReplayBuffer, SumTree
 
 
 class TestSumTree:

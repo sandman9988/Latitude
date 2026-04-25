@@ -17,7 +17,6 @@ import pytest
 from src.monitoring.audit_logger import DecisionLogger
 from src.monitoring.trade_audit_logger import TradeAuditLogger, get_trade_audit_logger
 
-
 # ===========================================================================
 # DecisionLogger write error (audit_logger.py lines 230-231)
 # ===========================================================================

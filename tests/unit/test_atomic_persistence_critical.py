@@ -17,7 +17,6 @@ import pytest
 
 from src.persistence.atomic_persistence import AtomicPersistence, JournaledPersistence
 
-
 # =========================================================================
 # TIER 1 — PRODUCTION-CRITICAL
 # =========================================================================

@@ -123,14 +123,11 @@ def fetch_and_write(
     try:
         from ctrader_open_api import Client, Protobuf, TcpProtocol  # type: ignore
         from ctrader_open_api.messages.OpenApiMessages_pb2 import (  # type: ignore
-            ProtoOAApplicationAuthReq,
-            ProtoOAApplicationAuthRes,
             ProtoOAAccountAuthReq,
-            ProtoOAAccountAuthRes,
+            ProtoOAApplicationAuthReq,
             ProtoOATraderReq,
-            ProtoOATraderRes,
         )
-        from twisted.internet import reactor, defer  # type: ignore
+        from twisted.internet import defer, reactor  # type: ignore
     except ImportError:
         LOG.error("ctrader-open-api is not installed.  pip install ctrader-open-api")
         return None
@@ -187,7 +184,7 @@ def fetch_and_write(
                     divisor = 10 ** money_digits
                     balance = trader.balance / divisor
 
-                    now = datetime.datetime.now(datetime.timezone.utc)
+                    now = datetime.datetime.now(datetime.UTC)
                     data = {
                         "balance": balance,
                         "money_digits": money_digits,

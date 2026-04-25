@@ -43,6 +43,7 @@ Performance:
 - Memory: ~16 bytes per experience (64-bit floats)
 """
 
+import contextlib
 import logging
 import math
 import os
@@ -578,10 +579,8 @@ class ExperienceBuffer:
                 os.replace(tmp_path, str(dest))
             except Exception:
                 # Clean up temp file on failure
-                try:
+                with contextlib.suppress(OSError):
                     os.remove(tmp_path)
-                except OSError:
-                    pass
                 raise
 
             LOG.info("[BUFFER] Saved %d experiences to %s", n, dest)

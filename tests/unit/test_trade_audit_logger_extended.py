@@ -7,13 +7,14 @@ sequence monotonicity, ticket field in entries.
 
 import json
 import threading
+
 import pytest
 
+import src.monitoring.trade_audit_logger as tal_module
 from src.monitoring.trade_audit_logger import (
     TradeAuditLogger,
     get_trade_audit_logger,
 )
-import src.monitoring.trade_audit_logger as tal_module
 
 
 # ---------------------------------------------------------------------------

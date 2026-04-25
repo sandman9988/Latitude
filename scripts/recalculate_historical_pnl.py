@@ -49,7 +49,7 @@ def analyze_trades(trade_log_path: Path):
         return
 
     trades = []
-    with open(trade_log_path, "r") as f:
+    with open(trade_log_path) as f:
         for line in f:
             if line.strip():
                 trades.append(json.loads(line))
@@ -96,7 +96,7 @@ def recalculate_trades(
         return
 
     trades = []
-    with open(input_path, "r") as f:
+    with open(input_path) as f:
         for line in f:
             if line.strip():
                 trades.append(json.loads(line))
@@ -139,7 +139,7 @@ def recalculate_trades(
             unchanged_count += 1
 
     print("=" * 80)
-    print(f"✨ Summary:")
+    print("✨ Summary:")
     print(f"  Total trades:     {len(trades)}")
     print(f"  Corrected:        {corrected_count}")
     print(f"  Unchanged:        {unchanged_count}")

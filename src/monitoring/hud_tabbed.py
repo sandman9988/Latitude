@@ -42,7 +42,7 @@ from src.constants import (
     KURTOSIS_ALERT_THRESHOLD,
     TRIGGER_BUFFER_CAPACITY,
 )
-from src.persistence.trade_log_reader import CachedTradeLogReader, read_all_trades
+from src.persistence.trade_log_reader import CachedTradeLogReader
 
 LOG = logging.getLogger(__name__)
 
@@ -324,7 +324,6 @@ class TabbedHUD:
         self.position = {}
         self.metrics = {}
         self.training_stats = {}
-        self.training_stats_h4: dict = {}   # H4 shadow policy stats
         self.risk_stats = {}
         self.market_stats = {}
         self.bot_config = {}
@@ -466,6 +465,40 @@ class TabbedHUD:
         if not self._stats_epoch:
             return "Lifetime"
         return f"Epoch since {self._stats_epoch.strftime('%Y-%m-%d')}"
+
+    def _has_active_scope(self) -> bool:
+        return bool(str(getattr(self, "active_sym", "") or "").strip() and int(getattr(self, "active_tf_min", 0) or 0) > 0)
+
+    def _active_scope_label(self) -> str:
+        if not self._has_active_scope():
+            return "all symbols/timeframes"
+        return f"{str(self.active_sym).upper()} {self._format_timeframe_minutes_label(int(self.active_tf_min))}"
+
+    def _active_scope_trades(self, trades: list[dict]) -> list[dict]:
+        """Return trades matching the active symbol/timeframe, or all trades without active scope."""
+        if not self._has_active_scope():
+            return list(trades)
+        _sym = str(self.active_sym).upper()
+        _tf = self._format_timeframe_minutes_label(int(self.active_tf_min))
+        return [
+            t for t in trades
+            if self._normalize_symbol(t.get("symbol")) == _sym
+            and self._normalize_timeframe_label(t) == _tf
+        ]
+
+    def _period_rows_for_trades(self, trades: list[dict], all_trades: list[dict] | None = None) -> list[tuple[str, dict]]:
+        """Build period metric rows for an already-scoped trade list."""
+        _starting = self._universe_starting_equity()
+        _daily, _weekly, _monthly = _classify_trades_by_period(trades)
+        _rows = [
+            ("24h", _hud_period_metrics(_daily, _starting)),
+            ("7 days", _hud_period_metrics(_weekly, _starting)),
+            ("Month", _hud_period_metrics(_monthly, _starting)),
+            ("Epoch" if self._stats_epoch else "Lifetime", _hud_period_metrics(trades, _starting)),
+        ]
+        if self._stats_epoch and all_trades is not None:
+            _rows.append(("Lifetime", _hud_period_metrics(all_trades, _starting)))
+        return _rows
 
     def _term_width(self) -> int:
         """Return current terminal column count (fallback 80)."""
@@ -794,6 +827,82 @@ class TabbedHUD:
             return _label
         return "M?"
 
+    @staticmethod
+    def _timeframe_label_from_path(path: Path) -> str:
+        """Infer a timeframe label from scoped bot/log paths."""
+        for _part in [path.stem, *[p.name for p in path.parents]]:
+            _m = re.search(r"(?:^|_)(M\d+|H\d+|D1|W1)(?:_|$)", str(_part).upper())
+            if _m:
+                return TabbedHUD._normalize_timeframe_label({"timeframe": _m.group(1)})
+        return "M?"
+
+    @staticmethod
+    def _decision_entry_timeframe_label(entry: dict) -> str:
+        """Return canonical timeframe label for a decision-log row."""
+        _tf = TabbedHUD._normalize_timeframe_label(entry)
+        if _tf != "M?":
+            return _tf
+        _details = entry.get("details", {})
+        if isinstance(_details, dict):
+            _tf = TabbedHUD._normalize_timeframe_label(_details)
+            if _tf != "M?":
+                return _tf
+        _source_path = entry.get("_source_path")
+        if _source_path:
+            return TabbedHUD._timeframe_label_from_path(Path(str(_source_path)))
+        return "M?"
+
+    @staticmethod
+    def _decision_entry_has_scope(entry: dict) -> bool:
+        """Return True when a decision row carries explicit or inferred bot scope."""
+        if TabbedHUD._decision_entry_timeframe_label(entry) != "M?":
+            return True
+        _sym = str(entry.get("symbol") or "").strip()
+        if _sym:
+            return True
+        _ctx = entry.get("context", {})
+        return isinstance(_ctx, dict) and bool(str(_ctx.get("symbol") or "").strip())
+
+    def _decision_entry_symbol(self, entry: dict) -> str:
+        _sym = str(entry.get("symbol") or "").strip().upper()
+        if _sym:
+            return _sym
+        _ctx = entry.get("context", {})
+        if isinstance(_ctx, dict):
+            _sym = str(_ctx.get("symbol") or "").strip().upper()
+            if _sym:
+                return _sym
+        _source_path = entry.get("_source_path")
+        if _source_path:
+            for _part in [Path(str(_source_path)).stem, *[p.name for p in Path(str(_source_path)).parents]]:
+                _m = re.search(r"(?:^|paper_)([A-Z0-9]+)_M\d+(?:_|$)", str(_part).upper())
+                if _m:
+                    return _m.group(1)
+        if self._has_active_scope():
+            _tf = self._decision_entry_timeframe_label(entry)
+            if _tf in ("M?", self._format_timeframe_minutes_label(int(self.active_tf_min))):
+                return str(self.active_sym).upper()
+        return ""
+
+    def _decision_entry_matches_active_scope(self, entry: dict) -> bool:
+        if not self._has_active_scope():
+            return True
+        _sym = self._decision_entry_symbol(entry)
+        _tf = self._decision_entry_timeframe_label(entry)
+        _active_tf = self._format_timeframe_minutes_label(int(self.active_tf_min))
+        _sym_ok = not _sym or _sym == str(self.active_sym).upper()
+        _tf_ok = _tf in ("M?", _active_tf)
+        return _sym_ok and _tf_ok
+
+    def _decision_entry_bot_label(self, entry: dict) -> str:
+        _sym = self._decision_entry_symbol(entry) or "?"
+        _tf = self._decision_entry_timeframe_label(entry)
+        if _tf == "M?":
+            return _sym
+        if _sym == "?":
+            return _tf
+        return f"{_sym}/{_tf}"
+
     def _build_metrics_cube(self, trades: list[dict]) -> None:
         _cube: dict[tuple[str, str, str], list[dict]] = {}
         for _t in trades:
@@ -837,7 +946,7 @@ class TabbedHUD:
         entries: list[dict] = []
         instruments = uni_raw.get("instruments", {})
         if isinstance(instruments, list):
-            for idx, item in enumerate(instruments):
+            for item in instruments:
                 if not isinstance(item, dict):
                     continue
                 _entry = dict(item)
@@ -848,7 +957,7 @@ class TabbedHUD:
                 entries.append(_entry)
             return entries
         if isinstance(instruments, dict):
-            for idx, (sym, item) in enumerate(instruments.items()):
+            for sym, item in instruments.items():
                 if isinstance(item, list):
                     for sub in item:
                         if not isinstance(sub, dict):
@@ -862,7 +971,7 @@ class TabbedHUD:
                     entries.append(_entry)
             return entries
         if isinstance(uni_raw, dict):
-            for idx, (sym, item) in enumerate(uni_raw.items()):
+            for sym, item in uni_raw.items():
                 if sym in ("version", "instruments"):
                     continue
                 if isinstance(item, list):
@@ -916,6 +1025,36 @@ class TabbedHUD:
             LOG.debug("[HUD] Failed to load bot stats for %s M%s", _sym, _tf, exc_info=True)
             return {}
 
+    def _load_bot_production_metrics(self, symbol: str, timeframe_minutes: int) -> dict:
+        _sym = str(symbol or "").upper()
+        try:
+            _tf = int(timeframe_minutes or 0)
+        except (TypeError, ValueError):
+            _tf = 0
+        if not _sym or _tf <= 0:
+            return {}
+        _path = self.data_dir / f"paper_{_sym}_M{_tf}" / "production_metrics.json"
+        if not _path.exists():
+            _path = self.data_dir / f"production_metrics_{_sym}_M{_tf}.json"
+        if not _path.exists():
+            return {}
+        try:
+            return json.loads(_path.read_text())
+        except Exception:
+            LOG.debug("[HUD] Failed to load production metrics for %s M%s", _sym, _tf, exc_info=True)
+            return {}
+
+    def _active_bot_stats_path(self) -> Path | None:
+        _sym = str(getattr(self, "active_sym", "") or "").upper()
+        try:
+            _tf = int(getattr(self, "active_tf_min", 0) or 0)
+        except (TypeError, ValueError):
+            _tf = 0
+        if not _sym or _tf <= 0:
+            return None
+        _path = self.data_dir / f"paper_stats_{_sym}_M{_tf}.json"
+        return _path if _path.exists() else None
+
     def _load_bots_stats(self, symbol: str, timeframe_minutes: int) -> dict:
         return self._load_bot_stats(symbol, timeframe_minutes)
 
@@ -932,11 +1071,20 @@ class TabbedHUD:
 
     def _load_all_training_stats(self) -> None:
         _by_key: dict[tuple[str, int, str], dict] = {}
-        _candidates = sorted(
-            self.data_dir.glob("training_stats_*_M*.json"),
-            key=lambda _p: _p.stat().st_mtime if _p.exists() else 0,
-            reverse=False,
-        )
+        _universe_keys: set[tuple[str, int]] = set()
+        if self.universe_stats:
+            for _entry in self.universe_stats.values():
+                if not isinstance(_entry, dict):
+                    continue
+                _sym = str(_entry.get("symbol", "") or "").upper()
+                try:
+                    _tf = int(_entry.get("timeframe_minutes", 0) or 0)
+                except (TypeError, ValueError):
+                    _tf = 0
+                if _sym and _tf > 0:
+                    _universe_keys.add((_sym, _tf))
+
+        _candidates = sorted(self.data_dir.glob("training_stats_*_M*.json"))
         for _path in _candidates:
             try:
                 _payload = json.loads(_path.read_text())
@@ -948,11 +1096,14 @@ class TabbedHUD:
             _sym, _tf = self._parse_training_stats_identity(_path)
             if not _sym or _tf <= 0:
                 continue
+            if _universe_keys and (_sym, _tf) not in _universe_keys:
+                continue
             _mode = str(_payload.get("trading_mode", "paper") or "paper").strip().lower()
             if _mode not in ("paper", "live"):
                 _mode = "paper"
             _k = (_sym, _tf, _mode)
-            if _k in _by_key:
+            _mtime = _path.stat().st_mtime if _path.exists() else 0
+            if _k in _by_key and _by_key[_k].get("mtime", 0) >= _mtime:
                 continue
             _by_key[_k] = {
                 "symbol": _sym,
@@ -960,9 +1111,16 @@ class TabbedHUD:
                 "trading_mode": _mode,
                 "stats": _payload,
                 "path": _path,
-                "mtime": _path.stat().st_mtime if _path.exists() else 0,
+                "mtime": _mtime,
             }
-        self.training_stats_all = list(_by_key.values())
+        self.training_stats_all = sorted(
+            _by_key.values(),
+            key=lambda _item: (
+                int(_item.get("timeframe_minutes", 0) or 0),
+                str(_item.get("symbol", "")),
+                str(_item.get("trading_mode", "")),
+            ),
+        )
 
     def _load_universe_stats(self) -> None:
         """Load universe.json, annotate liveness, auto-prune dead entries."""
@@ -1114,10 +1272,17 @@ class TabbedHUD:
             if "_M" in _tail:
                 _sym_part, _, _tf_str = _tail.rpartition("_M")
                 self.active_sym = _sym_part
-                try:
+                with contextlib.suppress(ValueError):
                     self.active_tf_min = int(_tf_str)
-                except ValueError:
-                    pass
+        if not self.active_sym or not self.active_tf_min:
+            _cfg_sym = str(self.bot_config.get("symbol", "") or "").upper()
+            try:
+                _cfg_tf = int(self.bot_config.get("timeframe_minutes", 0) or 0)
+            except (TypeError, ValueError):
+                _cfg_tf = 0
+            if _cfg_sym and _cfg_tf > 0:
+                self.active_sym = _cfg_sym
+                self.active_tf_min = _cfg_tf
         self._load_performance_snapshot()
 
         self._load_json("training_stats.json", "training_stats")
@@ -1181,6 +1346,13 @@ class TabbedHUD:
                 self._load_json(_rm_candidates[0].name, "risk_stats")
                 self._apply_risk_stats_to_market_stats()
 
+        # production_metrics.json is written inside each paper_<SYMBOL>_M<TF>
+        # directory. Reload it after active_sym/active_tf_min are resolved so
+        # Tab 1 system-health counters do not borrow the freshest other bot.
+        if self.active_sym and self.active_tf_min:
+            self._load_json(_BOT_CONFIG_FILE, "bot_config")
+            self._load_json("production_metrics.json", "production_metrics")
+
         # Self-test results (written at startup by run_self_test())
         st_file = self.data_dir / "self_test.json"
         if st_file.exists():
@@ -1189,10 +1361,6 @@ class TabbedHUD:
                     self.self_test_results = json.load(f).get("results", [])
             except Exception:
                 LOG.debug("[HUD] Failed to load self_test.json", exc_info=True)
-
-        # H4 shadow training stats (written by _export_h4_training_stats)
-        _h4_sym = self.active_sym or self.bot_config.get("symbol", "")
-        self.training_stats_h4 = {}
 
         # Re-apply order_book.json on top of any per-bot risk-file override.
         # The per-bot risk_metrics_SYM_MTF.json is written at bar-close (every N minutes)
@@ -1488,11 +1656,21 @@ class TabbedHUD:
 
         Universe-managed paper bots write their own copy of files like
         ``order_book.json`` and ``production_metrics.json`` into
-        ``data/paper_{SYM}_M{TF}/``.  When a stale/duplicate standalone bot is
-        also running, the top-level file may be out-of-date or reflect a
-        broken FIX session.  Always pick the newest-by-mtime so the HUD shows
-        live data from whichever bot is actually connected.
+        ``data/paper_{SYM}_M{TF}/``.  When an active symbol/timeframe is known,
+        prefer that exact scope before any freshness fallback so one timeframe
+        cannot overwrite another timeframe's Overview/System Health values.
         """
+        active_sym = str(getattr(self, "active_sym", "") or "").upper()
+        active_tf = int(getattr(self, "active_tf_min", 0) or 0)
+        if active_sym and active_tf > 0:
+            base = Path(filename)
+            scoped = self.data_dir / f"{base.stem}_{active_sym}_M{active_tf}{base.suffix}"
+            if scoped.exists():
+                return scoped
+            active_dir_file = self.data_dir / f"paper_{active_sym}_M{active_tf}" / filename
+            if active_dir_file.exists():
+                return active_dir_file
+
         top = self.data_dir / filename
         best = top if top.exists() else None
         best_mtime = best.stat().st_mtime if best else -1.0
@@ -1760,6 +1938,11 @@ class TabbedHUD:
             _any_tripped = False
             _kurt_gate_active = bool(self.risk_stats.get("kurtosis_gate_active", False))
             _kurtosis_now = float(self.risk_stats.get("kurtosis", 0.0) or 0.0)
+            _kurtosis_threshold = float(
+                self.risk_stats.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD)
+                or KURTOSIS_FAT_TAIL_THRESHOLD
+            )
+            _risk_scope = self._risk_scope_label(self.risk_stats)
             for _key, (_label, _explain) in _breaker_labels.items():
                 _b = _cb_data.get(_key, {})
                 if not isinstance(_b, dict):
@@ -1777,9 +1960,9 @@ class TabbedHUD:
                     _trip_ts = _b.get("trip_time", "")
                     _cd_mins = _b.get("cooldown_minutes", 60)
                     if _gate_only:
-                        _reason = "Kurtosis gate active (entry gate)"
+                        _reason = f"Kurtosis gate active [{_risk_scope}] (entry gate)"
                         _tv = _kurtosis_now
-                        _th = 3.0
+                        _th = _kurtosis_threshold
                     print(f"  {RED}✗ {_label}: TRIPPED{RST}")
                     print(f"    Reason:    {YLW}{_reason}{RST}")
                     print(f"    Value:     {_tv:.4f}  (threshold: {_th:.4f})")
@@ -2687,54 +2870,6 @@ class TabbedHUD:
         )
         print()
 
-
-    def _render_h4_shadow_training(self) -> None:
-        """Render H4 shadow DualPolicy training block (Training tab)."""
-        ts = self.training_stats_h4
-        tr = ts.get("trigger", {})
-        hr = ts.get("harvester", {})
-
-        t_steps = tr.get("training_steps", 0)
-        t_buf   = tr.get("buffer_size", 0)
-        t_eps   = tr.get("epsilon", 0.0)
-        t_loss  = tr.get("loss", 0.0) if "loss" in tr else ts.get("trigger_loss", 0.0)
-        t_ready = tr.get("ready_to_train", False)
-
-        h_steps = hr.get("training_steps", 0)
-        h_buf   = hr.get("buffer_size", 0)
-        h_beta  = hr.get("beta", 0.4)
-        h_loss  = hr.get("loss", 0.0) if "loss" in hr else ts.get("harvester_loss", 0.0)
-        h_ready = hr.get("ready_to_train", False)
-
-        shadow_pos = ts.get("h4_shadow_pos", 0)
-        h4_bars    = ts.get("h4_bars", 0)
-        pos_str    = {1: f"{_ANSI_G}LONG{_ANSI_RST}", -1: f"{_ANSI_R}SHORT{_ANSI_RST}"}.get(shadow_pos, f"{_ANSI_DIM}FLAT{_ANSI_RST}")
-
-        W = self._term_width()
-        print("  " + "─" * (W - 4))
-        print("  \033[1m📡 H4 SHADOW TRAINING  (M240 · no real orders)\033[0m")
-        print(f"    Shadow position: {pos_str}   Bars accumulated: {h4_bars}")
-        print()
-
-        ready_t = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if t_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
-        print(f"  \033[1m🎯 TRIGGER AGENT  (H4 Entry)\033[0m  {ready_t}")
-        print(f"    Steps:  {t_steps:>10,}")
-        print(f"    Buffer: {self._rt_pct_bar(t_buf, _RT_TRIG_CAP)}  {t_buf:,}/{_RT_TRIG_CAP:,}")
-        print(f"    ε:      {self._rt_eps_bar(t_eps)}")
-        _tl = f"{t_loss:.6f}" if t_loss > 0 else f"{_ANSI_DIM}0.000000 (idle){_ANSI_RST}"
-        print(f"    Loss:   {_tl}")
-        print()
-
-        ready_h = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if h_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
-        print(f"  \033[1m🌾 HARVESTER AGENT  (H4 Exit)\033[0m  {ready_h}")
-        print(f"    Steps:  {h_steps:>10,}")
-        print(f"    Buffer: {self._rt_pct_bar(h_buf, _RT_HARV_CAP)}  {h_buf:,}/{_RT_HARV_CAP:,}")
-        print(f"    β IS:   {self._rt_beta_bar(h_beta)}")
-        _hl = f"{h_loss:.6f}" if h_loss > 0 else f"{_ANSI_DIM}0.000000 (idle){_ANSI_RST}"
-        print(f"    Loss:   {_hl}")
-        print("    ℹ️  H4 bar closes every ~4 h — next training on H4 bar close")
-        print()
-
     def _render_training(self):
         """Render agent training status."""
         ts = self.training_stats
@@ -2756,10 +2891,8 @@ class TabbedHUD:
             if _ofs_stale:
                 # Silently discard stale offline training display + remove file
                 self.offline_stats = {}
-                try:
+                with contextlib.suppress(Exception):
                     (self.data_dir / "offline_training_status.json").unlink(missing_ok=True)
-                except Exception:
-                    pass
             else:
                 self._render_offline_training(ofs)
         if self.universe_stats:
@@ -2785,27 +2918,32 @@ class TabbedHUD:
                 }
             ]
 
-        _has_h4 = False
         for _idx, _item in enumerate(_training_items):
             _its = _item.get("stats", {})
             _tf_for_label = _item.get("timeframe_minutes") or self.active_tf_min
+            _sym_for_label = str(_item.get("symbol") or self.active_sym or "").upper()
+            _scope = (
+                f"{_sym_for_label} M{int(_tf_for_label)}"
+                if _sym_for_label and _tf_for_label
+                else (f"M{int(_tf_for_label)}" if _tf_for_label else "BOT")
+            )
+            _item_pm_payload = self._load_bot_production_metrics(_sym_for_label, int(_tf_for_label or 0))
+            _item_pm = _item_pm_payload.get("metrics", pm) if isinstance(_item_pm_payload, dict) else pm
             _train_label = (
-                f"{_mode_label} M{int(_tf_for_label)} TRAINING"
-                if _tf_for_label else f"{_mode_label} BOT TRAINING"
+                f"{_mode_label} {_scope} TRAINING"
+                if _scope != "BOT" else f"{_mode_label} BOT TRAINING"
             )
             print(f"\033[1m🤖 {_train_label}\033[0m\n")
             trig_ready = _its.get("trigger_ready", False)
             harv_ready = _its.get("harvester_ready", False)
             trig_steps = _its.get("trigger_training_steps", 0)
             harv_steps = _its.get("harvester_training_steps", 0)
-            self._render_live_trigger_agent(_its, pm, trig_ready, trig_steps)
-            self._render_live_harvester_agent(_its, pm, harv_ready, harv_steps)
+            self._render_live_trigger_agent(_its, _item_pm, trig_ready, trig_steps)
+            self._render_live_harvester_agent(_its, _item_pm, harv_ready, harv_steps)
             self._render_live_arena_and_health(_its, trig_ready, harv_ready, trig_steps, harv_steps)
             if _idx < len(_training_items) - 1:
                 print("  " + "─" * (self._term_width() - 4))
                 print()
-        if _has_h4:
-            self._render_h4_shadow_training()
 
         # Next-update hint — training stats only refresh on bar close
         _nbc_raw = self.market_stats.get("next_bar_close_utc")
@@ -3014,6 +3152,45 @@ class TabbedHUD:
             f"  {_ANSI_G}(live){_ANSI_RST}" if _mode == "live" else ""
         )
         print(f"\n\033[1m📊 POSITION\033[0m{_mode_tag}")
+        _open_positions: list[tuple[str, dict]] = []
+        for _bot in self.all_bots_stats or []:
+            _pos = _bot.get("_position", {}) if isinstance(_bot, dict) else {}
+            if not isinstance(_pos, dict) or str(_pos.get("direction", "FLAT")).upper() == "FLAT":
+                continue
+            _sym = str(_bot.get("symbol") or _pos.get("symbol") or "?").upper()
+            try:
+                _tf = int(_bot.get("timeframe_minutes") or _pos.get("timeframe_minutes") or 0)
+            except (TypeError, ValueError):
+                _tf = 0
+            _label = f"{_sym}/{self._format_timeframe_minutes_label(_tf)}" if _tf > 0 else _sym
+            _open_positions.append((_label, _pos))
+        if not _open_positions and str(self.position.get("direction", "FLAT")).upper() != "FLAT":
+            _sym = str(self.position.get("symbol") or self.active_sym or "?").upper()
+            _tf = int(self.position.get("timeframe_minutes") or self.active_tf_min or 0)
+            _label = f"{_sym}/{self._format_timeframe_minutes_label(_tf)}" if _tf > 0 else _sym
+            _open_positions.append((_label, self.position))
+        if len(_open_positions) > 1:
+            _total_unreal = sum(float(_p.get("unrealized_pnl", 0.0) or 0.0) for _, _p in _open_positions)
+            print(
+                f"  {_ANSI_B}{len(_open_positions)} open positions{_ANSI_RST}  |  "
+                f"Unrealized: {self._pnl_color(_total_unreal)}{_total_unreal:+.2f}{_ANSI_RST}"
+            )
+            for _label, _p in sorted(_open_positions, key=lambda kv: (kv[0], str(kv[1].get("position_id", ""))))[:8]:
+                _direction = str(_p.get("direction", "FLAT")).upper()
+                _dc = _ANSI_G if _direction == "LONG" else (_ANSI_R if _direction == "SHORT" else _ANSI_DIM)
+                _entry = float(_p.get("entry_price", 0.0) or 0.0)
+                _current = float(_p.get("current_price", 0.0) or 0.0)
+                _pnl = float(_p.get("unrealized_pnl", 0.0) or 0.0)
+                _ticks = _p.get("ticks_held", _p.get("bars_held", 0))
+                _dec = self._price_decimals(max(_entry, _current, 0.0))
+                print(
+                    f"  {_label:<13} {_dc}{_direction:<5}{_ANSI_RST} "
+                    f"{_entry:.{_dec}f} → {_current:.{_dec}f}  "
+                    f"{self._pnl_color(_pnl)}{_pnl:+.2f}{_ANSI_RST}  ticks:{_ticks}"
+                )
+            if len(_open_positions) > 8:
+                print(f"  {_ANSI_DIM}… {len(_open_positions) - 8} more open positions{_ANSI_RST}")
+            return
         direction = self.position.get("direction", "FLAT")
         entry = self.position.get("entry_price", 0)
         current = self.position.get("current_price", 0)
@@ -3190,10 +3367,7 @@ class TabbedHUD:
         else:
             _balance = _starting + _lifetime_pnl
             _live_tag = "  \033[33m~ est.\033[0m"
-        if _real_eq is not None:
-            _equity = float(_real_eq)
-        else:
-            _equity = _balance + _unreal
+        _equity = float(_real_eq) if _real_eq is not None else _balance + _unreal
         _margin_str = (
             f"  |  Free margin: \033[36m{float(_real_mfr):>10.2f}\033[0m"
             if _real_mfr is not None
@@ -3305,7 +3479,8 @@ class TabbedHUD:
         self._render_agent_status_block()
 
         # Market snapshot
-        print("\n\033[1m🔬 MARKET\033[0m")
+        _market_scope = self._risk_scope_label(self.risk_stats)
+        print(f"\n\033[1m🔬 MARKET [{_market_scope}]\033[0m")
         spread = self.market_stats.get("spread", 0)
         vpin = self.market_stats.get("vpin", 0)
         vpin_z = self.market_stats.get("vpin_z", 0)
@@ -3350,7 +3525,8 @@ class TabbedHUD:
 
     def _render_system_health_block(self) -> None:
         """Render the expanded system health rows and startup self-test."""
-        print("\n\033[1m🏥 SYSTEM HEALTH\033[0m")
+        _scope = self._risk_scope_label(self.risk_stats)
+        print(f"\n\033[1m🏥 SYSTEM HEALTH [{_scope}]\033[0m")
         self._render_health_connectivity()
         self._render_health_risk()
         self._render_health_buffers()
@@ -3370,32 +3546,33 @@ class TabbedHUD:
         def _bad(s: str) -> str:
             return f"{_ANSI_R}✗ {s}{_ANSI_RST}"
 
-        _ob_path = self.data_dir / _ORDER_BOOK_FILE
-        _bc_path = self.data_dir / _BOT_CONFIG_FILE
-        # Prefer the freshest per-bot paper_stats_*.json — written every HUD cycle.
-        # Fall back to order_book.json then bot_config.json for legacy setups.
-        _ps_paths = sorted(
-            self.data_dir.glob("paper_stats_*.json"),
-            key=lambda _p: _p.stat().st_mtime if _p.exists() else 0,
-            reverse=True,
-        )
-        if _ps_paths:
-            _ref_path = _ps_paths[0]
-        elif _ob_path.exists():
+        _scope = self._risk_scope_label(self.risk_stats)
+        _ob_path = self._preferred_data_file(_ORDER_BOOK_FILE)
+        _bc_path = self._preferred_data_file(_BOT_CONFIG_FILE)
+        _ref_path = self._active_bot_stats_path()
+        if _ref_path is None and _ob_path.exists():
             _ref_path = _ob_path
-        elif _bc_path.exists():
+        elif _ref_path is None and _bc_path.exists():
             _ref_path = _bc_path
-        else:
-            _ref_path = None
+        elif _ref_path is None and not (self.active_sym and self.active_tf_min):
+            # Legacy no-active-bot startup: use newest paper stats only when
+            # there is no active scope to protect from cross-timeframe bleed.
+            _ps_paths = sorted(
+                self.data_dir.glob("paper_stats_*.json"),
+                key=lambda _p: _p.stat().st_mtime if _p.exists() else 0,
+                reverse=True,
+            )
+            if _ps_paths:
+                _ref_path = _ps_paths[0]
         if _ref_path is not None:
             _file_age = time.time() - os.path.getmtime(_ref_path)
             _age_str = f"{_file_age:.0f}s"
             if _file_age < DATA_AGING_SECS:
-                _data_item = _ok(f"Data {_age_str}")
+                _data_item = _ok(f"Data {_scope} {_age_str}")
             elif _file_age < DATA_STALE_SECS:
-                _data_item = _warn(f"Data {_age_str}")
+                _data_item = _warn(f"Data {_scope} {_age_str}")
             else:
-                _data_item = _bad(f"Bot silent {_age_str}")
+                _data_item = _bad(f"Bot silent {_scope} {_age_str}")
         else:
             _data_item = _bad("No data")
 
@@ -3655,8 +3832,11 @@ class TabbedHUD:
             _mode_tag = f"  {_ANSI_Y}📄 PAPER{_ANSI_RST} + {_ANSI_G}💰 LIVE{_ANSI_RST}"
         else:
             _mode_tag = ""
-        src = f"  {_ANSI_DIM}(source: trade_log.jsonl){_ANSI_RST}" if self._metrics_from_trade_log else ""
-        print(f"\n\033[1m📈 PERFORMANCE METRICS\033[0m{_mode_tag}{src}\n")
+        src = (
+            f"  {_ANSI_DIM}(source: trade_log.jsonl; portfolio all symbols/timeframes){_ANSI_RST}"
+            if self._metrics_from_trade_log else ""
+        )
+        print(f"\n\033[1m📈 PERFORMANCE METRICS (PORTFOLIO)\033[0m{_mode_tag}{src}\n")
         if self._trade_log_unlabeled_count > 0:
             print(
                 f"  {_ANSI_Y}⚠ {self._trade_log_unlabeled_count} legacy trades were missing trading_mode; "
@@ -3679,23 +3859,6 @@ class TabbedHUD:
                 f"({_exc_n} older trades excluded, {_pnl_c}{_exc_pnl:+.2f}{_ANSI_RST}{_ANSI_DIM} PnL)  "
                 f"[e] to change{_ANSI_RST}\n"
             )
-
-        def _period_rows(
-            daily: dict,
-            weekly: dict,
-            monthly: dict,
-            scoped_lifetime: dict,
-            all_time: dict | None = None,
-        ) -> list[tuple[str, dict]]:
-            rows = [
-                ("24h", daily),
-                ("7 days", weekly),
-                ("Month", monthly),
-                ("Epoch" if self._stats_epoch else "Lifetime", scoped_lifetime),
-            ]
-            if self._stats_epoch and all_time is not None:
-                rows.append(("Lifetime", all_time))
-            return rows
 
         def _render_period_rows(rows: list[tuple[str, dict]]) -> None:
             _per_hdr = (
@@ -3722,33 +3885,36 @@ class TabbedHUD:
                     f"{sharpe:>8.2f} {pf:>8.2f} {dd_color}{maxdd:>7.2f}%{_ANSI_RST}"
                 )
 
+        _portfolio_trades = list(self._trade_log_metrics_trades)
+        _portfolio_all_trades = list(self._trade_log_all_trades)
+        _portfolio_by_mode = {
+            _mk: list(self._trade_log_metrics_trades_by_mode.get(_mk, []))
+            for _mk in ("paper", "live")
+        }
+        _portfolio_all_by_mode = {
+            _mk: list(self._trade_log_all_trades_by_mode.get(_mk, []))
+            for _mk in ("paper", "live")
+        }
+        _active_trades = self._active_scope_trades(self._trade_log_metrics_trades)
+        _active_all_trades = self._active_scope_trades(self._trade_log_all_trades)
+        _active_by_mode = {
+            _mk: self._active_scope_trades(self._trade_log_metrics_trades_by_mode.get(_mk, []))
+            for _mk in ("paper", "live")
+        }
+        _active_all_by_mode = {
+            _mk: self._active_scope_trades(self._trade_log_all_trades_by_mode.get(_mk, []))
+            for _mk in ("paper", "live")
+        }
+
         # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
         # This is NOT an annualised return-based Sharpe ratio.
         if _mode == "mixed":
             print(f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
-            _render_period_rows(_period_rows(
-                self.daily_metrics_by_mode.get("paper", {}),
-                self.weekly_metrics_by_mode.get("paper", {}),
-                self.monthly_metrics_by_mode.get("paper", {}),
-                self.lifetime_metrics_by_mode.get("paper", {}),
-                self.all_time_metrics_by_mode.get("paper", {}),
-            ))
+            _render_period_rows(self._period_rows_for_trades(_portfolio_by_mode["paper"], _portfolio_all_by_mode["paper"]))
             print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
-            _render_period_rows(_period_rows(
-                self.daily_metrics_by_mode.get("live", {}),
-                self.weekly_metrics_by_mode.get("live", {}),
-                self.monthly_metrics_by_mode.get("live", {}),
-                self.lifetime_metrics_by_mode.get("live", {}),
-                self.all_time_metrics_by_mode.get("live", {}),
-            ))
+            _render_period_rows(self._period_rows_for_trades(_portfolio_by_mode["live"], _portfolio_all_by_mode["live"]))
             print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
-        _render_period_rows(_period_rows(
-            self.daily_metrics,
-            self.weekly_metrics,
-            self.monthly_metrics,
-            self.lifetime_metrics,
-            self.all_time_metrics,
-        ))
+        _render_period_rows(self._period_rows_for_trades(_portfolio_trades, _portfolio_all_trades))
 
         self._render_current_session_performance()
 
@@ -3776,19 +3942,9 @@ class TabbedHUD:
         self._render_timeframe_mode_breakdown()
 
         def _q_rows(mode_key: str | None) -> list[tuple[str, dict]]:
-            def _pick(attr: str) -> dict:
-                if mode_key:
-                    return getattr(self, f"{attr}_by_mode", {}).get(mode_key, {}) or {}
-                return getattr(self, attr, {}) or {}
-            rows = [
-                ("24h", _pick("daily_metrics")),
-                ("7 days", _pick("weekly_metrics")),
-                ("Month", _pick("monthly_metrics")),
-                ("Epoch" if self._stats_epoch else "Lifetime", _pick("lifetime_metrics")),
-            ]
-            if self._stats_epoch:
-                rows.append(("Lifetime", _pick("all_time_metrics")))
-            return rows
+            if mode_key:
+                return self._period_rows_for_trades(_portfolio_by_mode.get(mode_key, []), _portfolio_all_by_mode.get(mode_key, []))
+            return self._period_rows_for_trades(_portfolio_trades, _portfolio_all_trades)
 
         if _mode == "mixed":
             print(f"\n  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
@@ -3801,15 +3957,27 @@ class TabbedHUD:
             _mk = _mode if _mode in ("paper", "live") else None
             self._render_trade_quality(_q_rows(_mk))
 
-        _quality_metrics = self.lifetime_metrics
-        if _mode == "paper":
-            _quality_metrics = self.lifetime_metrics_by_mode.get("paper", self.lifetime_metrics)
-        elif _mode == "live":
-            _quality_metrics = self.lifetime_metrics_by_mode.get("live", self.lifetime_metrics)
-
         pm = self.production_metrics.get("metrics", {})
-        # Always render timing and prediction convergence; use trade_log-derived
-        # lifetime_metrics for authoritative timing, pm for runtime convergence stats.
+        if self._has_active_scope():
+            _scope = self._active_scope_label()
+            print(f"\n  \033[1mACTIVE BOT DETAIL [{_scope}]\033[0m  {_ANSI_DIM}(per-bot decision-learning scope){_ANSI_RST}")
+            if _mode == "mixed":
+                print(f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
+                _render_period_rows(self._period_rows_for_trades(_active_by_mode["paper"], _active_all_by_mode["paper"]))
+                print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
+                _render_period_rows(self._period_rows_for_trades(_active_by_mode["live"], _active_all_by_mode["live"]))
+                print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
+            _render_period_rows(self._period_rows_for_trades(_active_trades, _active_all_trades))
+            _active_q = _active_trades
+            if _mode == "paper":
+                _active_q = _active_by_mode.get("paper", [])
+            elif _mode == "live":
+                _active_q = _active_by_mode.get("live", [])
+            self._render_trade_quality(self._period_rows_for_trades(_active_q, _active_all_trades))
+            _quality_metrics = _hud_period_metrics(_active_q, self._universe_starting_equity())
+        else:
+            _quality_metrics = _hud_period_metrics(_portfolio_trades, self._universe_starting_equity())
+        # Prediction convergence is scoped to the active bot when available.
         self._render_trade_timing(_quality_metrics, pm)
 
     def _render_current_session_performance(self) -> None:
@@ -3849,13 +4017,13 @@ class TabbedHUD:
         trades = self._trade_log_metrics_trades
         if not trades:
             return
-        paper_trades = self._trade_log_metrics_trades_by_mode.get("paper", [])
-        live_trades = self._trade_log_metrics_trades_by_mode.get("live", [])
+        paper_trades = [t for t in trades if t.get("trading_mode") == "paper"]
+        live_trades = [t for t in trades if t.get("trading_mode") == "live"]
 
         if not paper_trades and not live_trades:
             return
 
-        print("\n  \033[1mMODE BREAKDOWN\033[0m")
+        print("\n  \033[1mMODE BREAKDOWN (PORTFOLIO)\033[0m")
         _mb_hdr = f"  {'Mode':<8} {'Trades':>7} {'Win%':>7} {'PnL $':>11}"
         _mb_sep = "  " + "\u2500" * (_visible_width(_mb_hdr) - 2)
         print(_mb_hdr)
@@ -4087,7 +4255,7 @@ class TabbedHUD:
 
     def _resolve_prediction_convergence_metrics(self, pm: dict) -> dict:
         _mode = getattr(self, "_perf_snapshot_mode", "")
-        _trades = self._trade_log_metrics_trades
+        _trades = self._active_scope_trades(self._trade_log_metrics_trades)
         if _mode in ("paper", "live"):
             _trades = [t for t in _trades if str(t.get("trading_mode", "") or "").lower() == _mode]
 
@@ -4103,11 +4271,8 @@ class TabbedHUD:
             ]
 
         tl_active = self._compute_trade_log_convergence_metrics(_active_trades)
-        tl_all = self._compute_trade_log_convergence_metrics(_trades)
         use_active_runway = tl_active["runway_samples"] >= CONV_MIN_SAMPLES
         use_active_conf = tl_active["conf_samples"] >= CONV_MIN_SAMPLES
-        use_all_runway = tl_all["runway_samples"] >= CONV_MIN_SAMPLES
-        use_all_conf = tl_all["conf_samples"] >= CONV_MIN_SAMPLES
 
         if use_active_runway:
             runway_val = tl_active["runway_delta_ema"]
@@ -4116,17 +4281,10 @@ class TabbedHUD:
             runway_samples = tl_active["runway_samples"]
             avg_util = tl_active["avg_runway_utilization"]
             avg_err = tl_active["avg_runway_error_pct"]
-        elif use_all_runway:
-            runway_val = tl_all["runway_delta_ema"]
-            acc_val = tl_all["runway_accuracy_ema"]
-            runway_source = "trade_log.jsonl(mode_all_tf)"
-            runway_samples = tl_all["runway_samples"]
-            avg_util = tl_all["avg_runway_utilization"]
-            avg_err = tl_all["avg_runway_error_pct"]
         else:
             runway_val = float(pm.get("runway_delta_ema", 0.0))
             acc_val = float(pm.get("runway_accuracy_ema", 0.5))
-            runway_source = "production_metrics.json"
+            runway_source = "production_metrics.json(active_scope)"
             runway_samples = tl_active["runway_samples"]
             avg_util = tl_active["avg_runway_utilization"]
             avg_err = tl_active["avg_runway_error_pct"]
@@ -4135,13 +4293,9 @@ class TabbedHUD:
             conf_val = tl_active["conf_calib_err_ema"]
             conf_source = "trade_log.jsonl(active_tf)"
             conf_samples = tl_active["conf_samples"]
-        elif use_all_conf:
-            conf_val = tl_all["conf_calib_err_ema"]
-            conf_source = "trade_log.jsonl(mode_all_tf)"
-            conf_samples = tl_all["conf_samples"]
         else:
             conf_val = float(pm.get("conf_calib_err_ema", 0.5))
-            conf_source = "production_metrics.json"
+            conf_source = "production_metrics.json(active_scope)"
             conf_samples = tl_active["conf_samples"]
 
         return {
@@ -4263,25 +4417,26 @@ class TabbedHUD:
             pa_col = _ANSI_DIM
 
         print(
-            f"\n\033[1m🎯 PREDICTION CONVERGENCE\033[0m  "
+            f"\n\033[1m🎯 PREDICTION CONVERGENCE"
+            f"{' [' + self._active_scope_label() + ']' if self._has_active_scope() else ''}\033[0m  "
             f"{_ANSI_DIM}(per-period means; src=trade_log.jsonl){_ANSI_RST}\n"
         )
 
         if _mode == "mixed":
             print(f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
             self._render_prediction_convergence_table(self._prediction_convergence_rows(
-                self._trade_log_metrics_trades_by_mode.get("paper", []),
-                self._trade_log_all_trades_by_mode.get("paper", []),
+                self._active_scope_trades(self._trade_log_metrics_trades_by_mode.get("paper", [])),
+                self._active_scope_trades(self._trade_log_all_trades_by_mode.get("paper", [])),
             ))
             print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
             self._render_prediction_convergence_table(self._prediction_convergence_rows(
-                self._trade_log_metrics_trades_by_mode.get("live", []),
-                self._trade_log_all_trades_by_mode.get("live", []),
+                self._active_scope_trades(self._trade_log_metrics_trades_by_mode.get("live", [])),
+                self._active_scope_trades(self._trade_log_all_trades_by_mode.get("live", [])),
             ))
             print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
             self._render_prediction_convergence_table(self._prediction_convergence_rows(
-                self._trade_log_metrics_trades,
-                self._trade_log_all_trades,
+                self._active_scope_trades(self._trade_log_metrics_trades),
+                self._active_scope_trades(self._trade_log_all_trades),
             ))
         else:
             _mk = _mode if _mode in ("paper", "live") else None
@@ -4294,7 +4449,7 @@ class TabbedHUD:
                 if _mk else self._trade_log_all_trades
             )
             self._render_prediction_convergence_table(
-                self._prediction_convergence_rows(_scoped, _all)
+                self._prediction_convergence_rows(self._active_scope_trades(_scoped), self._active_scope_trades(_all))
             )
 
         print(
@@ -4314,7 +4469,7 @@ class TabbedHUD:
         and surfaces reward-relevant context (regime, runway, capture, PnL).
 
         Columns:
-          Date+Time | Mode | Agent | Decision | Conf | Detail (varies by decision type)
+          Date+Time | Bot | Mode | Agent | Decision | Conf | Detail (varies by decision type)
         """
         # ── Pre-filter: keep only selected mode when mixed ───────────────────
         if mode_filter in ("paper", "live"):
@@ -4360,7 +4515,7 @@ class TabbedHUD:
 
         # ── Header ────────────────────────────────────────────────────────
         header = (
-            f"  {'Time':<12} {'Mode':<5} {'Agent':<10} {'Decision':<10} "
+            f"  {'Time':<12} {'Bot':<13} {'Mode':<5} {'Agent':<10} {'Decision':<10} "
             f"{'Conf':>5}  {'Detail'}"
         )
         print(header)
@@ -4405,8 +4560,13 @@ class TabbedHUD:
             agent = entry.get("agent", "?")[:9]
             decision = entry.get("decision", "?")
             conf = entry.get("confidence", 0.0)
+            bot_str = self._decision_entry_bot_label(entry)[:13]
             ctx = entry.get("context", {})
+            if not isinstance(ctx, dict):
+                ctx = {}
             reasoning = entry.get("reasoning", {})
+            if not isinstance(reasoning, dict):
+                reasoning = {}
 
             # ── Build decision-specific detail string ──────────────────────
             dec_upper = decision.upper()
@@ -4480,7 +4640,7 @@ class TabbedHUD:
                 color = _ANSI_RST
 
             print(
-                f"  {ts_str:<12} {mode_str} {agent:<10} "
+                f"  {ts_str:<12} {bot_str:<13} {mode_str} {agent:<10} "
                 f"{color}{dec_upper:<10}{_ANSI_RST} "
                 f"{conf:>5.3f}  {detail}"
             )
@@ -4505,6 +4665,7 @@ class TabbedHUD:
             else:
                 mode_badge = ""
             details = entry.get("details", {})
+            bot_str = self._decision_entry_bot_label(entry)
             if isinstance(details, dict):
                 pos = details.get("cur_pos", "?")
                 action = details.get("action", "?")
@@ -4532,14 +4693,14 @@ class TabbedHUD:
                 color = _ANSI_Y
             else:
                 color = _ANSI_RST
-            print(f"  [{ts}] {mode_badge} {color}{event}{_ANSI_RST}: {details_str}")
+            print(f"  [{ts}] [{bot_str}] {mode_badge} {color}{event}{_ANSI_RST}: {details_str}")
         print("  " + "─" * 76)
         print(f"\n  Total decisions logged: {len(entries)}")
 
     def _render_decision_log(self):
         """Render the Decision Log tab (Tab 6) — newest entries first."""
-        print("\n\033[1m📝 DECISION LOG\033[0m (last 20 entries)\n")
-        print(f"  {_ANSI_DIM}(canonical source: {self.data_dir / 'logs' / 'audit' / 'decisions.jsonl'} + per-bot audit files; fallback: {self.data_dir / 'decision_log.json'}){_ANSI_RST}")
+        print("\n\033[1m📝 DECISION LOG (ALL BOTS)\033[0m (last 20 entries)\n")
+        print(f"  {_ANSI_DIM}(canonical source: per-bot logs/audit/decisions.jsonl; Bot column is symbol/timeframe scope){_ANSI_RST}")
 
         _mode_filter = ""
         if getattr(self, "_trade_log_mode", "") == "mixed":
@@ -4552,13 +4713,13 @@ class TabbedHUD:
 
         _decision_files: list[Path] = []
         _primary = self.data_dir / "logs" / "audit" / "decisions.jsonl"
+        _decision_files.extend(sorted(self.data_dir.glob("paper_*_M*/logs/audit/decisions.jsonl")))
         if _primary.exists():
             _decision_files.append(_primary)
-        _decision_files.extend(sorted(self.data_dir.glob("paper_*_M*/logs/audit/decisions.jsonl")))
 
         entries_jsonl: list[dict] = []
         if _decision_files:
-            _seen: set[tuple[str, str, str]] = set()
+            _seen: set[tuple[str, str, str, str, str]] = set()
             try:
                 for _jf in _decision_files:
                     with open(_jf, encoding="utf-8") as f:
@@ -4567,8 +4728,17 @@ class TabbedHUD:
                             if not stripped:
                                 continue
                             _entry = json.loads(stripped)
+                            _entry.setdefault("_source_path", str(_jf))
+                            _tf_label = self._decision_entry_timeframe_label(_entry)
+                            if _jf == _primary and not self._decision_entry_has_scope(_entry) and len(_decision_files) > 1:
+                                continue
+                            _ctx_for_key = _entry.get("context", {})
+                            if not isinstance(_ctx_for_key, dict):
+                                _ctx_for_key = {}
                             _dedupe_key = (
                                 str(_entry.get("timestamp") or _entry.get("ts") or _entry.get("time") or ""),
+                                str(_entry.get("symbol") or _ctx_for_key.get("symbol") or ""),
+                                _tf_label,
                                 str(_entry.get("trade_id") or ""),
                                 str(_entry.get("event") or _entry.get("decision") or ""),
                             )
@@ -4583,40 +4753,47 @@ class TabbedHUD:
             def _ts_key(e: dict) -> str:
                 return str(e.get("timestamp") or e.get("ts") or e.get("time") or "")
             entries_jsonl.sort(key=_ts_key, reverse=True)
-            self._render_jsonl_decision_entries(entries_jsonl, _mode_filter)
+            self._render_jsonl_decision_entries(entries_jsonl[:20], _mode_filter)
             return
 
-        log_file = self.data_dir / "decision_log.json"
-        if not log_file.exists():
+        legacy_files = sorted(self.data_dir.glob("decision_log_*_M*.json"))
+        legacy_files.extend(sorted(self.data_dir.glob("paper_*_M*/decision_log_*_M*.json")))
+        root_legacy = self.data_dir / "decision_log.json"
+        if root_legacy.exists():
+            legacy_files.append(root_legacy)
+        if not legacy_files:
             print("  ⚠️  No decision log found.")
             print("\n  Expected files:")
-            print("    logs/audit/decisions.jsonl  (rich — primary)")
-            print("    data/decision_log.json  (legacy — fallback)")
+            print("    paper_<SYMBOL>_M<TF>/logs/audit/decisions.jsonl  (rich — primary)")
+            print("    paper_<SYMBOL>_M<TF>/decision_log_<SYMBOL>_M<TF>.json  (legacy — fallback)")
             return
 
         try:
-            raw_text = log_file.read_text(encoding="utf-8")
-            # decision_log.json can end up as multiple appended JSON arrays
-            # (e.g. [...][\n...]) due to successive bot restarts writing the
-            # same file.  Walk through all top-level objects/arrays to collect
-            # every entry regardless of how many times the file was rewritten.
             _dec = json.JSONDecoder()
-            _pos = 0
             entries: list = []
-            while _pos < len(raw_text):
-                _stripped = raw_text[_pos:].lstrip()
-                if not _stripped:
-                    break
-                _skip = len(raw_text[_pos:]) - len(_stripped)
-                try:
-                    _obj, _idx = _dec.raw_decode(raw_text, _pos + _skip)
-                    _pos = _pos + _skip + _idx
-                    if isinstance(_obj, list):
-                        entries.extend(_obj)
-                    elif isinstance(_obj, dict):
-                        entries.append(_obj)
-                except json.JSONDecodeError:
-                    break
+            for log_file in legacy_files:
+                raw_text = log_file.read_text(encoding="utf-8")
+                # Legacy decision logs can end up as multiple appended JSON arrays
+                # after restarts. Walk all top-level objects/arrays.
+                _pos = 0
+                while _pos < len(raw_text):
+                    _stripped = raw_text[_pos:].lstrip()
+                    if not _stripped:
+                        break
+                    _skip = len(raw_text[_pos:]) - len(_stripped)
+                    try:
+                        _obj, _idx = _dec.raw_decode(raw_text, _pos + _skip)
+                        _pos = _pos + _skip + _idx
+                        if isinstance(_obj, list):
+                            for _entry in _obj:
+                                if isinstance(_entry, dict):
+                                    _entry.setdefault("_source_path", str(log_file))
+                                entries.append(_entry)
+                        elif isinstance(_obj, dict):
+                            _obj.setdefault("_source_path", str(log_file))
+                            entries.append(_obj)
+                    except json.JSONDecodeError:
+                        break
         except Exception as e:
             print(f"  ❌ Error reading decision log: {e}")
             return
@@ -4629,9 +4806,10 @@ class TabbedHUD:
 
     def _render_risk(self):
         """Render risk management details."""
-        print("\n\033[1m⚠️  RISK MANAGEMENT\033[0m\n")
-        print(f"  {_ANSI_DIM}(source: risk_stats.json + circuit_breakers.json){_ANSI_RST}")
         rs = self.risk_stats
+        _scope = self._risk_scope_label(rs)
+        print(f"\n\033[1m⚠️  RISK MANAGEMENT [{_scope}]\033[0m\n")
+        print(f"  {_ANSI_DIM}(source: scoped risk_metrics + circuit_breakers.json){_ANSI_RST}")
         self._render_risk_circuit_breaker(rs)
         self._render_risk_tail(rs)
         self._render_risk_regime(rs)
@@ -4643,6 +4821,7 @@ class TabbedHUD:
         """Render circuit breaker status block with individual breaker details."""
         cb = rs.get("circuit_breaker", "INACTIVE")
         kurt_gate = rs.get("kurtosis_gate_active", False)
+        _scope = self._risk_scope_label(rs)
         if cb == "ACTIVE":
             print(f"  {_ANSI_R}╔════════════════════════════════════════╗")
             print("  ║     ⚠️  CIRCUIT BREAKER ACTIVE ⚠️       ║")
@@ -4651,16 +4830,17 @@ class TabbedHUD:
         elif kurt_gate:
             _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
             _kurt_note = "entries BLOCKED" if _is_live_mode else "bypassed in paper mode"
+            _kurt_threshold = float(rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD)
             print(
-                f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE "
-                f"(κ={rs.get('kurtosis', 0):.1f} excess > 3.0){_ANSI_RST}  "
+                f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE [{_scope}] "
+                f"(κ={rs.get('kurtosis', 0):.1f} excess > {_kurt_threshold:.1f}){_ANSI_RST}  "
                 f"{_ANSI_DIM}{_kurt_note}{_ANSI_RST}\n"
             )
         else:
             print(f"  {_ANSI_G}✓ Circuit Breaker: INACTIVE{_ANSI_RST}\n")
 
         # Load individual breaker statuses from circuit_breakers.json
-        _cb_path = self.data_dir / "circuit_breakers.json"
+        _cb_path = self._preferred_data_file("circuit_breakers.json")
         _cb_data: dict = {}
         if _cb_path.exists():
             try:
@@ -4680,6 +4860,9 @@ class TabbedHUD:
         print("  \033[1m🔌 INDIVIDUAL BREAKERS\033[0m")
         _kurt_gate_active = bool(rs.get("kurtosis_gate_active", False))
         _kurtosis_now = float(rs.get("kurtosis", 0.0) or 0.0)
+        _kurtosis_threshold = float(
+            rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
+        )
         for _key, _label in _breaker_labels.items():
             _b = _cb_data.get(_key)
             if not isinstance(_b, dict):
@@ -4697,7 +4880,7 @@ class TabbedHUD:
 
                 _reason = _b.get("trip_reason", "")
                 if _gate_only:
-                    _reason = "Kurtosis gate active (entry gate)"
+                    _reason = f"Kurtosis gate active [{_scope}] (entry gate)"
                 if _reason:
                     _detail += f"  {_ANSI_Y}→ {_reason}{_ANSI_RST}"
 
@@ -4705,7 +4888,7 @@ class TabbedHUD:
                 _th = _b.get("threshold", 0.0)
                 if _gate_only:
                     _tv = _kurtosis_now
-                    _th = 3.0
+                    _th = _kurtosis_threshold
                 if _tv or _th:
                     _detail += f"  {_ANSI_DIM}(val={_tv:.2f} thr={_th:.2f}){_ANSI_RST}"
 
@@ -4739,14 +4922,27 @@ class TabbedHUD:
             print(f"    {_label:<15} {_icon}{_detail}{_extra}")
         print()
 
+    def _risk_scope_label(self, rs: dict) -> str:
+        """Return display scope for risk metrics."""
+        _sym = str(rs.get("symbol") or self.active_sym or "").strip().upper()
+        _tf = self._normalize_timeframe_label(rs)
+        if _tf == "M?" and self.active_tf_min:
+            _tf = self._format_timeframe_minutes_label(self.active_tf_min)
+        if _sym and _tf != "M?":
+            return f"{_sym} {_tf}"
+        if _tf != "M?":
+            return _tf
+        return _sym or "unknown timeframe"
+
     def _render_risk_tail(self, rs: dict) -> None:
         """Render tail risk values."""
         print("  \033[1m📉 TAIL RISK\033[0m")
         var = rs.get("var", 0) * 100
         kurtosis = rs.get("kurtosis", 0)
+        kurtosis_threshold = float(rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD)
         vol = rs.get("realized_vol", 0) * 100
 
-        kurt_col = _ANSI_R if kurtosis > KURTOSIS_FAT_TAIL_THRESHOLD else _ANSI_G
+        kurt_col = _ANSI_R if kurtosis > kurtosis_threshold else _ANSI_G
         if var > VAR_HIGH_PCT:
             var_col = _ANSI_R
         elif var > VAR_WARN_PCT:
@@ -4767,7 +4963,7 @@ class TabbedHUD:
         print(f"    Realized vol:      {vol_col}{vol:>9.3f}%{_ANSI_RST}")
         print(
             f"    Kurtosis:          {kurt_col}{kurtosis:>9.2f}{_ANSI_RST}  "
-            f"{_ANSI_DIM}(excess; >0 = fat tails; gate fires at >3){_ANSI_RST}"
+            f"{_ANSI_DIM}(excess; >0 = fat tails; gate fires at >{kurtosis_threshold:.1f}){_ANSI_RST}"
         )
         print()
 
@@ -5060,7 +5256,8 @@ class TabbedHUD:
 
     def _render_market(self):
         """Render market microstructure."""
-        print("\n\033[1m🔬 MARKET MICROSTRUCTURE\033[0m\n")
+        _scope = self._risk_scope_label(self.risk_stats)
+        print(f"\n\033[1m🔬 MARKET MICROSTRUCTURE [{_scope}]\033[0m\n")
         _market_age: float | None = None
         _sources = (
             self._preferred_data_file(_ORDER_BOOK_FILE),
@@ -5242,7 +5439,7 @@ class TabbedHUD:
         _now = time.time()
         if _now - self._all_trades_loaded_at < 5.0:
             return
-        trades = read_all_trades(self.data_dir / "trade_log.jsonl")
+        trades = list(self._trade_log_reader.trades)
         for trade in trades:
             raw_mode = str(trade.get("trading_mode", "") or "").strip().lower()
             if raw_mode in ("paper", "live"):
@@ -5340,14 +5537,17 @@ class TabbedHUD:
                 _mode_filter = ""
         trades_view = self._all_trades
         if _mode_filter:
-            trades_view = [t for t in self._all_trades if t.get("trading_mode") == _mode_filter]
+            trades_view = [t for t in trades_view if t.get("trading_mode") == _mode_filter]
         self._trades_view = trades_view
+        if self._trades_detail and self._trades_detail_trade not in trades_view:
+            self._trades_detail = False
+            self._trades_detail_trade = {}
 
         W = self._term_width()
         total = len(trades_view)
         if total == 0:
             _empty_label = f" ({_mode_filter})" if _mode_filter else ""
-            print(f"\n\033[1m[T] TRADE HISTORY\033[0m{_empty_label}  No trades recorded yet.")
+            print(f"\n\033[1m[T] TRADE HISTORY (PORTFOLIO)\033[0m{_empty_label}  No trades recorded yet.")
             return
         self._trades_per_page = self._trade_rows_per_page()
         max_page = max(0, (total - 1) // self._trades_per_page)
@@ -5357,8 +5557,13 @@ class TabbedHUD:
         self._trades_cursor = min(self._trades_cursor, max(0, len(page_trades) - 1))
 
         # Header
-        lm = self.all_time_metrics_by_mode.get(_mode_filter, self.all_time_metrics) if _mode_filter else self.all_time_metrics
-        epoch_lm = self.lifetime_metrics_by_mode.get(_mode_filter, self.lifetime_metrics) if _mode_filter else self.lifetime_metrics
+        _all_for_header = self._trade_log_all_trades
+        _epoch_for_header = self._trade_log_metrics_trades
+        if _mode_filter:
+            _all_for_header = [t for t in _all_for_header if t.get("trading_mode") == _mode_filter]
+            _epoch_for_header = [t for t in _epoch_for_header if t.get("trading_mode") == _mode_filter]
+        lm = _hud_period_metrics(_all_for_header, self._universe_starting_equity())
+        epoch_lm = _hud_period_metrics(_epoch_for_header, self._universe_starting_equity())
         total_pnl = lm.get("total_pnl", 0.0)
         wins      = lm.get("winning_trades", 0)
         losses    = lm.get("losing_trades", 0)
@@ -5380,11 +5585,15 @@ class TabbedHUD:
         _compact = self._trades_per_page <= 6
         if _compact:
             print(
-                f"\033[1m[T] TRADES\033[0m [{total}] {pg_str} {_ANSI_DIM}{_bar}{_ANSI_RST} "
+                f"\033[1m[T] TRADES (PORTFOLIO)\033[0m "
+                f"[{total}] {pg_str} {_ANSI_DIM}{_bar}{_ANSI_RST} "
                 f"PnL {self._pnl_color(total_pnl)}{total_pnl:+.2f}{_ANSI_RST}{_mode_hdr}"
             )
         else:
-            print(f"\033[1m[T] TRADE HISTORY\033[0m  [{total} trades]  {pg_str}  {_ANSI_DIM}{_bar}{_ANSI_RST}{_mode_hdr}")
+            print(
+                f"\033[1m[T] TRADE HISTORY (PORTFOLIO)\033[0m  "
+                f"[{total} trades]  {pg_str}  {_ANSI_DIM}{_bar}{_ANSI_RST}{_mode_hdr}"
+            )
 
         if self._trades_detail:
             self._render_trade_detail(self._trades_detail_trade)
@@ -5486,14 +5695,13 @@ class TabbedHUD:
                 _cap_val = max(-999.0, min(999.0, _cap_ratio * 100.0))
                 _cap_s = f"{_cap_val:>+{_C_CAP - 1}.0f}%"
                 _cap_c = self._pnl_color(_cap_val)
-            else:
+            elif float(_pnl or 0.0) < 0.0:
                 # No positive excursion => capture is undefined; flag losses red.
-                if float(_pnl or 0.0) < 0.0:
-                    _cap_s = f"{'n/a':>{_C_CAP}}"
-                    _cap_c = _ANSI_R
-                else:
-                    _cap_s = f"{'—':>{_C_CAP}}"
-                    _cap_c = _ANSI_DIM
+                _cap_s = f"{'n/a':>{_C_CAP}}"
+                _cap_c = _ANSI_R
+            else:
+                _cap_s = f"{'—':>{_C_CAP}}"
+                _cap_c = _ANSI_DIM
 
             # Mode badge — single char, always renders 1 column wide
             _tmode = _t.get("trading_mode", "")
@@ -5581,11 +5789,10 @@ class TabbedHUD:
             _cap_pct = max(-999.0, min(999.0, _cap_ratio * 100.0))
             _cc = self._pnl_color(_cap_pct)
             print(f"  {'%MFE captured:':<16} {_cc}{_cap_pct:+.1f}%{_ANSI_RST}  (normalized capture_ratio)")
+        elif float(_pnl or 0.0) < 0.0:
+            print(f"  {'%MFE captured:':<16} {_ANSI_R}n/a{_ANSI_RST}  (loss with zero MFE)")
         else:
-            if float(_pnl or 0.0) < 0.0:
-                print(f"  {'%MFE captured:':<16} {_ANSI_R}n/a{_ANSI_RST}  (loss with zero MFE)")
-            else:
-                print(f"  {'%MFE captured:':<16} {_ANSI_DIM}—{_ANSI_RST}")
+            print(f"  {'%MFE captured:':<16} {_ANSI_DIM}—{_ANSI_RST}")
         print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f} USD{_ANSI_RST}  (max favourable account-currency excursion)")
         print(f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f} USD{_ANSI_RST}  (max adverse account-currency excursion){_ratio_str}")
         print(f"  {'Close reason:':<16} {_rsn}")

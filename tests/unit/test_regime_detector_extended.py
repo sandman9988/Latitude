@@ -5,16 +5,16 @@ _autocorrelation edge cases, get_regime_info, regime transition,
 instrument volatility scaling, cache invalidation.
 """
 
-import pytest
 import numpy as np
+import pytest
 
 from src.features.regime_detector import (
-    RUNWAY_MULT_MEAN_REVERTING,
-    RUNWAY_MULT_NEUTRAL,
-    RUNWAY_MULT_TRENDING,
     REGIME_ADJ_MEAN_REVERTING,
     REGIME_ADJ_NEUTRAL,
     REGIME_ADJ_TRENDING,
+    RUNWAY_MULT_MEAN_REVERTING,
+    RUNWAY_MULT_NEUTRAL,
+    RUNWAY_MULT_TRENDING,
     RegimeDetector,
 )
 

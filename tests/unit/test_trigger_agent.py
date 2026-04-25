@@ -23,10 +23,10 @@ rng = np.random.default_rng(42)
 import pytest
 
 from src.agents.trigger_agent import (
-    TriggerAgent,
-    Q_RUNWAY_MIN,
     Q_RUNWAY_MAX,
     Q_RUNWAY_MAX_Q,
+    Q_RUNWAY_MIN,
+    TriggerAgent,
 )
 
 LOG = logging.getLogger(__name__)
@@ -356,6 +356,21 @@ class TestTriggerUpdateFromTrade:
         ta.update_from_trade(actual_mfe=0.003, predicted_runway=0.0)
         # Zero predicted → skip logging
 
+    def test_update_from_trade_uses_gross_when_net_runway_zero(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta._q_to_runway(1.5)  # Sets _last_entry_q for calibration update.
+
+        ta.update_from_trade(
+            actual_mfe=10.0,
+            predicted_runway=0.0,
+            predicted_runway_gross=0.002,
+            entry_price=5000.0,
+        )
+
+        bucket = TriggerAgent._q_bucket(1.5)
+        assert ta._runway_cal_counts[bucket] == 1
+        assert ta._runway_err_abs_ewma[bucket] == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # Platt parameter updates
@@ -469,7 +484,7 @@ class TestEWMARunwayCalibration:
 
     def test_ewma_adapts_over_time(self):
         """EWMA should track changing MFE values."""
-        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES, RUNWAY_CAL_ALPHA
+        from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
         ta = TriggerAgent(window=64, n_features=7)
         # Fill bucket with 0.002 first
         for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):

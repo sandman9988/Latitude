@@ -70,6 +70,15 @@ class TradingMetrics:
     # Timestamp
     timestamp: float
 
+    # Runtime scope. Defaults preserve compatibility with older callers while
+    # allowing HUD/alert consumers to reject wrong-symbol or wrong-timeframe
+    # payloads instead of trusting the filename alone.
+    symbol: str = ""
+    timeframe: str = ""
+    timeframe_minutes: int = 0
+    broker: str = "default"
+    trading_mode: str = ""
+
     # Prediction convergence (EMA-10 trades, defaults until first trade closes)
     runway_delta_ema: float = 0.0
     runway_accuracy_ema: float = 0.5
@@ -105,7 +114,8 @@ class ProductionMonitor:
         alert_drawdown_pct: float = 0.10,
         alert_memory_pct: float = 0.80,
         alert_error_rate_1h: int = 20,
-        # Metrics file
+        # Metrics file. Runtime bots pass an explicit scoped path. When omitted,
+        # the monitor only persists if update_metrics carries symbol/timeframe.
         metrics_file: Path | None = None,
         # HTTP server
         http_enabled: bool = True,
@@ -116,7 +126,7 @@ class ProductionMonitor:
         self.alert_memory_pct = alert_memory_pct
         self.alert_error_rate_1h = alert_error_rate_1h
 
-        self.metrics_file = Path(metrics_file) if metrics_file else Path("data/production_metrics.json")
+        self.metrics_file = Path(metrics_file) if metrics_file else None
 
         # Current metrics
         self.metrics: TradingMetrics | None = None
@@ -139,6 +149,10 @@ class ProductionMonitor:
         the values that changed.
         """
         uptime_hours = (time.time() - self.start_time) / 3600
+        try:
+            timeframe_minutes = int(kwargs.get("timeframe_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            timeframe_minutes = 0
 
         self.metrics = TradingMetrics(
             # P&L
@@ -174,6 +188,12 @@ class ProductionMonitor:
             error_count_1h=kwargs.get("error_count_1h", 0),
             fix_connected=kwargs.get("fix_connected", True),
             timestamp=time.time(),
+            # Runtime scope
+            symbol=str(kwargs.get("symbol", "") or ""),
+            timeframe=str(kwargs.get("timeframe", "") or ""),
+            timeframe_minutes=timeframe_minutes,
+            broker=str(kwargs.get("broker", "default") or "default"),
+            trading_mode=str(kwargs.get("trading_mode", "") or ""),
         )
 
         # Check for alerts
@@ -294,7 +314,24 @@ class ProductionMonitor:
 
         from src.utils.safe_utils import save_json_atomic  # noqa: PLC0415
 
-        save_json_atomic(self.metrics_file, data)
+        metrics_file = self._metrics_file_for_current_scope()
+        if metrics_file is None:
+            logger.debug("Skipping production metrics persistence without explicit or scoped path")
+            return
+
+        save_json_atomic(metrics_file, data)
+
+    def _metrics_file_for_current_scope(self) -> Path | None:
+        """Resolve the file that should receive the current metrics payload."""
+        if self.metrics_file is not None:
+            return self.metrics_file
+        if not self.metrics:
+            return None
+        symbol = str(self.metrics.symbol or "").strip().upper()
+        timeframe_minutes = int(self.metrics.timeframe_minutes or 0)
+        if not symbol or timeframe_minutes <= 0:
+            return None
+        return Path("data") / f"production_metrics_{symbol}_M{timeframe_minutes}.json"
 
     def get_metrics_json(self) -> str:
         """Get metrics as JSON string."""

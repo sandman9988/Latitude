@@ -9,6 +9,7 @@ Enhanced with defense-in-depth safety layer and state persistence.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import TYPE_CHECKING
 
@@ -319,10 +320,8 @@ class TradeManagerIntegration:
         # Determine if this is a net-close sentinel (no specific broker ticket)
         _net_close_dir: int | None = None
         if closed_ticket.startswith("_NET_"):
-            try:
+            with contextlib.suppress(ValueError):
                 _net_close_dir = int(closed_ticket[5:])
-            except ValueError:
-                pass
         with self.app._tracker_lock:
             for pos_id, tracker in self.app.mfe_mae_trackers.items():
                 if _net_close_dir is not None:
@@ -1248,10 +1247,8 @@ class TradeManagerIntegration:
             # Restore trade_entry_time for bars_held calculation after restart
             entry_time_str = ticket_data.get("entry_time")
             if entry_time_str and hasattr(self.app, "trade_entry_time"):
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     self.app.trade_entry_time = _dt.datetime.fromisoformat(entry_time_str)
-                except (ValueError, TypeError):
-                    pass
             LOG.info(
                 "[HEDGING] ✓ Recovered position ticket=%s: pos_id=%s entry=%.5f dir=%d qty=%.6f",
                 ticket, position_id, ticket_data["entry_price"], ticket_data["direction"], ticket_data["quantity"],

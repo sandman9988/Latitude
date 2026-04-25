@@ -1,7 +1,7 @@
 import pytest
 
-from src.risk.friction_costs import FrictionCalculator
 from src.agents.harvester_agent import HarvesterAgent
+from src.risk.friction_costs import FrictionCalculator
 
 
 @pytest.fixture

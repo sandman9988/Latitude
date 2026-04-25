@@ -25,15 +25,14 @@ from pathlib import Path
 import pytest
 
 from src.monitoring.hud_tabbed import (
-    TabbedHUD,
     _ANSI_G,
     _ANSI_R,
     _ANSI_Y,
+    TabbedHUD,
     _strip_ansi,
     _truncate_visible,
     _visible_width,
 )
-
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────
 
@@ -93,6 +92,8 @@ def hud(tmp_path: Path) -> TabbedHUD:
     audit_dir.mkdir(parents=True)
     (audit_dir / "decisions.jsonl").write_text(json.dumps({
         "timestamp": "2026-04-22T14:00:00+00:00",
+        "timeframe": "M15",
+        "timeframe_minutes": 15,
         "trading_mode": "paper",
         "agent": "trigger",
         "decision": "LONG",
@@ -232,7 +233,7 @@ class TestTableAlignment:
         frame = _render_tab(hud, "log")
         lines = frame.split("\n")
         for i, ln in enumerate(lines):
-            if re.search(r"^\s+Time\s+Mode\s+Agent\s+Decision\s+Conf\s+Detail",
+            if re.search(r"^\s+Time\s+Bot\s+Mode\s+Agent\s+Decision\s+Conf\s+Detail",
                          _strip_ansi(ln)):
                 # Separator on the very next non-blank line
                 j = i + 1
@@ -241,13 +242,49 @@ class TestTableAlignment:
                 assert j < len(lines)
                 sep = lines[j]
                 # "Detail" column is variable width — assert the table *prefix*
-                # up to and including the 2-space gutter before Detail is a
-                # fixed 51 visible cells.
-                prefix_width = 2 + 12 + 1 + 5 + 1 + 10 + 1 + 10 + 1 + 5 + 2
+                # up to and including the 2-space gutter before Detail.
+                prefix_width = 2 + 12 + 1 + 13 + 1 + 5 + 1 + 10 + 1 + 10 + 1 + 5 + 2
                 assert _visible_width(ln) >= prefix_width
                 assert _visible_width(sep) >= prefix_width
                 return
         pytest.fail("decision-log header not found")
+
+    def test_decision_log_shows_timeframe(self, hud: TabbedHUD):
+        frame = _strip_ansi(_render_tab(hud, "log"))
+        assert re.search(r"\b04-22T14:00\s+XAUUSD/M15\s+PPR\s+trigger\s+LONG\b", frame)
+
+    def test_decision_log_skips_unscoped_root_when_scoped_logs_exist(self, tmp_path: Path):
+        root_audit = tmp_path / "logs" / "audit"
+        root_audit.mkdir(parents=True)
+        (root_audit / "decisions.jsonl").write_text(json.dumps({
+            "timestamp": "2026-04-24T17:30:00+00:00",
+            "trading_mode": "paper",
+            "agent": "TriggerAgent",
+            "decision": "NO_ENTRY",
+            "confidence": 0.47,
+            "context": {"price": 4723.18},
+            "reasoning": {},
+        }) + "\n")
+
+        scoped_audit = tmp_path / "paper_XAUUSD_M5" / "logs" / "audit"
+        scoped_audit.mkdir(parents=True)
+        (scoped_audit / "decisions.jsonl").write_text(json.dumps({
+            "timestamp": "2026-04-24T17:25:00+00:00",
+            "trading_mode": "paper",
+            "agent": "TriggerAgent",
+            "decision": "LONG",
+            "confidence": 0.82,
+            "context": {"price": 4720.0},
+            "reasoning": {"feasibility": 0.7},
+        }) + "\n")
+
+        hud = TabbedHUD()
+        hud.data_dir = tmp_path
+        frame = _strip_ansi(_render_tab(hud, "log"))
+
+        assert "M5" in frame
+        assert "M?" not in frame
+        assert "17:30" not in frame
 
 
 # ─── Duplicate-row checks ────────────────────────────────────────────────

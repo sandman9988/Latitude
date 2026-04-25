@@ -3,11 +3,11 @@
 
 ## For Future Claude Instances
 
-**Last Updated:** 2026-03-19 (branch update-1.1-mfe-mae-tracking-v2)  
-**Project:** Dual-Agent Deep Q-Network (DDQN) Reinforcement Learning Trading System  
-**Platform:** cTrader via FIX 4.4 Protocol (Dual Sessions: Quote + Trade)  
-**Implementation:** Python 3.12 (41,878 lines production code + 35,207 lines tests, 143 test files, 2,221 passing)  
-**Status:** Active paper trading XAUUSD M5 — DDQN agents learning live; all stats wired; HUD fully audited; defense-in-depth audit complete  
+**Last Updated:** 2026-04-25 (branch update-1.1-mfe-mae-tracking-v2)
+**Project:** Dual-Agent Deep Q-Network (DDQN) Reinforcement Learning Trading System
+**Platform:** cTrader via FIX 4.4 Protocol (Dual Sessions: Quote + Trade)
+**Implementation:** Python 3.12
+**Status:** Active paper trading XAUUSD multi-timeframe fleet; per-symbol/per-timeframe metrics, learning state, offline champions, and runtime checkpoint sync are the current operating model
 **User:** Renier - Expert algorithmic trader
 
 ---
@@ -31,6 +31,7 @@ FIX Trade Session ← Orders ← Risk Checks ← Position Sizing ← Signals
 ```
 
 **Key Files:**
+- `AGENTS.md` - Coding-agent operating rules and source-of-truth constraints
 - `src/core/ctrader_ddqn_paper.py` - Main bot (6,354 lines)
 - `src/agents/trigger_agent.py` - Entry specialist (830 lines)
 - `src/agents/harvester_agent.py` - Exit specialist (906 lines)
@@ -41,6 +42,27 @@ FIX Trade Session ← Orders ← Risk Checks ← Position Sizing ← Signals
 - `src/features/regime_detector.py` - DSP regime detection (438 lines)
 - `src/monitoring/hud_tabbed.py` - Terminal HUD 7-tab UI (3,855 lines)
 - `src/core/broker_execution_model.py` - Asymmetric slippage model (440 lines)
+
+---
+
+## CODING AGENT OPERATING RULES
+
+Root `AGENTS.md` is the concise source for agent instructions. The key rules are:
+
+- Scope runtime facts by `(symbol, timeframe_minutes)`: metrics, learned
+  parameters, decision logs, caches, reward-shaping telemetry, runway
+  calibration, training stats, offline status, and checkpoints.
+- Use canonical timeframe file labels. The H4 trading timeframe is stored as
+  `M240`; do not create a parallel `H4` runtime/cache/checkpoint path.
+- Offline champion guards come from `data/checkpoints/offline_champions.json`,
+  then `data/universe.json`. Historical training logs are never acceptance
+  guards.
+- `data/universe.json` is the promoted weight registry. `run_universe.py` syncs
+  those weights into isolated runtime checkpoint directories and restarts stale
+  running paper bots.
+- Account-level exposure decisions require an explicit portfolio/gateway view.
+  Per-timeframe agents may learn independently, but they must not silently fight
+  over broker-account state.
 
 ---
 

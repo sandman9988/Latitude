@@ -25,7 +25,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_CONTRACT_SIZE_BY_SYMBOL: dict[str, float] = {
     "XAUUSD": 100.0,
 }

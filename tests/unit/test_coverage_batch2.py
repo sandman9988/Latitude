@@ -6,12 +6,10 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 from src.core.order_book import OrderBook, VPINCalculator
 from src.monitoring.activity_monitor import ActivityMonitor
-
 
 # ===========================================================================
 # OrderBook – spread non-finite (line 76)

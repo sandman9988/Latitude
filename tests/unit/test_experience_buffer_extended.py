@@ -5,8 +5,9 @@ set_current_regime, staleness negative-age, RegimeSampling enum.
 """
 
 import time
-import pytest
+
 import numpy as np
+import pytest
 
 from src.utils.experience_buffer import (
     ExperienceBuffer,

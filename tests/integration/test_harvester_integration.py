@@ -10,8 +10,8 @@ Verify complete integration:
 
 This simulates the actual bot flow: FLAT → ENTRY → IN_POSITION → EXIT
 """
-import sys
 import json
+import sys
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path

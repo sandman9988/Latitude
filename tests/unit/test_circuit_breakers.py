@@ -1,5 +1,6 @@
 """Tests for src.risk.circuit_breakers – BreakerState, individual breakers, CircuitBreakerManager."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,7 +15,6 @@ from src.risk.circuit_breakers import (
     KurtosisBreaker,
     SortinoBreaker,
 )
-
 
 # ---------------------------------------------------------------------------
 # BreakerState
@@ -406,3 +406,30 @@ class TestCircuitBreakerManager:
         mgr = CircuitBreakerManager(param_manager=pm)
         # Should use learned/default values without error
         assert mgr.sortino_threshold > 0
+
+    def test_restore_keeps_learned_kurtosis_threshold_authoritative(self, tmp_path):
+        from src.persistence.learned_parameters import LearnedParametersManager
+
+        pm = LearnedParametersManager(persistence_path=tmp_path / "params.json")
+        pm.set_value("XAUUSD", "kurtosis_threshold", 7.0, timeframe="M5", broker="default")
+        state_path = tmp_path / "cb_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "kurtosis": {
+                        "is_tripped": False,
+                        "trip_time": None,
+                        "trip_reason": "",
+                        "trip_value": 0.0,
+                        "threshold": 3.0,
+                        "cooldown_minutes": 60,
+                        "returns": [],
+                    }
+                }
+            )
+        )
+
+        mgr = CircuitBreakerManager(symbol="XAUUSD", timeframe="M5", broker="default", param_manager=pm)
+        assert mgr.kurtosis_breaker.threshold == pytest.approx(7.0)
+        assert mgr.restore_state(str(state_path)) is True
+        assert mgr.kurtosis_breaker.threshold == pytest.approx(7.0)

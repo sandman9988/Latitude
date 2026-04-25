@@ -11,11 +11,9 @@ Verifies the integration layer between CTraderFixApp and TradeManager:
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from src.core.trade_manager import Order, OrderStatus, OrdType, Side, TradeManager
+from src.core.trade_manager import Side, TradeManager
 from src.core.trade_manager_integration import TradeManagerIntegration
 
 LOG = logging.getLogger(__name__)

@@ -18,9 +18,9 @@ From C# Skeleton: AdaptiveRL_cTrader_Skeleton_v0_1/Core/PathGeometry.cs
 import logging
 from collections import deque
 
-from src.utils.safe_math import SafeMath
-
 import numpy as np
+
+from src.utils.safe_math import SafeMath
 
 # Path geometry calculation constants
 MIN_BARS_FOR_GEOMETRY: int = 3  # Need at least 3 bars for derivatives
@@ -111,10 +111,7 @@ class PathGeometry:
         # Jerk: rate of change of acceleration
         # On the very first call _prev_gamma is the init sentinel (0.0),
         # so there is no valid prior to diff against — emit 0.
-        if self._initialized:
-            jerk = gamma - self._prev_gamma
-        else:
-            jerk = 0.0
+        jerk = gamma - self._prev_gamma if self._initialized else 0.0
 
         # Efficiency: displacement / path length over 3 points
         displacement = abs(c2 - c0)

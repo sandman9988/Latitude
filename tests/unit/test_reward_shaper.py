@@ -4,7 +4,6 @@ import pytest
 
 from src.core.reward_shaper import RewardShaper
 
-
 # ---------------------------------------------------------------------------
 # Fixture – fresh shaper with defaults
 # ---------------------------------------------------------------------------

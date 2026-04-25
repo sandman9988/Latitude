@@ -10,7 +10,6 @@ from src.persistence.learned_parameters import (
     LearnedParametersManager,
 )
 
-
 # ---------------------------------------------------------------------------
 # AdaptiveParam
 # ---------------------------------------------------------------------------
@@ -160,6 +159,13 @@ class TestLearnedParametersManager:
         path = tmp_path / "sub" / "params.json"
         _m = LearnedParametersManager(persistence_path=path)
         assert path.parent.exists()
+
+    def test_default_path_uses_ctrader_data_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CTRADER_DATA_DIR", str(tmp_path / "runtime"))
+
+        manager = LearnedParametersManager()
+
+        assert manager.persistence_path == tmp_path / "runtime" / "learned_parameters.json"
 
     def test_get_instrument_creates_defaults(self, manager):
         inst = manager.get_instrument("BTCUSD")

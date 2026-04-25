@@ -12,8 +12,10 @@ From MASTER_HANDBOOK.md Section 2.2: Dual-Agent Architecture
 """
 
 import logging
+import os
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -28,7 +30,7 @@ from src.constants import (
     STATE_WINDOW_SIZE,
     TRIGGER_BUFFER_CAPACITY,
 )
-from src.features.regime_detector import RegimeDetector, TRENDING_THRESHOLD  # Phase 3.4
+from src.features.regime_detector import TRENDING_THRESHOLD, RegimeDetector  # Phase 3.4
 from src.persistence.learned_parameters import LearnedParametersManager
 from src.utils.experience_buffer import RegimeSampling
 from src.utils.mfe_mae import MFEMAECalculator
@@ -38,6 +40,10 @@ LOG = logging.getLogger(__name__)
 
 TEST_ENTRY_PRICE: float = 100000.0
 _FEATURE_VARIANCE_FLOOR: float = 1e-6  # minimum std to treat a feature column as variable
+
+
+def _safe_path_token(value: str) -> str:
+    return str(value or "UNKNOWN").replace("/", "_").replace("\\", "_")
 _MIN_SEED_BARS: int = 3                # minimum bars required to seed the regime detector
 
 
@@ -952,7 +958,14 @@ class DualPolicy:
             LOG.error("[CHECKPOINT] Failed to save %s weights: %s", label, e)
             return False
 
-    def save_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:
+    def _default_checkpoint_dir(self) -> Path:
+        """Return this policy's symbol/timeframe-specific checkpoint directory."""
+        data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
+        sym = _safe_path_token(self.symbol)
+        tf = _safe_path_token(self.timeframe)
+        return data_dir / "checkpoints" / f"{sym}_{tf}"
+
+    def save_checkpoint(self, checkpoint_dir: str | Path | None = None) -> bool:
         """Save full training state: DDQN weights, buffers, epsilon, training_steps.
 
         Called during graceful shutdown to preserve training progress.
@@ -963,20 +976,19 @@ class DualPolicy:
         Returns:
             True if all saves succeeded
         """
-        from pathlib import Path  # noqa: PLC0415
-
-        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        checkpoint_path = Path(checkpoint_dir) if checkpoint_dir is not None else self._default_checkpoint_dir()
+        checkpoint_path.mkdir(parents=True, exist_ok=True)
         success = True
 
         # 1. Save DDQN weights
-        success &= self._save_agent_weights(self.trigger, "trigger", f"{checkpoint_dir}/trigger_ddqn_weights.pt")
-        success &= self._save_agent_weights(self.harvester, "harvester", f"{checkpoint_dir}/harvester_ddqn_weights.pt")
+        success &= self._save_agent_weights(self.trigger, "trigger", str(checkpoint_path / "trigger_ddqn_weights.pt"))
+        success &= self._save_agent_weights(self.harvester, "harvester", str(checkpoint_path / "harvester_ddqn_weights.pt"))
 
         # 2. Save experience buffers
-        if self.trigger.buffer is not None and not self.trigger.buffer.save(f"{checkpoint_dir}/trigger_buffer"):
+        if self.trigger.buffer is not None and not self.trigger.buffer.save(str(checkpoint_path / "trigger_buffer")):
             success = False
 
-        if self.harvester.buffer is not None and not self.harvester.buffer.save(f"{checkpoint_dir}/harvester_buffer"):
+        if self.harvester.buffer is not None and not self.harvester.buffer.save(str(checkpoint_path / "harvester_buffer")):
             success = False
 
         # 3. Save training metadata (epsilon, steps, calibration, etc.)
@@ -994,7 +1006,7 @@ class DualPolicy:
         try:
             from src.utils.safe_utils import save_json_atomic  # noqa: PLC0415
 
-            meta_path = Path(checkpoint_dir) / "training_metadata.json"
+            meta_path = checkpoint_path / "training_metadata.json"
             save_json_atomic(meta_path, metadata)
             LOG.info("[CHECKPOINT] Saved training metadata: %s", metadata)
         except Exception as e:
@@ -1009,7 +1021,7 @@ class DualPolicy:
                     "current_regime": self.current_regime,
                     "current_zeta": self.current_zeta,
                 }
-                regime_path = Path(checkpoint_dir) / "regime_state.json"
+                regime_path = checkpoint_path / "regime_state.json"
                 save_json_atomic(regime_path, regime_state)
                 LOG.debug("[CHECKPOINT] Saved regime state: regime=%s, %d prices",
                           self.current_regime, len(self.regime_detector.price_buffer))
@@ -1017,9 +1029,9 @@ class DualPolicy:
                 LOG.warning("[CHECKPOINT] Failed to save regime state: %s", e)
 
         if success:
-            LOG.info("[CHECKPOINT] ✓ Full checkpoint saved to %s", checkpoint_dir)
+            LOG.info("[CHECKPOINT] ✓ Full checkpoint saved to %s", checkpoint_path)
         else:
-            LOG.warning("[CHECKPOINT] Checkpoint saved with some failures to %s", checkpoint_dir)
+            LOG.warning("[CHECKPOINT] Checkpoint saved with some failures to %s", checkpoint_path)
 
         return success
 
@@ -1108,7 +1120,7 @@ class DualPolicy:
             LOG.warning("[CHECKPOINT] Failed to restore regime state: %s", e)
         return False
 
-    def load_checkpoint(self, checkpoint_dir: str = "data/checkpoints") -> bool:
+    def load_checkpoint(self, checkpoint_dir: str | Path | None = None) -> bool:
         """Load training state from a previous checkpoint.
 
         Called during startup to resume training from where it left off.
@@ -1119,11 +1131,9 @@ class DualPolicy:
         Returns:
             True if checkpoint was found and loaded (at least partially)
         """
-        from pathlib import Path  # noqa: PLC0415
-
-        cp = Path(checkpoint_dir)
+        cp = Path(checkpoint_dir) if checkpoint_dir is not None else self._default_checkpoint_dir()
         if not cp.exists():
-            LOG.info("[CHECKPOINT] No checkpoint directory found at %s", checkpoint_dir)
+            LOG.info("[CHECKPOINT] No checkpoint directory found at %s", cp)
             return False
 
         loaded_anything = (
@@ -1143,7 +1153,7 @@ class DualPolicy:
                 self.harvester.buffer.size if self.harvester.buffer else 0,
             )
         else:
-            LOG.info("[CHECKPOINT] No checkpoint data found in %s", checkpoint_dir)
+            LOG.info("[CHECKPOINT] No checkpoint data found in %s", cp)
 
         return loaded_anything
 

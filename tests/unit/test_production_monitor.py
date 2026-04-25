@@ -7,7 +7,6 @@ import pytest
 
 from src.monitoring.production_monitor import Alert, ProductionMonitor, TradingMetrics
 
-
 # ---------------------------------------------------------------------------
 # TradingMetrics / Alert dataclasses
 # ---------------------------------------------------------------------------
@@ -148,6 +147,21 @@ class TestProductionMonitor:
         assert path.exists()
         data = json.loads(path.read_text())
         assert data["metrics"]["trades_total"] == 42
+
+    def test_saved_metrics_carry_runtime_scope(self, monitor, tmp_path):
+        monitor.update_metrics(
+            symbol="XAUUSD",
+            timeframe="M5",
+            timeframe_minutes=5,
+            broker="default",
+            trading_mode="paper",
+        )
+        data = json.loads((tmp_path / "metrics.json").read_text())
+        assert data["metrics"]["symbol"] == "XAUUSD"
+        assert data["metrics"]["timeframe"] == "M5"
+        assert data["metrics"]["timeframe_minutes"] == 5
+        assert data["metrics"]["broker"] == "default"
+        assert data["metrics"]["trading_mode"] == "paper"
 
     # -- get_metrics_json --
     def test_get_metrics_json_no_metrics(self, monitor):

@@ -12,8 +12,7 @@ from datetime import UTC
 
 import pytest
 
-from src.risk.friction_costs import SpreadTracker, FrictionCalculator, SymbolCosts, MIN_SPREAD_SAMPLES
-
+from src.risk.friction_costs import MIN_SPREAD_SAMPLES, FrictionCalculator, SpreadTracker, SymbolCosts
 
 # =========================================================================
 # SpreadTracker.get_learned_max_spread edge cases

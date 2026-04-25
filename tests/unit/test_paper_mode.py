@@ -4,7 +4,7 @@ import pytest
 
 import os
 
-from src.core.paper_mode import setup_paper_mode, setup_live_mode, get_paper_settings
+from src.core.paper_mode import get_paper_settings, setup_live_mode, setup_paper_mode
 
 
 class TestSetupPaperMode:

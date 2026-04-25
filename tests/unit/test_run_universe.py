@@ -18,8 +18,7 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
-import run_universe as ru   # noqa: E402
-
+import run_universe as ru  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -201,6 +200,26 @@ class TestRuntimeIsolation:
         assert "SenderCompID=demo" in quote_text
         assert "SenderCompID=demo" in trade_text
 
+    def test_sync_promoted_weights_to_runtime(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "data" / "checkpoints" / "XAUUSD_M5"
+        source.mkdir(parents=True)
+        trigger = source / "trigger_ddqn_weights.pt"
+        harvester = source / "harvester_ddqn_weights.pt"
+        trigger.write_bytes(b"trigger-new")
+        harvester.write_bytes(b"harvester-new")
+        runtime = tmp_path / "data" / "paper_XAUUSD_M5" / "checkpoints" / "XAUUSD_M5"
+        runtime.mkdir(parents=True)
+        (runtime / "trigger_ddqn_weights.pt").write_bytes(b"trigger-old")
+
+        entry = {"weights_path": f"{trigger};{harvester}"}
+
+        assert ru._runtime_weights_stale(entry, "XAUUSD", 5)
+        assert ru._sync_promoted_weights_to_runtime(entry, "XAUUSD", 5)
+        assert (runtime / "trigger_ddqn_weights.pt").read_bytes() == b"trigger-new"
+        assert (runtime / "harvester_ddqn_weights.pt").read_bytes() == b"harvester-new"
+        assert not ru._runtime_weights_stale(entry, "XAUUSD", 5)
+
     def test_launch_paper_bot_includes_runtime_env(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         def _runtime_env(symbol, timeframe_minutes):
@@ -251,7 +270,9 @@ class TestCmdPromote:
         _patch_universe(monkeypatch, uni)
         registry = {
             "version": 1,
-            "instruments": [{"symbol": "USDJPY", "stage": "OFFLINE_TRAINING", "timeframe_minutes": 1440, "z_omega": 2.0}],
+            "instruments": [
+                {"symbol": "USDJPY", "stage": "OFFLINE_TRAINING", "timeframe_minutes": 1440, "z_omega": 2.0}
+            ],
         }
 
         result = ru.cmd_promote(registry, "USDJPY", 1440)
@@ -308,7 +329,12 @@ class TestCmdDemote:
     def test_stops_running_bot(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         _patch_universe(monkeypatch, uni)
-        registry = {"version": 1, "instruments": [{"symbol": "BTCUSD", "stage": "PAPER", "paper_pid": 9999, "timeframe_minutes": 240}]}
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "BTCUSD", "stage": "PAPER", "paper_pid": 9999, "timeframe_minutes": 240}
+            ],
+        }
 
         with patch.object(ru, "_pid_alive", return_value=True), \
              patch.object(ru, "_stop_pid") as mock_stop:
@@ -386,6 +412,16 @@ class TestCmdStopAll:
             ru.cmd_stop_all(registry)
             mock_stop.assert_not_called()
 
+    def test_skips_orphan_scan_for_alternate_universe(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": []}
+
+        with patch.object(ru, "_iter_managed_paper_bot_pids") as mock_iter:
+            ru.cmd_stop_all(registry)
+
+        mock_iter.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # launch_paper_bots
@@ -438,6 +474,25 @@ class TestLaunchPaperBots:
             ru.launch_paper_bots(registry, specs, {})
 
         mock_launch.assert_not_called()
+
+    def test_restarts_running_bot_when_promoted_weights_are_stale(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("XAUUSD", "PAPER", pid=9999, tf=5)
+        registry["instruments"][0]["weights_path"] = "data/checkpoints/XAUUSD_M5/trigger_ddqn_weights.pt"
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+
+        with patch.object(ru, "_pid_alive", return_value=True), \
+             patch.object(ru, "_runtime_weights_stale", return_value=True), \
+             patch.object(ru, "_stop_pid") as mock_stop, \
+             patch.object(ru, "_sync_promoted_weights_to_runtime") as mock_sync, \
+             patch.object(ru, "_launch_paper_bot", return_value=5555) as mock_launch:
+            result = ru.launch_paper_bots(registry, specs, {})
+
+        mock_stop.assert_called_once_with(9999, "XAUUSD M5 paper bot")
+        mock_sync.assert_called_once()
+        mock_launch.assert_called_once()
+        assert _entry(result["instruments"], "XAUUSD", 5)["paper_pid"] == 5555
 
     def test_skips_missing_symbol_id(self, tmp_path, monkeypatch, caplog):
         uni = tmp_path / "universe.json"
@@ -494,6 +549,81 @@ class TestLaunchPaperBots:
         entry = _entry(result["instruments"], "XAUUSD", 30)
         assert entry["paper_pid"] == 2468
         assert entry["paper_started_at"] is not None
+
+    def test_shared_symbol_topology_launches_only_shortest_timeframe_owner(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 5, "paper_pid": None},
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 1, "paper_pid": None},
+            ],
+        }
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+        base_env = {ru._BROKER_TOPOLOGY_ENV: ru._TOPOLOGY_SHARED_SYMBOL}
+
+        with patch.object(ru, "_pid_alive", return_value=False), \
+             patch.object(ru, "_launch_paper_bot", return_value=1111) as mock_launch:
+            result = ru.launch_paper_bots(registry, specs, base_env)
+
+        mock_launch.assert_called_once_with("XAUUSD", 1, 41, 0.01, base_env, None)
+        owner = _entry(result["instruments"], "XAUUSD", 1)
+        waiting = _entry(result["instruments"], "XAUUSD", 5)
+        assert owner["fix_session_owner"] is True
+        assert owner["paper_pid"] == 1111
+        assert waiting["fix_session_owner"] is False
+        assert waiting["fix_owner_timeframe_minutes"] == 1
+        assert waiting["direct_fix_disabled_reason"] == "shared_fix_gateway_pending"
+        assert waiting["paper_pid"] is None
+
+    def test_shared_symbol_topology_honours_explicit_fix_owner(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 1, "paper_pid": None},
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 5, "paper_pid": None, "fix_owner": True},
+            ],
+        }
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+        base_env = {ru._BROKER_TOPOLOGY_ENV: ru._TOPOLOGY_SHARED_SYMBOL}
+
+        with patch.object(ru, "_pid_alive", return_value=False), \
+             patch.object(ru, "_launch_paper_bot", return_value=5555) as mock_launch:
+            result = ru.launch_paper_bots(registry, specs, base_env)
+
+        mock_launch.assert_called_once_with("XAUUSD", 5, 41, 0.01, base_env, None)
+        assert _entry(result["instruments"], "XAUUSD", 5)["fix_session_owner"] is True
+        assert _entry(result["instruments"], "XAUUSD", 1)["fix_owner_timeframe_minutes"] == 5
+
+    def test_shared_account_topology_launches_only_one_broker_owner(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "EURUSD", "stage": "PAPER", "timeframe_minutes": 5, "paper_pid": None},
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 1, "paper_pid": None},
+            ],
+        }
+        specs = {
+            "EURUSD": {"symbol_id": 1, "min_volume": 0.01},
+            "XAUUSD": {"symbol_id": 41, "min_volume": 0.01},
+        }
+        base_env = {ru._BROKER_TOPOLOGY_ENV: ru._TOPOLOGY_SHARED_ACCOUNT}
+
+        with patch.object(ru, "_pid_alive", return_value=False), \
+             patch.object(ru, "_launch_paper_bot", return_value=2222) as mock_launch:
+            result = ru.launch_paper_bots(registry, specs, base_env)
+
+        mock_launch.assert_called_once_with("XAUUSD", 1, 41, 0.01, base_env, None)
+        assert _entry(result["instruments"], "XAUUSD", 1)["fix_session_owner"] is True
+        waiting = _entry(result["instruments"], "EURUSD", 5)
+        assert waiting["fix_session_owner"] is False
+        assert waiting["fix_owner_symbol"] == "XAUUSD"
+        assert waiting["direct_fix_disabled_reason"] == "shared_fix_gateway_pending"
 
 
 # ---------------------------------------------------------------------------

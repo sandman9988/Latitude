@@ -288,10 +288,7 @@ class DDQNNetwork:
         updates) when loss is volatile.
         """
         # Normalise volatility relative to loss magnitude to get a scale-free ratio
-        if self._loss_ema > 1e-8:
-            cv = self._loss_var_ema / self._loss_ema  # coefficient of variation
-        else:
-            cv = 0.0
+        cv = self._loss_var_ema / self._loss_ema if self._loss_ema > 1e-8 else 0.0
         # Scale: cv=0 → factor=1.0 (full tau), cv=1+ → factor clamps at min
         factor = max(self._adaptive_tau_min, 1.0 - cv)
         return self.tau * factor

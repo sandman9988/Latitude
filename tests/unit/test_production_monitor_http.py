@@ -7,6 +7,7 @@ start_http_server with actual requests, stop_http_server.
 
 import json
 import urllib.request
+
 import pytest
 
 from src.monitoring.production_monitor import ProductionMonitor

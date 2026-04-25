@@ -119,8 +119,8 @@ class TestRollingMeanEmptyBuffer:
 # RiskManager – assess_risk edge paths
 # ===================================================================
 from src.risk.circuit_breakers import CircuitBreakerManager
-from src.risk.risk_manager import RiskManager, RiskAssessment, CorrelationBreakdown
-from src.risk.var_estimator import VaREstimator, RegimeType
+from src.risk.risk_manager import CorrelationBreakdown, RiskAssessment, RiskManager
+from src.risk.var_estimator import RegimeType, VaREstimator
 
 
 @pytest.fixture()

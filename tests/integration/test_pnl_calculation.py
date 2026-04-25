@@ -7,7 +7,6 @@ the bug where pnl was overwritten to 0.0 during reward processing.
 
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -208,18 +207,20 @@ class TestTradeCompletionProcess(unittest.TestCase):
         initial_pnl = pnl
 
         # Simulate the bug condition: accessing summary.get("pnl", 0.0)
-        summary = {
+        summary_without_pnl = {
             "direction": "LONG",
             "entry_price": 4878.96,
             "mfe": 0.125,
             # NOTE: No "pnl" key in summary!
         }
+        assert "pnl" not in summary_without_pnl
 
         # This would be the bug:
         # pnl = summary.get("pnl", 0.0)  # Returns 0.0, overwrites calculated value
 
         # Correct approach:
         pnl_for_reward = pnl  # Use separate variable
+        assert pnl_for_reward == pnl
 
         # Verify P&L is preserved
         assert pnl == initial_pnl, f"P&L was corrupted: initial={initial_pnl}, current={pnl}"

@@ -16,14 +16,14 @@ Covers:
     - RL threshold recommendations (lines 1146-1166)
 """
 
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
-from unittest.mock import MagicMock, patch
 
 from src.risk.circuit_breakers import CircuitBreakerManager
 from src.risk.risk_manager import RiskManager
 from src.risk.var_estimator import VaREstimator
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

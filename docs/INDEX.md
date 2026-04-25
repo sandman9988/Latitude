@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Documentation Index
 
-**Last Updated:** April 23, 2026  
+**Last Updated:** April 25, 2026
 **Branch:** update-1.1-mfe-mae-tracking-v2  
 **System Status:** ✅ Operational — test suite green
 
@@ -20,6 +20,7 @@
 - [operations/DISASTER_RECOVERY_RUNBOOK.md](operations/DISASTER_RECOVERY_RUNBOOK.md) - Emergency procedures
 
 ### 💻 **Developers**
+- [../AGENTS.md](../AGENTS.md) - Coding-agent operating rules, source-of-truth constraints, and test commands
 - [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) - Authoritative system design & architecture
 - [architecture/SYSTEM_ARCHITECTURE.md](architecture/SYSTEM_ARCHITECTURE.md) - Technical architecture
 - [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) - Codebase organization
@@ -39,7 +40,8 @@ Core documentation that operators and developers reference frequently.
 
 | Document | Purpose | Audience | Freshness |
 |----------|---------|----------|-----------|
-| **[CURRENT_STATE.md](CURRENT_STATE.md)** | **Latest system status** | All | ✅ Apr 23 |
+| **[CURRENT_STATE.md](CURRENT_STATE.md)** | **Latest system status** | All | ✅ Apr 25 |
+| [../AGENTS.md](../AGENTS.md) | Coding-agent instructions and source-of-truth rules | Developers | ✅ Apr 25 |
 | [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers | Current |
 | [MONITORING_GUIDE.md](MONITORING_GUIDE.md) | Health checks & alerts | Operators | Current |
 | [QUICKSTART.md](QUICKSTART.md) | Fast setup guide | New users | Current |
@@ -106,6 +108,13 @@ Day-to-day operational procedures.
 ---
 
 ## 🔄 Recent Changes
+
+### April 25, 2026 ✅ (offline champion guard + runtime checkpoint sync)
+- **Fixed:** Offline champion acceptance no longer scrapes stale `logs/train_offline.log`; guards come from `offline_champions.json` and `universe.json`
+- **Fixed:** `run_universe.py --watch` syncs promoted per-symbol/timeframe weights into isolated paper runtime checkpoint directories and restarts stale running bots
+- **Reconciled:** XAUUSD M5 promoted to accepted tournament candidate `ZOmega=1.5655` after beating live universe and evaluated incumbent guards
+- **Updated:** `AGENTS.md`, README, and training docs to require per-symbol/per-timeframe metrics, caches, decision logs, learned parameters, reward shaping, runway prediction, and checkpoints
+- **Added:** Weekend training setup/run scripts with guarded market-closed execution, tournament variants, focused capture replay, and retrain rounds
 
 ### April 23, 2026 ✅ (HUD + docs sync)
 - **Updated:** HUD quick reference to 7-tab map, arrows/Tab navigation, dynamic RL floors in Training tab, market feed freshness in Market tab, and normalized capture notes in Trades tab

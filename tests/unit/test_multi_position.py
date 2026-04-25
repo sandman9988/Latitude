@@ -19,7 +19,6 @@ Test Coverage:
 
 import logging
 import sys
-from typing import List
 
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger(__name__)
@@ -44,10 +43,7 @@ class MockPosition:
         """Update current price and recalculate P&L."""
         self.current_price = new_price
 
-        if self.side == "LONG":
-            pnl_per_unit = new_price - self.entry_price
-        else:  # SHORT
-            pnl_per_unit = self.entry_price - new_price
+        pnl_per_unit = new_price - self.entry_price if self.side == "LONG" else self.entry_price - new_price
 
         self.unrealized_pnl = pnl_per_unit * self.quantity
 
@@ -74,7 +70,7 @@ class MultiPositionManager:
     def __init__(self):
         self.positions: dict[int, MockPosition] = {}
         self.next_position_id = 1
-        self.closed_positions: List[MockPosition] = []
+        self.closed_positions: list[MockPosition] = []
 
     def open_position(self, symbol: str, side: str, quantity: float, entry_price: float) -> int:
         """Open a new position."""

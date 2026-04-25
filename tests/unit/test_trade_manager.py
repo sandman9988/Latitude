@@ -5,8 +5,7 @@ Tests core trade manager logic in isolation (FIX module is stubbed).
 """
 
 import threading
-import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -18,7 +17,6 @@ from src.core.trade_manager import (
     Side,
     TradeManager,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -3,6 +3,72 @@
 ## Overview
 This guide explains how to train your bot with exploration/online learning, then transition to production with learned parameters.
 
+All training state is scoped by `(symbol, timeframe_minutes)`. A model,
+parameter, metric, decision log, cache, reward-shaping recommendation, or
+checkpoint for one timeframe must not be reused as the source of truth for
+another timeframe.
+
+---
+
+## Weekend Offline Champion Workflow
+
+Weekend retraining is the standard closed-market improvement loop. It is
+designed to improve each active symbol/timeframe without degrading the current
+pipeline.
+
+### Install Cron
+
+```bash
+./run.sh weekend-train-setup
+```
+
+Default cron:
+
+- Time zone: `Africa/Johannesburg`
+- Schedule: Saturday 03:00 local time
+- Guarded market window: Friday 22:00 UTC through Sunday 21:30 UTC
+
+### Run Manually
+
+```bash
+./run.sh weekend-train
+```
+
+The script discovers all per-bot training caches under `data/`, stops the
+universe watcher only when needed, runs `train_offline.py`, syncs accepted
+champions into isolated runtime checkpoint directories, and restarts the watcher
+if it was running before training.
+
+### Acceptance Rules
+
+For every `(symbol, timeframe_minutes)` pair:
+
+1. Train deterministic tournament variants.
+2. Evaluate the current runtime incumbent.
+3. Load the registered champion from `data/checkpoints/offline_champions.json`.
+4. Fall back to the live `data/universe.json` score only when no registered
+   champion exists.
+5. Accept only if the candidate beats the evaluated incumbent and champion/live
+   guard, plus any configured acceptance margin.
+6. If the candidate does not beat both guards, leave the current champion in
+   place and use the configured retrain rounds.
+
+Historical logs such as `logs/train_offline.log` are diagnostics only and must
+not be used as champion or acceptance sources.
+
+### Focused Capture Replay
+
+By default, weekend training includes focused replay from the 10 best and 10
+worst recent capture records per symbol/timeframe. Keep this scoped: M1 replay
+records must not contaminate M5, M15, or M240 training.
+
+### Runtime Sync
+
+Accepted champion weights are recorded in `data/universe.json`. On launch,
+`run_universe.py --watch` compares those promoted weights with the isolated
+runtime checkpoint directory, copies stale/missing trigger and harvester weights,
+and restarts a running paper bot when the runtime weights differ.
+
 ---
 
 ## Phase 1: Training Mode (Learning & Exploration)

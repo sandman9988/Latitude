@@ -6,12 +6,11 @@ import pytest
 from src.features.hmm_regime import (
     HMM_MIN_OBSERVATIONS,
     HMM_N_STATES,
-    HMMRegimeDetector,
     RUNWAY_MULT_MEAN_REVERTING,
     RUNWAY_MULT_NEUTRAL,
     RUNWAY_MULT_TRENDING,
+    HMMRegimeDetector,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

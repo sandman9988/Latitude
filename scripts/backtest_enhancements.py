@@ -19,7 +19,6 @@ Metrics:
 
 import json
 import sys
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +31,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.features.hmm_regime import HMMRegimeDetector
 from src.features.regime_detector import RegimeDetector
-from src.risk.path_geometry import PathGeometry, VOL_RATIO_BLEND_WEIGHT, VOL_RATIO_NEUTRAL, VOL_RATIO_RUNWAY_SCALE
+from src.risk.path_geometry import VOL_RATIO_BLEND_WEIGHT, VOL_RATIO_NEUTRAL, VOL_RATIO_RUNWAY_SCALE
 from src.utils.safe_math import SafeMath
-
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -98,7 +96,7 @@ def print_comparison_table(labels: list[str], results: dict[str, dict]) -> None:
     metrics = list(next(iter(results.values())).keys())
     # Header
     col_w = 16
-    header = f"{'Metric':<25}" + "".join(f"{l:>{col_w}}" for l in labels)
+    header = f"{'Metric':<25}" + "".join(f"{label:>{col_w}}" for label in labels)
     print(header)
     print("-" * len(header))
     for m in metrics:
@@ -523,7 +521,7 @@ def test_ewma_calibration() -> None:
         print(f"  Warmup period MAE (first {WARMUP_TRADES} trades):")
         print(f"    Static:     {np.mean(warmup_static):.6f}")
         print(f"    Calibrated: {np.mean(warmup_calibrated):.6f}")
-        print(f"    (Calibrated falls back to static during warmup — should be equal)")
+        print("    (Calibrated falls back to static during warmup — should be equal)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -570,10 +570,7 @@ class TriggerAgent(AgentTrainingMixin):
         """
         zeta = getattr(self, '_current_zeta', 0.5)
         # regime_factor: 1.0 in trending, ramps to 0.5 as ζ rises above 0.7
-        if zeta < 0.7:
-            regime_factor = 1.0
-        else:
-            regime_factor = max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
+        regime_factor = 1.0 if zeta < 0.7 else max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
         # Slow the per-step decay: effective_decay approaches 1.0 (no decay)
         # when regime_factor is small (uncertain regime).
         effective_decay = 1.0 - (1.0 - self.epsilon_decay) * regime_factor
@@ -953,14 +950,22 @@ class TriggerAgent(AgentTrainingMixin):
             calibration_target = predicted_runway_gross if predicted_runway_gross > 0 else predicted_runway
             self._update_runway_calibration(actual_mfe_frac, calibration_target)
 
-        utilization = self._log_runway_error(actual_mfe, predicted_runway, entry_price=entry_price)
-        outcome = self._trade_outcome(actual_mfe, predicted_runway, entry_price=entry_price)
+        scored_runway = predicted_runway if predicted_runway > 0 else predicted_runway_gross
+        utilization = self._log_runway_error(actual_mfe, scored_runway, entry_price=entry_price)
+        outcome = self._trade_outcome(actual_mfe, scored_runway, entry_price=entry_price)
         self._update_platt_from_trade(entry_confidence, outcome, raw_confidence=raw_confidence)
         self._update_confidence_from_trade(utilization, actual_mfe=actual_mfe, entry_price=entry_price)
 
     def _log_runway_error(self, actual_mfe: float, predicted_runway: float, entry_price: float = 0.0) -> float:
         """Log runway prediction error and return utilization."""
         actual_mfe_frac = actual_mfe / entry_price if entry_price > 0 else actual_mfe
+        if predicted_runway <= 0:
+            LOG.debug(
+                "[TRIGGER] Runway prediction unavailable: predicted=%.6f actual_frac=%.6f",
+                predicted_runway,
+                actual_mfe_frac,
+            )
+            return 0.0
         error = actual_mfe_frac - predicted_runway
         error_pct = (error / predicted_runway) * 100
         LOG.debug(
@@ -1056,10 +1061,7 @@ class TriggerAgent(AgentTrainingMixin):
     def _extra_training_stats(self) -> dict:
         """Trigger-specific stats appended by the mixin."""
         zeta = getattr(self, '_current_zeta', 0.5)
-        if zeta < 0.7:
-            regime_factor = 1.0
-        else:
-            regime_factor = max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
+        regime_factor = 1.0 if zeta < 0.7 else max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
         runway_total_samples = self._runway_cal_total_samples()
         runway_active_buckets = self._runway_cal_active_buckets()
         runway_predictor_reliable = self._is_runway_predictor_reliable()

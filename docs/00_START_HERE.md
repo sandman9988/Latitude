@@ -1,6 +1,6 @@
 # Start Here: cTrader Adaptive Trading Bot Documentation Index
 
-**Last Updated:** March 8, 2026  
+**Last Updated:** April 25, 2026
 
 This page is the recommended entry point for the documentation set.
 
@@ -13,6 +13,7 @@ This page is the recommended entry point for the documentation set.
 📁 **[INDEX.md](INDEX.md)** - **Complete documentation navigation** with all docs organized by topic
 
 ### **Master References**
+- **[../AGENTS.md](../AGENTS.md)** - Coding-agent instructions and source-of-truth rules
 - **[../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md)** - Authoritative system design & architecture
 - **[../README.md](../README.md)** - Project overview and quick start
 
@@ -34,6 +35,8 @@ This page is the recommended entry point for the documentation set.
 
 ## Scripts and Commands
 
+- Weekend offline training setup: `./run.sh weekend-train-setup`
+- Manual guarded weekend training: `./run.sh weekend-train`
 - Phase 0 validation: `scripts/testing/phase0_validate_system.sh` (2-4 hour paper validation)
 - Quick test: `scripts/testing/quick_test.sh`
 - Monitoring suite: `scripts/monitoring/`
@@ -74,4 +77,5 @@ This page is the recommended entry point for the documentation set.
 ## Notes
 
 - The consolidated document is the single source of truth for gaps and current status. Historical analyses remain available for audit but are not authoritative.
+- Runtime telemetry and learning state are scoped by symbol and timeframe. Use `M240` as the canonical file/cache/checkpoint label for the H4 timeframe.
 - Keep this page current when adding or relocating documents.

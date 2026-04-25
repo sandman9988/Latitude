@@ -137,11 +137,11 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
     Opens a browser, listens on redirect_uri, returns an access token.
     """
     import http.server
+    import json
     import threading
     import urllib.parse
     import urllib.request
     import webbrowser
-    import json
 
     auth_code: list[str] = []
 
@@ -222,20 +222,20 @@ def _check_library() -> None:
     """Raise a clear error if ctrader-open-api is not installed."""
     try:
         import ctrader_open_api  # noqa: F401
-    except ImportError:
+    except ImportError as exc:
         raise SystemExit(
             "ctrader-open-api is not installed.\n"
             "  pip install ctrader-open-api\n"
             "Then re-run this script."
-        )
+        ) from exc
 
 
 def _dt_to_ms(dt: datetime.datetime) -> int:
-    return int(dt.replace(tzinfo=datetime.timezone.utc).timestamp() * MS)
+    return int(dt.replace(tzinfo=datetime.UTC).timestamp() * MS)
 
 
 def _ms_to_dt(ms: int) -> datetime.datetime:
-    return datetime.datetime.fromtimestamp(ms / MS, tz=datetime.timezone.utc).replace(tzinfo=None)
+    return datetime.datetime.fromtimestamp(ms / MS, tz=datetime.UTC).replace(tzinfo=None)
 
 
 def download_symbol(
@@ -259,18 +259,13 @@ def download_symbol(
     _check_library()
 
     from ctrader_open_api import Client, EndPoints, Protobuf, TcpProtocol  # type: ignore
-    from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import (  # type: ignore
-        ProtoMessage,
-        ProtoPayloadType,
-    )
     from ctrader_open_api.messages.OpenApiMessages_pb2 import (  # type: ignore
-        ProtoOAApplicationAuthReq,
         ProtoOAAccountAuthReq,
+        ProtoOAApplicationAuthReq,
         ProtoOAGetSymbolsListReq,
         ProtoOAGetTrendbarsReq,
     )
-    from twisted.internet import reactor, defer  # type: ignore
-    from twisted.internet.protocol import ReconnectingClientFactory  # type: ignore
+    from twisted.internet import defer, reactor  # type: ignore
 
     period = _TF_MINUTES_TO_PERIOD.get(timeframe_minutes)
     if period is None:

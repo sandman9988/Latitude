@@ -8,8 +8,6 @@ Verifies:
 - All three consumers use the shared class
 """
 
-import numpy as np
-import pytest
 import torch
 
 from src.core.ddqn_network import Conv1dQNet
@@ -79,6 +77,7 @@ class TestConv1dQNetImports:
     def test_trigger_agent_loads_conv1d_qnet(self):
         """TriggerAgent._load_model should use Conv1dQNet."""
         import inspect
+
         from src.agents.trigger_agent import TriggerAgent
         source = inspect.getsource(TriggerAgent._load_model)
         assert "Conv1dQNet" in source
@@ -87,6 +86,7 @@ class TestConv1dQNetImports:
     def test_harvester_agent_loads_conv1d_qnet(self):
         """HarvesterAgent._load_model should use Conv1dQNet."""
         import inspect
+
         from src.agents.harvester_agent import HarvesterAgent
         source = inspect.getsource(HarvesterAgent._load_model)
         assert "Conv1dQNet" in source
@@ -95,6 +95,7 @@ class TestConv1dQNetImports:
     def test_policy_uses_conv1d_qnet(self):
         """Policy.__init__ should reference Conv1dQNet."""
         import inspect
+
         from src.core.ctrader_ddqn_paper import Policy
         source = inspect.getsource(Policy.__init__)
         assert "Conv1dQNet" in source

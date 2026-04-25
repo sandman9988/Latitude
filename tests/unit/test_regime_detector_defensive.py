@@ -8,13 +8,14 @@ Covers uncovered lines: 140-141 (non-positive prices in buffer),
 and 234-238 (_autocorrelation body).
 """
 
-import numpy as np
-import pytest
 from unittest.mock import patch
 
+import numpy as np
+import pytest
+
 from src.features.regime_detector import (
-    RegimeDetector,
     NEUTRAL_ZETA,
+    RegimeDetector,
 )
 
 

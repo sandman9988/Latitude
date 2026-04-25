@@ -9,7 +9,6 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-
 # ══════════════════════════════════════════════════════════════════════════════
 # RiskManager division guards & named constants
 # ══════════════════════════════════════════════════════════════════════════════
@@ -19,8 +18,8 @@ class TestRiskManagerCapitalAllocation:
 
     @pytest.fixture
     def risk_mgr(self):
-        from src.risk.risk_manager import RiskManager
         from src.risk.circuit_breakers import CircuitBreakerManager
+        from src.risk.risk_manager import RiskManager
         from src.risk.var_estimator import VaREstimator
         cb = CircuitBreakerManager()
         var = VaREstimator()
@@ -123,7 +122,7 @@ class TestFrictionCostsLogging:
 class TestGetLiveQtyLogging:
     def test_trade_manager_exception_logs_warning(self):
         """When trade_manager.get_position() throws, should log warning."""
-        from src.core.ctrader_ddqn_paper import CTraderFixApp, LOG
+        from src.core.ctrader_ddqn_paper import LOG, CTraderFixApp
 
         bot = CTraderFixApp.__new__(CTraderFixApp)
         bot.qty = 0.01
@@ -207,6 +206,7 @@ class TestHarvesterCloseRewardUnits:
 class TestDDQNOptimizerLoadLogging:
     def test_bad_optimizer_state_logs_warning(self, tmp_path, caplog):
         import torch
+
         from src.core.ddqn_network import DDQNNetwork
 
         net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)

@@ -1,7 +1,7 @@
 """Tests for src.core.reward_integrity_monitor."""
 
-import pytest
 import numpy as np
+import pytest
 
 from src.core.reward_integrity_monitor import RewardIntegrityMonitor, RewardPnLPair
 

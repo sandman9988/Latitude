@@ -828,10 +828,26 @@ class CircuitBreakerManager:
                 _restore_breaker(self.kurtosis_breaker.state, state["kurtosis"])
                 self.kurtosis_breaker.returns = deque(state["kurtosis"].get("returns", []), maxlen=100)
                 # Restore adaptive-threshold plumbing if it was serialised.
+                # A saved breaker state can be older than learned_parameters.json;
+                # keep learned/explicit startup thresholds authoritative so an
+                # old universal trip level (for example 3.0) cannot override a
+                # per-symbol/timeframe learned value on restart.
                 _saved_thr = state["kurtosis"].get("threshold")
                 if _saved_thr is not None:
                     try:
-                        self.kurtosis_breaker.threshold = float(_saved_thr)
+                        saved_threshold = float(_saved_thr)
+                        if self.param_manager is None and self.kurtosis_threshold == MANAGER_DEFAULT_KURTOSIS:
+                            self.kurtosis_breaker.threshold = saved_threshold
+                        elif abs(saved_threshold - self.kurtosis_threshold) > SAFE_EPSILON:
+                            LOG.info(
+                                "[CIRCUIT-BREAKERS] Ignoring restored kurtosis threshold %.3f; "
+                                "using active %.3f for %s/%s/%s",
+                                saved_threshold,
+                                self.kurtosis_threshold,
+                                self.symbol,
+                                self.timeframe,
+                                self.broker,
+                            )
                     except (TypeError, ValueError):
                         pass
                 _saved_readings = state["kurtosis"].get("readings", [])

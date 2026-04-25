@@ -12,13 +12,13 @@ import numpy as np
 import pytest
 
 from src.features.regime_detector import (
-    RegimeDetector,
-    RUNWAY_MULT_TRENDING,
-    RUNWAY_MULT_MEAN_REVERTING,
-    RUNWAY_MULT_NEUTRAL,
-    REGIME_ADJ_TRENDING,
     REGIME_ADJ_MEAN_REVERTING,
     REGIME_ADJ_NEUTRAL,
+    REGIME_ADJ_TRENDING,
+    RUNWAY_MULT_MEAN_REVERTING,
+    RUNWAY_MULT_NEUTRAL,
+    RUNWAY_MULT_TRENDING,
+    RegimeDetector,
 )
 
 

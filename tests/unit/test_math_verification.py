@@ -14,9 +14,9 @@ Comprehensive testing of all calculations, statistics, and probabilities:
 
 import numpy as np
 
-from src.risk.risk_manager import RiskManager
 from src.risk.circuit_breakers import CircuitBreakerManager
-from src.risk.var_estimator import VaREstimator, RegimeType
+from src.risk.risk_manager import RiskManager
+from src.risk.var_estimator import RegimeType, VaREstimator
 
 
 class TestProbabilityMath:

@@ -295,13 +295,13 @@ class _Simulator:
         rs_sum = 0.0
         for i in range(-n, 0):
             b = self.bars[i]
-            o, h, l, c = float(b[1]), float(b[2]), float(b[3]), float(b[4])
+            o, h, low, c = float(b[1]), float(b[2]), float(b[3]), float(b[4])
             if o <= 0:
                 continue
             ho = np.log(h / o) if h > 0 and o > 0 else 0.0
-            lo = np.log(l / o) if l > 0 and o > 0 else 0.0
+            lo = np.log(low / o) if low > 0 and o > 0 else 0.0
             hc = np.log(h / c) if h > 0 and c > 0 else 0.0
-            lc = np.log(l / c) if l > 0 and c > 0 else 0.0
+            lc = np.log(low / c) if low > 0 and c > 0 else 0.0
             rs_sum += ho * hc + lo * lc
         var = max(rs_sum / n, 1e-12)
         return float(np.sqrt(var))
@@ -493,6 +493,8 @@ class OfflineTrainer:
         reward_clip_trigger: float = TRIGGER_REWARD_CLIP,
         capture_baseline: float = 0.5,
         penalty_scale: float = 1.0,
+        focused_replay_windows: list[list] | None = None,
+        focused_replay_passes: int = 0,
     ) -> None:
         self.symbol = symbol
         self.timeframe_minutes = timeframe_minutes
@@ -510,6 +512,8 @@ class OfflineTrainer:
         self._reward_clip_trigger = reward_clip_trigger
         self._capture_baseline = capture_baseline
         self._penalty_scale = penalty_scale
+        self.focused_replay_windows = focused_replay_windows or []
+        self.focused_replay_passes = max(0, int(focused_replay_passes or 0))
 
     # ── Entry point ──────────────────────────────────────────────────────────
 
@@ -556,11 +560,76 @@ class OfflineTrainer:
                 except Exception as exc:
                     LOG.warning("[OFFLINE] %s could not load %s: %s", label, ckpt.name, exc)
 
+    def _build_policy(self):
+        """Build a DualPolicy with the same configuration used by training and validation."""
+        from src.agents.dual_policy import DualPolicy  # noqa: PLC0415
+
+        n_train = int(len(self.bars) * self.train_split)
+        train_bars = self.bars[:n_train]
+        offline_buffer_capacity = min(max(len(train_bars) // 2, 2_000), 20_000)
+        policy_kwargs = {
+            "trigger_buffer_capacity": offline_buffer_capacity,
+            "harvester_buffer_capacity": offline_buffer_capacity,
+            **self.policy_kwargs,
+        }
+
+        path_geometry = PathGeometry()
+        if not hasattr(self, "_event_engine"):
+            self._event_engine = EventTimeFeatureEngine()
+        return DualPolicy(
+            symbol=self.symbol,
+            timeframe=f"M{self.timeframe_minutes}",
+            window=64,
+            enable_training=True,
+            enable_event_features=True,
+            path_geometry=path_geometry,
+            timeframe_minutes=self.timeframe_minutes,
+            **policy_kwargs,
+        )
+
+    def _load_runtime_weights(self, policy, checkpoint_dir: str | Path) -> bool:
+        """Load deployed runtime weights from a bot-scoped checkpoint directory."""
+        cp = Path(checkpoint_dir)
+        loaded = False
+        for agent_name, agent in [("trigger", policy.trigger), ("harvester", policy.harvester)]:
+            if agent.ddqn is None:
+                continue
+            weight_path = cp / f"{agent_name}_ddqn_weights.pt"
+            if not weight_path.exists():
+                weight_path = cp / f"{agent_name}_ddqn_weights.npz"
+            if not weight_path.exists():
+                continue
+            try:
+                agent.ddqn.load_weights(str(weight_path))
+                loaded = True
+            except Exception as exc:
+                LOG.warning("[OFFLINE] Could not load deployed %s weights from %s: %s", agent_name, weight_path, exc)
+        return loaded
+
+    def evaluate_runtime_checkpoint(self, checkpoint_dir: str | Path) -> tuple[float, int, bool]:
+        """Score the currently deployed bot checkpoint on this trainer's validation fold."""
+        import os  # noqa: PLC0415
+
+        n_total = len(self.bars)
+        n_train = int(n_total * self.train_split)
+        val_bars = self.bars[n_train:]
+        if not val_bars:
+            return 0.0, 0, False
+
+        _orig_eps_start, _orig_eps_end, _orig_disable_gates = self._set_offline_env_vars(os)
+        try:
+            policy = self._build_policy()
+        finally:
+            self._restore_env_vars(_orig_eps_start, _orig_eps_end, _orig_disable_gates)
+        loaded = self._load_runtime_weights(policy, checkpoint_dir)
+        if not loaded:
+            return 0.0, 0, False
+        score, val_trades = self._run_validation(policy, val_bars, f"{self.symbol}_M{self.timeframe_minutes}_incumbent")
+        return score, val_trades, True
+
     def _run_inner(self, label: str, t0: float) -> TrainResult:
         # Lazy import to avoid circular imports and allow multiprocessing fork
         import os  # noqa: PLC0415
-
-        from src.agents.dual_policy import DualPolicy  # noqa: PLC0415
 
         n_total = len(self.bars)
         n_train = int(n_total * self.train_split)
@@ -572,15 +641,6 @@ class OfflineTrainer:
             label, len(train_bars), len(val_bars), self.n_epochs, self.warm_start,
         )
 
-        # Scale PER buffer to training set size: up to half the training bars,
-        # capped at 20k to avoid unbounded memory. Explicit policy_kwargs override wins.
-        offline_buffer_capacity = min(max(len(train_bars) // 2, 2_000), 20_000)
-        policy_kwargs = {
-            "trigger_buffer_capacity": offline_buffer_capacity,
-            "harvester_buffer_capacity": offline_buffer_capacity,
-            **self.policy_kwargs,
-        }
-
         # Override epsilon schedule AND disable live gating for offline training.
         # Without DISABLE_GATES=1 the live confidence/feasibility gates block
         # every entry the untrained network attempts → 0 val trades → ZΩ=0.
@@ -588,19 +648,8 @@ class OfflineTrainer:
         # bleed into each other (each is a spawned process, so this is safe).
         _orig_eps_start, _orig_eps_end, _orig_disable_gates = self._set_offline_env_vars(os)
 
-        # Build policy — training enabled, with full feature parity to online
-        path_geometry = PathGeometry()
         self._event_engine = EventTimeFeatureEngine()
-        policy = DualPolicy(
-            symbol=self.symbol,
-            timeframe=f"M{self.timeframe_minutes}",
-            window=64,
-            enable_training=True,
-            enable_event_features=True,
-            path_geometry=path_geometry,
-            timeframe_minutes=self.timeframe_minutes,
-            **policy_kwargs,
-        )
+        policy = self._build_policy()
 
         # Restore env vars immediately after construction
         self._restore_env_vars(_orig_eps_start, _orig_eps_end, _orig_disable_gates)
@@ -622,6 +671,10 @@ class OfflineTrainer:
             _total_bars_all_epochs,
             _progress_every,
         )
+
+        focused_steps, focused_trades = self._run_focused_replay(policy, label)
+        total_train_steps += focused_steps
+        total_train_trades += focused_trades
 
         _progress_path.unlink(missing_ok=True)   # clean up when done
 
@@ -721,6 +774,50 @@ class OfflineTrainer:
                 label, epoch + 1, self.n_epochs, len(sim.trades), total_train_steps,
             )
         return total_train_steps, total_train_trades
+
+    def _run_focused_replay(self, policy, label: str) -> tuple[int, int]:
+        """Run bounded training-only replay windows for recent CAP% extremes."""
+        if not self.focused_replay_windows or self.focused_replay_passes <= 0:
+            return 0, 0
+
+        focused_steps = 0
+        focused_trades = 0
+        replayed = 0
+        for replay_pass in range(self.focused_replay_passes):
+            pass_windows = 0
+            for window in self.focused_replay_windows:
+                if len(window) < MIN_BARS_FOR_ENTRY:
+                    continue
+                policy.current_position = 0
+                sim = _Simulator(
+                    policy,
+                    update_policy=True,
+                    symbol_digits=self.symbol_digits,
+                    event_engine=self._event_engine,
+                    reward_clip_harvester=self._reward_clip_harvester,
+                    reward_clip_trigger=self._reward_clip_trigger,
+                    capture_baseline=self._capture_baseline,
+                    symbol=self.symbol,
+                    timeframe=f"M{self.timeframe_minutes}",
+                    penalty_scale=self._penalty_scale,
+                )
+                for i, bar in enumerate(window):
+                    sim.step(bar, i)
+                    focused_steps = self._maybe_train_step(policy, i, focused_steps)
+                focused_trades += len(sim.trades)
+                replayed += 1
+                pass_windows += 1
+            LOG.info(
+                "[OFFLINE] %s focused CAP replay pass %d/%d: %d windows (%d total), %d trades, %d gradient steps",
+                label,
+                replay_pass + 1,
+                self.focused_replay_passes,
+                pass_windows,
+                replayed,
+                focused_trades,
+                focused_steps,
+            )
+        return focused_steps, focused_trades
 
     def _maybe_train_step(self, policy, bar_idx: int, total_train_steps: int) -> int:
         if bar_idx % self.train_every != 0 or bar_idx == 0:

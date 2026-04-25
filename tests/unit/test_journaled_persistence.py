@@ -15,7 +15,6 @@ import pytest
 
 from src.persistence.journaled_persistence import Journal, JournalEntry
 
-
 # ── JournalEntry ────────────────────────────────────────────────────────────
 
 class TestJournalEntry:

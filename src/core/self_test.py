@@ -31,6 +31,14 @@ import numpy as np
 
 LOG = logging.getLogger(__name__)
 
+
+def _data_dir() -> Path:
+    return Path(os.environ.get("CTRADER_DATA_DIR", "data"))
+
+
+def _data_file(filename: str) -> Path:
+    return _data_dir() / filename
+
 # ── ANSI colours (disabled when not a tty) ────────────────────────────────────
 _IS_TTY = os.isatty(1)
 _G  = "\033[92m"  if _IS_TTY else ""   # green
@@ -161,8 +169,8 @@ def _chk_fix_configs() -> tuple[Sev, str]:
 
 
 def _chk_data_dir() -> tuple[Sev, str]:
-    data_dir = Path("data")
-    data_dir.mkdir(exist_ok=True)
+    data_dir = _data_dir()
+    data_dir.mkdir(parents=True, exist_ok=True)
     probe = data_dir / ".write_probe"
     try:
         probe.write_text("ok")
@@ -193,7 +201,7 @@ def _chk_qty() -> tuple[Sev, str]:
 
 
 def _chk_learned_params() -> tuple[Sev, str]:
-    p = Path("data/learned_parameters.json")
+    p = _data_file("learned_parameters.json")
     if not p.exists():
         return Sev.WARNING, "not found — cold start, defaults will be used"
     try:
@@ -205,7 +213,7 @@ def _chk_learned_params() -> tuple[Sev, str]:
 
 
 def _chk_bars_cache() -> tuple[Sev, str]:
-    p = Path("data/bars_cache.json")
+    p = _data_file("bars_cache.json")
     if not p.exists():
         return Sev.WARNING, "not found — vol/regime will be blind until first bars close"
     try:
@@ -221,7 +229,7 @@ def _chk_bars_cache() -> tuple[Sev, str]:
 
 
 def _chk_trade_log() -> tuple[Sev, str]:
-    p = Path("data/trade_log.jsonl")
+    p = _data_file("trade_log.jsonl")
     if not p.exists():
         return Sev.INFO, "no trade history yet"
     try:
@@ -246,7 +254,7 @@ def _chk_trade_log() -> tuple[Sev, str]:
 
 
 def _chk_circuit_breakers() -> tuple[Sev, str]:
-    p = Path("data/circuit_breakers.json")
+    p = _data_file("circuit_breakers.json")
     if not p.exists():
         return Sev.INFO, "no state file — all breakers start open"
     try:
@@ -276,7 +284,7 @@ def _chk_circuit_breakers() -> tuple[Sev, str]:
 
 
 def _chk_current_position() -> tuple[Sev, str]:
-    p = Path("data/current_position.json")
+    p = _data_file("current_position.json")
     if not p.exists():
         return Sev.INFO, "no persisted position (flat start)"
     try:
@@ -300,8 +308,8 @@ def _chk_current_position() -> tuple[Sev, str]:
 def _chk_per_buffer() -> tuple[Sev, str]:
     found = []
     for name in ("trigger", "harvester"):
-        # checkpoint dir is data/checkpoints/
-        cand = list(Path("data/checkpoints").glob(f"{name}_buffer*.npz")) if Path("data/checkpoints").exists() else []
+        checkpoint_dir = _data_file("checkpoints")
+        cand = list(checkpoint_dir.rglob(f"{name}_buffer*.npz")) if checkpoint_dir.exists() else []
         if cand:
             latest = max(cand, key=lambda f: f.stat().st_mtime)
             age = time.time() - latest.stat().st_mtime
@@ -342,7 +350,7 @@ def _chk_model_weights() -> tuple[Sev, str]:
 
 
 def _chk_risk_metrics() -> tuple[Sev, str]:
-    p = Path("data/risk_metrics.json")
+    p = _data_file("risk_metrics.json")
     if not p.exists():
         return Sev.INFO, "not found — will be written after first bar"
     try:
@@ -360,7 +368,7 @@ def _chk_risk_metrics() -> tuple[Sev, str]:
 
 
 def _chk_bot_config() -> tuple[Sev, str]:
-    p = Path("data/bot_config.json")
+    p = _data_file("bot_config.json")
     if not p.exists():
         return Sev.INFO, "not yet written (created on first bar)"
     try:
@@ -374,7 +382,7 @@ def _chk_bot_config() -> tuple[Sev, str]:
 
 def _chk_platt_sanity() -> tuple[Sev, str]:
     """Check Platt calibration params from learned_parameters; warn if degenerate."""
-    p = Path("data/learned_parameters.json")
+    p = _data_file("learned_parameters.json")
     if not p.exists():
         return Sev.INFO, "no learned params — Platt at defaults (a=1.0 b=0.0)"
     try:
@@ -482,8 +490,8 @@ def _persist_results(report: SelfTestReport) -> None:
                 "critical": len(report.critical_failures),
             },
         }
-        Path("data").mkdir(exist_ok=True)
-        Path("data/self_test.json").write_text(json.dumps(export, indent=2))
+        _data_dir().mkdir(parents=True, exist_ok=True)
+        _data_file("self_test.json").write_text(json.dumps(export, indent=2))
     except Exception:  # noqa: BLE001
         pass  # never let JSON export block startup
 

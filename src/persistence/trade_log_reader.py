@@ -14,7 +14,7 @@ from pathlib import Path
 
 LOG = logging.getLogger(__name__)
 
-_DEFAULT_PATH = Path("data/trade_log.jsonl")
+_DEFAULT_PATH = Path(os.environ.get("CTRADER_DATA_DIR", "data")) / "trade_log.jsonl"
 
 
 def read_all_trades(path: Path | str = _DEFAULT_PATH) -> list[dict]:

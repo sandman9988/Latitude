@@ -5,8 +5,9 @@ RollingVariance edge cases, iter/getitem.
 """
 
 import math
-import pytest
+
 import numpy as np
+import pytest
 
 from src.utils.ring_buffer import (
     RingBuffer,

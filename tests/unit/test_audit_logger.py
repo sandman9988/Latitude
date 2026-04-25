@@ -6,7 +6,6 @@ import pytest
 
 from src.monitoring.audit_logger import DecisionLogger, TransactionLogger
 
-
 # ---------------------------------------------------------------------------
 # TransactionLogger
 # ---------------------------------------------------------------------------
@@ -29,6 +28,21 @@ class TestTransactionLogger:
 
     def test_session_id_format(self, logger):
         assert logger.session_id.startswith("session_")
+
+    def test_decision_scope_metadata(self, tmp_path):
+        scoped_logger = DecisionLogger(
+            log_dir=str(tmp_path),
+            filename="decisions.jsonl",
+            trading_mode="paper",
+            symbol="XAUUSD",
+            timeframe="M5",
+            timeframe_minutes=5,
+        )
+        scoped_logger.log_decision("TriggerAgent", "NO_ENTRY", 0.7, {"price": 100.0})
+        entries = self._read_entries(scoped_logger)
+        assert entries[0]["symbol"] == "XAUUSD"
+        assert entries[0]["timeframe"] == "M5"
+        assert entries[0]["timeframe_minutes"] == 5
 
     # -- log_event --
     def test_log_event_basic(self, logger):

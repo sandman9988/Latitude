@@ -85,6 +85,12 @@ class TestDualPolicyInit:
         assert dp.timeframe == "M5"
         assert dp.broker == "pepperstone"
 
+    def test_default_checkpoint_dir_scopes_symbol_timeframe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CTRADER_DATA_DIR", str(tmp_path / "runtime"))
+        dp = DualPolicy(symbol="XAU/USD", timeframe="M15", enable_training=False)
+
+        assert dp._default_checkpoint_dir() == tmp_path / "runtime" / "checkpoints" / "XAU_USD_M15"
+
 
 # ---------------------------------------------------------------------------
 # Position lifecycle

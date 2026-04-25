@@ -319,8 +319,8 @@ class TestTradeExporterEdges:
         # Use an object() for predicted_runway → f"{object():.6f}" raises TypeError.
         bad_trade = {
             "trade_num": 1,
-            "entry_time": dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc),
-            "exit_time": dt.datetime(2025, 1, 2, tzinfo=dt.timezone.utc),
+            "entry_time": dt.datetime(2025, 1, 1, tzinfo=dt.UTC),
+            "exit_time": dt.datetime(2025, 1, 2, tzinfo=dt.UTC),
             "direction": "BUY",
             "entry_price": 2000.0,
             "exit_price": 2010.0,
@@ -345,8 +345,8 @@ class TestTradeExporterEdges:
         mock_tracker.get_trade_history.return_value = [
             {
                 "trade_num": 1,
-                "entry_time": dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc),
-                "exit_time": dt.datetime(2025, 1, 2, tzinfo=dt.timezone.utc),
+                "entry_time": dt.datetime(2025, 1, 1, tzinfo=dt.UTC),
+                "exit_time": dt.datetime(2025, 1, 2, tzinfo=dt.UTC),
                 "direction": "BUY",
                 "entry_price": 2000.0,
                 "exit_price": 2010.0,

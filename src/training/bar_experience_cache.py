@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,7 +80,8 @@ def _default_cache_path(symbol: str, timeframe_minutes: int) -> str:
     'data/training_cache_BTCUSD_M240.jsonl'
     """
     safe = symbol.replace("/", "-").replace("\\", "-")
-    return f"data/training_cache_{safe}_M{timeframe_minutes}.jsonl"
+    data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
+    return str(data_dir / f"training_cache_{safe}_M{timeframe_minutes}.jsonl")
 
 
 class BarExperienceCache:

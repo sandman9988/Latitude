@@ -35,6 +35,31 @@ def test_build_performance_snapshot_rebuilds_history_windows():
     assert snapshot["lifetime"]["total_pnl"] == 12.0
 
 
+def test_build_performance_snapshot_can_rebuild_one_bot_scope():
+    now = datetime(2026, 4, 23, 12, 0, tzinfo=UTC)
+    trades = [
+        {**_trade(now - timedelta(hours=1), 10.0), "symbol": "XAUUSD", "timeframe_minutes": 5, "trading_mode": "paper"},
+        {**_trade(now - timedelta(hours=1), 99.0), "symbol": "XAUUSD", "timeframe_minutes": 15, "trading_mode": "paper"},
+        {**_trade(now - timedelta(hours=1), 88.0), "symbol": "EURUSD", "timeframe_minutes": 5, "trading_mode": "paper"},
+        {**_trade(now - timedelta(hours=1), 77.0), "symbol": "XAUUSD", "timeframe_minutes": 5, "trading_mode": "live"},
+    ]
+
+    snapshot = build_performance_snapshot(
+        trades,
+        trading_mode="paper",
+        starting_equity=10_000.0,
+        symbol="XAUUSD",
+        timeframe_minutes=5,
+        now=now,
+    )
+
+    assert snapshot["symbol"] == "XAUUSD"
+    assert snapshot["timeframe"] == "M5"
+    assert snapshot["timeframe_minutes"] == 5
+    assert snapshot["lifetime"]["total_trades"] == 1
+    assert snapshot["lifetime"]["total_pnl"] == 10.0
+
+
 def test_build_epoch_metrics_filters_by_close_or_entry_time(tmp_path):
     now = datetime(2026, 4, 23, 12, 0, tzinfo=UTC)
     epoch = now - timedelta(days=2)

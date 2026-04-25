@@ -26,6 +26,7 @@ A dual FIX session trading bot for cTrader/Pepperstone that uses Deep Q-Network 
 
 **Core Documentation:**
 
+- [AGENTS.md](AGENTS.md) - Coding-agent operating rules and source-of-truth constraints
 - 📖 [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - Authoritative system design and architecture
 - 🚀 [docs/00_START_HERE.md](docs/00_START_HERE.md) - Documentation entry point with organized guides
 - 🏗 [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM_ARCHITECTURE.md) - Technical architecture
@@ -295,6 +296,38 @@ export DDQN_MODEL_ENSEMBLE=1
 - Exploration bonus when models disagree (high uncertainty)
 - Performance-weighted voting for robust decisions
 - Better sample efficiency during training
+
+## Offline Training And Promotion
+
+Offline learning is scoped by `(symbol, timeframe_minutes)`. A candidate for
+`XAUUSD M5` must never overwrite `XAUUSD M1`, `M15`, or `M240` state.
+
+Current source-of-truth flow:
+
+- `train_offline.py` evaluates candidates into per-bot checkpoint directories.
+- Accepted champions are recorded in `data/checkpoints/offline_champions.json`.
+- `data/universe.json` records the promoted runtime weight paths per symbol/timeframe.
+- `run_universe.py --watch` syncs promoted weights into the isolated paper
+  runtime checkpoint directory before launch and restarts a stale running bot.
+
+Historical logs are diagnostic only. They are not valid champion or acceptance
+guards.
+
+Guarded weekend retraining can be installed with:
+
+```bash
+./run.sh weekend-train-setup
+```
+
+and run manually during a market-closed window with:
+
+```bash
+./run.sh weekend-train
+```
+
+The weekend workflow uses tournament variants, focused capture replay, and
+retrain rounds. It promotes only a candidate that beats the current per-timeframe
+incumbent and champion guard.
 
 ## Monitoring
 

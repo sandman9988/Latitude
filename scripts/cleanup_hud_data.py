@@ -16,7 +16,7 @@ Usage:
 
 import argparse
 import shutil
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 DATA_DIR = Path("data")
@@ -51,8 +51,6 @@ def analyze_data_dir():
     print("=" * 100)
 
     now = datetime.now(UTC)
-    stale_threshold = now - timedelta(days=STALE_THRESHOLD_DAYS)
-
     # Find stale files
     print(f"\n🗁 Files to Archive (> {STALE_THRESHOLD_DAYS} days old):")
     stale_files = []
@@ -65,7 +63,7 @@ def analyze_data_dir():
             print(f"  ❌ {json_file.name:40} | {age_days:3}d old | {mtime.date()}")
 
     # Find backup clutter
-    print(f"\n📦 Backup Files to Consolidate:")
+    print("\n📦 Backup Files to Consolidate:")
     backups_to_delete = []
     for filename, patterns in BACKUP_PATTERNS.items():
         backup_files = []
@@ -89,7 +87,7 @@ def analyze_data_dir():
 
     # Summary
     print("\n" + "=" * 100)
-    print(f"SUMMARY:")
+    print("SUMMARY:")
     print(f"  Files to archive: {len(stale_files)}")
     print(f"  Backup files to delete: {len(backups_to_delete)}")
     print(f"  Archive location: {ARCHIVE_DIR}")
@@ -115,7 +113,7 @@ def execute_cleanup(dry_run: bool = True):
             ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
         print("Archiving stale files:")
-        for filename, age_days, mtime in stale_files:
+        for filename, _age_days, mtime in stale_files:
             src = DATA_DIR / filename
             dst = ARCHIVE_DIR / f"{filename}.{mtime.strftime('%Y%m%d_%H%M%S')}"
 
@@ -143,9 +141,9 @@ def execute_cleanup(dry_run: bool = True):
                     print(f"  ❌ {backup_file.name} - Error: {e}")
 
     if not dry_run:
-        print(f"\n✓ Cleanup complete!")
+        print("\n✓ Cleanup complete!")
         print(f"✓ Created archive: {ARCHIVE_DIR}")
-        print(f"✓ Run: python3 scripts/cleanup_hud_data.py --analyze  # Verify")
+        print("✓ Run: python3 scripts/cleanup_hud_data.py --analyze  # Verify")
     else:
         print("\n✓ Dry-run complete. Run with --execute to apply changes.")
 

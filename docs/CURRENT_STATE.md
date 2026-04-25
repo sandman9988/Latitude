@@ -1,6 +1,6 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** April 24, 2026 (multi-timeframe paper fleet under universe watcher)  
+**Last Updated:** April 25, 2026 (weekend offline champion reconciliation and runtime sync)
 **Branch:** `update-1.1-mfe-mae-tracking-v2`  
 **Status:** ✅ Operational — all tests green  
 **Audience:** All
@@ -9,7 +9,7 @@
 
 ## 🎯 Executive Summary
 
-XAUUSD trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode, running as a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) supervised by `run_universe.py --watch`. Offline, paper, and live training pipelines now fully aligned (same 18-feature state, same .pt weight format, same RewardShaper). Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics. Defense-in-depth audit complete — max-loss enforcement hardened, paper fill bug fixed, circuit breaker reset fixed.
+XAUUSD trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode, running as a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) supervised by `run_universe.py --watch`. Offline, paper, and live training pipelines now use the same per-symbol/per-timeframe identity for metrics, caches, learned parameters, decision logs, reward shaping, runway prediction, and checkpoint promotion. Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics. Defense-in-depth audit complete — max-loss enforcement hardened, paper fill bug fixed, circuit breaker reset fixed.
 
 **Test Suite:** 2,221 passing, 0 skipped, 0 failures (~35 s)  
 **Production Lines:** ~41,300
@@ -19,6 +19,7 @@ XAUUSD trading bot using dual-agent DDQN reinforcement learning. Currently in **
 - **Timeframes:** M1, M5, M15, M30, M60, M240 (one bot per timeframe, isolated FIX sessions)
 - **Supervisor:** `run_universe.py --watch` (30 s poll, auto-restarts crashed bots)
 - **Registry:** `data/universe.json` (schema: `{"version": 1, "instruments": [ ... ]}`)
+- **Champion Registry:** `data/checkpoints/offline_champions.json` (per symbol/timeframe)
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
 - **Session:** QUOTE + TRADE dual FIX sessions (one pair per bot)
@@ -30,6 +31,68 @@ XAUUSD trading bot using dual-agent DDQN reinforcement learning. Currently in **
 ./run.sh --hud-only     # attach TUI HUD (interactive terminal required)
 pkill -f run_universe ; pkill -f ctrader_ddqn_paper   # stop everything
 ```
+
+---
+
+## Offline Champion Source Of Truth (Apr 25, 2026)
+
+### Problem
+
+M5 had a live/paper pipeline score of `ZOmega=0.8793`, while the offline
+tournament was guarding against a stale historical `ZOmega=1.6088` parsed from
+`logs/train_offline.log`. That made the system reject a valid M5 candidate even
+though it beat the actual deployed pipeline and evaluated runtime incumbent.
+
+### Fix
+
+- Removed historical training-log scraping from the offline champion guard.
+- Champion guard order is now:
+  1. `data/checkpoints/offline_champions.json`
+  2. `data/universe.json` for the default checkpoint root
+- Runtime incumbent evaluation remains separate and is still considered during
+  acceptance.
+- Existing M5 tournament candidate `offline_candidate_base` was reconciled and
+  promoted because it beat the actual live pipeline and evaluated incumbent.
+
+### Current M5 Reconciliation Result
+
+| Item | Value |
+|---|---:|
+| Previous live M5 universe score | 0.8793 |
+| Evaluated M5 runtime incumbent | 0.9293 |
+| Accepted M5 candidate | 1.5655 |
+| Validation trades | 149 |
+
+`data/universe.json`, `data/checkpoints/offline_champions.json`, and
+`data/offline_training_status.json` now agree on the accepted M5 candidate.
+
+### Runtime Sync Fix
+
+The promoted shared checkpoint path under `data/checkpoints/XAUUSD_M5/` was not
+automatically reaching the isolated paper runtime path under
+`data/paper_XAUUSD_M5/checkpoints/XAUUSD_M5/`.
+
+`run_universe.py` now:
+
+- reads each promoted `weights_path` from `data/universe.json`;
+- compares promoted weights with the isolated runtime checkpoint files;
+- copies promoted trigger/harvester weights into the isolated runtime directory
+  before launch;
+- restarts an already running paper bot when its runtime weights are stale.
+
+This applies to every future `(symbol, timeframe_minutes)` entry, not only M5.
+
+### Guardrails For Future Work
+
+- Historical logs are diagnostics only. They are not champion or acceptance
+  sources of truth.
+- All metrics, caches, learned parameters, reward-shaping recommendations,
+  runway calibration, training stats, and decision logs remain scoped by
+  `(symbol, timeframe_minutes)`.
+- The canonical H4 runtime label is `M240`; do not reintroduce a separate H4
+  file/cache/checkpoint path.
+- Account-level exposure still needs a portfolio/gateway view before multiple
+  simultaneous bots should make holistic broker-account decisions.
 
 ---
 

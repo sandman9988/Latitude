@@ -6,7 +6,6 @@ import pytest
 
 from src.features.event_time_features import EventTimeFeatureEngine, SessionTimes
 
-
 # ---------------------------------------------------------------------------
 # SessionTimes dataclass
 # ---------------------------------------------------------------------------

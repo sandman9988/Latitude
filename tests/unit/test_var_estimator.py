@@ -3,8 +3,8 @@
 Covers: RegimeType, KurtosisMonitor, VaREstimator, position_size_from_var.
 """
 
-import pytest
 import numpy as np
+import pytest
 
 from src.risk.var_estimator import (
     MIN_KURTOSIS_SAMPLE,

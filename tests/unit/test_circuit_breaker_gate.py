@@ -18,10 +18,7 @@ import pytest
 from src.risk.circuit_breakers import (
     BreakerState,
     CircuitBreakerManager,
-    ConsecutiveLossesBreaker,
-    DrawdownBreaker,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

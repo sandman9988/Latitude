@@ -23,8 +23,8 @@ rng = np.random.default_rng(42)
 import pytest
 
 from src.agents.harvester_agent import (
-    HarvesterAgent,
     PCT_SCALE,
+    HarvesterAgent,
 )
 
 LOG = logging.getLogger(__name__)

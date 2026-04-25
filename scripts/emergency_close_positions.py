@@ -254,10 +254,7 @@ def main():
     print()
     LOG.info("Starting emergency close...")
 
-    if args.method == "fix":
-        success = close_via_fix_session()
-    else:
-        success = close_via_running_bot()
+    success = close_via_fix_session() if args.method == "fix" else close_via_running_bot()
 
     return 0 if success else 1
 

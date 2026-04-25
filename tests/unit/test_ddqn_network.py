@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import torch
 
-from src.core.ddqn_network import Conv1dQNet, DDQNNetwork, _QNet
+from src.core.ddqn_network import DDQNNetwork, _QNet
 
 rng = np.random.default_rng(42)
 

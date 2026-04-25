@@ -22,6 +22,7 @@ def _build_app():
 def test_depth_gate_and_hud_export(tmp_path):
     app = _build_app()
     app.hud_data_dir = tmp_path
+    app.shared_hud_dir = tmp_path
     app.start_time = dt.datetime.now(dt.UTC)
     app.bar_count = 1
     app.best_bid = 100.0
@@ -49,8 +50,43 @@ def test_depth_gate_and_hud_export(tmp_path):
 
     app._export_hud_data()
     risk_metrics = json.loads((tmp_path / "risk_metrics.json").read_text())
+    scoped_risk_metrics = json.loads((tmp_path / "risk_metrics_BTCUSD_M1.json").read_text())
+    training_stats = json.loads((tmp_path / "training_stats.json").read_text())
 
     assert risk_metrics["depth_gate_active"] is True
+    assert scoped_risk_metrics["depth_gate_active"] is True
+    assert training_stats["symbol"] == "BTCUSD"
+    assert training_stats["timeframe"] == "M1"
+    assert training_stats["timeframe_minutes"] == 1
     assert risk_metrics["depth_bid"] == pytest.approx(depth_bid)
     assert risk_metrics["vpin_zscore"] == pytest.approx(2.0)
     assert risk_metrics["vpin_threshold"] == pytest.approx(app.vpin_z_threshold)
+
+
+def test_performance_snapshot_filters_shared_trade_log_by_bot_scope(tmp_path):
+    app = ctrader_ddqn_paper.CTraderFixApp.__new__(ctrader_ddqn_paper.CTraderFixApp)
+    app.shared_hud_dir = tmp_path
+    app.symbol = "XAUUSD"
+    app.timeframe_minutes = 5
+    app.paper_mode = True
+    app.starting_equity = 10_000.0
+
+    now = dt.datetime.now(dt.UTC).isoformat()
+    rows = [
+        {"symbol": "XAUUSD", "timeframe_minutes": 5, "trading_mode": "paper", "entry_time": now, "pnl": 10.0},
+        {"symbol": "XAUUSD", "timeframe_minutes": 15, "trading_mode": "paper", "entry_time": now, "pnl": 20.0},
+        {"symbol": "EURUSD", "timeframe_minutes": 5, "trading_mode": "paper", "entry_time": now, "pnl": 30.0},
+        {"symbol": "XAUUSD", "timeframe_minutes": 5, "trading_mode": "live", "entry_time": now, "pnl": 40.0},
+    ]
+    (tmp_path / "trade_log.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = app._build_performance_snapshot({})
+
+    assert snapshot["symbol"] == "XAUUSD"
+    assert snapshot["timeframe"] == "M5"
+    assert snapshot["timeframe_minutes"] == 5
+    assert snapshot["lifetime"]["total_trades"] == 1
+    assert snapshot["lifetime"]["total_pnl"] == pytest.approx(10.0)

@@ -17,9 +17,9 @@ rng = np.random.default_rng(42)
 
 import pytest
 
-from src.persistence.journaled_persistence import Journal
-from src.monitoring.production_monitor import ProductionMonitor
 from src.core.reward_integrity_monitor import RewardIntegrityMonitor
+from src.monitoring.production_monitor import ProductionMonitor
+from src.persistence.journaled_persistence import Journal
 
 
 class TestCrashRecovery:

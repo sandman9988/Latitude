@@ -22,7 +22,6 @@ from src.utils.safe_math import (
     safe_array_operation,
 )
 
-
 # ── SafeMath.to_decimal / quantize ──────────────────────────────────────────
 
 class TestToDecimalQuantize:

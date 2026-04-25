@@ -14,13 +14,12 @@ from unittest.mock import patch
 import pytest
 
 from src.risk.friction_costs import (
+    MAX_SPREAD_PIPS,
+    MIN_SPREAD_SAMPLES,
     FrictionCalculator,
     SlippageModel,
     SpreadTracker,
-    MAX_SPREAD_PIPS,
-    MIN_SPREAD_SAMPLES,
 )
-
 
 # ===========================================================================
 # SpreadTracker defensive paths

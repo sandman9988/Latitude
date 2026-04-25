@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 
 from src.risk.emergency_close import EmergencyPositionCloser
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # 📚 Deployment & Operations Documentation Index
 
-**Last Updated:** April 23, 2026  
+**Last Updated:** April 25, 2026
 **Purpose:** Quick navigation for deployment-related documents
 
 ---
@@ -34,6 +34,7 @@
 |----------|---------|----------|
 | [CURRENT_STATE.md](CURRENT_STATE.md) | Latest status & fixes | All |
 | [QUICKSTART.md](QUICKSTART.md) | Get bot running in 15 min | New users |
+| [../AGENTS.md](../AGENTS.md) | Coding-agent instructions and source-of-truth rules | Developers |
 | [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers |
 | [MONITORING_GUIDE.md](MONITORING_GUIDE.md) | Health checks & alerts | Operators |
 
@@ -79,6 +80,8 @@
 |--------|----------|---------|
 | `scripts/testing/phase0_validate_system.sh` | 2-4 hours | Paper validation before live |
 | `scripts/testing/quick_test.sh` | < 5 min | Fast sanity check |
+| `scripts/weekend_offline_training.sh` | Weekend | Guarded per-timeframe offline tournament training |
+| `scripts/setup_weekend_training.sh` | < 1 min | Install/update weekend training cron entry |
 | `run.sh` | Ongoing | Main bot launcher |
 | `scripts/monitoring/` | — | Monitoring dashboard suite |
 
@@ -108,6 +111,12 @@ See [guides/DEPLOYMENT_QUICKSTART.md](guides/DEPLOYMENT_QUICKSTART.md) for the e
 1. Accumulate 500+ closed trades
 2. Check metrics: Sharpe > 1.5, Win Rate > 45%, WTL < 15%
 3. Update `QTY` in environment and restart
+
+### "I want to improve models over the weekend"
+1. Read [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) - Weekend Offline Champion Workflow
+2. Install cron with `./run.sh weekend-train-setup`
+3. Run manually with `./run.sh weekend-train` during the market-closed window
+4. Verify accepted candidates in `data/checkpoints/offline_champions.json` and `data/universe.json`
 
 ---
 

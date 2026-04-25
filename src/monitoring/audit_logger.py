@@ -181,7 +181,15 @@ class DecisionLogger:
     - Reasoning/features that influenced decision
     """
 
-    def __init__(self, log_dir: str = "logs/audit", filename: str = "decisions.jsonl", trading_mode: str = "live"):
+    def __init__(  # noqa: PLR0913
+        self,
+        log_dir: str = "logs/audit",
+        filename: str = "decisions.jsonl",
+        trading_mode: str = "live",
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        timeframe_minutes: int | None = None,
+    ):
         """
         Initialize decision logger.
 
@@ -189,6 +197,7 @@ class DecisionLogger:
             log_dir: Directory for log files
             filename: Log filename (JSON Lines format)
             trading_mode: "paper" or "live" — stamped on every entry
+            symbol/timeframe: optional bot scope stamped on every entry
         """
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -196,6 +205,9 @@ class DecisionLogger:
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
         self.trading_mode = trading_mode
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.timeframe_minutes = timeframe_minutes
 
     def log_decision(  # noqa: PLR0913
         self, agent: str, decision: str, confidence: float, context: dict[str, Any], reasoning: dict[str, Any] = None,
@@ -215,14 +227,23 @@ class DecisionLogger:
         """
         entry = {
             "timestamp": datetime.now(UTC).isoformat(),
-            "session": self.session_id,
-            "trading_mode": self.trading_mode,
+            "session": getattr(self, "session_id", None),
+            "trading_mode": getattr(self, "trading_mode", "live"),
             "agent": agent,
             "decision": decision,
             "confidence": float(confidence),
             "context": context,
             "reasoning": reasoning or {},
         }
+        symbol = getattr(self, "symbol", None)
+        timeframe = getattr(self, "timeframe", None)
+        timeframe_minutes = getattr(self, "timeframe_minutes", None)
+        if symbol:
+            entry["symbol"] = symbol
+        if timeframe:
+            entry["timeframe"] = timeframe
+        if timeframe_minutes is not None:
+            entry["timeframe_minutes"] = timeframe_minutes
         if trade_id is not None:
             entry["trade_id"] = trade_id
         if position_id is not None:
