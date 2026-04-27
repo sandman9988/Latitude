@@ -1513,7 +1513,7 @@ class TFAgent:
             _ret1, _ret5, _ret20 = self._compute_returns()
             _bars_list = list(self.bars)
             _prev_c = _bars_list[-2][4] if len(_bars_list) >= 2 else _c
-            _gap_pts = float(_o_b - _prev_c)
+            _gap_pts = float(_o - _prev_c)
             _gap_rs = (_gap_pts / _prev_c / _rs_vol_s) if _rs_vol_s > 0 and _prev_c > 0 else 0.0
             _trig_stats = (self.policy.get_training_stats() or {}).get("trigger") or {} if hasattr(self.policy, "get_training_stats") else {}
             _alignment = self._alignment_score(action, _ret1, _ret5, _ret20)
@@ -1521,10 +1521,13 @@ class TFAgent:
             _hmm = self._get_hmm_probs()
             _cb_mult = self.circuit_breakers.get_position_size_multiplier() if self.circuit_breakers is not None else 1.0
             _drawdown_pct = max(0.0, (self.starting_equity - self.equity) / max(abs(self.starting_equity), 1.0))
+            _regime: str = getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN"
+            _feasibility: float = float(_geom.get("feasibility", 0.0) or 0.0)
+            _rs_vol_ratio = _rs_vol_s / _rs_vol_l if _rs_vol_l > 0 else 1.0
 
             self._entry_trigger_data = {
-                "entry_regime": regime,
-                "entry_feasibility": feasibility,
+                "entry_regime": _regime,
+                "entry_feasibility": _feasibility,
                 "entry_zeta": float(getattr(self.policy, "current_zeta", 1.0) or 1.0),
                 "entry_geom_efficiency": _geom.get("efficiency", 0.0),
                 "entry_geom_runway": _geom.get("runway", 0.5),
@@ -1549,10 +1552,10 @@ class TFAgent:
                 "entry_alignment_score": _alignment,
                 "entry_bars_since_energy_bar": _energy_bars,
                 "entry_hmm_probs": _hmm,
-                "entry_bar_open": float(_o_b),
-                "entry_bar_high": float(_h_b),
-                "entry_bar_low": float(_l_b),
-                "entry_bar_close": float(_c_b),
+                "entry_bar_open": float(_o),
+                "entry_bar_high": float(_h),
+                "entry_bar_low": float(_l),
+                "entry_bar_close": float(_c),
                 "entry_cb_size_mult": _cb_mult,
                 "entry_drawdown_pct": _drawdown_pct,
             }
