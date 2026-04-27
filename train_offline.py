@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-train_offline.py
+r"""train_offline.py.
 ================
 Parallelised offline DDQN trainer.
 
@@ -40,6 +39,7 @@ Examples
 
     # Replay live-captured experience cache
     python3 train_offline.py data/training_cache.jsonl --timeframes M5
+
 """
 
 from __future__ import annotations
@@ -79,8 +79,7 @@ _STAGE_ORDER = ["UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"]
 
 def _tf_label(minutes: int) -> str:
     """Human-readable timeframe label: 60→H1, 240→H4, 1440→D1, else M{n}."""
-    _MAP = {15: "M15", 30: "M30", 60: "H1", 120: "H2", 240: "H4",
-            480: "H8", 720: "H12", 1440: "D1", 10080: "W1"}
+    _MAP = {15: "M15", 30: "M30", 60: "H1", 120: "H2", 240: "H4", 480: "H8", 720: "H12", 1440: "D1", 10080: "W1"}
     return _MAP.get(int(minutes), f"M{minutes}")
 
 
@@ -99,8 +98,7 @@ def _register_universe(
     z_omega: float,
     weights_path: str,
 ) -> None:
-    """
-    Promote a successfully trained instrument to PAPER stage in
+    """Promote a successfully trained instrument to PAPER stage in
     data/universe.json.
 
     Safe to call concurrently — uses atomic tmp-file rename.
@@ -126,7 +124,8 @@ def _register_universe(
 
     existing_idx = next(
         (
-            i for i, e in enumerate(instruments)
+            i
+            for i, e in enumerate(instruments)
             if str(e.get("symbol", "")).upper() == symbol
             and int(e.get("timeframe_minutes", 0) or 0) == int(timeframe_minutes)
         ),
@@ -134,11 +133,7 @@ def _register_universe(
     )
     existing = instruments[existing_idx] if existing_idx >= 0 else {}
     current_stage = existing.get("stage", "UNTRAINED")
-    current_idx = (
-        _STAGE_ORDER.index(current_stage)
-        if current_stage in _STAGE_ORDER
-        else 0
-    )
+    current_idx = _STAGE_ORDER.index(current_stage) if current_stage in _STAGE_ORDER else 0
 
     already_paper = current_idx > _STAGE_ORDER.index("OFFLINE_TRAINING")
     better_score = z_omega > existing.get("z_omega", 0.0)
@@ -147,15 +142,15 @@ def _register_universe(
         new_stage = current_stage if already_paper else "PAPER"
         updated = {
             **existing,
-            "symbol":            symbol,
-            "stage":             new_stage,
+            "symbol": symbol,
+            "stage": new_stage,
             "timeframe_minutes": timeframe_minutes,
-            "z_omega":           z_omega,
-            "weights_path":      weights_path,
-            "promoted_at":       existing.get("promoted_at") or datetime.now(UTC).isoformat(),
-            "updated_at":        datetime.now(UTC).isoformat(),
-            "paper_pid":         existing.get("paper_pid"),
-            "paper_started_at":  existing.get("paper_started_at"),
+            "z_omega": z_omega,
+            "weights_path": weights_path,
+            "promoted_at": existing.get("promoted_at") or datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
+            "paper_pid": existing.get("paper_pid"),
+            "paper_started_at": existing.get("paper_started_at"),
         }
         if existing_idx >= 0:
             instruments[existing_idx] = updated
@@ -170,18 +165,29 @@ def _register_universe(
         if already_paper:
             LOG.info(
                 "[UNIVERSE] %s M%d ZOmega updated  (%.4f → %.4f)  stage=%s preserved",
-                symbol, timeframe_minutes, existing.get("z_omega", 0.0), z_omega, new_stage,
+                symbol,
+                timeframe_minutes,
+                existing.get("z_omega", 0.0),
+                z_omega,
+                new_stage,
             )
         else:
             LOG.info(
                 "[UNIVERSE] %s M%d → PAPER  (ZOmega=%.4f)  Run: python3 run_universe.py",
-                symbol, timeframe_minutes, z_omega,
+                symbol,
+                timeframe_minutes,
+                z_omega,
             )
     else:
         LOG.info(
             "[UNIVERSE] %s M%d already %s ZΩ=%.4f, new ZΩ=%.4f — keeping best",
-            symbol, timeframe_minutes, current_stage, existing.get("z_omega", 0.0), z_omega,
+            symbol,
+            timeframe_minutes,
+            current_stage,
+            existing.get("z_omega", 0.0),
+            z_omega,
         )
+
 
 # ── Import training modules ────────────────────────────────────────────────────
 # Deferred to avoid importing torch/numpy before fork on some platforms
@@ -286,6 +292,7 @@ def _load_symbol_digits(symbol: str) -> int:
         _specs_path = Path("config/symbol_specs.json")
         if _specs_path.exists():
             import json as _j  # noqa: PLC0415
+
             specs = _j.loads(_specs_path.read_text())
             base = re.sub(r"[+.].*$", "", symbol)  # XAUUSD+→XAUUSD, XAUUSD.CRP→XAUUSD
             entry = specs.get(symbol) or specs.get(base)
@@ -298,12 +305,13 @@ def _load_symbol_digits(symbol: str) -> int:
 
 # ── Job descriptor ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class Job:
     symbol: str
     timeframe_minutes: int
     bars_file: Path
-    file_format: str   # "csv" or "jsonl"
+    file_format: str  # "csv" or "jsonl"
     source_files: tuple[Path, ...] = ()
 
 
@@ -399,9 +407,11 @@ def _load_offline_champion(
 ) -> tuple[float | None, str]:
     loaders = [lambda: _offline_champion_from_registry(checkpoint_root, symbol, timeframe_minutes)]
     if Path(checkpoint_root).resolve() == Path("data/checkpoints").resolve():
-        loaders.extend([
-            lambda: _offline_champion_from_universe(symbol, timeframe_minutes),
-        ])
+        loaders.extend(
+            [
+                lambda: _offline_champion_from_universe(symbol, timeframe_minutes),
+            ]
+        )
     for loader in loaders:
         score, source = loader()
         if score is not None:
@@ -489,7 +499,7 @@ def _parse_iso_utc(value: Any) -> datetime | None:
         return None
     text = value.strip()
     try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
         return None
     if parsed.tzinfo is None:
@@ -533,7 +543,7 @@ def _record_replay_bars(record: dict[str, Any], parse_bar) -> list:
     return sorted(seen.values(), key=lambda bar: bar[0])
 
 
-def _load_focused_cap_replay_windows(  # noqa: PLR0912
+def _load_focused_cap_replay_windows(
     source_files: list[str],
     symbol: str,
     timeframe_minutes: int,
@@ -597,7 +607,7 @@ def _load_focused_cap_replay_windows(  # noqa: PLR0912
     return [item[4] for item in sorted(selected.values(), key=lambda row: row[1])]
 
 
-def _clamp_int(value: int | float, floor: int, ceiling: int | None = None) -> int:
+def _clamp_int(value: float, floor: int, ceiling: int | None = None) -> int:
     out = max(floor, int(value))
     return min(out, ceiling) if ceiling is not None else out
 
@@ -759,7 +769,8 @@ def _seed_worker_rng(seed: int | None) -> None:
 
 # ── Worker function (runs in child process) ────────────────────────────────────
 
-def _run_job(  # noqa: PLR0912, PLR0913, PLR0915
+
+def _run_job(
     symbol: str,
     timeframe_minutes: int,
     bars_file: str,
@@ -785,18 +796,53 @@ def _run_job(  # noqa: PLR0912, PLR0913, PLR0915
     candidate_seed: int | None = None,
     deploy_candidate: bool = True,
 ) -> dict[str, Any]:
-    """
-    Child-process entry point.  Returns a dict (not a TrainResult) so it
+    """Child-process entry point.  Returns a dict (not a TrainResult) so it
     can be pickled cleanly across the process boundary.
     """
     import logging as _log  # noqa: PLC0415
-    _log.basicConfig(level=logging.INFO,
-                     format="%(asctime)s [%(levelname)s][%(process)d] %(name)s: %(message)s")
+
+    _log.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s][%(process)d] %(name)s: %(message)s")
     logger = _log.getLogger("train_offline.worker")
 
     from src.persistence.learned_parameters import LearnedParametersManager  # noqa: PLC0415
     from src.training.historical_loader import load_csv, load_jsonl_cache  # noqa: PLC0415
     from src.training.offline_trainer import OfflineTrainer  # noqa: PLC0415
+
+    # ── Stalled-job resume detection ────────────────────────────────────────────
+    # If a progress file exists and is stale (>30 min without update) the previous
+    # training run stalled.  Check if a candidate checkpoint already has weights;
+    # if so, force warm_start=True so the run picks up from where it left off.
+    _progress_path = Path(f"data/offline_progress_{symbol}_M{timeframe_minutes}.json")
+    _resume = False
+    if _progress_path.exists():
+        try:
+            _p = json.loads(_progress_path.read_text())
+            _pct = _p.get("pct", 0)
+            _mtime = _progress_path.stat().st_mtime
+            _stale = (time.time() - _mtime) > 1800  # 30 min stall threshold
+            if _pct > 0 and _pct < 99 and _stale:
+                logger.warning(
+                    "[RESUME] %s %s progress=%.1f%% stale since %s — attempting resume",
+                    symbol, _tf_label(timeframe_minutes), _pct,
+                    datetime.fromtimestamp(_mtime).isoformat())
+                _resume = True
+        except Exception as _exc:
+            logger.debug("[RESUME] Progress check error: %s", _exc)
+    if _resume:
+        _cp_dir = _candidate_checkpoint_dir(checkpoint_dir, symbol, timeframe_minutes, candidate_id)
+        if _cp_dir.exists():
+            logger.info("[RESUME] Found checkpoint dir %s — forcing warm_start=True", _cp_dir)
+            warm_start = True
+            # Also try to restore epsilon from progress for smoother continuation
+            try:
+                if _progress_path.exists():
+                    _p = json.loads(_progress_path.read_text())
+                    _eps = _p.get("epsilon")
+                    if _eps is not None:
+                        epsilon_start = max(float(_eps), epsilon_end)
+                        logger.info("[RESUME] Restored epsilon=%.4f from progress file", epsilon_start)
+            except Exception:
+                pass
 
     candidate_id = _safe_path_token(candidate_id)
     _seed_worker_rng(candidate_seed)
@@ -835,7 +881,8 @@ def _run_job(  # noqa: PLR0912, PLR0913, PLR0915
                     focused_cap_lookback_days,
                     focused_cap_per_side,
                 )
-                if focused_cap_replay else []
+                if focused_cap_replay
+                else []
             )
             if focused_replay_windows:
                 logger.info(
@@ -849,11 +896,17 @@ def _run_job(  # noqa: PLR0912, PLR0913, PLR0915
     except Exception as exc:
         logger.error("[WORKER] %s: failed to load bars: %s", label, exc)
         return {
-            "symbol": symbol, "timeframe_minutes": timeframe_minutes,
-            "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
-            "total_train_steps": 0, "elapsed_s": 0.0,
-            "weights_path": "", "error": str(exc),
-            "candidate_id": candidate_id, "candidate_seed": candidate_seed,
+            "symbol": symbol,
+            "timeframe_minutes": timeframe_minutes,
+            "z_omega": 0.0,
+            "train_trades": 0,
+            "val_trades": 0,
+            "total_train_steps": 0,
+            "elapsed_s": 0.0,
+            "weights_path": "",
+            "error": str(exc),
+            "candidate_id": candidate_id,
+            "candidate_seed": candidate_seed,
         }
 
     # Load reward-shaping params from learned_parameters.json (auto-backfills defaults)
@@ -901,13 +954,13 @@ def _run_job(  # noqa: PLR0912, PLR0913, PLR0915
     )
     with _isolated_runtime_data_dir(offline_runtime_dir):
         if accept_if_better:
-            incumbent_z_omega, incumbent_val_trades, incumbent_loaded = (
-                trainer.evaluate_runtime_checkpoint(bot_checkpoint_dir)
+            incumbent_z_omega, incumbent_val_trades, incumbent_loaded = trainer.evaluate_runtime_checkpoint(
+                bot_checkpoint_dir
             )
             legacy_checkpoint_dir = Path(checkpoint_dir)
             if not incumbent_loaded and legacy_checkpoint_dir != bot_checkpoint_dir:
-                incumbent_z_omega, incumbent_val_trades, incumbent_loaded = (
-                    trainer.evaluate_runtime_checkpoint(legacy_checkpoint_dir)
+                incumbent_z_omega, incumbent_val_trades, incumbent_loaded = trainer.evaluate_runtime_checkpoint(
+                    legacy_checkpoint_dir
                 )
 
         result = trainer.run()
@@ -940,37 +993,130 @@ def _run_job(  # noqa: PLR0912, PLR0913, PLR0915
         accepted = True
         accept_reason = "acceptance_disabled_candidate_saved_only"
     return {
-        "symbol":              result.symbol,
-        "timeframe_minutes":   result.timeframe_minutes,
-        "candidate_id":        candidate_id,
-        "candidate_seed":      candidate_seed,
+        "symbol": result.symbol,
+        "timeframe_minutes": result.timeframe_minutes,
+        "candidate_id": candidate_id,
+        "candidate_seed": candidate_seed,
         "candidate_deploy_deferred": bool(accepted and not deploy_candidate),
-        "z_omega":             result.z_omega,
-        "incumbent_z_omega":   incumbent_z_omega,
+        "z_omega": result.z_omega,
+        "incumbent_z_omega": incumbent_z_omega,
         "incumbent_val_trades": incumbent_val_trades,
-        "incumbent_loaded":    incumbent_loaded,
-        "champion_z_omega":    champion_z_omega,
-        "champion_source":     champion_source,
+        "incumbent_loaded": incumbent_loaded,
+        "champion_z_omega": champion_z_omega,
+        "champion_source": champion_source,
         "acceptance_guard_z_omega": acceptance_guard_z_omega,
-        "acceptance_guard_source":  acceptance_guard_source,
-        "accepted":            accepted,
-        "accept_reason":       accept_reason,
+        "acceptance_guard_source": acceptance_guard_source,
+        "accepted": accepted,
+        "accept_reason": accept_reason,
         "accepted_weights_path": ";".join(accepted_paths),
         "deployed_checkpoint_dir": str(bot_checkpoint_dir),
         "offline_runtime_dir": str(offline_runtime_dir),
-        "train_trades":        result.train_trades,
-        "val_trades":          result.val_trades,
-        "total_train_steps":   result.total_train_steps,
-        "elapsed_s":           result.elapsed_s,
-        "weights_path":        result.weights_path,
-        "error":               result.error,
+        "train_trades": result.train_trades,
+        "val_trades": result.val_trades,
+        "total_train_steps": result.total_train_steps,
+        "elapsed_s": result.elapsed_s,
+        "weights_path": result.weights_path,
+        "error": result.error,
     }
+
+
+def _run_job_tournament(
+    symbol: str,
+    timeframe_minutes: int,
+    bars_file: str,
+    file_format: str,
+    checkpoint_dir: str,
+    train_split: float,
+    max_bars: int | None,
+    accept_if_better: bool,
+    acceptance_margin: float,
+    source_files: list[str] | None,
+    focused_cap_replay: bool,
+    focused_cap_per_side: int,
+    focused_cap_lookback_days: float,
+    symbol_digits: int,
+    variant_specs: list[dict],
+) -> dict[str, Any]:
+    """Run all tournament variants for one (symbol, TF) job in this process.
+
+    Each variant is trained sequentially here; the caller runs multiple jobs in
+    parallel so no timeframe waits for another timeframe's variants to finish.
+    Returns the best result across all variants by ZOmega.
+    """
+    import logging as _log  # noqa: PLC0415
+
+    _log.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s][%(process)d] %(name)s: %(message)s")
+    logger = _log.getLogger("train_offline.tournament_worker")
+
+    label = f"{symbol}_M{timeframe_minutes}"
+    best: dict[str, Any] | None = None
+
+    for idx, v in enumerate(variant_specs):
+        logger.info(
+            "[TOURNAMENT-WORKER] %s variant %d/%d: %s",
+            label,
+            idx + 1,
+            len(variant_specs),
+            v.get("candidate_id", "?"),
+        )
+        result = _run_job(
+            symbol=symbol,
+            timeframe_minutes=timeframe_minutes,
+            bars_file=bars_file,
+            file_format=file_format,
+            checkpoint_dir=checkpoint_dir,
+            train_split=train_split,
+            train_every=v["train_every"],
+            max_bars=max_bars,
+            n_epochs=v["n_epochs"],
+            warm_start=v["warm_start"],
+            epsilon_start=v["epsilon_start"],
+            epsilon_end=v["epsilon_end"],
+            symbol_digits=symbol_digits,
+            penalty_scale=v["penalty_scale"],
+            accept_if_better=accept_if_better,
+            acceptance_margin=acceptance_margin,
+            source_files=source_files,
+            focused_cap_replay=focused_cap_replay,
+            focused_cap_per_side=focused_cap_per_side,
+            focused_cap_lookback_days=focused_cap_lookback_days,
+            focused_cap_passes=v["focused_cap_passes"],
+            candidate_id=v["candidate_id"],
+            candidate_seed=v["candidate_seed"],
+            deploy_candidate=v["deploy_candidate"],
+        )
+        if result.get("error"):
+            logger.warning("[TOURNAMENT-WORKER] %s variant %s errored: %s", label, v.get("candidate_id"), result["error"])
+            continue
+        if best is None or _prefer_training_result(result, best):
+            best = result
+            logger.info(
+                "[TOURNAMENT-WORKER] %s new best from %s: ZΩ=%.4f",
+                label,
+                v.get("candidate_id"),
+                result.get("z_omega", 0.0),
+            )
+
+    if best is None:
+        return {
+            "symbol": symbol,
+            "timeframe_minutes": timeframe_minutes,
+            "z_omega": 0.0,
+            "train_trades": 0,
+            "val_trades": 0,
+            "total_train_steps": 0,
+            "elapsed_s": 0.0,
+            "weights_path": "",
+            "error": "all variants failed",
+            "candidate_id": variant_specs[0].get("candidate_id", "tournament") if variant_specs else "tournament",
+            "candidate_seed": None,
+        }
+    return best
 
 
 # ── Job discovery ──────────────────────────────────────────────────────────────
 
-_TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30,
-               "H1": 60, "H4": 240, "H12": 720, "D1": 1440, "W1": 10080}
+_TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "H12": 720, "D1": 1440, "W1": 10080}
 _MIN_FOCUSED_REPLAY_BARS = 80
 
 
@@ -1009,13 +1155,14 @@ def _detect_symbol(filename: str) -> str | None:
     XAUUSD+_H1_20240101.csv     → XAUUSD+
     XAUUSD.crp_H4_20240101.csv  → XAUUSD.CRP
     BTCUSD_M15.csv              → BTCUSD
+
     """
-    stem = Path(filename).stem          # drop extension
+    stem = Path(filename).stem  # drop extension
     if stem.lower().startswith("training_cache_"):
-        stem = stem[len("training_cache_"):]
+        stem = stem[len("training_cache_") :]
     m = _TF_PATTERN.search(stem)
     if m:
-        sym = stem[:m.start()]          # everything before _M15 / _H1 / etc.
+        sym = stem[: m.start()]  # everything before _M15 / _H1 / etc.
         if sym:
             return sym.upper()
     # Fallback for filenames without a recognised TF marker
@@ -1023,7 +1170,7 @@ def _detect_symbol(filename: str) -> str | None:
     return m2.group(1) if m2 else None
 
 
-def discover_jobs(  # noqa: PLR0912
+def discover_jobs(
     paths: list[str],
     symbol_filter: list[str] | None = None,
     tf_filter: list[str] | None = None,
@@ -1046,16 +1193,14 @@ def discover_jobs(  # noqa: PLR0912
         for f in files:
             fmt = "jsonl" if f.suffix.lower() == ".jsonl" else "csv"
             sym = _detect_symbol(f.name)
-            tf  = _detect_tf_minutes(f.name)
+            tf = _detect_tf_minutes(f.name)
 
             if sym is None:
                 LOG.warning("Could not detect symbol from filename: %s — skipping", f.name)
                 continue
 
             if fmt == "jsonl" and tf is None:
-                LOG.warning(
-                    "JSONL file %s has no TF in filename; will use --timeframes or skip", f.name
-                )
+                LOG.warning("JSONL file %s has no TF in filename; will use --timeframes or skip", f.name)
 
             if tf_minutes_filter:
                 if tf is None and tf_minutes_filter:
@@ -1136,9 +1281,9 @@ def _combine_duplicate_jobs(candidates: list[Job]) -> Job:
 
 # ── Pre-flight data integrity check ───────────────────────────────────────────
 
-def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], list[str]]:  # noqa: PLR0912
-    """
-    Validate each job's data file before spawning any workers.
+
+def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], list[str]]:
+    """Validate each job's data file before spawning any workers.
 
     Checks performed:
       1. Symlink resolves to a real file (catches broken symlinks immediately)
@@ -1148,6 +1293,7 @@ def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], lis
 
     Returns:
       (good_jobs, error_messages)
+
     """
     good: list[Job] = []
     errors: list[str] = []
@@ -1164,9 +1310,7 @@ def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], lis
                 # Distinguish broken symlink from missing file
                 if path.is_symlink():
                     target = path.resolve()
-                    source_errors.append(
-                        f"broken symlink {path} → {target} (target does not exist)"
-                    )
+                    source_errors.append(f"broken symlink {path} → {target} (target does not exist)")
                 else:
                     source_errors.append(f"file not found: {path}")
                 continue
@@ -1181,12 +1325,11 @@ def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], lis
 
                     if j.file_format == "jsonl":
                         import json as _json  # noqa: PLC0415
+
                         try:
                             _json.loads(first)
                         except Exception as exc:
-                            source_errors.append(
-                                f"first line is not valid JSON ({exc}): {path}"
-                            )
+                            source_errors.append(f"first line is not valid JSON ({exc}): {path}")
                             continue
                         row_count += 1
                     # CSV: first line is header — just presence is enough
@@ -1210,10 +1353,7 @@ def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], lis
 
         if row_count < min_rows:
             source_desc = "; ".join(str(path) for path in paths)
-            errors.append(
-                f"[PREFLIGHT] {label}: only {row_count} data rows "
-                f"(need ≥ {min_rows}): {source_desc}"
-            )
+            errors.append(f"[PREFLIGHT] {label}: only {row_count} data rows (need ≥ {min_rows}): {source_desc}")
             continue
 
         good.append(j)
@@ -1223,12 +1363,13 @@ def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], lis
 
 # ── Best-model selection ───────────────────────────────────────────────────────
 
+
 def select_best(results: list[dict]) -> dict[str, dict]:
-    """
-    For each symbol, select the timeframe with the highest ZOmega.
+    """For each symbol, select the timeframe with the highest ZOmega.
 
     Returns:
         { symbol: best_result_dict }
+
     """
     best: dict[str, dict] = {}
     for r in results:
@@ -1271,7 +1412,7 @@ def _best_weight_filename(result: dict, src: Path) -> str | None:
 def copy_best_weights(best: dict[tuple[str, int], dict], dest_dir: Path) -> None:
     """Copy accepted per-bot weight files to dest_dir/{symbol}_M{tf}_{agent}_offline.pt."""
     dest_dir.mkdir(parents=True, exist_ok=True)
-    for _key, r in best.items():
+    for r in best.values():
         paths_str = r.get("accepted_weights_path") or r.get("weights_path", "")
         if not paths_str:
             continue
@@ -1307,6 +1448,7 @@ def _retrain_eligible(
 
 # ── Summary table ──────────────────────────────────────────────────────────────
 
+
 def print_summary(results: list[dict]) -> None:
     header = (
         f"{'Symbol':<12} {'TF':>5} {'Trades':>7} {'ValTrades':>9} "
@@ -1317,7 +1459,7 @@ def print_summary(results: list[dict]) -> None:
     print(header)
     print(sep)
     for r in sorted(results, key=lambda x: (x["symbol"], x["timeframe_minutes"])):
-        label = _tf_label(r['timeframe_minutes'])
+        label = _tf_label(r["timeframe_minutes"])
         status = f"ERROR: {r['error'][:40]}" if r.get("error") else "OK"
         zo = r.get("z_omega", 0.0)
         zo_str = f"{zo:.4f}" if zo != float("inf") else "  +inf"
@@ -1337,65 +1479,131 @@ def print_summary(results: list[dict]) -> None:
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
 
+
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Parallelised offline DDQN training across multiple instruments / timeframes",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Options")[0],
     )
-    p.add_argument("inputs", nargs="+", metavar="FILE_OR_DIR",
-                   help="CSV files, JSONL caches, or directories containing them")
-    p.add_argument("--symbols",       nargs="+", default=None, metavar="SYM",
-                   help="Filter to specific symbols (default: all)")
-    p.add_argument("--timeframes",    nargs="+", default=None, metavar="TF",
-                   help="Timeframe codes to train e.g. M5 H1 (default: all detected)")
-    p.add_argument("--workers",       type=int, default=None,
-                   help="Worker processes (default: CPU count)")
-    p.add_argument("--checkpoint-dir",default="data/checkpoints", metavar="PATH")
-    p.add_argument("--train-split",   type=float, default=0.80, metavar="0.8")
-    p.add_argument("--train-every",   type=int, default=4, metavar="N")
-    p.add_argument("--max-bars",      type=int, default=None, metavar="N")
-    p.add_argument("--n-epochs",      type=int, default=1, metavar="N",
-                   help="Number of training passes over the data per job (default: 1)")
-    p.add_argument("--warm-start",    action="store_true", default=False,
-                   help="Load existing checkpoint weights before training (continue from prior run)")
-    p.add_argument("--epsilon-start", type=float, default=0.4, metavar="E",
-                   help="Epsilon at the start of each training epoch (default: 0.4)")
-    p.add_argument("--epsilon-end",   type=float, default=0.05, metavar="E",
-                   help="Epsilon floor / val epsilon (default: 0.05)")
-    p.add_argument("--penalty-scale", type=float, default=1.0, metavar="S",
-                   help="Scale factor for WTL/timing penalties (0.0=no penalty, 1.0=full, default: 1.0)")
-    p.add_argument("--accept-if-better", action=argparse.BooleanOptionalAction, default=True,
-                   help=(
-                       "Evaluate candidate weights against the deployed per-bot checkpoint "
-                       "and only copy them into runtime checkpoint files if better "
-                       "(default: enabled)."
-                   ))
-    p.add_argument("--acceptance-margin", type=float, default=0.0, metavar="ZO",
-                   help="Required ZOmega improvement over incumbent before accepting candidate (default: 0.0)")
-    p.add_argument("--focused-cap-replay", action=argparse.BooleanOptionalAction, default=True,
-                   help=(
-                       "Run a bounded training-only replay pass over the 10 best and 10 worst "
-                       "recent CAP%% cache records for each symbol/timeframe (default: enabled)."
-                   ))
-    p.add_argument("--focused-cap-per-side", type=int, default=10, metavar="N",
-                   help="Best and worst CAP%% replay records to select per job (default: 10 each)")
-    p.add_argument("--focused-cap-lookback-days", type=float, default=7.0, metavar="DAYS",
-                   help="Lookback window for focused CAP%% replay records (default: 7)")
-    p.add_argument("--focused-cap-passes", type=int, default=1, metavar="N",
-                   help="Training-only passes over selected focused CAP%% replay windows (default: 1)")
-    p.add_argument("--tournament-variants", type=int, default=1, metavar="N",
-                   help=(
-                       "Run N deterministic training recipes per job and deploy only the best candidate "
-                       "that beats the per-symbol/timeframe guard (default: 1)"
-                   ))
-    p.add_argument("--tournament-seed", type=int, default=8675309, metavar="N",
-                   help="Base RNG seed for tournament candidates (default: 8675309)")
-    p.add_argument("--dry-run",       action="store_true",
-                   help="Discover jobs and print plan without training")
+    p.add_argument(
+        "inputs", nargs="+", metavar="FILE_OR_DIR", help="CSV files, JSONL caches, or directories containing them"
+    )
+    p.add_argument(
+        "--symbols", nargs="+", default=None, metavar="SYM", help="Filter to specific symbols (default: all)"
+    )
+    p.add_argument(
+        "--timeframes",
+        nargs="+",
+        default=None,
+        metavar="TF",
+        help="Timeframe codes to train e.g. M5 H1 (default: all detected)",
+    )
+    p.add_argument("--workers", type=int, default=None, help="Worker processes (default: CPU count)")
+    p.add_argument("--checkpoint-dir", default="data/checkpoints", metavar="PATH")
+    p.add_argument("--train-split", type=float, default=0.80, metavar="0.8")
+    p.add_argument("--train-every", type=int, default=4, metavar="N")
+    p.add_argument("--max-bars", type=int, default=None, metavar="N")
+    p.add_argument(
+        "--n-epochs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of training passes over the data per job (default: 1)",
+    )
+    p.add_argument(
+        "--warm-start",
+        action="store_true",
+        default=False,
+        help="Load existing checkpoint weights before training (continue from prior run)",
+    )
+    p.add_argument(
+        "--epsilon-start",
+        type=float,
+        default=0.4,
+        metavar="E",
+        help="Epsilon at the start of each training epoch (default: 0.4)",
+    )
+    p.add_argument(
+        "--epsilon-end", type=float, default=0.05, metavar="E", help="Epsilon floor / val epsilon (default: 0.05)"
+    )
+    p.add_argument(
+        "--penalty-scale",
+        type=float,
+        default=1.0,
+        metavar="S",
+        help="Scale factor for WTL/timing penalties (0.0=no penalty, 1.0=full, default: 1.0)",
+    )
+    p.add_argument(
+        "--accept-if-better",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Evaluate candidate weights against the deployed per-bot checkpoint "
+            "and only copy them into runtime checkpoint files if better "
+            "(default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--acceptance-margin",
+        type=float,
+        default=0.0,
+        metavar="ZO",
+        help="Required ZOmega improvement over incumbent before accepting candidate (default: 0.0)",
+    )
+    p.add_argument(
+        "--focused-cap-replay",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run a bounded training-only replay pass over the 10 best and 10 worst "
+            "recent CAP%% cache records for each symbol/timeframe (default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--focused-cap-per-side",
+        type=int,
+        default=10,
+        metavar="N",
+        help="Best and worst CAP%% replay records to select per job (default: 10 each)",
+    )
+    p.add_argument(
+        "--focused-cap-lookback-days",
+        type=float,
+        default=7.0,
+        metavar="DAYS",
+        help="Lookback window for focused CAP%% replay records (default: 7)",
+    )
+    p.add_argument(
+        "--focused-cap-passes",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Training-only passes over selected focused CAP%% replay windows (default: 1)",
+    )
+    p.add_argument(
+        "--tournament-variants",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Run N deterministic training recipes per job and deploy only the best candidate "
+            "that beats the per-symbol/timeframe guard (default: 1)"
+        ),
+    )
+    p.add_argument(
+        "--tournament-seed",
+        type=int,
+        default=8675309,
+        metavar="N",
+        help="Base RNG seed for tournament candidates (default: 8675309)",
+    )
+    p.add_argument("--dry-run", action="store_true", help="Discover jobs and print plan without training")
     # Universe / paper-trading promotion
     p.add_argument(
-        "--auto-promote", action="store_true", default=False,
+        "--auto-promote",
+        action="store_true",
+        default=False,
         help=(
             "After training, promote any symbol whose best ZOmega meets "
             "--paper-threshold to PAPER stage in data/universe.json. "
@@ -1403,11 +1611,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--paper-threshold", type=float, default=1.0, metavar="ZO",
+        "--paper-threshold",
+        type=float,
+        default=1.0,
+        metavar="ZO",
         help="Minimum ZOmega score required for --auto-promote (default: 1.0)",
     )
     p.add_argument(
-        "--retrain-rounds", type=int, default=1, metavar="N",
+        "--retrain-rounds",
+        type=int,
+        default=1,
+        metavar="N",
         help=(
             "Number of warm-start retrain cycles for rejected or below-threshold jobs. "
             "After the first round, any job rejected by the acceptance guard or whose "
@@ -1416,18 +1630,47 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
-        "--retrain-negative-only", action="store_true", default=False,
+        "--retrain-negative-only",
+        action="store_true",
+        default=False,
         help=(
             "After round 1, retrain only jobs with negative ZOmega (z_omega < 0). "
             "When enabled, this overrides threshold-based retry selection."
         ),
     )
-    p.add_argument("-v", "--verbose", action="store_true",
-                   help="Enable DEBUG logging")
+    p.add_argument("-v", "--verbose", action="store_true", help="Enable DEBUG logging")
     return p
 
 
-def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
+def _build_variant_specs(
+    variants: list,
+    base_seed: int | None,
+    job: "Job",
+    accept_if_better: bool,
+) -> list[dict]:
+    """Build serialisable per-job variant spec dicts for _run_job_tournament."""
+    specs = []
+    tournament_seed = int(base_seed) if base_seed is not None else 8675309
+    for v in variants:
+        cid = f"offline_candidate_{v.name}"
+        token = f"{cid}:{job.symbol}:{job.timeframe_minutes}:{tournament_seed}".encode()
+        seed = (tournament_seed + zlib.crc32(token)) % 2_147_483_647
+        specs.append({
+            "n_epochs": v.n_epochs,
+            "train_every": v.train_every,
+            "warm_start": v.warm_start,
+            "epsilon_start": v.epsilon_start,
+            "epsilon_end": v.epsilon_end,
+            "penalty_scale": v.penalty_scale,
+            "focused_cap_passes": v.focused_cap_passes,
+            "candidate_id": cid,
+            "candidate_seed": seed,
+            "deploy_candidate": False,  # tournament worker defers; main() deploys winner
+        })
+    return specs
+
+
+def _execute_pool(
     jobs: list,
     n_workers: int,
     args,
@@ -1435,49 +1678,79 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
     ot_status: dict,
     t_start: float,
     best_per_job: dict | None = None,
+    variants: list | None = None,
 ) -> list[dict]:
-    """
-    Run a pool of training jobs and return the list of result dicts.
+    """Run a pool of training jobs and return the list of result dicts.
     Updates ot_status in place so the HUD reflects live progress.
     If best_per_job is supplied and args.auto_promote is set, promotes
     winners to universe.json immediately as each job finishes.
+
+    When *variants* is provided (tournament mode) each job runs all its variants
+    internally via _run_job_tournament — no inter-job barrier between variant
+    rounds.  When None, each job runs a single _run_job call (non-tournament /
+    retrain path).
     """
     round_results: list[dict] = []
     ctx = multiprocessing.get_context("spawn")
     candidate_id = str(getattr(args, "candidate_id", "offline_candidate") or "offline_candidate")
     base_seed = getattr(args, "candidate_seed", None)
     deploy_candidate = not bool(getattr(args, "defer_candidate_deploy", False))
+
     with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
-        futures = {
-            pool.submit(
-                _run_job,
-                j.symbol,
-                j.timeframe_minutes,
-                str(j.bars_file),
-                j.file_format,
-                args.checkpoint_dir,
-                args.train_split,
-                args.train_every,
-                args.max_bars,
-                args.n_epochs,
-                warm_start,
-                args.epsilon_start,
-                args.epsilon_end,
-                _load_symbol_digits(j.symbol),
-                args.penalty_scale,
-                args.accept_if_better,
-                args.acceptance_margin,
-                [str(path) for path in _job_source_files(j)],
-                args.focused_cap_replay,
-                args.focused_cap_per_side,
-                args.focused_cap_lookback_days,
-                args.focused_cap_passes,
-                candidate_id,
-                _candidate_seed(base_seed, candidate_id, j),
-                deploy_candidate,
-            ): j
-            for j in jobs
-        }
+        if variants is not None:
+            # Tournament mode: one future per job, all variants run inside the worker.
+            futures = {
+                pool.submit(
+                    _run_job_tournament,
+                    j.symbol,
+                    j.timeframe_minutes,
+                    str(j.bars_file),
+                    j.file_format,
+                    args.checkpoint_dir,
+                    args.train_split,
+                    args.max_bars,
+                    args.accept_if_better,
+                    args.acceptance_margin,
+                    [str(path) for path in _job_source_files(j)],
+                    args.focused_cap_replay,
+                    args.focused_cap_per_side,
+                    args.focused_cap_lookback_days,
+                    _load_symbol_digits(j.symbol),
+                    _build_variant_specs(variants, base_seed, j, args.accept_if_better),
+                ): j
+                for j in jobs
+            }
+        else:
+            futures = {
+                pool.submit(
+                    _run_job,
+                    j.symbol,
+                    j.timeframe_minutes,
+                    str(j.bars_file),
+                    j.file_format,
+                    args.checkpoint_dir,
+                    args.train_split,
+                    args.train_every,
+                    args.max_bars,
+                    args.n_epochs,
+                    warm_start,
+                    args.epsilon_start,
+                    args.epsilon_end,
+                    _load_symbol_digits(j.symbol),
+                    args.penalty_scale,
+                    args.accept_if_better,
+                    args.acceptance_margin,
+                    [str(path) for path in _job_source_files(j)],
+                    args.focused_cap_replay,
+                    args.focused_cap_per_side,
+                    args.focused_cap_lookback_days,
+                    args.focused_cap_passes,
+                    candidate_id,
+                    _candidate_seed(base_seed, candidate_id, j),
+                    deploy_candidate,
+                ): j
+                for j in jobs
+            }
 
         # Mark submitted jobs as running
         submitted_keys = {(j.symbol, j.timeframe_minutes) for j in jobs}
@@ -1499,15 +1772,22 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
                     else:
                         LOG.info(
                             "[MAIN] %s done — ZOmega=%.4f  trades=%d",
-                            label, res["z_omega"], res["val_trades"],
+                            label,
+                            res["z_omega"],
+                            res["val_trades"],
                         )
                 except Exception as exc:
                     LOG.error("[MAIN] %s raised: %s", label, exc, exc_info=True)
                     res = {
-                        "symbol": job.symbol, "timeframe_minutes": job.timeframe_minutes,
-                        "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
-                        "total_train_steps": 0, "elapsed_s": 0.0,
-                        "weights_path": "", "error": str(exc),
+                        "symbol": job.symbol,
+                        "timeframe_minutes": job.timeframe_minutes,
+                        "z_omega": 0.0,
+                        "train_trades": 0,
+                        "val_trades": 0,
+                        "total_train_steps": 0,
+                        "elapsed_s": 0.0,
+                        "weights_path": "",
+                        "error": str(exc),
                         "candidate_id": candidate_id,
                         "candidate_seed": _candidate_seed(base_seed, candidate_id, job),
                     }
@@ -1515,8 +1795,7 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
 
                 ot_status["elapsed_s"] = time.perf_counter() - t_start
                 for entry in ot_status["results"]:
-                    if (entry["symbol"] == res["symbol"]
-                            and entry["timeframe_minutes"] == res["timeframe_minutes"]):
+                    if entry["symbol"] == res["symbol"] and entry["timeframe_minutes"] == res["timeframe_minutes"]:
                         entry["status"] = "error" if res.get("error") else "done"
                         entry["candidate_id"] = res.get("candidate_id", candidate_id)
                         entry["candidate_seed"] = res.get("candidate_seed")
@@ -1550,8 +1829,12 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
                     # Promote accepted per-symbol/per-timeframe winners as soon
                     # as each job finishes so parallel timeframes do not mask
                     # one another behind a single symbol-level best result.
-                    if (args.auto_promote and bool(res.get("accepted", True)) and zo >= args.paper_threshold
-                            and zo > prev_best):
+                    if (
+                        args.auto_promote
+                        and bool(res.get("accepted", True))
+                        and zo >= args.paper_threshold
+                        and zo > prev_best
+                    ):
                         sym = res["symbol"]
                         _register_universe(
                             symbol=sym,
@@ -1561,7 +1844,9 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
                         )
                         LOG.info(
                             "[PROMOTE] %s %s ZΩ=%.4f → promoted to PAPER immediately",
-                            sym, _tf_label(res["timeframe_minutes"]), zo,
+                            sym,
+                            _tf_label(res["timeframe_minutes"]),
+                            zo,
                         )
 
         except Exception as pool_exc:
@@ -1571,17 +1856,21 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
             for j in jobs:
                 if (j.symbol, j.timeframe_minutes) not in completed_syms:
                     err_res = {
-                        "symbol": j.symbol, "timeframe_minutes": j.timeframe_minutes,
-                        "z_omega": 0.0, "train_trades": 0, "val_trades": 0,
-                        "total_train_steps": 0, "elapsed_s": 0.0,
-                        "weights_path": "", "error": f"Pool crash: {pool_exc}",
+                        "symbol": j.symbol,
+                        "timeframe_minutes": j.timeframe_minutes,
+                        "z_omega": 0.0,
+                        "train_trades": 0,
+                        "val_trades": 0,
+                        "total_train_steps": 0,
+                        "elapsed_s": 0.0,
+                        "weights_path": "",
+                        "error": f"Pool crash: {pool_exc}",
                         "candidate_id": candidate_id,
                         "candidate_seed": _candidate_seed(base_seed, candidate_id, j),
                     }
                     round_results.append(err_res)
                     for entry in ot_status["results"]:
-                        if (entry["symbol"] == j.symbol
-                                and entry["timeframe_minutes"] == j.timeframe_minutes):
+                        if entry["symbol"] == j.symbol and entry["timeframe_minutes"] == j.timeframe_minutes:
                             entry["status"] = "error"
                             entry["error"] = err_res["error"]
                             break
@@ -1591,7 +1880,7 @@ def _execute_pool(  # noqa: PLR0912, PLR0913, PLR0915
     return round_results
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
+def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -1613,11 +1902,27 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         LOG.error("No jobs found. Check file paths and --symbols/--timeframes filters.")
         return 1
 
+    # Filter to known active symbols only (XAUUSD, BTCUSD).
+    # This prevents orphan EURUSD / other test symbols from entering the pipeline.
+    _KNOWN_SYMBOLS = {"XAUUSD", "BTCUSD"}
+    jobs = [j for j in jobs if j.symbol in _KNOWN_SYMBOLS]
+    if not jobs:
+        LOG.error("All jobs filtered out by symbol whitelist (XAUUSD, BTCUSD).")
+        return 1
+
     LOG.info("Discovered %d job(s):", len(jobs))
     for j in jobs:
         sources = _job_source_files(j)
         suffix = f" (+{len(sources) - 1} merged)" if len(sources) > 1 else ""
         LOG.info("  %s %s  ← %s%s", j.symbol, _tf_label(j.timeframe_minutes), sources[0], suffix)
+
+    # Sort jobs by reverse timeframe (highest first, lowest last).
+    # M240 runs first (fewest bars → finishes fastest) so the worker pool
+    # is never blocked on a long M1 job while fast TFs sit idle.
+    jobs.sort(key=lambda j: -j.timeframe_minutes)
+    LOG.info("Jobs sorted by reverse timeframe (highest TF first):")
+    for j in jobs:
+        LOG.info("  %s %s (%d min)", j.symbol, _tf_label(j.timeframe_minutes), j.timeframe_minutes)
 
     # ── Pre-flight data integrity check ──────────────────────────────────────
     jobs, pf_errors = preflight_check(jobs)
@@ -1629,7 +1934,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
             return 1
         LOG.warning(
             "%d job(s) dropped due to data errors; continuing with %d valid job(s).",
-            len(pf_errors), len(jobs),
+            len(pf_errors),
+            len(jobs),
         )
 
     if args.dry_run:
@@ -1667,8 +1973,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         LOG.info("[TOURNAMENT] Running %d candidate recipes per job", len(training_variants))
         for variant in training_variants:
             LOG.info(
-                "[TOURNAMENT] %s: epochs=%d train_every=%d eps=%.3f→%.3f "
-                "penalty=%.3f focused_passes=%d warm_start=%s",
+                "[TOURNAMENT] %s: epochs=%d train_every=%d eps=%.3f→%.3f penalty=%.3f focused_passes=%d warm_start=%s",
                 variant.name,
                 variant.n_epochs,
                 variant.train_every,
@@ -1681,24 +1986,29 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
 
     # ── Round 0 / tournament variants ─────────────────────────────────────────
     best_per_job: dict[tuple, dict] = {}
-    for variant in training_variants:
-        variant_args = _variant_args(args, variant, defer_candidate_deploy=tournament_mode)
-        run_jobs = jobs
-        if tournament_mode:
-            retry_keys = {(j.symbol, j.timeframe_minutes) for j in run_jobs}
-            for entry in _ot_status["results"]:
-                if (entry["symbol"], entry["timeframe_minutes"]) in retry_keys:
-                    entry["status"] = "queued"
-                    entry["candidate_id"] = variant_args.candidate_id
-                    entry.pop("z_omega", None)
-            _ot_status["status"] = "running"
-            _write_status(_ot_status)
-
+    if tournament_mode:
+        # Each job runs all its variants internally (no per-variant pool barrier).
+        # With --workers N, N jobs process their full variant sequences in parallel.
+        _ot_status["status"] = "running"
+        _write_status(_ot_status)
         round_results = _execute_pool(
-            run_jobs,
+            jobs,
+            n_workers,
+            args,
+            warm_start=False,  # warm_start is per-variant inside _run_job_tournament
+            ot_status=_ot_status,
+            t_start=t_start,
+            best_per_job=best_per_job,
+            variants=training_variants,
+        )
+        results.extend(round_results)
+    else:
+        variant_args = _variant_args(args, training_variants[0], defer_candidate_deploy=False)
+        round_results = _execute_pool(
+            jobs,
             n_workers,
             variant_args,
-            warm_start=variant.warm_start,
+            warm_start=training_variants[0].warm_start,
             ot_status=_ot_status,
             t_start=t_start,
             best_per_job=best_per_job,
@@ -1716,7 +2026,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
 
     for retrain_round in range(1, args.retrain_rounds if not tournament_mode else 1):
         retry_jobs = [
-            j for j in jobs
+            j
+            for j in jobs
             if _retrain_eligible(
                 best_per_job.get((j.symbol, j.timeframe_minutes)),
                 threshold=args.paper_threshold,
@@ -1762,9 +2073,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
 
         retrain_args = _variant_args(args, training_variants[0], defer_candidate_deploy=False)
         round_results = _execute_pool(
-            retry_jobs, min(n_workers, len(retry_jobs)), retrain_args,
-            warm_start=True,   # always warm-start on retrain rounds
-            ot_status=_ot_status, t_start=t_start,
+            retry_jobs,
+            min(n_workers, len(retry_jobs)),
+            retrain_args,
+            warm_start=True,  # always warm-start on retrain rounds
+            ot_status=_ot_status,
+            t_start=t_start,
             best_per_job=best_per_job,
         )
         results.extend(round_results)
@@ -1786,8 +2100,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
     # Print summary table — deduplicate to show best result per (symbol, TF)
     deduped = list(best_per_job.values()) if best_per_job else results
     # Include any errored jobs not in best_per_job
-    errored = [r for r in results if r.get("error")
-               and (r["symbol"], r["timeframe_minutes"]) not in best_per_job]
+    errored = [r for r in results if r.get("error") and (r["symbol"], r["timeframe_minutes"]) not in best_per_job]
     print_summary(deduped + errored)
     LOG.info("All jobs completed in %.1f s", total_s)
 
@@ -1807,7 +2120,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         for (_sym, _tf), r in sorted(best.items()):
             zo = r.get("z_omega", 0.0)
             zo_str = f"{zo:.4f}" if zo != float("inf") else "+inf"
-            label = _tf_label(r['timeframe_minutes'])
+            label = _tf_label(r["timeframe_minutes"])
             print(f"  {r['symbol']:<12} {label:>5}  ZOmega={zo_str}")
 
         promoted: list[str] = []
@@ -1829,13 +2142,10 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
                 promoted.append(f"{sym} {label}")
 
         if promoted:
-            print(
-                f"\n[UNIVERSE] {len(promoted)} bot(s) promoted to PAPER stage: "
-                + ", ".join(promoted)
-            )
+            print(f"\n[UNIVERSE] {len(promoted)} bot(s) promoted to PAPER stage: " + ", ".join(promoted))
             print("  Launch paper bots with:  python3 run_universe.py --watch")
 
-    n_ok  = sum(1 for r in deduped + errored if not r.get("error"))
+    n_ok = sum(1 for r in deduped + errored if not r.get("error"))
     n_err = len(deduped + errored) - n_ok
     if n_err:
         LOG.warning("%d job(s) failed.", n_err)
