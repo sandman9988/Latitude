@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""
-Analyze which observation features your trained agents actually use.
+"""Analyze which observation features your trained agents actually use.
 Based on lessons from feature engineering experiments.
 """
+
 import json
 from pathlib import Path
 
@@ -16,7 +16,7 @@ HEADER_WIDTH = 70
 BAR_MAX_WIDTH = 30
 
 
-def print_section_header(title):
+def print_section_header(title) -> None:
     """Print a formatted section header."""
     print("\n" + "=" * HEADER_WIDTH)
     print(f"  {title}")
@@ -37,14 +37,14 @@ def _extract_from_state_dict(state_dict):
 
 
 def load_checkpoint(checkpoint_path):
-    """
-    Load checkpoint and extract weights from first layer.
+    """Load checkpoint and extract weights from first layer.
 
     Args:
         checkpoint_path: Path to checkpoint file
 
     Returns:
         numpy array of weights or None if not found
+
     """
     if not checkpoint_path.exists():
         print(f"[WARN] {checkpoint_path} not found")
@@ -69,13 +69,13 @@ def load_checkpoint(checkpoint_path):
 
 
 def print_feature_importance(labels, importance, title):
-    """
-    Print feature importance analysis with formatted table.
+    """Print feature importance analysis with formatted table.
 
     Args:
         labels: List of feature names
         importance: Array of importance values
         title: Analysis title
+
     """
     ranked = sorted(zip(labels, importance, strict=True), key=lambda x: -x[1])
 
@@ -159,9 +159,8 @@ def analyze_harvester_agent():
     )
 
 
-def analyze_trade_discriminators():
-    """
-    Analyze what features discriminate winning vs losing trades.
+def analyze_trade_discriminators() -> None:
+    """Analyze what features discriminate winning vs losing trades.
     Requires decision_log.json with sufficient trade history.
 
     Note: Cohen's d analysis implementation pending - requires entry feature snapshots.
@@ -188,8 +187,8 @@ def analyze_trade_discriminators():
     losers = [t for t in closed if t.get("pnl_pct", 0) <= 0]
 
     print(f"Closed trades: {len(closed)}")
-    print(f"Winners: {len(winners)} ({len(winners)/max(len(closed),1)*100:.1f}%)")
-    print(f"Losers: {len(losers)} ({len(losers)/max(len(closed),1)*100:.1f}%)")
+    print(f"Winners: {len(winners)} ({len(winners) / max(len(closed), 1) * 100:.1f}%)")
+    print(f"Losers: {len(losers)} ({len(losers) / max(len(closed), 1) * 100:.1f}%)")
 
     if len(closed) < MIN_SAMPLE_SIZE_WARNING:
         print(f"\n[WARN] Less than {MIN_SAMPLE_SIZE_WARNING} closed trades - results may be unreliable")

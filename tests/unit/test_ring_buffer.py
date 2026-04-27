@@ -15,6 +15,7 @@ from src.utils.ring_buffer import (
 # RingBuffer
 # ---------------------------------------------------------------------------
 
+
 class TestRingBuffer:
     def test_init_capacity(self):
         rb = RingBuffer(5)
@@ -65,6 +66,7 @@ class TestRingBuffer:
 # RollingMean
 # ---------------------------------------------------------------------------
 
+
 class TestRollingMean:
     def test_single_value(self):
         rm = RollingMean(5)
@@ -110,6 +112,7 @@ class TestRollingMean:
 # ---------------------------------------------------------------------------
 # RollingVariance
 # ---------------------------------------------------------------------------
+
 
 class TestRollingVariance:
     def test_constant_values_zero_variance(self):
@@ -166,6 +169,7 @@ class TestRollingVariance:
 # RollingMinMax
 # ---------------------------------------------------------------------------
 
+
 class TestRollingMinMax:
     def test_single_value(self):
         mm = RollingMinMax(5)
@@ -211,6 +215,7 @@ class TestRollingMinMax:
 # ---------------------------------------------------------------------------
 # RollingStats (composite)
 # ---------------------------------------------------------------------------
+
 
 class TestRollingStats:
     def test_all_properties(self):

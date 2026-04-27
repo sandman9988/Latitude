@@ -17,7 +17,7 @@ from src.monitoring.audit_logger import DecisionLogger, TransactionLogger
 # TransactionLogger extended
 # ---------------------------------------------------------------------------
 class TestTransactionLoggerExt:
-    @pytest.fixture()
+    @pytest.fixture
     def logger(self, tmp_path):
         return TransactionLogger(log_dir=str(tmp_path), filename="tx.jsonl")
 
@@ -60,6 +60,7 @@ class TestTransactionLoggerExt:
 
     def test_concurrent_writes(self, logger):
         """Multiple threads writing should not corrupt the file."""
+
         def write_events(tid):
             for i in range(20):
                 logger.log_event("CONCURRENT", {"thread": tid, "idx": i})
@@ -90,7 +91,7 @@ class TestTransactionLoggerExt:
 # DecisionLogger extended
 # ---------------------------------------------------------------------------
 class TestDecisionLoggerExt:
-    @pytest.fixture()
+    @pytest.fixture
     def logger(self, tmp_path):
         return DecisionLogger(log_dir=str(tmp_path), filename="dec.jsonl")
 
@@ -123,9 +124,13 @@ class TestDecisionLoggerExt:
 
     def test_log_trigger_decision_defaults(self, logger):
         logger.log_trigger_decision(
-            decision="NO_ENTRY", confidence=0.3,
-            price=99000.0, volatility=0.01, imbalance=0.0,
-            vpin_z=0.0, regime="UNKNOWN",
+            decision="NO_ENTRY",
+            confidence=0.3,
+            price=99000.0,
+            volatility=0.01,
+            imbalance=0.0,
+            vpin_z=0.0,
+            regime="UNKNOWN",
         )
         entries = self._read_entries(logger)
         e = entries[0]
@@ -155,9 +160,13 @@ class TestDecisionLoggerExt:
 
     def test_log_harvester_decision_defaults(self, logger):
         logger.log_harvester_decision(
-            decision="HOLD", confidence=0.6,
-            price=100010.0, entry_price=100000.0,
-            mfe=30.0, mae=10.0, ticks_held=50,
+            decision="HOLD",
+            confidence=0.6,
+            price=100010.0,
+            entry_price=100000.0,
+            mfe=30.0,
+            mae=10.0,
+            ticks_held=50,
             unrealized_pnl=10.0,
         )
         entries = self._read_entries(logger)

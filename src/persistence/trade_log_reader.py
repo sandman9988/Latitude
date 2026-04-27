@@ -27,6 +27,7 @@ def read_all_trades(path: Path | str = _DEFAULT_PATH) -> list[dict[str, Any]]:
 
     Returns:
         List of trade dicts in file order (oldest first).
+
     """
     path = Path(path)
     if not path.exists():
@@ -83,6 +84,7 @@ def read_recent_trades(
 
     Returns:
         List of completed trade dicts (oldest-first within the window).
+
     """
     path = Path(path)
     if not path.exists():
@@ -182,6 +184,7 @@ def read_all_trades_validated(path: Path | str = _DEFAULT_PATH) -> tuple[list[di
 
     Returns:
         (trades, warnings) - list of validated trades and list of warning strings
+
     """
     trades = read_all_trades(path)
     warnings: list[str] = []

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-order_book.py
+"""order_book.py.
 
 Lightweight L2 order book and VPIN calculator for microstructure signals.
 - Maintains top-N bids/asks with sizes
@@ -13,7 +12,7 @@ from collections import deque
 
 
 class OrderBook:
-    def __init__(self, depth: int = 10):
+    def __init__(self, depth: int = 10) -> None:
         self.depth = depth
         self.bids: dict[float, float] = {}
         self.asks: dict[float, float] = {}
@@ -89,14 +88,13 @@ class OrderBook:
 
 
 class VPINCalculator:
-    """
-    Volume-synchronized Probability of Informed Trading (VPIN).
+    """Volume-synchronized Probability of Informed Trading (VPIN).
     - Uses volume buckets (bucket_volume) instead of fixed time
     - Tracks rolling imbalance statistics (mean/std/zscore)
-    - Requires trade side inference from tape or book
+    - Requires trade side inference from tape or book.
     """
 
-    def __init__(self, bucket_volume: float = 1.0, window: int = 20):
+    def __init__(self, bucket_volume: float = 1.0, window: int = 20) -> None:
         self.bucket_volume = max(bucket_volume, 1e-6)
         self.window = max(window, 1)
         self.reset()
@@ -155,7 +153,6 @@ class VPINCalculator:
 
     def get_stats(self) -> dict:
         """Get VPIN statistics with defensive validation."""
-
         vpin = self.get_vpin()
         if not self.completed:
             return {"vpin": vpin, "mean": 0.0, "std": 0.0, "zscore": 0.0}

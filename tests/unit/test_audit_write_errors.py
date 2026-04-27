@@ -21,10 +21,11 @@ from src.monitoring.trade_audit_logger import TradeAuditLogger, get_trade_audit_
 # DecisionLogger write error (audit_logger.py lines 230-231)
 # ===========================================================================
 
+
 class TestDecisionLoggerWriteError:
     """Test that DecisionLogger handles write failures gracefully."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def logger(self, tmp_path):
         return DecisionLogger(log_dir=str(tmp_path), filename="dec.jsonl")
 
@@ -60,7 +61,7 @@ class TestDecisionLoggerWriteError:
         logger.trading_mode = "paper"
 
         # Make directory read-only
-        os.chmod(log_dir, 0o444)
+        log_dir.chmod(0o444)
         try:
             # Should not raise
             logger.log_decision(
@@ -70,7 +71,7 @@ class TestDecisionLoggerWriteError:
                 context={},
             )
         finally:
-            os.chmod(log_dir, 0o755)
+            log_dir.chmod(0o755)
 
     def test_log_decision_write_error_via_mock(self, logger):
         """Mock open to raise an IOError during log_decision."""
@@ -123,6 +124,7 @@ class TestDecisionLoggerWriteError:
 # TradeAuditLogger write error (trade_audit_logger.py lines 113-114)
 # ===========================================================================
 
+
 class TestTradeAuditLoggerWriteError:
     """Test that TradeAuditLogger handles write failures gracefully."""
 
@@ -151,12 +153,12 @@ class TestTradeAuditLoggerWriteError:
         logger.sequence = 0
 
         # Make directory read-only
-        os.chmod(readonly_dir, 0o444)
+        readonly_dir.chmod(0o444)
         try:
             # Should not raise
             logger._write_entry("TEST", {"x": 1}, "INFO")
         finally:
-            os.chmod(readonly_dir, 0o755)
+            readonly_dir.chmod(0o755)
 
     def test_write_entry_open_raises_oserror(self, tmp_path):
         """Mock open to raise OSError."""
@@ -222,12 +224,14 @@ class TestTradeAuditLoggerWriteError:
 # get_trade_audit_logger singleton
 # ===========================================================================
 
+
 class TestGetTradeAuditLoggerSingleton:
     """Test the singleton factory function."""
 
     def test_returns_instance(self):
         """get_trade_audit_logger should return a TradeAuditLogger."""
         import src.monitoring.trade_audit_logger as mod
+
         # Reset singleton for clean test
         old = mod._audit_logger_instance
         try:

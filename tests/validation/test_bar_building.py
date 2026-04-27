@@ -20,7 +20,7 @@ from datetime import UTC
 class BarBuilder:
     """Simplified BarBuilder for testing"""
 
-    def __init__(self, timeframe_minutes: int = 15):
+    def __init__(self, timeframe_minutes: int = 15) -> None:
         self.timeframe_minutes = timeframe_minutes
         self.bucket: dt.datetime | None = None
         self.o: float | None = None
@@ -129,9 +129,9 @@ def test_bar_closure_timing():
     assert result is not None, "Tick at 10:15:00 should close previous bar"
 
     closed_time, o, h, lo, c = result
-    assert closed_time == dt.datetime(
-        2026, 1, 11, 10, 0, 0, tzinfo=UTC
-    ), f"Closed bar timestamp should be 10:00, got {closed_time}"
+    assert closed_time == dt.datetime(2026, 1, 11, 10, 0, 0, tzinfo=UTC), (
+        f"Closed bar timestamp should be 10:00, got {closed_time}"
+    )
     assert o == pytest.approx(100.0), f"Closed bar O should be 100.0, got {o}"
     assert h == pytest.approx(105.0), f"Closed bar H should be 105.0, got {h}"
     assert lo == pytest.approx(100.0), f"Closed bar L should be 100.0, got {lo}"
@@ -172,9 +172,9 @@ def test_timeframe_alignment():
         expected = dt.datetime(2026, 1, 11, exp_hour, exp_minute, 0, tzinfo=UTC)
 
         bucket = bb.bucket_start(tick)
-        assert (
-            bucket == expected
-        ), f"M{tf_minutes}: tick {tick_time} should align to {expected_bucket}, got {bucket.strftime('%H:%M')}"
+        assert bucket == expected, (
+            f"M{tf_minutes}: tick {tick_time} should align to {expected_bucket}, got {bucket.strftime('%H:%M')}"
+        )
 
         print(f"  ✓ M{tf_minutes:>2}: {tick_time} → {expected_bucket}")
 
@@ -257,7 +257,7 @@ def test_data_integrity_across_bars():
 
     # Verify Bar 1 closed correctly
     assert result is not None, "Bar 1 should be closed"
-    closed_time, o, h, lo, c = result
+    _closed_time, o, h, lo, c = result
     assert o == pytest.approx(100.0), f"Bar 1 O should be 100.0, got {o}"
     assert h == pytest.approx(110.0), f"Bar 1 H should be 110.0, got {h}"
     assert lo == pytest.approx(95.0), f"Bar 1 L should be 95.0, got {lo}"
@@ -295,7 +295,18 @@ def test_edge_cases():
         if i < 9:
             assert result is None
 
-    assert bb1.o == pytest.approx(100.0) and bb1.h == pytest.approx(100.0) and bb1.l == pytest.approx(100.0) and bb1.c == pytest.approx(100.0)
+    assert (
+        bb1.o == pytest.approx(100.0)
+    )
+    assert (
+        bb1.h == pytest.approx(100.0)
+    )
+    assert (
+        bb1.l == pytest.approx(100.0)
+    )
+    assert (
+        bb1.c == pytest.approx(100.0)
+    )
     print("  ✓ Same price all ticks: O=H=L=C=100.0")
 
     # Edge case 2: Extreme price swing
@@ -368,16 +379,15 @@ def run_all_tests():
         for name, error in failed:
             print(f"  ❌ {name}: {error}")
         return 1
-    else:
-        print("\n✅ ALL BAR BUILDING TESTS PASSED")
-        print("\nVerified:")
-        print("  • OHLC aggregation within bars")
-        print("  • Bar closure at timeframe boundaries")
-        print("  • Correct alignment for M1, M5, M15, H1")
-        print("  • Boundary detection across gaps and hour changes")
-        print("  • Data integrity (no leakage between bars)")
-        print("  • Edge cases (same price, extreme swings, rapid updates)")
-        return 0
+    print("\n✅ ALL BAR BUILDING TESTS PASSED")
+    print("\nVerified:")
+    print("  • OHLC aggregation within bars")
+    print("  • Bar closure at timeframe boundaries")
+    print("  • Correct alignment for M1, M5, M15, H1")
+    print("  • Boundary detection across gaps and hour changes")
+    print("  • Data integrity (no leakage between bars)")
+    print("  • Edge cases (same price, extreme swings, rapid updates)")
+    return 0
 
 
 if __name__ == "__main__":

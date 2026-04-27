@@ -13,6 +13,7 @@ from src.risk.emergency_close import EmergencyPositionCloser
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_trade_integration(*, position_tickets=None, mfe_mae_trackers=None, trade_manager=None):
     ti = MagicMock()
     app = MagicMock()
@@ -35,6 +36,7 @@ def _make_trade_integration(*, position_tickets=None, mfe_mae_trackers=None, tra
 # ---------------------------------------------------------------------------
 # Tier 1: mfe_mae_trackers close path (hedging mode fallback)
 # ---------------------------------------------------------------------------
+
 
 class TestCloseByMfeMaeTrackers:
     """Lines 67-75: Close positions via app.mfe_mae_trackers when tickets unavailable."""
@@ -106,6 +108,4 @@ class TestCloseByMfeMaeTrackers:
         closer = EmergencyPositionCloser(ti)
 
         closer.close_all_positions("TEST_REASON")
-        ti.close_position.assert_called_once_with(
-            position_id="POS_ABC", reason="TEST_REASON"
-        )
+        ti.close_position.assert_called_once_with(position_id="POS_ABC", reason="TEST_REASON")

@@ -2542,13 +2542,31 @@ class TabbedHUD:
         ofs_status = self._offline_status_normalized(ofs)
         ofs_total = self._offline_total_jobs(ofs, _results)
         ofs_done = sum(1 for r in _results if r.get("status") in ("done", "error"))
-        ofs_elapsed = ofs.get("elapsed_s", 0.0)
-        ofs_start = ofs.get("started_at", "")[:19].replace("T", " ") if ofs.get("started_at") else "—"
-        ofs_end = ofs.get("completed_at", "")[:19].replace("T", " ") if ofs.get("completed_at") else None
+        # Compute elapsed: from started_at for running jobs, else from stale elapsed_s.
+        ofs_elapsed = 0.0
+        ofs_start_str = ofs.get("started_at", "")
+        ofs_end_str = ofs.get("completed_at", "")
+        if ofs_status == "running" and ofs_start_str:
+            try:
+                _start = datetime.fromisoformat(ofs_start_str.replace("Z", "+00:00"))
+                ofs_elapsed = (datetime.now(UTC) - _start).total_seconds()
+            except (ValueError, TypeError):
+                ofs_elapsed = ofs.get("elapsed_s", 0.0)
+        else:
+            ofs_elapsed = ofs.get("elapsed_s", 0.0)
+        ofs_start = ofs_start_str[:19].replace("T", " ") if ofs_start_str else "—"
+        ofs_end = ofs_end_str[:19].replace("T", " ") if ofs_end_str else None
         status_badge = self._offline_status_badge(ofs_status, ofs_done, ofs_total)
         prog_bar = self._offline_progress_bar(ofs_done, ofs_total)
+        _elapsed_h = int(ofs_elapsed // 3600)
+        _elapsed_m = int((ofs_elapsed % 3600) // 60)
+        _elapsed_s = int(ofs_elapsed % 60)
+        if _elapsed_h:
+            _elapsed_str = f"{_elapsed_h}h {_elapsed_m}m"
+        else:
+            _elapsed_str = f"{_elapsed_m}m {_elapsed_s}s"
         print(f"\n  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
-        print(f"    Progress:  {prog_bar}   Elapsed: {ofs_elapsed:.0f}s")
+        print(f"    Progress:  {prog_bar}   Elapsed: {_elapsed_str}")
         print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
         if _results:
             self._render_offline_jobs_table(_results)
@@ -2580,8 +2598,8 @@ class TabbedHUD:
         """Render the symbol/TF results table for offline training."""
         sym_w = max(6, *(len(r.get("symbol", "")) for r in results))
         print()
-        print(f"    {'Symbol':<{sym_w}}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  ZOmega")
-        print(f"    {'─' * sym_w}  {'─' * 5}  {'─' * 9}  {'─' * 38}  {'─' * 8}")
+        print(f"    {'Symbol':<{sym_w}}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  {'ZOmega':>8}  {'Comment':<14}")
+        print(f"    {'─' * sym_w}  {'─' * 5}  {'─' * 9}  {'─' * 38}  {'─' * 8}  {'─' * 14}")
         for r in results:
             self._render_offline_job_row(r, sym_w)
 
@@ -2593,10 +2611,33 @@ class TabbedHUD:
         jcol, jbadge = self._offline_job_status(jstatus)
         zo_str = self._offline_job_zo_str(r.get("z_omega"), jstatus, r.get("val_trades"))
         detail = self._offline_job_detail(jstatus, r)
-        row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}{_ANSI_RST}  {detail}  {zo_str}"
+        comment = self._offline_job_comment(jstatus, r)
+        row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}{_ANSI_RST}  {detail}  {zo_str}  {comment}"
         if jstatus == "error" and r.get("error"):
             row += f"  {_ANSI_R}{r['error'][:30]}{_ANSI_RST}"
         print(row)
+
+    def _offline_job_comment(self, status: str, r: dict) -> str:
+        """Return the Comment column text for an offline job row.
+
+        - Running jobs: show "run X/Y" from progress file epoch/n_epochs.
+        - Done jobs: show accept_reason if set.
+        - Otherwise: "—".
+        """
+        if status == "running":
+            prog = self.offline_job_progress.get((r.get("symbol"), r.get("timeframe_minutes")), {})
+            epoch = int(prog.get("epoch", 0) or 0)
+            n_epochs = int(prog.get("n_epochs", 0) or 0)
+            if epoch and n_epochs:
+                return f"{_ANSI_Y}run {epoch}/{n_epochs}{_ANSI_RST}"
+            return f"{'—':<14}"
+        if status == "done":
+            reason = r.get("accept_reason", "")
+            if reason:
+                return reason[:14]
+            accepted = r.get("accepted", False)
+            return f"{_ANSI_G}accepted{_ANSI_RST}" if accepted else f"{_ANSI_DIM}not accepted{_ANSI_RST}"
+        return f"{'—':<14}"
 
     def _offline_job_status(self, status: str) -> tuple[str, str]:
         """Return (color, badge) for offline job status."""
@@ -2699,7 +2740,7 @@ class TabbedHUD:
             if alive
             else (f"{_ANSI_R}✗ dead ({pid}){_ANSI_RST}" if pid else f"{_ANSI_DIM}not started{_ANSI_RST}")
         )
-        uptime_s = ps.get("uptime_seconds", 0)
+        uptime_s = int(ps.get("uptime_seconds", 0))
         if uptime_s >= 3600:
             uptime_str = f"{uptime_s // 3600}h {(uptime_s % 3600) // 60}m"
         elif uptime_s:

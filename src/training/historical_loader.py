@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-HistoricalLoader
+"""HistoricalLoader.
 ================
 Load OHLC bars from disk into a list of (datetime, o, h, l, c) tuples
 compatible with DualPolicy._build_state().
@@ -29,51 +28,54 @@ import json
 import logging
 import re
 from collections import deque
-from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 LOG = logging.getLogger(__name__)
 
-Bar = tuple[datetime, float, float, float, float, float]   # t, o, h, l, c, spread_pts
+Bar = tuple[datetime, float, float, float, float, float]  # t, o, h, l, c, spread_pts
 
 # ── Recognised column-name patterns ─────────────────────────────────────────
 
-_DATE_COLS   = re.compile(r"(date|time|gmt|timestamp)", re.IGNORECASE)
-_TIME_COLS   = re.compile(r"^time$", re.IGNORECASE)
-_OPEN_COLS   = re.compile(r"^open$", re.IGNORECASE)
-_HIGH_COLS   = re.compile(r"^high$", re.IGNORECASE)
-_LOW_COLS    = re.compile(r"^low$", re.IGNORECASE)
-_CLOSE_COLS  = re.compile(r"^close$|^last$", re.IGNORECASE)
+_DATE_COLS = re.compile(r"(date|time|gmt|timestamp)", re.IGNORECASE)
+_TIME_COLS = re.compile(r"^time$", re.IGNORECASE)
+_OPEN_COLS = re.compile(r"^open$", re.IGNORECASE)
+_HIGH_COLS = re.compile(r"^high$", re.IGNORECASE)
+_LOW_COLS = re.compile(r"^low$", re.IGNORECASE)
+_CLOSE_COLS = re.compile(r"^close$|^last$", re.IGNORECASE)
 _SPREAD_COLS = re.compile(r"^spread$", re.IGNORECASE)
 
 # Datetime format strings to try, most specific first
 _DT_FORMATS = [
-    "%d.%m.%Y %H:%M:%S.%f",   # Dukascopy with ms
-    "%d.%m.%Y %H:%M:%S",      # Dukascopy
-    "%Y.%m.%d %H:%M",         # MT4
-    "%Y.%m.%d %H:%M:%S",      # MT4 with seconds
-    "%Y-%m-%d %H:%M:%S",      # ISO-like (no tz)
-    "%Y-%m-%d %H:%M:%S%z",    # ISO-like with tz offset (e.g. cTrader: +00:00)
-    "%Y-%m-%dT%H:%M:%S",      # ISO 8601
+    "%d.%m.%Y %H:%M:%S.%f",  # Dukascopy with ms
+    "%d.%m.%Y %H:%M:%S",  # Dukascopy
+    "%Y.%m.%d %H:%M",  # MT4
+    "%Y.%m.%d %H:%M:%S",  # MT4 with seconds
+    "%Y-%m-%d %H:%M:%S",  # ISO-like (no tz)
+    "%Y-%m-%d %H:%M:%S%z",  # ISO-like with tz offset (e.g. cTrader: +00:00)
+    "%Y-%m-%dT%H:%M:%S",  # ISO 8601
     "%Y-%m-%dT%H:%M:%SZ",
     "%Y-%m-%dT%H:%M:%S%z",
-    "%m/%d/%Y %H:%M",         # US format
-    "%d/%m/%Y %H:%M",         # EU format
+    "%m/%d/%Y %H:%M",  # US format
+    "%d/%m/%Y %H:%M",  # EU format
 ]
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 def load_csv(
     path: str | Path,
     max_bars: int | None = None,
     timeframe_minutes: int | None = None,
 ) -> list[Bar]:
-    """
-    Load bars from a CSV file.
+    """Load bars from a CSV file.
 
     Args:
         path:               Path to CSV file.
@@ -83,10 +85,12 @@ def load_csv(
 
     Returns:
         Sorted list of (datetime, o, h, l, c) bars, newest last.
+
     """
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"CSV file not found: {path}")
+        msg = f"CSV file not found: {path}"
+        raise FileNotFoundError(msg)
 
     raw = list(_iter_csv(path))
     bars = _sort_and_dedupe(raw)
@@ -103,8 +107,7 @@ def load_jsonl_cache(
     path: str | Path,
     max_bars: int | None = None,
 ) -> list[Bar]:
-    """
-    Reconstruct a flat bar sequence from a training_cache.jsonl file.
+    """Reconstruct a flat bar sequence from a training_cache.jsonl file.
 
     The loader merges entry_bars and exit_bars from each record into one
     de-duplicated, sorted sequence.  This lets the offline trainer replay
@@ -116,10 +119,12 @@ def load_jsonl_cache(
 
     Returns:
         Sorted list of (datetime, o, h, l, c) bars.
+
     """
     path = Path(path)
     if not path.exists():
-        raise FileNotFoundError(f"JSONL cache not found: {path}")
+        msg = f"JSONL cache not found: {path}"
+        raise FileNotFoundError(msg)
 
     seen: dict[datetime, Bar] = {}
     with open(path, encoding="utf-8") as fh:
@@ -158,8 +163,7 @@ def sliding_windows(
     window: int,
     step: int = 1,
 ) -> Iterator[list[Bar]]:
-    """
-    Yield overlapping windows of *window* bars, advancing by *step*.
+    """Yield overlapping windows of *window* bars, advancing by *step*.
 
     The offline trainer calls this to iterate through history as if the bot
     were running bar-by-bar, without rebuilding the full deque on every step.
@@ -170,6 +174,7 @@ def sliding_windows(
 
 
 # ── CSV parsing ───────────────────────────────────────────────────────────────
+
 
 def _iter_csv(path: Path) -> Iterator[Bar]:
     """Yield bars from a CSV file, auto-detecting column layout."""
@@ -196,8 +201,8 @@ def _iter_csv(path: Path) -> Iterator[Bar]:
 
         col_map = _detect_columns(list(reader.fieldnames))
         if not col_map:
-            raise ValueError(f"Could not detect OHLC columns in {path.name}. "
-                             f"Headers: {reader.fieldnames}")
+            msg = f"Could not detect OHLC columns in {path.name}. Headers: {reader.fieldnames}"
+            raise ValueError(msg)
 
         for row in reader:
             bar = _parse_csv_row(row, col_map)
@@ -206,8 +211,7 @@ def _iter_csv(path: Path) -> Iterator[Bar]:
 
 
 def _detect_datetime_columns(headers: list[str], norm: dict[str, str]) -> dict[str, str]:
-    """
-    Detect which header(s) carry datetime information.
+    """Detect which header(s) carry datetime information.
 
     Handles three layouts:
     * Combined column   → ``result["dt"]``
@@ -252,8 +256,7 @@ def _detect_columns(headers: list[str]) -> dict[str, str] | None:
         return None
 
     # OHLC columns (also strip brackets from normalised keys)
-    for name, pattern in [("o", _OPEN_COLS), ("h", _HIGH_COLS),
-                           ("l", _LOW_COLS),  ("c", _CLOSE_COLS)]:
+    for name, pattern in [("o", _OPEN_COLS), ("h", _HIGH_COLS), ("l", _LOW_COLS), ("c", _CLOSE_COLS)]:
         match = _find(pattern)
         if match:
             result[name] = match
@@ -301,15 +304,13 @@ def _parse_datetime(s: str) -> datetime | None:
     # Fast path: try fromisoformat first (handles +00:00 / Z suffixes natively on Py3.11+)
     try:
         dt = datetime.fromisoformat(s)
-        dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
-        return dt
+        return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
     except ValueError:
         pass
     for fmt in _DT_FORMATS:
         try:
             dt = datetime.strptime(s, fmt)
-            dt = dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
-            return dt
+            return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
         except ValueError:
             continue
     LOG.debug("[LOADER] Could not parse datetime: %r", s)
@@ -317,6 +318,7 @@ def _parse_datetime(s: str) -> datetime | None:
 
 
 # ── JSONL parsing ─────────────────────────────────────────────────────────────
+
 
 def _parse_jsonl_bar(row: list) -> Bar | None:
     """Parse a bar from the BarExperienceCache format: [iso_str, o, h, l, c]."""
@@ -331,6 +333,7 @@ def _parse_jsonl_bar(row: list) -> Bar | None:
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
+
 
 def _sort_and_dedupe(bars: list[Bar]) -> list[Bar]:
     """Sort bars by timestamp, drop duplicates (keep last occurrence)."""
@@ -348,7 +351,7 @@ def _filter_to_timeframe(bars: list[Bar], timeframe_minutes: int) -> list[Bar]:
     infer the actual bar-interval from the first pair of bars and only drop bars
     whose gap to the previous bar differs significantly from the expected step.
     """
-    if len(bars) < 2:  # noqa: PLR2004 — need at least a pair to infer step
+    if len(bars) < 2:
         return bars
 
     expected_secs = timeframe_minutes * 60

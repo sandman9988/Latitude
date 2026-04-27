@@ -1,6 +1,5 @@
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        #!/usr/bin/env python3
-"""
-Startup Self-Test
+#!/usr/bin/env python3
+"""Startup Self-Test.
 =================
 Runs before FIX sessions are created.  Every check is isolated: one failure
 never crashes the others.
@@ -39,32 +38,34 @@ def _data_dir() -> Path:
 def _data_file(filename: str) -> Path:
     return _data_dir() / filename
 
+
 # ── ANSI colours (disabled when not a tty) ────────────────────────────────────
 _IS_TTY = os.isatty(1)
-_G  = "\033[92m"  if _IS_TTY else ""   # green
-_Y  = "\033[93m"  if _IS_TTY else ""   # yellow
-_R  = "\033[91m"  if _IS_TTY else ""   # red
-_B  = "\033[94m"  if _IS_TTY else ""   # blue/cyan
-_W  = "\033[0m"   if _IS_TTY else ""   # reset
-_BD = "\033[1m"   if _IS_TTY else ""   # bold
+_G = "\033[92m" if _IS_TTY else ""  # green
+_Y = "\033[93m" if _IS_TTY else ""  # yellow
+_R = "\033[91m" if _IS_TTY else ""  # red
+_B = "\033[94m" if _IS_TTY else ""  # blue/cyan
+_W = "\033[0m" if _IS_TTY else ""  # reset
+_BD = "\033[1m" if _IS_TTY else ""  # bold
 
 # ── check constants ────────────────────────────────────────────────────────────
-_MAX_QTY_LOTS        = 100    # position size (lots) considered suspiciously large
-_MAX_CORRUPT_LINES   = 5      # max corrupt trade-log lines before WARNING
-_STALE_POSITION_SECS = 3600   # 1 h — stale position data threshold
-_STALE_DAY_SECS      = 86400  # 24 h — generic one-day staleness threshold
-_MAX_PLATT_PARAM     = 50     # abs(a) or abs(b) above this is considered extreme
+_MAX_QTY_LOTS = 100  # position size (lots) considered suspiciously large
+_MAX_CORRUPT_LINES = 5  # max corrupt trade-log lines before WARNING
+_STALE_POSITION_SECS = 3600  # 1 h — stale position data threshold
+_STALE_DAY_SECS = 86400  # 24 h — generic one-day staleness threshold
+_MAX_PLATT_PARAM = 50  # abs(a) or abs(b) above this is considered extreme
 
 
 class Sev(IntEnum):
     """Test result severity."""
-    PASS     = 0   # ✓ green  — all good
-    INFO     = 1   # ℹ blue   — diagnostic only
-    WARNING  = 2   # ⚠ yellow — degraded, but safe to continue
-    CRITICAL = 3   # ✗ red    — must abort
+
+    PASS = 0  # ✓ green  — all good
+    INFO = 1  # ℹ blue   — diagnostic only
+    WARNING = 2  # ⚠ yellow — degraded, but safe to continue
+    CRITICAL = 3  # ✗ red    — must abort
 
 
-_SEV_ICON  = {Sev.PASS: "✓", Sev.INFO: "ℹ", Sev.WARNING: "⚠", Sev.CRITICAL: "✗"}
+_SEV_ICON = {Sev.PASS: "✓", Sev.INFO: "ℹ", Sev.WARNING: "⚠", Sev.CRITICAL: "✗"}
 _SEV_COLOR = {Sev.PASS: _G, Sev.INFO: _B, Sev.WARNING: _Y, Sev.CRITICAL: _R}
 
 
@@ -75,7 +76,7 @@ class TestResult:
     detail: str = ""
 
     def __str__(self) -> str:
-        col  = _SEV_COLOR[self.sev]
+        col = _SEV_COLOR[self.sev]
         icon = _SEV_ICON[self.sev]
         tail = f"  {_W}{self.detail}" if self.detail else ""
         return f"  {col}{icon} {self.name}{_W}{tail}"
@@ -99,11 +100,11 @@ class SelfTestReport:
         return [r for r in self.results if r.sev == Sev.WARNING]
 
     def print_banner(self) -> None:
-        n       = len(self.results)
-        n_pass  = sum(1 for r in self.results if r.sev == Sev.PASS)
-        n_info  = sum(1 for r in self.results if r.sev == Sev.INFO)
-        n_warn  = len(self.warnings)
-        n_crit  = len(self.critical_failures)
+        n = len(self.results)
+        n_pass = sum(1 for r in self.results if r.sev == Sev.PASS)
+        n_info = sum(1 for r in self.results if r.sev == Sev.INFO)
+        n_warn = len(self.warnings)
+        n_crit = len(self.critical_failures)
 
         print(f"\n{_BD}{'─' * 60}{_W}")
         print(f"{_BD}  🔍 STARTUP SELF-TEST{_W}")
@@ -119,17 +120,13 @@ class SelfTestReport:
         else:
             status_str = f"{_G}{_BD}ALL CLEAR{_W}"
         print(
-            f"  Checks: {n}  "
-            f"{_G}✓{n_pass}{_W}  "
-            f"{_B}ℹ{n_info}{_W}  "
-            f"{_Y}⚠{n_warn}{_W}  "
-            f"{_R}✗{n_crit}{_W}  "
-            f"→ {status_str}"
+            f"  Checks: {n}  {_G}✓{n_pass}{_W}  {_B}ℹ{n_info}{_W}  {_Y}⚠{n_warn}{_W}  {_R}✗{n_crit}{_W}  → {status_str}"
         )
         print(f"{_BD}{'─' * 60}{_W}\n")
 
 
 # ── individual check helpers ──────────────────────────────────────────────────
+
 
 def _check(
     report: SelfTestReport,
@@ -140,15 +137,16 @@ def _check(
     try:
         sev, detail = fn()
         report.add(name, sev, detail)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         report.add(name, Sev.CRITICAL, f"unhandled exception: {exc}")
 
 
 # ── individual checks ─────────────────────────────────────────────────────────
 
+
 def _chk_env_vars() -> tuple[Sev, str]:
     required = ("CTRADER_USERNAME", "CTRADER_PASSWORD_QUOTE", "CTRADER_PASSWORD_TRADE")
-    missing  = [k for k in required if not os.environ.get(k)]
+    missing = [k for k in required if not os.environ.get(k)]
     if missing:
         return Sev.CRITICAL, f"missing env vars: {', '.join(missing)}"
     return Sev.PASS, ""
@@ -220,7 +218,7 @@ def _chk_bars_cache() -> tuple[Sev, str]:
         age = time.time() - p.stat().st_mtime
         data = json.loads(p.read_text())
         n = len(data.get("bars", [])) if isinstance(data, dict) else 0
-        age_str = f"{age/3600:.1f}h old"
+        age_str = f"{age / 3600:.1f}h old"
         if age > 86400 * 2:
             return Sev.WARNING, f"{n} bars cached but {age_str} — stale"
         return Sev.PASS, f"{n} bars cached ({age_str})"
@@ -236,7 +234,7 @@ def _chk_trade_log() -> tuple[Sev, str]:
         lines = p.read_text().splitlines()
         valid = 0
         corrupt = 0
-        for line in lines[-50:]:   # spot-check last 50 lines only
+        for line in lines[-50:]:  # spot-check last 50 lines only
             stripped = line.strip()
             if not stripped:
                 continue
@@ -261,10 +259,7 @@ def _chk_circuit_breakers() -> tuple[Sev, str]:
         data = json.loads(p.read_text())
         # Schema uses "is_tripped" (matches CircuitBreakers.save_state())
         # Guard against both old schema ("tripped") and missing keys gracefully.
-        tripped = [
-            k for k, v in data.items()
-            if isinstance(v, dict) and (v.get("is_tripped") or v.get("tripped"))
-        ]
+        tripped = [k for k, v in data.items() if isinstance(v, dict) and (v.get("is_tripped") or v.get("tripped"))]
         if tripped:
             return Sev.WARNING, f"tripped from previous session: {tripped}"
         # Verify schema version matches what save_state() writes
@@ -289,13 +284,12 @@ def _chk_current_position() -> tuple[Sev, str]:
         return Sev.INFO, "no persisted position (flat start)"
     try:
         data = json.loads(p.read_text())
-        pos  = data.get("position", 0)
+        pos = data.get("position", 0)
         price = data.get("entry_price", 0)
-        age   = time.time() - (data.get("timestamp") or 0)
+        age = time.time() - (data.get("timestamp") or 0)
         if pos != 0 and age > _STALE_POSITION_SECS:
             return Sev.WARNING, (
-                f"stale position data ({age/3600:.1f}h old): "
-                f"pos={pos} entry={price} — verify via FIX"
+                f"stale position data ({age / 3600:.1f}h old): pos={pos} entry={price} — verify via FIX"
             )
         if pos != 0:
             side = "LONG" if pos > 0 else "SHORT"
@@ -313,7 +307,7 @@ def _chk_per_buffer() -> tuple[Sev, str]:
         if cand:
             latest = max(cand, key=lambda f: f.stat().st_mtime)
             age = time.time() - latest.stat().st_mtime
-            found.append(f"{name}({age/3600:.1f}h)")
+            found.append(f"{name}({age / 3600:.1f}h)")
     if not found:
         return Sev.WARNING, "no checkpoints — buffers start empty (training delayed)"
     return Sev.PASS, f"found: {', '.join(found)}"
@@ -337,11 +331,11 @@ def _chk_model_weights() -> tuple[Sev, str]:
         # while the operator believes the learned model is active.
         try:
             import torch as _torch  # noqa: PLC0415
+
             _torch.load(p, map_location="cpu", weights_only=True)
         except ImportError:
             return Sev.WARNING, (
-                f"{label}: file exists ({kb}KB) but torch not installed "
-                "— falling back to DDQN numpy / heuristic"
+                f"{label}: file exists ({kb}KB) but torch not installed — falling back to DDQN numpy / heuristic"
             )
         except Exception as e:
             return Sev.WARNING, f"{label}: file exists ({kb}KB) but torch.load failed: {e}"
@@ -355,13 +349,12 @@ def _chk_risk_metrics() -> tuple[Sev, str]:
         return Sev.INFO, "not found — will be written after first bar"
     try:
         data = json.loads(p.read_text())
-        var  = data.get("var", 0)
-        vol  = data.get("realized_vol", 0)
+        var = data.get("var", 0)
+        vol = data.get("realized_vol", 0)
         # Use file mtime for freshness — the JSON has no timestamp field
-        age  = time.time() - p.stat().st_mtime
+        age = time.time() - p.stat().st_mtime
         return Sev.PASS if age < _STALE_DAY_SECS else Sev.WARNING, (
-            f"VaR={var:.4f} vol={vol:.4f} age={age/3600:.1f}h"
-            + (" (stale)" if age >= _STALE_DAY_SECS else "")
+            f"VaR={var:.4f} vol={vol:.4f} age={age / 3600:.1f}h" + (" (stale)" if age >= _STALE_DAY_SECS else "")
         )
     except Exception as e:
         return Sev.WARNING, f"corrupt ({e})"
@@ -408,14 +401,12 @@ def _chk_quickfix_importable() -> tuple[Sev, str]:
     sessions at all, so this is CRITICAL.
     """
     try:
-        import quickfix  # noqa: PLC0415, F401
+        import quickfix  # noqa: PLC0415
+
         version = getattr(quickfix, "__version__", "unknown")
         return Sev.PASS, f"quickfix {version}"
     except ImportError as e:
-        return Sev.CRITICAL, (
-            f"quickfix not importable: {e} — run: "
-            "cd ../quickfix && pip install -e ."
-        )
+        return Sev.CRITICAL, (f"quickfix not importable: {e} — run: cd ../quickfix && pip install -e .")
 
 
 def _chk_numpy_sanity() -> tuple[Sev, str]:
@@ -435,7 +426,7 @@ def _chk_symbol_specs() -> tuple[Sev, str]:
         return Sev.WARNING, "config/symbol_specs.json not found — using defaults"
     try:
         data = json.loads(p.read_text())
-        sym  = os.environ.get("CTRADER_SYMBOL", "XAUUSD")
+        sym = os.environ.get("CTRADER_SYMBOL", "XAUUSD")
         if sym not in data:
             return Sev.WARNING, f"{sym} not in symbol_specs.json — broker defaults used"
         spec = data[sym]
@@ -451,26 +442,26 @@ def _chk_symbol_specs() -> tuple[Sev, str]:
 # is_critical_check=False means even CRITICAL is downgraded to WARNING.
 _CHECKS: list[tuple[str, Callable[[], tuple[Sev, str]], bool]] = [
     # ── Hard requirements ─────────────────────────────────────────────────
-    ("Environment variables",     _chk_env_vars,             True),
-    ("QuickFIX importable",        _chk_quickfix_importable,  True),
-    ("FIX config files",           _chk_fix_configs,          True),
-    ("Data directory writable",    _chk_data_dir,             True),
-    ("Log directories",            _chk_log_dir,              True),
-    ("Position size (qty)",        _chk_qty,                  True),
-    ("NumPy arithmetic",           _chk_numpy_sanity,         True),
+    ("Environment variables", _chk_env_vars, True),
+    ("QuickFIX importable", _chk_quickfix_importable, True),
+    ("FIX config files", _chk_fix_configs, True),
+    ("Data directory writable", _chk_data_dir, True),
+    ("Log directories", _chk_log_dir, True),
+    ("Position size (qty)", _chk_qty, True),
+    ("NumPy arithmetic", _chk_numpy_sanity, True),
     # ── Soft requirements (warn, don't abort) ─────────────────────────────
-    ("Learned parameters",        _chk_learned_params,    False),
-    ("Bars cache",                _chk_bars_cache,        False),
-    ("Trade log",                 _chk_trade_log,         False),
-    ("Circuit breaker state",     _chk_circuit_breakers,  False),
-    ("Persisted position",        _chk_current_position,  False),
-    ("PER buffer checkpoints",    _chk_per_buffer,        False),
-    ("DDQN model weights",        _chk_model_weights,     False),
+    ("Learned parameters", _chk_learned_params, False),
+    ("Bars cache", _chk_bars_cache, False),
+    ("Trade log", _chk_trade_log, False),
+    ("Circuit breaker state", _chk_circuit_breakers, False),
+    ("Persisted position", _chk_current_position, False),
+    ("PER buffer checkpoints", _chk_per_buffer, False),
+    ("DDQN model weights", _chk_model_weights, False),
     # ── Informational ─────────────────────────────────────────────────────
-    ("Risk metrics cache",        _chk_risk_metrics,      False),
-    ("Bot config cache",          _chk_bot_config,        False),
-    ("Symbol specs",              _chk_symbol_specs,      False),
-    ("Platt calibration params",  _chk_platt_sanity,      False),
+    ("Risk metrics cache", _chk_risk_metrics, False),
+    ("Bot config cache", _chk_bot_config, False),
+    ("Symbol specs", _chk_symbol_specs, False),
+    ("Platt calibration params", _chk_platt_sanity, False),
 ]
 
 
@@ -479,20 +470,17 @@ def _persist_results(report: SelfTestReport) -> None:
     try:
         export = {
             "timestamp": time.time(),
-            "results": [
-                {"name": r.name, "sev": r.sev.name, "detail": r.detail}
-                for r in report.results
-            ],
+            "results": [{"name": r.name, "sev": r.sev.name, "detail": r.detail} for r in report.results],
             "summary": {
-                "pass":     sum(1 for r in report.results if r.sev == Sev.PASS),
-                "info":     sum(1 for r in report.results if r.sev == Sev.INFO),
+                "pass": sum(1 for r in report.results if r.sev == Sev.PASS),
+                "info": sum(1 for r in report.results if r.sev == Sev.INFO),
                 "warnings": len(report.warnings),
                 "critical": len(report.critical_failures),
             },
         }
         _data_dir().mkdir(parents=True, exist_ok=True)
         _data_file("self_test.json").write_text(json.dumps(export, indent=2))
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass  # never let JSON export block startup
 
 
@@ -508,8 +496,7 @@ def _log_results(report: SelfTestReport) -> None:
 
 
 def run_self_test(*, abort_on_critical: bool = True) -> SelfTestReport:
-    """
-    Run all startup checks.
+    """Run all startup checks.
 
     Parameters
     ----------
@@ -520,6 +507,7 @@ def run_self_test(*, abort_on_critical: bool = True) -> SelfTestReport:
     Returns
     -------
     SelfTestReport – full results (useful for tests / programmatic inspection)
+
     """
     report = SelfTestReport()
 
@@ -530,7 +518,7 @@ def run_self_test(*, abort_on_critical: bool = True) -> SelfTestReport:
             if not can_be_critical and sev == Sev.CRITICAL:
                 sev = Sev.WARNING
             report.add(name, sev, detail)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             sev = Sev.CRITICAL if can_be_critical else Sev.WARNING
             report.add(name, sev, f"unhandled exception: {exc}")
 

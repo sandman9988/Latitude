@@ -21,7 +21,7 @@ class MockHarvesterAgent:
 
 
 class MockDualPolicy:
-    def __init__(self):
+    def __init__(self) -> None:
         self.harvester = MockHarvesterAgent()
         self.current_position = 0
         self.entry_price = 0
@@ -92,7 +92,7 @@ def test_entry_to_exit_flow():
 
         if policy.current_position == 0:
             # FLAT: Check for entry
-            action, confidence, runway = policy.decide_entry(bars)
+            action, confidence, _runway = policy.decide_entry(bars)
             desired = 1 if action == 1 else 0
 
             # Simulate entry if signaled
@@ -199,7 +199,7 @@ def test_decision_log_harvester_fields():
     # Simulate a few bars in position
     for i in range(3):
         current_price = 90500.0 + i * 20  # Price rising
-        exit_action, exit_conf = policy.decide_exit([], current_price=current_price)
+        exit_action, _exit_conf = policy.decide_exit([], current_price=current_price)
 
         print(
             f"Bar {i}: MFE={policy.mfe:.2f}, MAE={policy.mae:.2f}, "

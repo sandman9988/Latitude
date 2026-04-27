@@ -13,6 +13,7 @@ from src.monitoring.trade_analyzer import TradeAnalyzer
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_csv(rows: list[dict], path: str) -> str:
     """Write a list of row-dicts to *path* as CSV and return *path*."""
     pd.DataFrame(rows).to_csv(path, index=False)
@@ -53,7 +54,7 @@ def _sample_rows(n: int = 20, *, seed: int = 42) -> list[dict]:
     return rows
 
 
-@pytest.fixture()
+@pytest.fixture
 def csv_path(tmp_path):
     """Create a temporary CSV with 20 sample trades."""
     path = str(tmp_path / "trades.csv")
@@ -65,8 +66,8 @@ def csv_path(tmp_path):
 # Construction / validation
 # ---------------------------------------------------------------------------
 
-class TestTradeAnalyzerInit:
 
+class TestTradeAnalyzerInit:
     def test_load_valid_csv(self, csv_path):
         ta = TradeAnalyzer(csv_path)
         assert len(ta.df) == 20
@@ -91,14 +92,25 @@ class TestTradeAnalyzerInit:
 # Summary stats
 # ---------------------------------------------------------------------------
 
-class TestSummaryStats:
 
+class TestSummaryStats:
     def test_keys_present(self, csv_path):
         stats = TradeAnalyzer(csv_path).get_summary_stats()
-        for key in ("total_trades", "win_rate", "profit_factor", "sharpe_ratio",
-                     "sortino_ratio", "max_drawdown", "max_win_streak", "max_loss_streak",
-                     "avg_mfe", "avg_mae", "avg_capture_efficiency",
-                     "avg_duration_seconds", "median_duration_seconds"):
+        for key in (
+            "total_trades",
+            "win_rate",
+            "profit_factor",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "max_drawdown",
+            "max_win_streak",
+            "max_loss_streak",
+            "avg_mfe",
+            "avg_mae",
+            "avg_capture_efficiency",
+            "avg_duration_seconds",
+            "median_duration_seconds",
+        ):
             assert key in stats
 
     def test_total_trades(self, csv_path):
@@ -124,8 +136,8 @@ class TestSummaryStats:
 # Hourly / daily analysis
 # ---------------------------------------------------------------------------
 
-class TestGroupedAnalysis:
 
+class TestGroupedAnalysis:
     def test_analyze_by_hour_returns_df(self, csv_path):
         result = TradeAnalyzer(csv_path).analyze_by_hour()
         assert isinstance(result, pd.DataFrame)
@@ -136,16 +148,15 @@ class TestGroupedAnalysis:
         assert isinstance(result, pd.DataFrame)
         # Index labels should be day names
         for day_name in result.index:
-            assert day_name in ("Monday", "Tuesday", "Wednesday", "Thursday",
-                                "Friday", "Saturday", "Sunday")
+            assert day_name in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
 # ---------------------------------------------------------------------------
 # Best / worst trades
 # ---------------------------------------------------------------------------
 
-class TestBestWorstTrades:
 
+class TestBestWorstTrades:
     def test_find_best_trades_count(self, csv_path):
         best = TradeAnalyzer(csv_path).find_best_trades(n=5)
         assert len(best) == 5
@@ -164,8 +175,8 @@ class TestBestWorstTrades:
 # Capture efficiency analysis
 # ---------------------------------------------------------------------------
 
-class TestCaptureEfficiency:
 
+class TestCaptureEfficiency:
     def test_returns_dict_with_expected_keys(self, csv_path):
         result = TradeAnalyzer(csv_path).analyze_capture_efficiency()
         for key in ("overall_avg", "overall_median", "wins_avg", "losses_avg", "pct_above_50"):
@@ -185,8 +196,8 @@ class TestCaptureEfficiency:
 # Dual-agent analysis (graceful degradation)
 # ---------------------------------------------------------------------------
 
-class TestDualAgentAnalysis:
 
+class TestDualAgentAnalysis:
     def test_returns_error_when_columns_missing(self, csv_path):
         result = TradeAnalyzer(csv_path).analyze_dual_agents()
         assert "error" in result
@@ -196,8 +207,8 @@ class TestDualAgentAnalysis:
 # Export / convert types
 # ---------------------------------------------------------------------------
 
-class TestExportAnalysis:
 
+class TestExportAnalysis:
     def test_export_creates_json(self, csv_path, tmp_path):
         out = str(tmp_path / "report.json")
         ta = TradeAnalyzer(csv_path)

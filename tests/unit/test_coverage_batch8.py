@@ -243,26 +243,20 @@ class TestSafeMathEdgeCases:
     def test_running_variance_count_zero(self):
         from src.utils.safe_math import SafeMath
 
-        result = SafeMath.running_variance_update(
-            old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=0
-        )
+        result = SafeMath.running_variance_update(old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=0)
         assert result == pytest.approx(0.0)
 
     def test_running_variance_count_one(self):
         from src.utils.safe_math import SafeMath
 
-        result = SafeMath.running_variance_update(
-            old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=1
-        )
+        result = SafeMath.running_variance_update(old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=1)
         assert result == pytest.approx(0.0)
 
     # Lines 274-276: normal computation path when count >= MIN_SAMPLE_COUNT (2)
     def test_running_variance_normal_path(self):
         from src.utils.safe_math import SafeMath
 
-        result = SafeMath.running_variance_update(
-            old_variance=1.0, old_mean=5.0, new_mean=5.5, new_value=6.0, count=3
-        )
+        result = SafeMath.running_variance_update(old_variance=1.0, old_mean=5.0, new_mean=5.5, new_value=6.0, count=3)
         # delta1 = 6.0 - 5.0 = 1.0, delta2 = 6.0 - 5.5 = 0.5
         # result = 1.0 + (1.0 * 0.5 - 1.0) / 3 = 1.0 + (-0.5/3) = 1.0 - 0.1667 = 0.8333
         assert abs(result - (1.0 + (1.0 * 0.5 - 1.0) / 3)) < 1e-10

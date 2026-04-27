@@ -9,7 +9,7 @@ from src.core.reward_shaper import RewardShaper
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def shaper():
     return RewardShaper(symbol="BTCUSD", timeframe="M15")
 
@@ -161,8 +161,8 @@ class TestHarvesterReward:
             mfe=100.0,
             mae=5.0,
             was_wtl=False,
-            bars_held=20,
-            bars_from_mfe_to_exit=2,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=2,
         )
         assert r["quality"] == "EXCELLENT"
         assert r["harvester_reward"] > 0
@@ -173,8 +173,8 @@ class TestHarvesterReward:
             mfe=100.0,
             mae=50.0,
             was_wtl=True,
-            bars_held=30,
-            bars_from_mfe_to_exit=25,
+            _bars_held=30,
+            _bars_from_mfe_to_exit=25,
         )
         assert r["wtl_penalty"] < 0
         assert r["was_wtl"] is True
@@ -184,10 +184,10 @@ class TestHarvesterReward:
         r = shaper.calculate_harvester_reward(
             exit_pnl=50.0,
             mfe=100.0,
-            mae=60.0,       # 60% drawdown vs MFE → penalty
+            mae=60.0,  # 60% drawdown vs MFE → penalty
             was_wtl=False,
-            bars_held=20,
-            bars_from_mfe_to_exit=15,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=15,
         )
         assert r["timing_penalty"] < 0
 
@@ -197,16 +197,16 @@ class TestHarvesterReward:
             mfe=100.0,
             mae=20.0,
             was_wtl=True,
-            bars_held=20,
-            bars_from_mfe_to_exit=10,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=10,
         )
         severe = shaper.calculate_harvester_reward(
             exit_pnl=-50.0,
             mfe=100.0,
             mae=20.0,
             was_wtl=True,
-            bars_held=20,
-            bars_from_mfe_to_exit=10,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=10,
         )
         assert severe["wtl_penalty"] < mild["wtl_penalty"]
 
@@ -216,16 +216,16 @@ class TestHarvesterReward:
             mfe=100.0,
             mae=20.0,
             was_wtl=True,
-            bars_held=20,
-            bars_from_mfe_to_exit=10,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=10,
         )
         negative = shaper.calculate_harvester_reward(
             exit_pnl=-20.0,
             mfe=100.0,
             mae=20.0,
             was_wtl=True,
-            bars_held=20,
-            bars_from_mfe_to_exit=10,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=10,
         )
         assert negative["wtl_penalty"] < positive["wtl_penalty"]
 
@@ -235,7 +235,7 @@ class TestHarvesterReward:
             mfe=0.0,
             mae=0.0,
             was_wtl=False,
-            bars_held=10,
+            _bars_held=10,
         )
         assert r["capture_efficiency"] < 0
 

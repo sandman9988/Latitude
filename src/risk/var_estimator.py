@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""
-VaR Estimator with Multi-Factor Adjustment
+"""VaR Estimator with Multi-Factor Adjustment
 Implements dynamic Value-at-Risk calculation from Master Handbook
-Includes regime, VPIN, kurtosis, and volatility adjustments
+Includes regime, VPIN, kurtosis, and volatility adjustments.
 """
 
 import logging
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class RegimeType(Enum):
-    """Market regime classification"""
+    """Market regime classification."""
 
     UNDERDAMPED = "underdamped"  # High volatility, trending
     CRITICAL = "critical"  # Transition state
@@ -37,17 +36,16 @@ class RegimeType(Enum):
 
 
 class KurtosisMonitor:
-    """
-    Monitor excess kurtosis for tail risk detection
+    """Monitor excess kurtosis for tail risk detection.
 
     Handbook: "Kurtosis > 3 indicates fat tails; trigger circuit breaker"
     """
 
-    def __init__(self, window: int = 100, threshold: float = KURTOSIS_ALERT_THRESHOLD):
-        """
-        Args:
-            window: Rolling window for kurtosis calculation
-            threshold: Excess kurtosis threshold for circuit breaker
+    def __init__(self, window: int = 100, threshold: float = KURTOSIS_ALERT_THRESHOLD) -> None:
+        """Args:
+        window: Rolling window for kurtosis calculation
+        threshold: Excess kurtosis threshold for circuit breaker.
+
         """
         self.window = window
         self.threshold = threshold
@@ -56,17 +54,17 @@ class KurtosisMonitor:
         self._breaker_active = False
 
     def update(self, return_value: float) -> tuple[float, bool]:
-        """
-        Update kurtosis monitor with new return
+        """Update kurtosis monitor with new return.
 
         Args:
             return_value: Log return or percentage return
 
         Returns:
             (kurtosis, breaker_triggered)
+
         """
         if not SafeMath.is_valid(return_value):
-            logger.debug(f"Invalid return: {return_value}")
+            logger.debug("Invalid return: %s", return_value)
             return self._last_kurtosis, self._breaker_active
 
         self.returns.append(return_value)
@@ -82,20 +80,20 @@ class KurtosisMonitor:
         breaker = kurtosis > self.threshold
 
         if breaker and not self._breaker_active:
-            logger.warning(f"KURTOSIS CIRCUIT BREAKER: {kurtosis:.2f} > {self.threshold}")
+            logger.warning("KURTOSIS CIRCUIT BREAKER: %.2f > %s", kurtosis, self.threshold)
             self._breaker_active = True
         elif not breaker and self._breaker_active:
-            logger.info(f"Kurtosis circuit breaker reset: {kurtosis:.2f}")
+            logger.info("Kurtosis circuit breaker reset: %.2f", kurtosis)
             self._breaker_active = False
 
         return kurtosis, breaker
 
     def _calculate_kurtosis(self) -> float:
-        """
-        Calculate excess kurtosis (Fisher's definition)
+        """Calculate excess kurtosis (Fisher's definition).
 
         Returns:
             Excess kurtosis (normal distribution = 0)
+
         """
         if len(self.returns) < MIN_KURTOSIS_STATS:
             return 0.0
@@ -124,26 +122,25 @@ class KurtosisMonitor:
 
     @property
     def is_breaker_active(self) -> bool:
-        """Check if circuit breaker is currently active"""
+        """Check if circuit breaker is currently active."""
         return self._breaker_active
 
     @property
     def current_kurtosis(self) -> float:
-        """Get last calculated kurtosis"""
+        """Get last calculated kurtosis."""
         return self._last_kurtosis
 
     def reset(self) -> None:
-        """Manually reset the kurtosis circuit breaker gate"""
+        """Manually reset the kurtosis circuit breaker gate."""
         if self._breaker_active:
-            logger.info(f"Kurtosis gate manually reset (was active at κ={self._last_kurtosis:.2f})")
+            logger.info("Kurtosis gate manually reset (was active at κ=%.2f)", self._last_kurtosis)
             self._breaker_active = False
         else:
             logger.info("Kurtosis gate reset (was already inactive)")
 
 
 class VaREstimator:
-    """
-    Dynamic VaR estimation with multi-factor adjustment
+    """Dynamic VaR estimation with multi-factor adjustment.
 
     Handbook Formula:
     VaR = base_var * regime_mult * vpin_mult * kurtosis_mult * vol_mult
@@ -162,13 +159,13 @@ class VaREstimator:
         confidence: float = 0.95,
         regime_multipliers: dict | None = None,
         kurtosis_monitor: KurtosisMonitor | None = None,
-    ):
-        """
-        Args:
-            window: Rolling window for VaR calculation
-            confidence: VaR confidence level (0.95 = 95%)
-            regime_multipliers: Dict mapping RegimeType → multiplier
-            kurtosis_monitor: Shared kurtosis monitor (or create new)
+    ) -> None:
+        """Args:
+        window: Rolling window for VaR calculation
+        confidence: VaR confidence level (0.95 = 95%)
+        regime_multipliers: Dict mapping RegimeType → multiplier
+        kurtosis_monitor: Shared kurtosis monitor (or create new).
+
         """
         self.window = window
         self.confidence = confidence
@@ -188,17 +185,17 @@ class VaREstimator:
         self._last_var = 0.0
         self._reference_vol = None
 
-        logger.info(f"VaREstimator initialized: window={window}, confidence={confidence}")
+        logger.info("VaREstimator initialized: window=%s, confidence=%s", window, confidence)
 
     def update_return(self, return_value: float) -> None:
-        """
-        Add new return to rolling window
+        """Add new return to rolling window.
 
         Args:
             return_value: Log return or percentage return
+
         """
         if not SafeMath.is_valid(return_value):
-            logger.debug(f"Skipping invalid return: {return_value}")
+            logger.debug("Skipping invalid return: %s", return_value)
             return
 
         self.returns.append(return_value)
@@ -210,8 +207,7 @@ class VaREstimator:
         vpin_z: float = 0.0,
         current_vol: float | None = None,
     ) -> float:
-        """
-        Estimate VaR with multi-factor adjustment and defensive validation
+        """Estimate VaR with multi-factor adjustment and defensive validation.
 
         Args:
             regime: Current market regime
@@ -220,6 +216,7 @@ class VaREstimator:
 
         Returns:
             Adjusted VaR (in same units as returns), always positive
+
         """
         # Defensive: Minimum sample size
         if len(self.returns) < MIN_VAR_SAMPLE:
@@ -227,7 +224,8 @@ class VaREstimator:
             # meaningful estimate instead of 0 during the warm-up period.
             # z_{0.95} ≈ 1.645 for a one-tailed normal distribution.
             _vol = (
-                current_vol if (current_vol and current_vol > 0)
+                current_vol
+                if (current_vol and current_vol > 0)
                 else (self._reference_vol if self._reference_vol and self._reference_vol > 0 else 0.0)
             )
             if _vol > 0:
@@ -296,7 +294,7 @@ class VaREstimator:
         return self._last_var
 
     def _calculate_base_var(self) -> float:
-        """Calculate base VaR from historical percentile"""
+        """Calculate base VaR from historical percentile."""
         if len(self.returns) < MIN_BASE_VAR_SAMPLE:
             return 0.0
 
@@ -310,7 +308,7 @@ class VaREstimator:
         return abs(base_var)  # VaR is positive
 
     def _calculate_vol_mult(self, current_vol: float | None) -> float:
-        """Calculate volatility multiplier"""
+        """Calculate volatility multiplier."""
         if current_vol is None or not SafeMath.is_valid(current_vol):
             return 1.0
 
@@ -335,17 +333,17 @@ class VaREstimator:
 
     @property
     def last_var(self) -> float:
-        """Get last calculated VaR"""
+        """Get last calculated VaR."""
         return self._last_var
 
     @property
     def kurtosis(self) -> float:
-        """Get current kurtosis"""
+        """Get current kurtosis."""
         return self.kurtosis_monitor.current_kurtosis
 
     @property
     def is_kurtosis_breaker_active(self) -> bool:
-        """Check if kurtosis circuit breaker is active"""
+        """Check if kurtosis circuit breaker is active."""
         return self.kurtosis_monitor.is_breaker_active
 
 
@@ -356,8 +354,7 @@ def position_size_from_var(
     contract_size: float = 1.0,
     max_leverage: float = 10.0,
 ) -> float:
-    """
-    Calculate position size from VaR
+    """Calculate position size from VaR.
 
     Args:
         var: VaR in fractional units (e.g., 0.02 = 2%)
@@ -368,6 +365,7 @@ def position_size_from_var(
 
     Returns:
         Position size in lots/contracts
+
     """
     if var < MIN_VAR_THRESHOLD:
         logger.warning("VaR too small, returning zero position size")
@@ -384,9 +382,8 @@ def position_size_from_var(
     position_value = min(max_position_value, max_leveraged)
 
     # Convert to lots
-    position_size = SafeMath.safe_div(position_value, contract_size, default=0.0)
+    return SafeMath.safe_div(position_value, contract_size, default=0.0)
 
-    return position_size
 
 
 if __name__ == "__main__":

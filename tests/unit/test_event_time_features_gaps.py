@@ -17,7 +17,7 @@ from src.features.event_time_features import EventTimeFeatureEngine
 class TestGetNearestSessionEvent:
     """Test get_nearest_session_event, including the no-events edge case."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def engine(self):
         return EventTimeFeatureEngine()
 
@@ -51,7 +51,7 @@ class TestGetNearestSessionEvent:
 class TestIsHighLiquidityPeriod:
     """Test is_high_liquidity_period, including the NY-only and false paths."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def engine(self):
         return EventTimeFeatureEngine()
 

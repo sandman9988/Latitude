@@ -25,10 +25,11 @@ from src.risk.friction_costs import (
 # SpreadTracker defensive paths
 # ===========================================================================
 
+
 class TestSpreadTrackerDefensive:
     """Test SpreadTracker error handlers and edge cases."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def tracker(self):
         return SpreadTracker(window_size=200)
 
@@ -140,10 +141,11 @@ class TestSpreadTrackerDefensive:
 # SlippageModel defensive paths
 # ===========================================================================
 
+
 class TestSlippageModelDefensive:
     """Test SlippageModel input validation and extreme cases."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def model(self):
         return SlippageModel()
 
@@ -216,18 +218,18 @@ class TestSlippageModelDefensive:
 # FrictionCalculator defensive paths
 # ===========================================================================
 
+
 class TestFrictionCalculatorDefensive:
     """Test FrictionCalculator config loading, normalization, and cost edge cases."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def calc(self, tmp_path):
         """Create FrictionCalculator without relying on config file."""
         with (
             patch("src.risk.friction_costs.FrictionCalculator._load_symbol_specs_from_config"),
             patch("src.risk.friction_costs.FrictionCalculator._load_learned_parameters"),
         ):
-            fc = FrictionCalculator(symbol="XAUUSD", symbol_id=10026)
-        return fc
+            return FrictionCalculator(symbol="XAUUSD", symbol_id=10026)
 
     def test_normalize_quantity_invalid_input(self, calc):
         """Invalid quantity normalizes to min_volume."""
@@ -375,7 +377,7 @@ class TestFrictionCalculatorDefensive:
 
     def test_is_spread_acceptable_no_data(self, calc):
         """With no spread data, trading is allowed."""
-        ok, current, max_acc = calc.is_spread_acceptable()
+        ok, _current, _max_acc = calc.is_spread_acceptable()
         assert ok is True
 
     def test_is_spread_acceptable_non_finite_multiplier(self, calc):

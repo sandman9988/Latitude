@@ -20,6 +20,7 @@ from src.risk.circuit_breakers import (
 # BreakerState
 # ---------------------------------------------------------------------------
 
+
 class TestBreakerState:
     def test_init_not_tripped(self):
         bs = BreakerState(name="Test")
@@ -59,6 +60,7 @@ class TestBreakerState:
 # ---------------------------------------------------------------------------
 # SortinoBreaker
 # ---------------------------------------------------------------------------
+
 
 class TestSortinoBreaker:
     def test_not_enough_trades(self):
@@ -102,6 +104,7 @@ class TestSortinoBreaker:
 # ---------------------------------------------------------------------------
 # KurtosisBreaker
 # ---------------------------------------------------------------------------
+
 
 class TestKurtosisBreaker:
     def test_not_enough_samples(self):
@@ -208,6 +211,7 @@ class TestKurtosisAdaptive:
 # DrawdownBreaker
 # ---------------------------------------------------------------------------
 
+
 class TestDrawdownBreaker:
     def test_no_drawdown(self):
         db = DrawdownBreaker()
@@ -254,6 +258,7 @@ class TestDrawdownBreaker:
 # ConsecutiveLossesBreaker
 # ---------------------------------------------------------------------------
 
+
 class TestConsecutiveLossesBreaker:
     def test_no_losses(self):
         cb = ConsecutiveLossesBreaker(max_losses=5)
@@ -282,8 +287,9 @@ class TestConsecutiveLossesBreaker:
 # CircuitBreakerManager
 # ---------------------------------------------------------------------------
 
+
 class TestCircuitBreakerManager:
-    @pytest.fixture()
+    @pytest.fixture
     def mgr(self):
         return CircuitBreakerManager(
             sortino_threshold=0.5,
@@ -310,7 +316,6 @@ class TestCircuitBreakerManager:
             mgr.update_trade(pnl=-100, equity=10000)
         assert mgr.check_all() is True
         assert mgr.is_any_tripped()
-
 
     def test_get_tripped_breakers(self):
         mgr = CircuitBreakerManager(max_consecutive_losses=2)
@@ -402,6 +407,7 @@ class TestCircuitBreakerManager:
 
     def test_param_manager_integration(self, tmp_path):
         from src.persistence.learned_parameters import LearnedParametersManager
+
         pm = LearnedParametersManager(persistence_path=tmp_path / "params.json")
         mgr = CircuitBreakerManager(param_manager=pm)
         # Should use learned/default values without error

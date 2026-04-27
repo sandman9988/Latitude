@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Trade Log Data Recovery & Backfill
+"""Trade Log Data Recovery & Backfill.
 ===================================
 Fixes missing fields in trade_log.jsonl:
 1. Backfills NULL entry_time from exit_time - estimated_trade_duration
@@ -23,7 +22,7 @@ from pathlib import Path
 LOG_FILE = Path("logs/trade_recovery.log")
 
 
-def log_msg(msg: str, level: str = "INFO"):
+def log_msg(msg: str, level: str = "INFO") -> None:
     """Log recovery operations."""
     ts = datetime.now(UTC).isoformat()
     log_entry = f"[{ts}] [{level}] {msg}"
@@ -33,18 +32,15 @@ def log_msg(msg: str, level: str = "INFO"):
         f.write(log_entry + "\n")
 
 
-def analyze_trade_log():
+def analyze_trade_log() -> None:
     """Analyze current state of trade_log.jsonl."""
     trade_file = Path("data/trade_log.jsonl")
     if not trade_file.exists():
         log_msg("CRITICAL: data/trade_log.jsonl not found", "ERROR")
         return
 
-    trades = []
     with open(trade_file) as f:
-        for line in f:
-            if line.strip():
-                trades.append(json.loads(line.strip()))
+        trades = [json.loads(line.strip()) for line in f if line.strip()]
 
     null_entry_times = [i for i, t in enumerate(trades) if t.get("entry_time") is None]
     missing_qty = [i for i, t in enumerate(trades) if "quantity" not in t or t.get("quantity") is None]
@@ -58,8 +54,8 @@ def analyze_trade_log():
     print(f"  • NULL entry_time: {len(null_entry_times)} trades")
     if null_entry_times:
         print(f"    Indices: {null_entry_times[:10]} {'...' if len(null_entry_times) > 10 else ''}")
-    print(f"  • Missing quantity: {len(missing_qty)} trades ({len(missing_qty)/len(trades)*100:.1f}%)")
-    print(f"  • Recalculated PnL: {len(recalc_trades)} trades ({len(recalc_trades)/len(trades)*100:.1f}%)")
+    print(f"  • Missing quantity: {len(missing_qty)} trades ({len(missing_qty) / len(trades) * 100:.1f}%)")
+    print(f"  • Recalculated PnL: {len(recalc_trades)} trades ({len(recalc_trades) / len(trades) * 100:.1f}%)")
 
     if recalc_trades:
         orig_pnl = sum(t.get("pnl_original", 0) for t in trades if "pnl_original" in t)
@@ -73,8 +69,7 @@ def analyze_trade_log():
 
 
 def estimate_entry_time(trade: dict) -> str | None:
-    """
-    Estimate entry_time from exit_time and typical trade duration.
+    """Estimate entry_time from exit_time and typical trade duration.
 
     For XAUUSD, typical trades last:
     - Winner trades: 15-30 minutes
@@ -88,7 +83,7 @@ def estimate_entry_time(trade: dict) -> str | None:
         return None
 
     try:
-        exit_dt = datetime.fromisoformat(exit_time_str.replace("Z", "+00:00"))
+        exit_dt = datetime.fromisoformat(exit_time_str)
     except Exception:
         return None
 
@@ -100,18 +95,15 @@ def estimate_entry_time(trade: dict) -> str | None:
     return entry_dt.isoformat()
 
 
-def fix_entry_times(dry_run: bool = True):
+def fix_entry_times(dry_run: bool = True) -> None:
     """Backfill NULL entry_time using heuristic estimation."""
     trade_file = Path("data/trade_log.jsonl")
     if not trade_file.exists():
         log_msg("CRITICAL: Trade log not found", "ERROR")
         return
 
-    trades = []
     with open(trade_file) as f:
-        for line in f:
-            if line.strip():
-                trades.append(json.loads(line.strip()))
+        trades = [json.loads(line.strip()) for line in f if line.strip()]
 
     fixed_count = 0
     backed_up = False
@@ -140,14 +132,11 @@ def fix_entry_times(dry_run: bool = True):
         log_msg(f"DRY-RUN: Would fix {fixed_count} NULL entry_time values")
 
 
-def verify_pnl_recalculation():
+def verify_pnl_recalculation() -> None:
     """Verify PnL recalculation integrity."""
     trade_file = Path("data/trade_log.jsonl")
-    trades = []
     with open(trade_file) as f:
-        for line in f:
-            if line.strip():
-                trades.append(json.loads(line.strip()))
+        trades = [json.loads(line.strip()) for line in f if line.strip()]
 
     recalc_trades = [t for t in trades if t.get("pnl_recalculated")]
     if not recalc_trades:
@@ -179,7 +168,7 @@ def verify_pnl_recalculation():
     print("\n" + "=" * 80)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Trade log data recovery & backfill")
     parser.add_argument("--analyze", action="store_true", help="Analyze trade log issues")
     parser.add_argument("--fix-entry-times", action="store_true", help="Backfill NULL entry_time")

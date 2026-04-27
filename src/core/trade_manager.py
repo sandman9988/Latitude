@@ -1,5 +1,4 @@
-"""
-TradeManager - Centralized FIX Protocol Order & Position Management
+"""TradeManager - Centralized FIX Protocol Order & Position Management.
 
 Handles complete order lifecycle using FIX 4.4 Protocol:
 - Order submission via NewOrderSingle (35=D)
@@ -53,20 +52,20 @@ except ImportError:
             name,
             (),
             {
-                "__init__": lambda self, *a, **kw: None,
-                "__repr__": lambda self: f"<{name}>",
-                "setField": lambda self, *a: None,
-                "sendToTarget": staticmethod(lambda *a: None),
+                "__init__": lambda _self, *_a, **_kw: None,
+                "__repr__": lambda _self: f"<{name}>",
+                "setField": lambda _self, *_a: None,
+                "sendToTarget": staticmethod(lambda *_a: None),
             },
         )
 
     class _FixStub:
         """Stub namespace – quickfix C-extension not installed."""
 
-        def __getattr__(self, name):  # noqa: D105 – instance
+        def __getattr__(self, name) -> type:
             return _make_stub(name)
 
-        __class_getitem__ = classmethod(lambda cls, item: None)
+        __class_getitem__ = classmethod(lambda _cls, _item: None)
 
     class _Fix44Stub:
         """Stub namespace for quickfix44 message types."""
@@ -112,7 +111,7 @@ LOG = logging.getLogger(__name__)
 
 
 class OrderStatus(Enum):
-    """FIX OrdStatus (Tag 39) values"""
+    """FIX OrdStatus (Tag 39) values."""
 
     NEW = "0"
     PARTIALLY_FILLED = "1"
@@ -132,7 +131,7 @@ class OrderStatus(Enum):
 
 
 class ExecType(Enum):
-    """FIX ExecType (Tag 150) values"""
+    """FIX ExecType (Tag 150) values."""
 
     NEW = "0"
     DONE_FOR_DAY = "3"
@@ -154,14 +153,14 @@ class ExecType(Enum):
 
 
 class Side(Enum):
-    """FIX Side (Tag 54) values"""
+    """FIX Side (Tag 54) values."""
 
     BUY = "1"
     SELL = "2"
 
 
 class OrdType(Enum):
-    """FIX OrdType (Tag 40) values"""
+    """FIX OrdType (Tag 40) values."""
 
     MARKET = "1"
     LIMIT = "2"
@@ -170,7 +169,7 @@ class OrdType(Enum):
 
 
 class Order:
-    """Represents a FIX order with full lifecycle tracking, using SafeMath for precision"""
+    """Represents a FIX order with full lifecycle tracking, using SafeMath for precision."""
 
     def __init__(
         self,
@@ -181,20 +180,25 @@ class Order:
         quantity: float | Decimal,
         price: float | Decimal | None = None,
         instrument_digits: int = 2,
-    ):  # noqa: PLR0913
+    ) -> None:
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         # Validate required inputs
         if not clord_id:
-            raise ValueError("clord_id is required")
+            msg = "clord_id is required"
+            raise ValueError(msg)
         if not symbol:
-            raise ValueError("symbol is required")
+            msg = "symbol is required"
+            raise ValueError(msg)
         if not isinstance(side, Side):
-            raise ValueError(f"Invalid side: {side} (must be Side enum)")
+            msg = f"Invalid side: {side} (must be Side enum)"
+            raise TypeError(msg)
         if not isinstance(ord_type, OrdType):
-            raise ValueError(f"Invalid ord_type: {ord_type} (must be OrdType enum)")
+            msg = f"Invalid ord_type: {ord_type} (must be OrdType enum)"
+            raise TypeError(msg)
         if not isinstance(instrument_digits, int) or not 0 <= instrument_digits <= 10:
-            raise ValueError(f"Invalid instrument_digits: {instrument_digits} (must be int 0-10)")
+            msg = f"Invalid instrument_digits: {instrument_digits} (must be int 0-10)"
+            raise ValueError(msg)
 
         self.clord_id: str = clord_id
         self.symbol: str = symbol
@@ -206,18 +210,22 @@ class Order:
         try:
             self.quantity: Decimal = SafeMath.to_decimal(quantity, instrument_digits)
             if self.quantity <= 0:
-                raise ValueError(f"Quantity must be positive: {quantity}")
+                msg = f"Quantity must be positive: {quantity}"
+                raise ValueError(msg)
         except Exception as e:
-            raise ValueError(f"Invalid quantity '{quantity}': {e}") from e
+            msg = f"Invalid quantity '{quantity}': {e}"
+            raise ValueError(msg) from e
 
         # Convert price with validation (optional for market orders)
         if price is not None:
             try:
                 self.price: Decimal | None = SafeMath.to_decimal(price, instrument_digits)
                 if self.price <= 0:
-                    raise ValueError(f"Price must be positive: {price}")
+                    msg = f"Price must be positive: {price}"
+                    raise ValueError(msg)
             except Exception as e:
-                raise ValueError(f"Invalid price '{price}': {e}") from e
+                msg = f"Invalid price '{price}': {e}"
+                raise ValueError(msg) from e
         else:
             self.price: Decimal | None = None
 
@@ -280,7 +288,7 @@ class Order:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], instrument_digits: int = 2):
+    def from_dict(cls, data: dict[str, Any], instrument_digits: int = 2) -> "Order":
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         order = cls(
@@ -311,9 +319,9 @@ class Order:
 
 
 class Position:
-    """Represents current position for a symbol, using SafeMath for precision"""
+    """Represents current position for a symbol, using SafeMath for precision."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         symbol: str,
         long_qty: float | Decimal = 0.0,
@@ -322,7 +330,7 @@ class Position:
         pos_maint_rpt_id: str | None = None,
         updated_at=None,
         instrument_digits: int = 2,
-    ):
+    ) -> None:
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         self.symbol = symbol
@@ -331,9 +339,9 @@ class Position:
         self.short_qty: Decimal = SafeMath.to_decimal(short_qty, instrument_digits)
         self.net_qty: Decimal = SafeMath.to_decimal(net_qty, instrument_digits)
         self.pos_maint_rpt_id: str | None = pos_maint_rpt_id
-        self.updated_at = updated_at if updated_at else utc_now()
+        self.updated_at = updated_at or utc_now()
 
-    def update_from_report(self, long_qty: float | Decimal, short_qty: float | Decimal, pos_id: str | None = None):
+    def update_from_report(self, long_qty: float | Decimal, short_qty: float | Decimal, pos_id: str | None = None) -> None:
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         self.long_qty = SafeMath.to_decimal(long_qty, self.instrument_digits)
@@ -347,6 +355,7 @@ class Position:
 
         Returns:
             True if position was updated successfully, False if validation failed
+
         """
         try:
             # Convert and validate filled_qty
@@ -402,13 +411,11 @@ class Position:
         try:
             # Check for NaN/Inf - Decimal doesn't have is_finite, check string representation
             s = str(value).lower()
-            if "nan" in s or "inf" in s or "snan" in s:
-                return False
-            return True
+            return not ("nan" in s or "inf" in s or "snan" in s)
         except Exception:
             return False
 
-    def seed(self, net_qty: float | Decimal, _entry_price: float = 0.0):
+    def seed(self, net_qty: float | Decimal, _entry_price: float = 0.0) -> None:
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         net_qty = SafeMath.to_decimal(net_qty, self.instrument_digits)
@@ -443,7 +450,7 @@ class Position:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], instrument_digits: int = 2):
+    def from_dict(cls, data: dict[str, Any], instrument_digits: int = 2) -> "Position":
         from src.utils.safe_math import SafeMath  # noqa: PLC0415
 
         updated_at: datetime | None = None
@@ -464,8 +471,7 @@ class Position:
 
 
 class TradeManager:
-    """
-    Centralized FIX Protocol order and position management.
+    """Centralized FIX Protocol order and position management.
 
     Responsibilities:
     1. Order submission via NewOrderSingle (35=D)
@@ -491,7 +497,7 @@ class TradeManager:
         pos = manager.get_position()
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         session_id: Any,  # fix.SessionID - quickfix doesn't have type stubs
         symbol_id: int,
@@ -500,9 +506,8 @@ class TradeManager:
         max_pending_orders: int = 10,
         paper_mode: bool = False,
         get_price_callback: Callable[[], tuple[float, float]] | None = None,
-    ):
-        """
-        Initialize TradeManager.
+    ) -> None:
+        """Initialize TradeManager.
 
         Args:
             session_id: FIX session ID for TRADE session
@@ -512,6 +517,7 @@ class TradeManager:
             max_pending_orders: Maximum concurrent pending orders
             paper_mode: If True, simulate fills locally when broker doesn't respond
             get_price_callback: Callback returning (bid, ask) for paper fill price
+
         """
         self.session_id = session_id
         self.symbol_id = str(symbol_id)
@@ -561,15 +567,15 @@ class TradeManager:
             paper_mode,
         )
 
-    def seed_position(self, net_qty: float, _entry_price: float = 0.0):
-        """
-        Seed TradeManager with externally-known position.
+    def seed_position(self, net_qty: float, _entry_price: float = 0.0) -> None:
+        """Seed TradeManager with externally-known position.
 
         Use this when bot starts with positions already open at broker.
 
         Args:
             net_qty: Net position (positive=LONG, negative=SHORT)
             entry_price: Optional entry price for tracking
+
         """
         self.position.seed(net_qty, _entry_price)
         if net_qty > 0:
@@ -581,7 +587,7 @@ class TradeManager:
         LOG.info("[TRADEMGR] 🌱 Position seeded: net=%.6f direction=%s", net_qty, _direction)
 
     def _generate_clord_id(self) -> str:
-        """Generate unique client order ID"""
+        """Generate unique client order ID."""
         self.clord_counter += 1
         timestamp = int(time.time())
         return f"cl_{timestamp}_{self.clord_counter}"
@@ -598,8 +604,7 @@ class TradeManager:
         tag_prefix: str | None = None,
         position_ticket: str | None = None,  # Added back for hedging mode
     ) -> Order | None:
-        """
-        Submit market order via NewOrderSingle (35=D).
+        """Submit market order via NewOrderSingle (35=D).
 
         Args:
             side: Side.BUY or Side.SELL
@@ -608,6 +613,7 @@ class TradeManager:
 
         Returns:
             Order object if submitted, None if failed
+
         """
         if self.active_order_count >= self.max_pending_orders:
             LOG.warning("[TRADEMGR] Max pending orders reached (%d)", self.max_pending_orders)
@@ -681,8 +687,7 @@ class TradeManager:
         price: float,
         tag_prefix: str | None = None,
     ) -> Order | None:
-        """
-        Submit limit order via NewOrderSingle (35=D).
+        """Submit limit order via NewOrderSingle (35=D).
 
         Args:
             side: Side.BUY or Side.SELL
@@ -692,6 +697,7 @@ class TradeManager:
 
         Returns:
             Order object if submitted, None if failed
+
         """
         if self.active_order_count >= self.max_pending_orders:
             LOG.warning("[TRADEMGR] Max pending orders reached (%d)", self.max_pending_orders)
@@ -761,6 +767,7 @@ class TradeManager:
 
         Returns:
             Order object if submitted, None if failed
+
         """
         if self.active_order_count >= self.max_pending_orders:
             LOG.warning("[TRADEMGR] Max pending orders reached (%d)", self.max_pending_orders)
@@ -807,14 +814,14 @@ class TradeManager:
             return None
 
     def cancel_order(self, clord_id: str) -> bool:
-        """
-        Cancel order via OrderCancelRequest (35=F).
+        """Cancel order via OrderCancelRequest (35=F).
 
         Args:
             clord_id: Client order ID to cancel
 
         Returns:
             True if cancel request sent, False otherwise
+
         """
         order = self.orders.get(clord_id)
         if not order:
@@ -850,8 +857,7 @@ class TradeManager:
             return False
 
     def modify_order(self, clord_id: str, new_price: float, new_qty: float | None = None) -> bool:
-        """
-        Modify order via OrderCancelReplaceRequest (35=G).
+        """Modify order via OrderCancelReplaceRequest (35=G).
 
         Args:
             clord_id: Original client order ID
@@ -860,6 +866,7 @@ class TradeManager:
 
         Returns:
             True if modify request sent, False otherwise
+
         """
         order = self.orders.get(clord_id)
         if not order:
@@ -909,9 +916,8 @@ class TradeManager:
     # ----------------------------
     # PAPER MODE: Simulated Fills
     # ----------------------------
-    def _schedule_paper_fill_timeout(self, clord_id: str, side: Side, quantity: float):
-        """
-        Schedule a paper fill timeout check.
+    def _schedule_paper_fill_timeout(self, clord_id: str, side: Side, quantity: float) -> None:
+        """Schedule a paper fill timeout check.
 
         In PAPER_MODE, if broker doesn't respond within paper_fill_timeout seconds,
         simulate a fill locally using current bid/ask prices.
@@ -925,10 +931,11 @@ class TradeManager:
             clord_id: Client order ID to check
             side: Order side (BUY/SELL)
             quantity: Order quantity
+
         """
         import threading  # noqa: PLC0415
 
-        def check_paper_fill():
+        def check_paper_fill() -> None:
             time.sleep(self.paper_fill_timeout)
             self._check_paper_fill_timeout(clord_id, side, quantity)
 
@@ -940,9 +947,8 @@ class TradeManager:
         thread.start()
         LOG.debug("[PAPER] Scheduled paper fill timeout for %s in %.1fs", clord_id, self.paper_fill_timeout)
 
-    def _check_paper_fill_timeout(self, clord_id: str, side: Side, quantity: float):
-        """
-        Check if order needs paper fill simulation.
+    def _check_paper_fill_timeout(self, clord_id: str, side: Side, quantity: float) -> None:
+        """Check if order needs paper fill simulation.
 
         Called after paper_fill_timeout seconds. If order still pending (broker
         hasn't responded), simulate the fill locally.
@@ -951,6 +957,7 @@ class TradeManager:
             clord_id: Client order ID to check
             side: Order side
             quantity: Order quantity
+
         """
         # Check if order is still pending (broker hasn't responded)
         with self._lock:
@@ -971,9 +978,8 @@ class TradeManager:
         )
         self._simulate_paper_fill(order, side, quantity)
 
-    def _simulate_paper_fill(self, order: Order, side: Side, quantity: float):
-        """
-        Simulate a paper fill using current market prices.
+    def _simulate_paper_fill(self, order: Order, side: Side, quantity: float) -> None:
+        """Simulate a paper fill using current market prices.
 
         This creates a fake ExecutionReport that updates position and triggers
         all the same callbacks as a real broker fill.
@@ -984,6 +990,7 @@ class TradeManager:
             order: Order to fill
             side: Order side
             quantity: Order quantity
+
         """
         if not self.get_price_callback:
             LOG.error("[PAPER] Cannot simulate fill - no price callback")
@@ -1140,9 +1147,8 @@ class TradeManager:
             msg.getField(last_px_field)
             order.last_px = SafeMath.to_decimal(last_px_field.getValue(), self.position.instrument_digits)
 
-    def on_execution_report(self, msg: Any):
-        """
-        Process ExecutionReport (35=8) from FIX session.
+    def on_execution_report(self, msg: Any) -> None:
+        """Process ExecutionReport (35=8) from FIX session.
 
         Routes to appropriate handler based on ExecType (Tag 150):
         - ExecType=0 (New): Order accepted
@@ -1206,8 +1212,8 @@ class TradeManager:
             except Exception as e:
                 LOG.error("[TRADEMGR] Error processing ExecutionReport: %s", e, exc_info=True)
 
-    def _handle_new(self, order: Order):
-        """Handle ExecType=0 (New) - Order accepted by broker"""
+    def _handle_new(self, order: Order) -> None:
+        """Handle ExecType=0 (New) - Order accepted by broker."""
         LOG.info(
             "[TRADEMGR] ✓ Order accepted: %s %s qty=%.6f OrderID=%s",
             order.side.name,
@@ -1216,8 +1222,8 @@ class TradeManager:
             order.order_id or "N/A",
         )
 
-    def _handle_fill(self, order: Order):
-        """Handle ExecType=F (Fill) - Order filled (full or partial)
+    def _handle_fill(self, order: Order) -> None:
+        """Handle ExecType=F (Fill) - Order filled (full or partial).
 
         Includes duplicate-fill guard: if a paper fill already processed this
         order (clord_id removed from pending_orders and order already FILLED),
@@ -1286,15 +1292,15 @@ class TradeManager:
             except Exception as e:
                 LOG.error("[TRADEMGR] Error in fill callback: %s", e, exc_info=True)
 
-    def _handle_canceled(self, order: Order):
-        """Handle ExecType=4 (Canceled) - Order canceled"""
+    def _handle_canceled(self, order: Order) -> None:
+        """Handle ExecType=4 (Canceled) - Order canceled."""
         LOG.info("[TRADEMGR] Order canceled: %s", order.clord_id)
 
         # Audit log: Order cancellation
         self.audit.log_order_cancel(order_id=order.clord_id, reason="User/system cancellation")
 
     def _handle_rejected(self, order: Order, msg: Any) -> None:
-        """Handle ExecType=8 (Rejected) - Order rejected"""
+        """Handle ExecType=8 (Rejected) - Order rejected."""
         # Extract reject reason
         text_field = fix.Text()
         if msg.isSetField(text_field):
@@ -1317,12 +1323,12 @@ class TradeManager:
             except Exception as e:
                 LOG.error("[TRADEMGR] Error in reject callback: %s", e, exc_info=True)
 
-    def _handle_replaced(self, order: Order):
-        """Handle ExecType=5 (Replaced) - Order modified successfully"""
+    def _handle_replaced(self, order: Order) -> None:
+        """Handle ExecType=5 (Replaced) - Order modified successfully."""
         LOG.info("[TRADEMGR] ✓ Order replaced: %s", order.clord_id)
 
-    def _handle_status_update(self, order: Order):
-        """Handle ExecType=I (OrderStatus) - Status update from OrderStatusRequest"""
+    def _handle_status_update(self, order: Order) -> None:
+        """Handle ExecType=I (OrderStatus) - Status update from OrderStatusRequest."""
         LOG.debug(
             "[TRADEMGR] Status update: %s status=%s filled=%.6f/%.6f",
             order.clord_id,
@@ -1331,9 +1337,8 @@ class TradeManager:
             order.quantity,
         )
 
-    def request_positions(self, retry_count: int = 0):
-        """
-        Request current positions via RequestForPositions (35=AN).
+    def request_positions(self, retry_count: int = 0) -> None:
+        """Request current positions via RequestForPositions (35=AN).
 
         FIX P1-8: Added retry logic with timeout tracking
 
@@ -1341,6 +1346,7 @@ class TradeManager:
 
         Args:
             retry_count: Current retry attempt number
+
         """
         if not self.session_id:
             LOG.warning("[TRADEMGR] Cannot request positions - no session")
@@ -1366,7 +1372,7 @@ class TradeManager:
             # P0 FIX: Schedule timeout check (improved threading-based timeout)
             import threading  # noqa: PLC0415
 
-            def check_timeout():
+            def check_timeout() -> None:
                 time.sleep(self.position_request_timeout)
                 self._check_position_request_timeout(req_id)
 
@@ -1377,12 +1383,12 @@ class TradeManager:
             # Remove from pending
             self.pending_position_requests.pop(req_id, None)
 
-    def _check_position_request_timeout(self, req_id: str):
-        """
-        FIX P1-8: Check if position request timed out and retry if needed.
+    def _check_position_request_timeout(self, req_id: str) -> None:
+        """FIX P1-8: Check if position request timed out and retry if needed.
 
         Args:
             req_id: Position request ID to check
+
         """
         with self._lock:
             request_info = self.pending_position_requests.get(req_id)
@@ -1414,9 +1420,8 @@ class TradeManager:
                 self.position_request_max_retries,
             )
 
-    def check_all_position_request_timeouts(self):
-        """
-        P0 FIX: Manually check all pending position requests for timeouts.
+    def check_all_position_request_timeouts(self) -> None:
+        """P0 FIX: Manually check all pending position requests for timeouts.
 
         Call this periodically (e.g., every bar) as a fallback to threading-based checks.
         """
@@ -1425,9 +1430,8 @@ class TradeManager:
         for req_id in req_ids:
             self._check_position_request_timeout(req_id)
 
-    def on_position_report(self, msg: Any):
-        """
-        Process PositionReport (35=AP) from FIX session.
+    def on_position_report(self, msg: Any) -> None:
+        """Process PositionReport (35=AP) from FIX session.
 
         Updates internal position tracking with:
         - Tag 704 (LongQty): Long position quantity
@@ -1487,37 +1491,37 @@ class TradeManager:
             LOG.error("[TRADEMGR] Error processing PositionReport: %s", e, exc_info=True)
 
     def get_position(self) -> Position:
-        """Get current position"""
+        """Get current position."""
         return self.position
 
     def get_position_direction(self, min_qty: float = 0.0) -> int:
-        """
-        Get position direction as integer.
+        """Get position direction as integer.
 
         Args:
             min_qty: Minimum quantity threshold to consider non-flat
 
         Returns:
             1 for long, -1 for short, 0 for flat
+
         """
         if abs(self.position.net_qty) < min_qty:
             return 0
         return 1 if self.position.net_qty > 0 else -1
 
     def get_order(self, clord_id: str) -> Order | None:
-        """Get order by client order ID"""
+        """Get order by client order ID."""
         return self.orders.get(clord_id)
 
     def get_active_orders(self) -> list[Order]:
-        """Get all active orders"""
+        """Get all active orders."""
         return [o for o in self.orders.values() if o.is_active()]
 
     def get_filled_orders(self) -> list[Order]:
-        """Get all filled orders"""
+        """Get all filled orders."""
         return [o for o in self.orders.values() if o.status == OrderStatus.FILLED]
 
     def get_statistics(self) -> dict[str, Any]:
-        """Get order statistics"""
+        """Get order statistics."""
         total_orders = len(self.orders)
         filled = len([o for o in self.orders.values() if o.status == OrderStatus.FILLED])
         rejected = len([o for o in self.orders.values() if o.status == OrderStatus.REJECTED])
@@ -1537,12 +1541,12 @@ class TradeManager:
             "position_short_qty": self.position.short_qty,
         }
 
-    def cleanup_old_orders(self, max_age_hours: int = 24):
-        """
-        Clean up old terminal orders from memory.
+    def cleanup_old_orders(self, max_age_hours: int = 24) -> None:
+        """Clean up old terminal orders from memory.
 
         Args:
             max_age_hours: Remove terminal orders older than this
+
         """
         cutoff = utc_now().timestamp() - (max_age_hours * 3600)
         to_remove = [
@@ -1559,9 +1563,8 @@ class TradeManager:
         if to_remove:
             LOG.info("[TRADEMGR] Cleaned up %d old orders", len(to_remove))
 
-    def check_pending_order_timeouts(self):
-        """
-        P0 FIX: Check for orders that haven't received acknowledgment within timeout.
+    def check_pending_order_timeouts(self) -> None:
+        """P0 FIX: Check for orders that haven't received acknowledgment within timeout.
 
         This prevents "lost in flight" orders where order status is unknown.
         Query order status via FIX OrderStatusRequest (35=H) after timeout.
@@ -1610,12 +1613,12 @@ class TradeManager:
             except Exception as e:
                 LOG.error("[TRADEMGR] Error in reject callback: %s", e)
 
-    def _query_order_status(self, clord_id: str):
-        """
-        Query order status via FIX OrderStatusRequest (35=H).
+    def _query_order_status(self, clord_id: str) -> None:
+        """Query order status via FIX OrderStatusRequest (35=H).
 
         Args:
             clord_id: Client order ID to query
+
         """
         order = self.orders.get(clord_id)
         if not order:
@@ -1634,9 +1637,8 @@ class TradeManager:
         except Exception as e:
             LOG.error("[TRADEMGR] ✗ Failed to send OrderStatusRequest: %s", e)
 
-    def on_logon(self):
-        """
-        P0 FIX: Handle session logon/reconnect.
+    def on_logon(self) -> None:
+        """P0 FIX: Handle session logon/reconnect.
 
         Critical recovery logic:
         1. Query status of all pending orders (might have been filled during disconnect)

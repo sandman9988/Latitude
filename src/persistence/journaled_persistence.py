@@ -1,5 +1,4 @@
-"""
-Journaled Persistence - Write-Ahead Log (WAL) for Crash Recovery
+"""Journaled Persistence - Write-Ahead Log (WAL) for Crash Recovery.
 
 GAP 2 FIX: Implements journaling/WAL to ensure no data loss on crash.
 
@@ -32,6 +31,8 @@ Usage:
     journal.replay_from_checkpoint()
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from collections import deque
@@ -55,8 +56,7 @@ class JournalEntry:
 
 
 class Journal:
-    """
-    Write-Ahead Log for crash recovery.
+    """Write-Ahead Log for crash recovery.
 
     Ensures:
     - Every state change logged before execution
@@ -70,14 +70,14 @@ class Journal:
         journal_path: str = "data/journal.log",
         checkpoint_interval: int = 100,
         max_journal_size_mb: int = 100,
-    ):
-        """
-        Initialize journal.
+    ) -> None:
+        """Initialize journal.
 
         Args:
             journal_path: Path to journal file
             checkpoint_interval: Operations between checkpoints
             max_journal_size_mb: Max journal size before rotation
+
         """
         self.journal_path = Path(journal_path)
         self.checkpoint_path = Path(str(journal_path).replace(".log", ".checkpoint"))
@@ -104,7 +104,7 @@ class Journal:
             self.sequence_num,
         )
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Release file handle on garbage collection."""
         self.close()
 
@@ -131,8 +131,7 @@ class Journal:
         return 0
 
     def log_operation(self, operation: str, data: dict) -> int:
-        """
-        Write operation to journal before executing.
+        """Write operation to journal before executing.
 
         Args:
             operation: Operation type (e.g., "position_open", "trade_close")
@@ -140,6 +139,7 @@ class Journal:
 
         Returns:
             Sequence number of logged operation
+
         """
         entry = JournalEntry(
             seq=self.sequence_num,
@@ -182,7 +182,7 @@ class Journal:
             },
         )
 
-    def log_trade_close(  # noqa: PLR0913
+    def log_trade_close(
         self, order_id: str, exit_price: float, pnl: float, mfe: float, mae: float, winner_to_loser: bool
     ):
         """Log trade close operation."""
@@ -220,8 +220,7 @@ class Journal:
         )
 
     def checkpoint(self) -> bool:
-        """
-        Create checkpoint (compact journal state).
+        """Create checkpoint (compact journal state).
 
         Checkpoint contains:
         - Current sequence number
@@ -230,6 +229,7 @@ class Journal:
 
         Returns:
             True if checkpoint created successfully
+
         """
         try:
             checkpoint_data = {
@@ -271,7 +271,7 @@ class Journal:
         except Exception:
             return False
 
-    def _rotate_journal(self):
+    def _rotate_journal(self) -> None:
         """Rotate journal to prevent unbounded growth."""
         try:
             # Close current journal
@@ -305,9 +305,8 @@ class Journal:
         except Exception:
             LOG.warning("[JOURNAL] Checkpoint after rotation failed", exc_info=True)
 
-    def replay_from_checkpoint(self, callback: callable = None) -> list[JournalEntry]:
-        """
-        Replay operations from last checkpoint to current.
+    def replay_from_checkpoint(self, callback: callable | None = None) -> list[JournalEntry]:
+        """Replay operations from last checkpoint to current.
 
         Args:
             callback: Optional function to call for each operation
@@ -316,6 +315,7 @@ class Journal:
 
         Returns:
             List of replayed operations
+
         """
         replayed = []
 
@@ -373,7 +373,7 @@ class Journal:
         """Get recent operations from memory."""
         return list(self.recent_operations)[-count:]
 
-    def close(self):
+    def close(self) -> None:
         """Close journal file (flush and close)."""
         try:
             # Create final checkpoint
@@ -387,11 +387,11 @@ class Journal:
         except Exception as e:
             LOG.error("[JOURNAL] Error closing journal: %s", e, exc_info=True)
 
-    def __enter__(self):
+    def __enter__(self) -> "Journal":
         """Context manager support."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Context manager cleanup."""
         self.close()
 

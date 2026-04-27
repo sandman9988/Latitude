@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-friction_costs.py
+"""friction_costs.py.
 
 Friction Cost Calculator for cTrader
 Tracks and models all trading costs: spread, commission, swap, slippage
@@ -21,7 +20,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final, TypedDict
+from typing import Any, Final, TypedDict
 
 from src.persistence.learned_parameters import LearnedParametersManager
 
@@ -31,18 +30,18 @@ MAX_SPREAD_PIPS: Final[float] = 1000.0
 MIN_SPREAD_SAMPLES: Final[int] = 100
 
 # ── Digits inference price magnitude buckets ──────────────────────────────────
-_DIGITS_PRICE_HIGH: float = 10_000.0   # BTC, NAS100 and similar large-value instruments
+_DIGITS_PRICE_HIGH: float = 10_000.0  # BTC, NAS100 and similar large-value instruments
 _DIGITS_PRICE_MEDIUM: float = 1_000.0  # Gold, large JPY-cross moves
-_DIGITS_PRICE_LOW: float = 100.0       # Standard JPY pairs, some indices
-_DIGITS_PRICE_FLOOR: float = 10.0      # Very low priced pairs
-_DIGITS_HIGH_MAX: int = 2              # Max digits for high-price instruments
-_DIGITS_LOW_MAX: int = 3               # Max digits for medium/low-price instruments
-_DIGITS_FOREX_MAX: int = 5             # Max digits for standard forex pairs
-DEFAULT_DIGITS: int = 2               # Default digits (used as sentinel for "not yet inferred")
-DEFAULT_TRIPLE_SWAP_DAY: int = 2       # Wednesday (0=Mon…6=Sun)
+_DIGITS_PRICE_LOW: float = 100.0  # Standard JPY pairs, some indices
+_DIGITS_PRICE_FLOOR: float = 10.0  # Very low priced pairs
+_DIGITS_HIGH_MAX: int = 2  # Max digits for high-price instruments
+_DIGITS_LOW_MAX: int = 3  # Max digits for medium/low-price instruments
+_DIGITS_FOREX_MAX: int = 5  # Max digits for standard forex pairs
+DEFAULT_DIGITS: int = 2  # Default digits (used as sentinel for "not yet inferred")
+DEFAULT_TRIPLE_SWAP_DAY: int = 2  # Wednesday (0=Mon…6=Sun)
 MIN_WEEKDAY: int = 0
 MAX_WEEKDAY: int = 6
-TRIPLE_SWAP_EXTRA_DAYS: int = 2        # Additional swap days for weekend rollover
+TRIPLE_SWAP_EXTRA_DAYS: int = 2  # Additional swap days for weekend rollover
 
 
 @dataclass
@@ -102,8 +101,7 @@ class FrictionBreakdown(TypedDict):
 
 
 class SpreadTracker:
-    """
-    Track real-time spreads to model spread patterns.
+    """Track real-time spreads to model spread patterns.
 
     Spreads vary by:
     - Time of day (wider during Asian session for BTC)
@@ -111,7 +109,7 @@ class SpreadTracker:
     - Liquidity (wider during holidays)
     """
 
-    def __init__(self, window_size: int = 1000):
+    def __init__(self, window_size: int = 1000) -> None:
         self.window_size = window_size
         self.spreads = deque(maxlen=window_size)
         self.timestamps = deque(maxlen=window_size)
@@ -119,9 +117,8 @@ class SpreadTracker:
         # Hourly spread buckets (0-23 UTC)
         self.hourly_spreads: dict[int, deque] = {h: deque(maxlen=100) for h in range(24)}
 
-    def update(self, bid: float, ask: float, pip_size: float = 1.0):
+    def update(self, bid: float, ask: float, pip_size: float = 1.0) -> None:
         """Record a new bid/ask spread with defensive validation."""
-
         # Defensive: Validate inputs
         if not all(isinstance(x, (int, float)) for x in (bid, ask, pip_size)):
             return
@@ -211,8 +208,7 @@ class SpreadTracker:
         return self.get_hourly_avg_spread(now.hour)
 
     def get_learned_max_spread(self, multiplier: float = 2.0) -> float:
-        """
-        Calculate learned maximum acceptable spread.
+        """Calculate learned maximum acceptable spread.
 
         Uses historical minimum spread * multiplier to determine
         what spread should be considered "acceptable" for trading.
@@ -225,8 +221,8 @@ class SpreadTracker:
 
         Returns:
             Maximum acceptable spread in pips based on learned behavior
-        """
 
+        """
         min_spread = self.get_min_spread()
 
         # Defensive: Need enough data points
@@ -252,8 +248,7 @@ class SpreadTracker:
 
 
 class SlippageModel:
-    """
-    Model slippage as a function of position size and market conditions.
+    """Model slippage as a function of position size and market conditions.
 
     Per handbook: Slippage is ASYMMETRIC:
     - Market buy (aggressive): worse fill than ask
@@ -266,7 +261,7 @@ class SlippageModel:
     - Low liquidity (thinner order book)
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Base slippage (pips) for 1 standard lot
         self.base_slippage_pips = 0.5
 
@@ -282,8 +277,7 @@ class SlippageModel:
         self.sell_multiplier = 1.0
 
     def estimate_slippage(self, quantity: float, side: str = "BUY", volatility_factor: float = 1.0) -> float:
-        """
-        Estimate slippage in pips with defensive validation.
+        """Estimate slippage in pips with defensive validation.
 
         Args:
             quantity: Position size in lots
@@ -292,8 +286,8 @@ class SlippageModel:
 
         Returns:
             Expected slippage in pips
-        """
 
+        """
         # Defensive: Validate inputs
         if not isinstance(quantity, (int, float)):
             return 0.0
@@ -332,8 +326,7 @@ class SlippageModel:
 
 
 class FrictionCalculator:
-    """
-    Calculate total friction costs for a trade.
+    """Calculate total friction costs for a trade.
 
     Total friction = spread + commission + swap + slippage
 
@@ -347,7 +340,7 @@ class FrictionCalculator:
         timeframe: str = "M15",
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
-    ):
+    ) -> None:
         self.symbol = symbol
         self.symbol_id = symbol_id
         self.timeframe = timeframe
@@ -385,8 +378,7 @@ class FrictionCalculator:
         )
 
     def _load_symbol_specs_from_config(self) -> None:
-        """
-        Load symbol specifications from config/symbol_specs.json as fallback.
+        """Load symbol specifications from config/symbol_specs.json as fallback.
 
         SecurityDefinition from broker takes precedence when received.
         This provides reasonable defaults for trading before SecurityDef arrives.
@@ -458,7 +450,7 @@ class FrictionCalculator:
             return
         self.spread_multiplier = self._get_param("spread_relax", 2.0)
         self.depth_buffer = self._get_param("depth_buffer", 0.10)
-        self.depth_levels = int(round(self._get_param("depth_levels", 5.0)))
+        self.depth_levels = round(self._get_param("depth_levels", 5.0))
         self._last_param_refresh = now
         LOG.info(
             "[FRICTION] Learned thresholds loaded: spread<=%.2fx min | depth_levels=%d | depth_buffer=%.2f",
@@ -472,10 +464,10 @@ class FrictionCalculator:
         self._load_learned_parameters(force=True)
 
     def normalize_quantity(self, quantity: float) -> float:
-        """
-        Normalize quantity to broker's volume constraints.
+        """Normalize quantity to broker's volume constraints.
 
         Symbol-agnostic: Uses min_volume, max_volume, volume_step from SecurityDefinition.
+
         Examples:
             - BTCUSD: min=0.01, max=100, step=0.01
             - XAUUSD: min=0.01, max=50, step=0.01
@@ -486,8 +478,8 @@ class FrictionCalculator:
 
         Returns:
             Normalized quantity conforming to min/max/step constraints
-        """
 
+        """
         # Defensive: Handle invalid input
         if not math.isfinite(quantity) or quantity <= 0:
             return self.costs.min_volume
@@ -501,15 +493,14 @@ class FrictionCalculator:
             normalized = steps * self.costs.volume_step
 
         # Final clamp after rounding (edge case: step rounds above max)
-        normalized = max(self.costs.min_volume, min(normalized, self.costs.max_volume))
+        return max(self.costs.min_volume, min(normalized, self.costs.max_volume))
 
-        return normalized
 
     def normalize_price(self, price: float) -> float:
-        """
-        Normalize price to broker's digit precision.
+        """Normalize price to broker's digit precision.
 
         Symbol-agnostic: Uses digits from SecurityDefinition.
+
         Examples:
             - XAUUSD (Gold): digits=2 → 1850.12
             - USDJPY: digits=3 → 148.123
@@ -521,8 +512,8 @@ class FrictionCalculator:
 
         Returns:
             Price rounded to instrument's tick_size/digits precision
-        """
 
+        """
         # Defensive: Handle invalid input
         if not math.isfinite(price) or price <= 0:
             return 0.0
@@ -539,11 +530,11 @@ class FrictionCalculator:
         return normalized
 
     def get_symbol_info(self) -> dict:
-        """
-        Get current symbol specification for logging/debugging.
+        """Get current symbol specification for logging/debugging.
 
         Returns:
             Dict with all broker-provided symbol constraints
+
         """
         return {
             "symbol": self.symbol,
@@ -559,9 +550,8 @@ class FrictionCalculator:
             "last_updated": str(self.costs.last_updated) if self.costs.last_updated else None,
         }
 
-    def update_symbol_costs(self, **kwargs):
-        """
-        Update symbol cost parameters from broker SecurityDefinition or config.
+    def update_symbol_costs(self, **kwargs: Any) -> None:
+        """Update symbol cost parameters from broker SecurityDefinition or config.
 
         Broker-provided values always take precedence over config fallbacks.
         This is the symbol-agnostic approach - all costs come from broker.
@@ -579,6 +569,7 @@ class FrictionCalculator:
                 - max_volume: Maximum lot size
                 - volume_step: Lot size increment
                 - contract_size: Units per lot (e.g., 100 for XAUUSD)
+
         """
         for key, value in kwargs.items():
             if hasattr(self.costs, key):
@@ -621,8 +612,7 @@ class FrictionCalculator:
             self.costs.pip_value_per_lot = contract_size * self.costs.pip_size
 
     def infer_digits_from_price(self, price: float) -> int:
-        """
-        Infer price digits from observed price when SecurityDefinition doesn't provide it.
+        """Infer price digits from observed price when SecurityDefinition doesn't provide it.
 
         Symbol-agnostic heuristics:
             - XAUUSD (Gold): ~1850.12 → 2 digits
@@ -635,8 +625,8 @@ class FrictionCalculator:
 
         Returns:
             Inferred number of decimal places
-        """
 
+        """
         if not math.isfinite(price) or price <= 0:
             return 2  # Default
 
@@ -651,18 +641,17 @@ class FrictionCalculator:
         # Symbol-agnostic heuristics based on price magnitude
         if price > _DIGITS_PRICE_HIGH:  # BTC, indices like NAS100
             return min(_DIGITS_HIGH_MAX, observed_digits)
-        elif price > _DIGITS_PRICE_LOW:  # Gold, JPY crosses, indices
+        if price > _DIGITS_PRICE_LOW:  # Gold, JPY crosses, indices
             if price > _DIGITS_PRICE_MEDIUM:
                 return min(_DIGITS_HIGH_MAX, observed_digits)
             return min(_DIGITS_LOW_MAX, observed_digits)
-        elif price > _DIGITS_PRICE_FLOOR:  # JPY pairs
+        if price > _DIGITS_PRICE_FLOOR:  # JPY pairs
             return min(_DIGITS_LOW_MAX, observed_digits)
-        else:  # Standard forex pairs (EURUSD, GBPUSD)
-            return min(_DIGITS_FOREX_MAX, observed_digits)
+        # Standard forex pairs (EURUSD, GBPUSD)
+        return min(_DIGITS_FOREX_MAX, observed_digits)
 
     def update_digits_from_price(self, price: float) -> None:
-        """
-        Update digits if not set from SecurityDefinition.
+        """Update digits if not set from SecurityDefinition.
 
         Only updates if current digits seems to be default/unset.
         """
@@ -678,7 +667,7 @@ class FrictionCalculator:
                 self.costs.digits = inferred
                 self._refresh_derived_costs()
 
-    def update_spread(self, bid: float, ask: float):
+    def update_spread(self, bid: float, ask: float) -> None:
         """Update current spread observation."""
         self.spread_tracker.update(bid, ask, self.costs.pip_size)
 
@@ -688,16 +677,15 @@ class FrictionCalculator:
         self.costs.max_spread_pips = self.spread_tracker.get_max_spread()
 
     def calculate_spread_cost(self, quantity: float) -> float:
-        """
-        Calculate spread cost in USD with defensive validation.
+        """Calculate spread cost in USD with defensive validation.
 
         Args:
             quantity: Position size in lots
 
         Returns:
             Spread cost in USD
-        """
 
+        """
         # Defensive: Validate inputs
         if not isinstance(quantity, (int, float)):
             return 0.0
@@ -732,8 +720,7 @@ class FrictionCalculator:
         return min(spread_cost, 1_000_000.0)
 
     def calculate_commission(self, quantity: float, price: float) -> float:
-        """
-        Calculate commission in USD with defensive validation.
+        """Calculate commission in USD with defensive validation.
 
         Args:
             quantity: Position size in lots
@@ -741,8 +728,8 @@ class FrictionCalculator:
 
         Returns:
             Commission in USD
-        """
 
+        """
         # Defensive: Validate inputs
         if not all(isinstance(x, (int, float)) for x in (quantity, price)):
             return 0.0
@@ -802,8 +789,7 @@ class FrictionCalculator:
         return tsd
 
     def _count_swap_rollovers(self, crosses_rollover: bool, holding_days: float) -> int:
-        """
-        Count the number of swap rollovers for this holding period.
+        """Count the number of swap rollovers for this holding period.
 
         Adds TRIPLE_SWAP_EXTRA_DAYS extra on the triple-swap weekday to
         account for the weekend financing charge.
@@ -820,8 +806,7 @@ class FrictionCalculator:
     def calculate_swap(
         self, quantity: float, side: str, holding_days: float = 1.0, crosses_rollover: bool = False, price: float = 0.0
     ) -> float:
-        """
-        Calculate swap (overnight financing) cost in USD.
+        """Calculate swap (overnight financing) cost in USD.
 
         CRITICAL: Swap only charged at daily rollover time (typically 5pm EST/10pm UTC).
         For intraday M5 trades that close before rollover: swap = 0
@@ -836,6 +821,7 @@ class FrictionCalculator:
         Returns:
             Swap cost in USD (negative = you pay, positive = you earn)
             Returns 0 for intraday trades that don't cross rollover
+
         """
         # INTRADAY TRADES: No swap if not crossing rollover
         # Most M5 trades (~2.4hrs) close before rollover → swap = 0
@@ -851,7 +837,7 @@ class FrictionCalculator:
             # Overnight (crosses_rollover=True): swap = -$0.72 (1 rollover)
             # Wednesday overnight: swap = -$2.16 (3 rollovers for weekend)
             return swap_rate * self.costs.pip_value_per_lot * quantity * num_rollovers
-        elif self.costs.swap_type == "PERCENTAGE":
+        if self.costs.swap_type == "PERCENTAGE":
             # Swap as annual percentage of notional value, charged per rollover day
             # swap_rate is expressed as annual % (e.g., -2.5 means -2.5% per year)
             # Formula: notional * (swap_rate / 100) / 365 * num_rollover_days
@@ -863,8 +849,7 @@ class FrictionCalculator:
         return 0.0
 
     def calculate_slippage_cost(self, quantity: float, side: str, volatility_factor: float = 1.0) -> float:
-        """
-        Calculate expected slippage cost in USD.
+        """Calculate expected slippage cost in USD.
 
         Args:
             quantity: Position size in lots
@@ -873,16 +858,16 @@ class FrictionCalculator:
 
         Returns:
             Expected slippage cost in USD
+
         """
         slippage_pips = self.slippage_model.estimate_slippage(quantity, side, volatility_factor)
 
         # Convert pips to USD
         # For BTCUSD: 1 pip per lot = $10 per standard lot
-        slippage_cost = slippage_pips * self.costs.pip_value_per_lot * quantity
+        return slippage_pips * self.costs.pip_value_per_lot * quantity
 
-        return slippage_cost
 
-    def calculate_total_friction(  # noqa: PLR0913
+    def calculate_total_friction(
         self,
         quantity: float,
         side: str,
@@ -891,8 +876,7 @@ class FrictionCalculator:
         volatility_factor: float = 1.0,
         crosses_rollover: bool = False,
     ) -> FrictionBreakdown:
-        """
-        Calculate all friction costs for a trade.
+        """Calculate all friction costs for a trade.
 
         Same logic for BOTH paper trading and live trading.
 
@@ -912,6 +896,7 @@ class FrictionCalculator:
                 - slippage: Expected slippage (USD)
                 - total: Total friction (USD)
                 - total_pips: Total friction in pips
+
         """
         spread = self.calculate_spread_cost(quantity)
         commission = self.calculate_commission(quantity, price)
@@ -946,8 +931,7 @@ class FrictionCalculator:
         entry_price: float,
         holding_days: float = 1.0,
     ) -> float:
-        """
-        Adjust raw P&L for friction costs.
+        """Adjust raw P&L for friction costs.
 
         Args:
             raw_pnl: Raw P&L before costs
@@ -958,6 +942,7 @@ class FrictionCalculator:
 
         Returns:
             Net P&L after friction
+
         """
         friction = self.calculate_total_friction(quantity, side, entry_price, holding_days)
 
@@ -988,8 +973,7 @@ class FrictionCalculator:
         }
 
     def is_spread_acceptable(self, multiplier: float | None = None) -> tuple[bool, float, float]:
-        """
-        Check if current spread is acceptable for trading.
+        """Check if current spread is acceptable for trading.
 
         Uses learned minimum spread * multiplier as the threshold.
         This adapts to market conditions rather than hardcoded values.
@@ -999,8 +983,8 @@ class FrictionCalculator:
 
         Returns:
             Tuple of (is_acceptable, current_spread, max_acceptable)
-        """
 
+        """
         self._load_learned_parameters()
         effective_multiplier = multiplier if multiplier is not None else self.spread_multiplier
         if not math.isfinite(effective_multiplier) or effective_multiplier <= 0:
@@ -1100,7 +1084,7 @@ if __name__ == "__main__":
     print(f"Raw P&L:         ${raw_pnl:.2f}")
     print(f"Friction cost:   ${friction['total']:.2f}")
     print(f"Net P&L:         ${net_pnl:.2f}")
-    print(f"Friction ratio:  {(friction['total']/raw_pnl)*100:.1f}% of gross profit")
+    print(f"Friction ratio:  {(friction['total'] / raw_pnl) * 100:.1f}% of gross profit")
 
     # Show statistics
     print("\n=== Test 5: Friction statistics ===")

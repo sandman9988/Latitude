@@ -179,14 +179,27 @@ class TestAlertDetails:
 class TestTradingMetricsDataclass:
     def test_all_fields_set(self):
         m = TradingMetrics(
-            realized_pnl_day=100, realized_pnl_total=500, unrealized_pnl=10,
-            drawdown_current=0.05, drawdown_max=0.10, trades_today=5,
-            trades_total=50, win_rate=0.6, avg_profit=10.0, avg_loss=-5.0,
-            avg_trade_duration_mins=30, trigger_confidence_avg=0.7,
-            harvester_confidence_avg=0.8, last_trade_mins_ago=15,
-            circuit_breakers_tripped=0, circuit_breaker_names=[],
-            uptime_hours=5.0, memory_usage_pct=0.5, error_count_1h=0,
-            fix_connected=True, timestamp=time.time(),
+            realized_pnl_day=100,
+            realized_pnl_total=500,
+            unrealized_pnl=10,
+            drawdown_current=0.05,
+            drawdown_max=0.10,
+            trades_today=5,
+            trades_total=50,
+            win_rate=0.6,
+            avg_profit=10.0,
+            avg_loss=-5.0,
+            avg_trade_duration_mins=30,
+            trigger_confidence_avg=0.7,
+            harvester_confidence_avg=0.8,
+            last_trade_mins_ago=15,
+            circuit_breakers_tripped=0,
+            circuit_breaker_names=[],
+            uptime_hours=5.0,
+            memory_usage_pct=0.5,
+            error_count_1h=0,
+            fix_connected=True,
+            timestamp=time.time(),
         )
         assert m.realized_pnl_day == 100
         assert m.win_rate == pytest.approx(0.6)

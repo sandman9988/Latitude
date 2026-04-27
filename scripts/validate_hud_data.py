@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-HUD Data Validation Script
+"""HUD Data Validation Script.
 ==========================
 Runs comprehensive checks on HUD data sources for inconsistencies, staleness, and incompleteness.
 
@@ -25,12 +24,12 @@ DATA_DIR = Path("data")
 
 # Staleness thresholds (seconds)
 STALE_THRESHOLD_CRITICAL = 300  # 5 minutes
-STALE_THRESHOLD_WARNING = 60    # 1 minute
+STALE_THRESHOLD_WARNING = 60  # 1 minute
 
 # Data quality thresholds
 MIN_ENTRY_TIME_COVERAGE = 0.95  # At least 95% of trades should have entry_time
-MIN_QUANTITY_COVERAGE = 1.00    # All trades must have quantity
-MIN_PNL_CONSISTENCY = 0.05      # PnL across sources should match within 5%
+MIN_QUANTITY_COVERAGE = 1.00  # All trades must have quantity
+MIN_PNL_CONSISTENCY = 0.05  # PnL across sources should match within 5%
 DEFAULT_CONTRACT_SIZE_BY_SYMBOL = {
     "XAUUSD": 100.0,
 }
@@ -61,10 +60,11 @@ FILES_SECONDARY = {
 # DATA QUALITY CHECKS
 # ============================================================================
 
+
 class HUDDataValidator:
     """Validates HUD data integrity and reports inconsistencies."""
 
-    def __init__(self, data_dir: Path = DATA_DIR):
+    def __init__(self, data_dir: Path = DATA_DIR) -> None:
         self.data_dir = data_dir
         self.issues = []
         self.warnings = []
@@ -72,7 +72,7 @@ class HUDDataValidator:
         self.trade_log = []
         self.load_trade_log()
 
-    def load_trade_log(self):
+    def load_trade_log(self) -> None:
         """Load trade_log.jsonl into memory."""
         trade_file = self.data_dir / "trade_log.jsonl"
         if not trade_file.exists():
@@ -101,9 +101,7 @@ class HUDDataValidator:
                 f"({null_count} missing, affects avg_trade_duration calculation)"
             )
         elif null_count > 0:
-            self.warnings.append(
-                f"⚠️  {null_count} trades missing entry_time (will be excluded from duration calc)"
-            )
+            self.warnings.append(f"⚠️  {null_count} trades missing entry_time (will be excluded from duration calc)")
 
         return coverage, null_count
 
@@ -143,20 +141,19 @@ class HUDDataValidator:
                 )
             else:
                 self.issues.append(
-                    f"⚠️  CRITICAL: {recalc_count} trades ({recalc_count/len(self.trade_log):.1%}) have unreconciled recalculated PnL. "
+                    f"⚠️  CRITICAL: {recalc_count} trades ({recalc_count / len(self.trade_log):.1%}) have unreconciled recalculated PnL. "
                     f"Current total: ${current_pnl:.2f}, Original: ${original_pnl:.2f}, "
                     f"Variance: ${variance:.2f} ({variance_pct:.1f}%). "
                     f"Mismatches against expected account-currency scale: {mismatches}"
                 )
 
-        result = {
+        return {
             "current_pnl": current_pnl,
             "original_pnl": original_pnl,
             "recalc_count": recalc_count,
             "variance_usd": abs(current_pnl - original_pnl),
             "variance_pct": (abs(current_pnl - original_pnl) / abs(original_pnl) * 100) if original_pnl != 0 else 0,
         }
-        return result
 
     def _reconciled_recalculated_pnl(self) -> tuple[bool, int]:
         """Return True when recalculated PnL matches point PnL * qty * contract size."""
@@ -208,14 +205,10 @@ class HUDDataValidator:
             status = "OK"
             if age_secs > STALE_THRESHOLD_CRITICAL:
                 status = "CRITICAL"
-                self.issues.append(
-                    f"⚠️  STALE: {filename.name} is {age_secs/60:.1f}min old"
-                )
+                self.issues.append(f"⚠️  STALE: {filename.name} is {age_secs / 60:.1f}min old")
             elif age_secs > STALE_THRESHOLD_WARNING:
                 status = "WARNING"
-                self.warnings.append(
-                    f"ℹ️  AGING: {filename.name} is {age_secs:.0f}s old"
-                )
+                self.warnings.append(f"ℹ️  AGING: {filename.name} is {age_secs:.0f}s old")
 
             staleness[filename.name] = {
                 "age_seconds": age_secs,
@@ -269,7 +262,7 @@ class HUDDataValidator:
             "production_metrics_",
         ):
             if prefix.startswith(metric_prefix):
-                symbol = prefix[len(metric_prefix):]
+                symbol = prefix[len(metric_prefix) :]
                 if symbol:
                     return symbol.upper(), int(tf_part)
         return None, None
@@ -394,15 +387,13 @@ class HUDDataValidator:
             }
 
             if direction != "FLAT" and not position["has_quantity"]:
-                self.warnings.append(
-                    f"⚠️  Position file {pos_files[0].name} missing quantity field"
-                )
+                self.warnings.append(f"⚠️  Position file {pos_files[0].name} missing quantity field")
 
         return position
 
     def generate_report(self) -> dict[str, Any]:
         """Generate comprehensive report."""
-        report = {
+        return {
             "timestamp": datetime.now(UTC).isoformat(),
             "data_directory": str(self.data_dir),
             "trade_log_count": len(self.trade_log),
@@ -420,7 +411,6 @@ class HUDDataValidator:
             "infos": self.infos,
             "health_score": self._calculate_health_score(),
         }
-        return report
 
     def _calculate_health_score(self) -> float:
         """Calculate overall HUD data health (0-100)."""
@@ -464,7 +454,7 @@ class HUDDataValidator:
 
         return report
 
-    def export_json(self, filepath: str):
+    def export_json(self, filepath: str) -> None:
         """Export report to JSON."""
         report = self.generate_report()
         with open(filepath, "w") as f:

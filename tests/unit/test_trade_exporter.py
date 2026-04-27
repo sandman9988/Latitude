@@ -12,6 +12,7 @@ from src.monitoring.trade_exporter import TradeExporter
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _sample_trade(num: int = 1, pnl: float = 50.0) -> dict:
     """Create a minimal valid trade dict."""
     entry_time = dt.datetime(2026, 1, 10, 8, 0, tzinfo=dt.UTC)
@@ -31,7 +32,7 @@ def _sample_trade(num: int = 1, pnl: float = 50.0) -> dict:
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def exporter(tmp_path):
     return TradeExporter(output_dir=str(tmp_path / "trades"))
 
@@ -39,6 +40,7 @@ def exporter(tmp_path):
 # ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
+
 
 class TestTradeExporterInit:
     def test_creates_output_dir(self, tmp_path):
@@ -50,6 +52,7 @@ class TestTradeExporterInit:
 # ---------------------------------------------------------------------------
 # export_trades
 # ---------------------------------------------------------------------------
+
 
 class TestExportTrades:
     def test_empty_list_raises(self, exporter):
@@ -110,16 +113,27 @@ class TestExportTrades:
 # export_summary
 # ---------------------------------------------------------------------------
 
+
 class TestExportSummary:
     def test_creates_csv(self, exporter):
         metrics = {
-            "total_trades": 10, "winning_trades": 7, "losing_trades": 3,
-            "win_rate": 0.7, "total_pnl": 500.0, "avg_winner": 100.0,
-            "avg_loser": -50.0, "profit_factor": 4.67, "expectancy": 35.0,
-            "sharpe_ratio": 1.5, "initial_equity": 10000.0,
-            "current_equity": 10500.0, "total_return": 0.05,
-            "max_drawdown": 0.03, "current_drawdown": 0.01,
-            "max_consecutive_wins": 5, "max_consecutive_losses": 2,
+            "total_trades": 10,
+            "winning_trades": 7,
+            "losing_trades": 3,
+            "win_rate": 0.7,
+            "total_pnl": 500.0,
+            "avg_winner": 100.0,
+            "avg_loser": -50.0,
+            "profit_factor": 4.67,
+            "expectancy": 35.0,
+            "sharpe_ratio": 1.5,
+            "initial_equity": 10000.0,
+            "current_equity": 10500.0,
+            "total_return": 0.05,
+            "max_drawdown": 0.03,
+            "current_drawdown": 0.01,
+            "max_consecutive_wins": 5,
+            "max_consecutive_losses": 2,
             "winner_to_loser_count": 1,
         }
         path = exporter.export_summary(metrics)
@@ -127,12 +141,23 @@ class TestExportSummary:
 
     def test_custom_filename(self, exporter):
         metrics = {
-            "total_trades": 0, "winning_trades": 0, "losing_trades": 0,
-            "win_rate": 0, "total_pnl": 0, "avg_winner": 0, "avg_loser": 0,
-            "profit_factor": 0, "expectancy": 0, "sharpe_ratio": 0,
-            "initial_equity": 10000, "current_equity": 10000, "total_return": 0,
-            "max_drawdown": 0, "current_drawdown": 0,
-            "max_consecutive_wins": 0, "max_consecutive_losses": 0,
+            "total_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "win_rate": 0,
+            "total_pnl": 0,
+            "avg_winner": 0,
+            "avg_loser": 0,
+            "profit_factor": 0,
+            "expectancy": 0,
+            "sharpe_ratio": 0,
+            "initial_equity": 10000,
+            "current_equity": 10000,
+            "total_return": 0,
+            "max_drawdown": 0,
+            "current_drawdown": 0,
+            "max_consecutive_wins": 0,
+            "max_consecutive_losses": 0,
             "winner_to_loser_count": 0,
         }
         path = exporter.export_summary(metrics, filename="summary.csv")

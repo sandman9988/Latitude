@@ -226,9 +226,7 @@ class TestEstimateVar:
         _fill_returns(v, n=100, std=0.02)
         base_var = v._calculate_base_var()
         # Use extreme multipliers
-        var = v.estimate_var(
-            regime=RegimeType.UNDERDAMPED, vpin_z=5.0, current_vol=0.1
-        )
+        var = v.estimate_var(regime=RegimeType.UNDERDAMPED, vpin_z=5.0, current_vol=0.1)
         assert var <= base_var * VAR_MULT_MAX + 1e-10
 
     def test_unknown_regime_uses_default(self):
@@ -323,10 +321,7 @@ class TestProperties:
 # ---------------------------------------------------------------------------
 class TestPositionSizeFromVar:
     def test_basic_sizing(self):
-        size = position_size_from_var(
-            var=0.02, risk_budget_usd=1000.0,
-            account_equity=50000.0, contract_size=100000.0
-        )
+        size = position_size_from_var(var=0.02, risk_budget_usd=1000.0, account_equity=50000.0, contract_size=100000.0)
         # risk_budget / var = 1000/0.02 = 50000
         # max_leveraged = 50000 * 10 = 500000
         # position_value = min(50000, 500000) = 50000
@@ -344,9 +339,7 @@ class TestPositionSizeFromVar:
     def test_leverage_cap_active(self):
         # Very small VaR → huge position, but leverage cap kicks in
         size = position_size_from_var(
-            var=0.0001, risk_budget_usd=10000.0,
-            account_equity=10000.0, contract_size=100000.0,
-            max_leverage=2.0
+            var=0.0001, risk_budget_usd=10000.0, account_equity=10000.0, contract_size=100000.0, max_leverage=2.0
         )
         # risk_budget / var = 10000/0.0001 = 100,000,000
         # max_leveraged = 10000 * 2 = 20000
@@ -354,20 +347,14 @@ class TestPositionSizeFromVar:
         assert abs(size - 0.2) < 0.01
 
     def test_default_contract_size(self):
-        size = position_size_from_var(
-            var=0.01, risk_budget_usd=100.0,
-            account_equity=100000.0
-        )
+        size = position_size_from_var(var=0.01, risk_budget_usd=100.0, account_equity=100000.0)
         # risk_budget / var = 100/0.01 = 10000
         # max_leveraged = 100000 * 10 = 1000000
         # lots = 10000 / 1.0 = 10000
         assert abs(size - 10000.0) < 0.01
 
     def test_large_var_small_position(self):
-        size = position_size_from_var(
-            var=0.5, risk_budget_usd=100.0,
-            account_equity=10000.0, contract_size=100000.0
-        )
+        size = position_size_from_var(var=0.5, risk_budget_usd=100.0, account_equity=10000.0, contract_size=100000.0)
         # risk_budget / var = 100/0.5 = 200
         # lots = 200 / 100000 = 0.002
         assert abs(size - 0.002) < 0.001

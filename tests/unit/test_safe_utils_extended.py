@@ -87,11 +87,12 @@ class TestSafeArrayExtended:
         """Object where __getitem__ raises on access."""
 
         class BadAccess:
-            def __len__(self):
+            def __len__(self) -> int:
                 return 5
 
             def __getitem__(self, idx):
-                raise TypeError("broken")
+                msg = "broken"
+                raise TypeError(msg)
 
         result = SafeArray.safe_get(BadAccess(), 0, "err")
         assert result == "err"

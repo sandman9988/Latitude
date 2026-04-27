@@ -10,8 +10,9 @@ from src.monitoring.audit_logger import DecisionLogger, TransactionLogger
 # TransactionLogger
 # ---------------------------------------------------------------------------
 
+
 class TestTransactionLogger:
-    @pytest.fixture()
+    @pytest.fixture
     def logger(self, tmp_path):
         return TransactionLogger(log_dir=str(tmp_path), filename="tx.jsonl")
 
@@ -135,8 +136,9 @@ class TestTransactionLogger:
 # DecisionLogger
 # ---------------------------------------------------------------------------
 
+
 class TestDecisionLogger:
-    @pytest.fixture()
+    @pytest.fixture
     def logger(self, tmp_path):
         return DecisionLogger(log_dir=str(tmp_path), filename="decisions.jsonl")
 

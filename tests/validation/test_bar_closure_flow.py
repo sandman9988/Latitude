@@ -149,9 +149,9 @@ def trace_bar_closure_events():
     ]
 
     for event in events:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"STEP {event['step']}: {event['name']}")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"📍 Line: {event['line']}")
         print("\n💻 CODE:")
         for line in event["code"].split("\n"):

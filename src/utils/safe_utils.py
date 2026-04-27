@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""
-Defensive Programming Utilities
+"""Defensive Programming Utilities
 Implements SafeMath and SafeArray patterns from Master Handbook
-Prevents NaN/Inf propagation, division by zero, and array bounds errors
+Prevents NaN/Inf propagation, division by zero, and array bounds errors.
 """
 
 import contextlib
@@ -14,7 +13,7 @@ import tempfile
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -23,13 +22,13 @@ MIN_VALUES_FOR_STD: int = 2  # Minimum values needed to calculate standard devia
 
 
 class SafeMath:
-    """Safe mathematical operations with NaN/Inf protection"""
+    """Safe mathematical operations with NaN/Inf protection."""
 
     EPSILON = 1e-12  # Minimum divisor threshold
 
     @staticmethod
-    def is_valid(value: float | int) -> bool:
-        """Check if value is finite and not NaN"""
+    def is_valid(value: float) -> bool:
+        """Check if value is finite and not NaN."""
         try:
             return math.isfinite(float(value)) and not math.isnan(float(value))
         except (ValueError, TypeError, OverflowError):
@@ -37,8 +36,7 @@ class SafeMath:
 
     @staticmethod
     def safe_div(numerator: float, denominator: float, default: float = 0.0) -> float:
-        """
-        Safe division with NaN/Inf protection
+        """Safe division with NaN/Inf protection.
 
         Args:
             numerator: Dividend
@@ -47,27 +45,27 @@ class SafeMath:
 
         Returns:
             numerator / denominator if valid, else default
+
         """
         if not SafeMath.is_valid(numerator):
-            logger.debug(f"safe_div: Invalid numerator {numerator}, returning {default}")
+            logger.debug("safe_div: Invalid numerator %s, returning %s", numerator, default)
             return default
 
         if not SafeMath.is_valid(denominator) or abs(denominator) < SafeMath.EPSILON:
-            logger.debug(f"safe_div: Invalid/zero denominator {denominator}, returning {default}")
+            logger.debug("safe_div: Invalid/zero denominator %s, returning %s", denominator, default)
             return default
 
         result = numerator / denominator
 
         if not SafeMath.is_valid(result):
-            logger.debug(f"safe_div: Result {result} invalid, returning {default}")
+            logger.debug("safe_div: Result %s invalid, returning %s", result, default)
             return default
 
         return result
 
     @staticmethod
     def clamp(value: float, lower: float, upper: float) -> float:
-        """
-        Clamp value to [lower, upper] range with NaN protection
+        """Clamp value to [lower, upper] range with NaN protection.
 
         Args:
             value: Value to clamp
@@ -76,24 +74,25 @@ class SafeMath:
 
         Returns:
             Clamped value, or midpoint if value is invalid
+
         """
         if not SafeMath.is_valid(value):
             midpoint = (lower + upper) / 2.0
-            logger.debug(f"clamp: Invalid value {value}, returning midpoint {midpoint}")
+            logger.debug("clamp: Invalid value %s, returning midpoint %s", value, midpoint)
             return midpoint
 
         return max(lower, min(upper, value))
 
     @staticmethod
     def safe_sqrt(value: float, default: float = 0.0) -> float:
-        """Square root with negative protection"""
+        """Square root with negative protection."""
         if not SafeMath.is_valid(value) or value < 0:
             return default
         return math.sqrt(value)
 
     @staticmethod
     def safe_log(value: float, default: float = 0.0) -> float:
-        """Natural log with non-positive protection"""
+        """Natural log with non-positive protection."""
         if not SafeMath.is_valid(value) or value <= 0:
             return default
         result = math.log(value)
@@ -101,29 +100,28 @@ class SafeMath:
 
     @staticmethod
     def safe_exp(value: float, default: float = 1.0) -> float:
-        """Exponential with overflow protection"""
+        """Exponential with overflow protection."""
         if not SafeMath.is_valid(value):
             return default
         try:
             result = math.exp(value)
             return result if SafeMath.is_valid(result) else default
         except OverflowError:
-            logger.debug(f"safe_exp: Overflow on {value}, returning {default}")
+            logger.debug("safe_exp: Overflow on %s, returning %s", value, default)
             return default
 
     @staticmethod
     def sanitize(value: float, default: float = 0.0) -> float:
-        """Replace NaN/Inf with default"""
+        """Replace NaN/Inf with default."""
         return value if SafeMath.is_valid(value) else default
 
 
 class SafeArray:
-    """Safe array and deque access with bounds checking"""
+    """Safe array and deque access with bounds checking."""
 
     @staticmethod
     def safe_get(arr: list | deque, index: int, default: Any = None) -> Any:
-        """
-        Get element from list/deque with bounds checking
+        """Get element from list/deque with bounds checking.
 
         Args:
             arr: List or deque
@@ -132,31 +130,31 @@ class SafeArray:
 
         Returns:
             arr[index] if in bounds, else default
+
         """
         if arr is None or not hasattr(arr, "__getitem__"):
-            logger.debug(f"safe_get: Invalid array type {type(arr)}")
+            logger.debug("safe_get: Invalid array type %s", type(arr))
             return default
 
         try:
             length = len(arr)
         except TypeError:
-            logger.debug(f"safe_get: Cannot get length of {type(arr)}")
+            logger.debug("safe_get: Cannot get length of %s", type(arr))
             return default
 
         if not (0 <= index < length):
-            logger.debug(f"safe_get: Index {index} out of bounds [0, {length})")
+            logger.debug("safe_get: Index %s out of bounds [0, %s)", index, length)
             return default
 
         try:
             return arr[index]
         except (IndexError, KeyError, TypeError) as e:
-            logger.debug(f"safe_get: Access failed: {e}")
+            logger.debug("safe_get: Access failed: %s", e)
             return default
 
     @staticmethod
     def safe_get_series(arr: list | deque, bars_ago: int, default: Any = None) -> Any:
-        """
-        Get element from series using bars-ago indexing
+        """Get element from series using bars-ago indexing.
 
         Args:
             arr: List or deque (ordered oldest to newest)
@@ -170,6 +168,7 @@ class SafeArray:
             bars = [old, ..., prev, current]
             safe_get_series(bars, 0) → current
             safe_get_series(bars, 1) → prev
+
         """
         if arr is None or not hasattr(arr, "__getitem__"):
             return default
@@ -180,7 +179,7 @@ class SafeArray:
             return default
 
         if bars_ago < 0:
-            logger.debug(f"safe_get_series: Negative bars_ago {bars_ago}")
+            logger.debug("safe_get_series: Negative bars_ago %s", bars_ago)
             return default
 
         index = length - 1 - bars_ago
@@ -188,13 +187,12 @@ class SafeArray:
 
     @staticmethod
     def safe_last(arr: list | deque, default: Any = None) -> Any:
-        """Get last element with bounds checking"""
+        """Get last element with bounds checking."""
         return SafeArray.safe_get_series(arr, 0, default)
 
     @staticmethod
     def safe_slice(arr: list | deque, start: int | None = None, end: int | None = None) -> list | deque:
-        """
-        Safe slice with bounds correction
+        """Safe slice with bounds correction.
 
         Args:
             arr: List or deque
@@ -203,6 +201,7 @@ class SafeArray:
 
         Returns:
             Sliced array (empty if invalid)
+
         """
         if arr is None or not hasattr(arr, "__getitem__"):
             return [] if isinstance(arr, list) else deque()
@@ -210,12 +209,12 @@ class SafeArray:
         try:
             return arr[start:end]
         except (TypeError, ValueError) as e:
-            logger.debug(f"safe_slice: Slice failed: {e}")
+            logger.debug("safe_slice: Slice failed: %s", e)
             return [] if isinstance(arr, list) else deque()
 
     @staticmethod
     def is_empty(arr: list | deque | None) -> bool:
-        """Check if array is None or empty"""
+        """Check if array is None or empty."""
         if arr is None:
             return True
         try:
@@ -225,37 +224,37 @@ class SafeArray:
 
 
 class SafeDeque:
-    """Wrapper for deque with safe operations"""
+    """Wrapper for deque with safe operations."""
 
-    def __init__(self, maxlen: int | None = None, name: str = "deque"):
+    def __init__(self, maxlen: int | None = None, name: str = "deque") -> None:
         self._deque = deque(maxlen=maxlen)
         self._name = name
         self._maxlen = maxlen
 
     def append(self, item: Any) -> None:
-        """Append item to deque"""
+        """Append item to deque."""
         self._deque.append(item)
 
     def get(self, index: int, default: Any = None) -> Any:
-        """Get element with bounds checking"""
+        """Get element with bounds checking."""
         return SafeArray.safe_get(self._deque, index, default)
 
     def get_series(self, bars_ago: int, default: Any = None) -> Any:
-        """Get element using bars-ago indexing"""
+        """Get element using bars-ago indexing."""
         return SafeArray.safe_get_series(self._deque, bars_ago, default)
 
     def last(self, default: Any = None) -> Any:
-        """Get last element"""
+        """Get last element."""
         return SafeArray.safe_last(self._deque, default)
 
     def __len__(self) -> int:
         return len(self._deque)
 
-    def __iter__(self):
+    def __iter__(self) -> "Iterator[Any]":
         return iter(self._deque)
 
-    def __getitem__(self, index):
-        """Direct access (use get() for safe access)"""
+    def __getitem__(self, index: int) -> Any:
+        """Direct access (use get() for safe access)."""
         return self._deque[index]
 
     @property
@@ -269,7 +268,7 @@ class SafeDeque:
 
 # Convenience functions for common operations
 def safe_mean(values: list[float], default: float = 0.0) -> float:
-    """Calculate mean with NaN/empty protection"""
+    """Calculate mean with NaN/empty protection."""
     if not values:
         return default
 
@@ -281,7 +280,7 @@ def safe_mean(values: list[float], default: float = 0.0) -> float:
 
 
 def safe_std(values: list[float], default: float = 0.0) -> float:
-    """Calculate standard deviation with NaN/empty protection"""
+    """Calculate standard deviation with NaN/empty protection."""
     if not values or len(values) < MIN_VALUES_FOR_STD:
         return default
 
@@ -296,7 +295,7 @@ def safe_std(values: list[float], default: float = 0.0) -> float:
 
 
 def safe_percentile(values: list[float], percentile: float, default: float = 0.0) -> float:
-    """Calculate percentile with NaN/empty protection"""
+    """Calculate percentile with NaN/empty protection."""
     if not values:
         return default
 
@@ -350,31 +349,30 @@ if __name__ == "__main__":
 # Time utilities (UTC required for FIX protocol)
 # ----------------------------
 def utc_ts_ms() -> str:
-    """
-    Generate FIX protocol UTCTimestamp.
+    """Generate FIX protocol UTCTimestamp.
 
     Format: YYYYMMDD-HH:MM:SS.sss (UTC)
     Required for FIX protocol timestamps (Tag 52, etc.)
 
     Returns:
         UTC timestamp string with milliseconds
+
     """
     return datetime.now(UTC).strftime("%Y%m%d-%H:%M:%S.%f")[:-3]
 
 
 def utc_now() -> datetime:
-    """
-    Get current UTC datetime.
+    """Get current UTC datetime.
 
     Returns:
         Current datetime in UTC timezone
+
     """
     return datetime.now(UTC)
 
 
 def save_json_atomic(path: str | Path, data: dict | list, *, indent: int = 2) -> None:
-    """
-    Atomically write JSON to *path*.
+    """Atomically write JSON to *path*.
 
     Strategy: write to a temp file in the same directory, then ``os.replace``
     (atomic on POSIX) to the target.  If the process crashes mid-write the
@@ -384,6 +382,7 @@ def save_json_atomic(path: str | Path, data: dict | list, *, indent: int = 2) ->
         path:   Destination file path.
         data:   JSON-serialisable data.
         indent: Pretty-print indent (default 2).
+
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

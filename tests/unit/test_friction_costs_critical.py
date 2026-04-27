@@ -78,7 +78,7 @@ class TestGetLearnedMaxSpreadEdgeCases:
 class TestCalculateSwapPercentage:
     """Lines 810-860: PERCENTAGE swap type calculation."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def fc(self):
         calc = FrictionCalculator.__new__(FrictionCalculator)
         calc.costs = SymbolCosts(
@@ -96,8 +96,11 @@ class TestCalculateSwapPercentage:
     def test_percentage_swap_buy_overnight(self, fc):
         """Buy position crossing rollover → negative swap cost."""
         result = fc.calculate_swap(
-            quantity=1.0, side="BUY", holding_days=1.0,
-            crosses_rollover=True, price=50000.0,
+            quantity=1.0,
+            side="BUY",
+            holding_days=1.0,
+            crosses_rollover=True,
+            price=50000.0,
         )
         # swap_long=-2.5% annual, 1 lot, price=50000, contract_size=1
         # notional = 1 * 1 * 50000 = 50000
@@ -108,23 +111,32 @@ class TestCalculateSwapPercentage:
     def test_percentage_swap_sell_overnight(self, fc):
         """Sell position uses swap_short rate."""
         result = fc.calculate_swap(
-            quantity=1.0, side="SELL", holding_days=1.0,
-            crosses_rollover=True, price=50000.0,
+            quantity=1.0,
+            side="SELL",
+            holding_days=1.0,
+            crosses_rollover=True,
+            price=50000.0,
         )
         assert result < 0  # swap_short is also negative
 
     def test_percentage_swap_zero_price_returns_zero(self, fc):
         """price <= 0 → swap cost = 0 (can't calculate notional)."""
         result = fc.calculate_swap(
-            quantity=1.0, side="BUY", holding_days=1.0,
-            crosses_rollover=True, price=0.0,
+            quantity=1.0,
+            side="BUY",
+            holding_days=1.0,
+            crosses_rollover=True,
+            price=0.0,
         )
         assert result == pytest.approx(0.0)
 
     def test_percentage_swap_negative_price_returns_zero(self, fc):
         result = fc.calculate_swap(
-            quantity=1.0, side="BUY", holding_days=1.0,
-            crosses_rollover=True, price=-100.0,
+            quantity=1.0,
+            side="BUY",
+            holding_days=1.0,
+            crosses_rollover=True,
+            price=-100.0,
         )
         assert result == pytest.approx(0.0)
 
@@ -137,7 +149,7 @@ class TestCalculateSwapPercentage:
 class TestTripleSwapDay:
     """Lines 822, 827: Triple swap day adds +2 rollovers."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def fc_pips(self):
         calc = FrictionCalculator.__new__(FrictionCalculator)
         calc.costs = SymbolCosts(
@@ -158,11 +170,14 @@ class TestTripleSwapDay:
         # so we can't easily mock datetime.now. Instead, set triple_swap_day
         # to match today's weekday so the test is deterministic.
         from datetime import datetime as dt_cls
+
         today_weekday = dt_cls.now(UTC).weekday()
         fc_pips.costs.triple_swap_day = today_weekday
 
         result = fc_pips.calculate_swap(
-            quantity=0.1, side="BUY", holding_days=1.0,
+            quantity=0.1,
+            side="BUY",
+            holding_days=1.0,
             crosses_rollover=True,
         )
 
@@ -173,12 +188,15 @@ class TestTripleSwapDay:
     def test_non_triple_day_single_rollover(self, fc_pips):
         """On non-triple day, overnight = exactly 1 rollover."""
         from datetime import datetime as dt_cls
+
         # Set triple_swap_day to a day that is NOT today
         today_weekday = dt_cls.now(UTC).weekday()
         fc_pips.costs.triple_swap_day = (today_weekday + 3) % 7  # Different day
 
         result = fc_pips.calculate_swap(
-            quantity=0.1, side="BUY", holding_days=1.0,
+            quantity=0.1,
+            side="BUY",
+            holding_days=1.0,
             crosses_rollover=True,
         )
 
@@ -190,11 +208,14 @@ class TestTripleSwapDay:
         fc_pips.costs.triple_swap_day = 99  # Invalid → validated to 2 in code
 
         result = fc_pips.calculate_swap(
-            quantity=0.1, side="BUY", holding_days=1.0,
+            quantity=0.1,
+            side="BUY",
+            holding_days=1.0,
             crosses_rollover=True,
         )
 
         from datetime import datetime as dt_cls
+
         today = dt_cls.now(UTC).weekday()
         # tsd=99 defaults to 2 (Wednesday). If today is Wednesday, triple (3 rollovers)
         if today == 2:
@@ -211,7 +232,7 @@ class TestTripleSwapDay:
 class TestSwapIntraday:
     """Intraday trades (not crossing rollover) → swap = 0."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def fc(self):
         calc = FrictionCalculator.__new__(FrictionCalculator)
         calc.costs = SymbolCosts(
@@ -227,14 +248,18 @@ class TestSwapIntraday:
 
     def test_intraday_no_rollover_zero_swap(self, fc):
         result = fc.calculate_swap(
-            quantity=1.0, side="BUY", holding_days=0.5,
+            quantity=1.0,
+            side="BUY",
+            holding_days=0.5,
             crosses_rollover=False,
         )
         assert result == pytest.approx(0.0)
 
     def test_multiday_with_rollover_nonzero(self, fc):
         result = fc.calculate_swap(
-            quantity=1.0, side="BUY", holding_days=2.0,
+            quantity=1.0,
+            side="BUY",
+            holding_days=2.0,
             crosses_rollover=True,
         )
         assert result != 0.0
@@ -243,7 +268,9 @@ class TestSwapIntraday:
         """Unknown swap_type → swap_cost = 0."""
         fc.costs.swap_type = "UNKNOWN"
         result = fc.calculate_swap(
-            quantity=1.0, side="BUY", holding_days=1.0,
+            quantity=1.0,
+            side="BUY",
+            holding_days=1.0,
             crosses_rollover=True,
         )
         assert result == pytest.approx(0.0)

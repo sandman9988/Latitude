@@ -25,7 +25,7 @@ from src.persistence.atomic_persistence import AtomicPersistence, JournaledPersi
 class TestSaveJsonErrorHandling:
     """Lines 91-95: OSError during shutil.move → temp cleaned up, False returned."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def ap(self, tmp_path):
         return AtomicPersistence(str(tmp_path))
 
@@ -133,7 +133,7 @@ class TestJournaledPersistenceRecovery:
 class TestJournalWriteAndCommit:
     """Lines 331-348: _journal_write and _journal_commit WAL implementation."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def jp(self, tmp_path):
         return JournaledPersistence(base_dir=str(tmp_path))
 
@@ -176,7 +176,7 @@ class TestJournalWriteAndCommit:
 class TestRestoreFromBackup:
     """Lines 186-190: _restore_from_backup loads most recent .bak on CRC failure."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def ap(self, tmp_path):
         return AtomicPersistence(str(tmp_path))
 
@@ -209,6 +209,7 @@ class TestRestoreFromBackup:
     def test_restore_picks_most_recent_backup(self, ap, tmp_path):
         """Multiple backups → most recent one used."""
         import time
+
         # Create multiple saves to generate backups
         ap.save_json({"v": 1}, "data.json")
         time.sleep(0.05)  # Ensure distinct mtime

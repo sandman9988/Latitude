@@ -21,6 +21,7 @@ requires_hmmlearn = pytest.mark.skipif(not HMMLEARN_AVAILABLE, reason="hmmlearn 
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _feed_prices(det: HMMRegimeDetector, prices: list[float]) -> None:
     for p in prices:
         det.add_price(p)
@@ -60,6 +61,7 @@ def _mean_reverting_prices(n: int = 80, *, seed: int = 42) -> list[float]:
 # Initialization
 # ---------------------------------------------------------------------------
 
+
 class TestHMMInit:
     def test_inherits_regime_detector(self):
         det = HMMRegimeDetector(window_size=50, update_interval=5)
@@ -77,6 +79,7 @@ class TestHMMInit:
 # ---------------------------------------------------------------------------
 # HMM fitting
 # ---------------------------------------------------------------------------
+
 
 class TestHMMFitting:
     def test_not_fitted_with_few_observations(self):
@@ -102,6 +105,7 @@ class TestHMMFitting:
 # ---------------------------------------------------------------------------
 # Blended multiplier
 # ---------------------------------------------------------------------------
+
 
 class TestBlendedMultiplier:
     def test_fallback_before_fit(self):
@@ -132,6 +136,7 @@ class TestBlendedMultiplier:
 # get_regime_info()
 # ---------------------------------------------------------------------------
 
+
 class TestRegimeInfo:
     def test_info_before_fit(self):
         det = HMMRegimeDetector()
@@ -155,6 +160,7 @@ class TestRegimeInfo:
 # Base class compatibility
 # ---------------------------------------------------------------------------
 
+
 class TestBaseCompatibility:
     def test_vr_regime_still_works(self):
         """VR-based regime detection should still function normally."""
@@ -173,6 +179,7 @@ class TestBaseCompatibility:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestHMMEdgeCases:
     def test_invalid_prices_handled(self):

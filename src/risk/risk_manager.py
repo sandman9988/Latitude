@@ -1,5 +1,4 @@
-"""
-RiskManager - Central Risk Coordinator & Portfolio Controller
+"""RiskManager - Central Risk Coordinator & Portfolio Controller.
 
 WARNING: This module is NOT currently used by the main bot.
 The production bot (ctrader_ddqn_paper.py) uses CircuitBreakerManager,
@@ -40,9 +39,9 @@ _ENTRY_REJECTED_MSG = "[RISK] Entry REJECTED: %s"
 _EXIT_REJECTED_MSG = "[RISK] Exit REJECTED: %s"
 
 # ── Risk budget adjustment thresholds ──────────────────────────────────────────
-RISK_BUDGET_BOOST_WIN_RATE: float = 0.55   # Win rate above this → increase budget
+RISK_BUDGET_BOOST_WIN_RATE: float = 0.55  # Win rate above this → increase budget
 RISK_BUDGET_BOOST_EQUITY_GAIN: float = 0.05  # Equity gain above this → increase budget
-RISK_BUDGET_CUT_WIN_RATE: float = 0.45   # Win rate below this → decrease budget
+RISK_BUDGET_CUT_WIN_RATE: float = 0.45  # Win rate below this → decrease budget
 RISK_BUDGET_CUT_EQUITY_LOSS: float = -0.10  # Equity loss below this → decrease budget
 RISK_BUDGET_CUT_PAYOFF_MIN: float = 0.8  # Payoff ratio below this → decrease budget
 
@@ -54,7 +53,7 @@ HEALTH_HIGH_CONCENTRATION: float = 0.9  # Concentration above → warn high
 
 # ── RL / Q-learning thresholds ─────────────────────────────────────────────────
 RL_MIN_CONFIDENCE_FOR_SUGGESTION: float = 0.7  # Confidence above → suggest RL thresholds
-RL_MIN_Q_TABLE_SIZE: int = 10   # Minimum Q-table entries before recommendations
+RL_MIN_Q_TABLE_SIZE: int = 10  # Minimum Q-table entries before recommendations
 RL_MIN_TRADES_FOR_CALIBRATION: int = 10  # Minimum trades for calibration bucket
 
 # ── Confidence bucket boundaries ──────────────────────────────────────────────
@@ -65,33 +64,33 @@ CONF_BUCKET_85: float = 0.85
 CONF_BUCKET_95: float = 0.95
 
 # ── Dynamic threshold tuning (runway/capture quality feedback) ──────────────
-ADAPT_MIN_SAMPLES: int = 20                 # outcomes required before tuning
-ADAPT_COOLDOWN_SECS: float = 30.0           # prevent threshold thrashing
-ADAPT_ENTRY_EMA_ALPHA: float = 0.08         # entry quality smoothing
-ADAPT_EXIT_EMA_ALPHA: float = 0.12          # exit quality smoothing (react faster)
-ADAPT_ENTRY_STEP_UP: float = 0.01           # tighten entry gating
-ADAPT_ENTRY_STEP_DOWN: float = 0.005        # relax entry gating
-ADAPT_EXIT_STEP_UP: float = 0.005           # tighten exit gating
-ADAPT_EXIT_STEP_DOWN: float = 0.01          # relax exit gating (faster protective exits)
-ADAPT_ENTRY_LOW_QUALITY: float = 0.52       # below -> tighten entries
-ADAPT_ENTRY_HIGH_QUALITY: float = 0.65      # above -> loosen entries slightly
-ADAPT_EXIT_LOW_QUALITY: float = 0.58        # below -> allow earlier exits
-ADAPT_EXIT_HIGH_QUALITY: float = 0.72       # above -> slightly tighten exits
-ADAPT_CALIB_BIAS_WEIGHT: float = 0.25       # weight of signed calibration error
-ADAPT_CALIB_MIN_BUCKET_SAMPLES: int = 8     # minimum samples per bucket for bias calc
+ADAPT_MIN_SAMPLES: int = 20  # outcomes required before tuning
+ADAPT_COOLDOWN_SECS: float = 30.0  # prevent threshold thrashing
+ADAPT_ENTRY_EMA_ALPHA: float = 0.08  # entry quality smoothing
+ADAPT_EXIT_EMA_ALPHA: float = 0.12  # exit quality smoothing (react faster)
+ADAPT_ENTRY_STEP_UP: float = 0.01  # tighten entry gating
+ADAPT_ENTRY_STEP_DOWN: float = 0.005  # relax entry gating
+ADAPT_EXIT_STEP_UP: float = 0.005  # tighten exit gating
+ADAPT_EXIT_STEP_DOWN: float = 0.01  # relax exit gating (faster protective exits)
+ADAPT_ENTRY_LOW_QUALITY: float = 0.52  # below -> tighten entries
+ADAPT_ENTRY_HIGH_QUALITY: float = 0.65  # above -> loosen entries slightly
+ADAPT_EXIT_LOW_QUALITY: float = 0.58  # below -> allow earlier exits
+ADAPT_EXIT_HIGH_QUALITY: float = 0.72  # above -> slightly tighten exits
+ADAPT_CALIB_BIAS_WEIGHT: float = 0.25  # weight of signed calibration error
+ADAPT_CALIB_MIN_BUCKET_SAMPLES: int = 8  # minimum samples per bucket for bias calc
 
 # ── Capital allocation constants ──────────────────────────────────────────────
 CIRCUIT_BREAKER_BUDGET_FACTOR: float = 0.75  # 25% risk budget cut when breakers active
 UNCORRELATED_RESERVE_FRACTION: float = 0.10  # Reserve 10% capital for uncorrelated assets
-CONFIDENCE_EPSILON: float = 1e-6              # Division-safety epsilon for confidence calcs
+CONFIDENCE_EPSILON: float = 1e-6  # Division-safety epsilon for confidence calcs
 
 # ── Calibration quality thresholds ────────────────────────────────────────────
-CALIBRATION_GOOD_ERROR: float = 0.1   # Error below this → well-calibrated
+CALIBRATION_GOOD_ERROR: float = 0.1  # Error below this → well-calibrated
 CALIBRATION_DOMINANCE_RATIO: float = 0.7  # One agent must be 30% better to prefer it
 
 # ── Correlation breakdown thresholds ──────────────────────────────────────────
-CORRELATION_CRITICAL: float = 0.95   # → CRITICAL risk, CLOSE_ALL
-CORRELATION_HIGH: float = 0.90   # → HIGH risk, REDUCE_EXPOSURE
+CORRELATION_CRITICAL: float = 0.95  # → CRITICAL risk, CLOSE_ALL
+CORRELATION_HIGH: float = 0.90  # → HIGH risk, REDUCE_EXPOSURE
 CORRELATION_MODERATE: float = 0.85  # → MODERATE risk, REDUCE_EXPOSURE
 MIN_HISTORY_FOR_CORRELATION: int = 20  # Minimum bars needed for correlation check
 MIN_SYMBOLS_FOR_CORRELATION: int = 2  # Need at least 2 symbols
@@ -104,7 +103,7 @@ MIN_CALIBRATION_BUCKET_SIZE: int = 5  # Minimum outcomes per bucket to report ca
 
 @dataclass
 class EntryValidation:
-    """Result of entry order validation"""
+    """Result of entry order validation."""
 
     approved: bool
     qty: float
@@ -115,7 +114,7 @@ class EntryValidation:
 
 @dataclass
 class ExitValidation:
-    """Result of exit order validation"""
+    """Result of exit order validation."""
 
     approved: bool
     volume: int
@@ -125,7 +124,7 @@ class ExitValidation:
 
 @dataclass
 class ProbabilityCalibration:
-    """Tracks prediction accuracy for self-calibration (per-agent)"""
+    """Tracks prediction accuracy for self-calibration (per-agent)."""
 
     agent_id: str  # "trigger", "harvester", or "composite"
     confidence_bucket: float  # e.g., 0.7 for 70-79% confidence
@@ -138,7 +137,7 @@ class ProbabilityCalibration:
 
 @dataclass
 class CorrelationBreakdown:
-    """Flash crash / correlation breakdown detector"""
+    """Flash crash / correlation breakdown detector."""
 
     timestamp: float
     avg_correlation: float  # Average pairwise correlation
@@ -150,7 +149,7 @@ class CorrelationBreakdown:
 
 @dataclass
 class CompositeProbabilityPredictor:
-    """Composite probability prediction combining all agents - MAIN PREDICTION TOOL"""
+    """Composite probability prediction combining all agents - MAIN PREDICTION TOOL."""
 
     trigger_calibration: dict[float, ProbabilityCalibration]  # TriggerAgent predictions
     harvester_calibration: dict[float, ProbabilityCalibration]  # HarvesterAgent predictions
@@ -163,7 +162,7 @@ class CompositeProbabilityPredictor:
 
 @dataclass
 class RiskAssessment:
-    """Comprehensive portfolio risk assessment"""
+    """Comprehensive portfolio risk assessment."""
 
     total_exposure_usd: float
     total_var_usd: float
@@ -181,8 +180,7 @@ class RiskAssessment:
 
 
 class RiskManager:
-    """
-    Central Risk Coordinator - The "Risk Brain" of the Trading System
+    """Central Risk Coordinator - The "Risk Brain" of the Trading System.
 
     Primary Responsibilities:
     1. Capital Allocation: VaR-based position sizing across portfolio
@@ -201,7 +199,7 @@ class RiskManager:
     This is the SINGLE POINT OF CONTROL for all risk decisions.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         circuit_breakers: CircuitBreakerManager,
         var_estimator: VaREstimator,
@@ -213,9 +211,8 @@ class RiskManager:
         timeframe: str = "M15",
         broker: str = "default",
         param_manager=None,  # LearnedParametersManager instance
-    ):
-        """
-        Initialize RiskManager.
+    ) -> None:
+        """Initialize RiskManager.
 
         Args:
             circuit_breakers: Circuit breaker manager instance
@@ -228,6 +225,7 @@ class RiskManager:
             timeframe: Timeframe (for context)
             broker: Broker name (for context)
             param_manager: LearnedParametersManager for adaptive thresholds (None = use defaults)
+
         """
         self.circuit_breakers = circuit_breakers
         self.var_estimator = var_estimator
@@ -275,7 +273,7 @@ class RiskManager:
         self.total_trades = 0
         self.winning_trades = 0
         self.total_pnl = 0.0
-        self.total_wins_pnl = 0.0   # cumulative P&L on winning trades
+        self.total_wins_pnl = 0.0  # cumulative P&L on winning trades
         self.total_losses_pnl = 0.0  # cumulative |P&L| on losing trades
         self.peak_equity = 10000.0  # Will be updated
         self.initial_risk_budget = risk_budget_usd
@@ -327,7 +325,7 @@ class RiskManager:
         self.flash_crash_threshold: float = 0.85  # avg correlation > 0.85 = warning
 
         LOG.info(
-            "[RISK] Initialized RiskManager" " (Central Risk Coordinator):" " budget=$%.2f max_size=%.4f symbol=%s",
+            "[RISK] Initialized RiskManager (Central Risk Coordinator): budget=$%.2f max_size=%.4f symbol=%s",
             risk_budget_usd,
             max_position_size,
             symbol,
@@ -342,7 +340,7 @@ class RiskManager:
             if key in breakers_status and breakers_status[key].get("tripped", False)
         ]
 
-    def validate_entry(  # noqa: PLR0911, PLR0913
+    def validate_entry(
         self,
         action: int,
         confidence: float,
@@ -353,8 +351,7 @@ class RiskManager:
         account_balance: float = 10000.0,
         max_leverage: float = 100.0,
     ) -> EntryValidation:
-        """
-        Validate entry order per SYSTEM_FLOW.md specification.
+        """Validate entry order per SYSTEM_FLOW.md specification.
 
         Validation Steps:
         1. Check circuit breakers → REJECT if tripped
@@ -375,6 +372,7 @@ class RiskManager:
 
         Returns:
             EntryValidation with approval status, quantity, reason
+
         """
         # Step 1: Check circuit breakers
         if self.circuit_breakers.is_any_tripped():
@@ -483,8 +481,7 @@ class RiskManager:
         fraction: float = 1.0,
         min_position_size: float = 0.01,
     ) -> ExitValidation:
-        """
-        Validate exit order per SYSTEM_FLOW.md specification.
+        """Validate exit order per SYSTEM_FLOW.md specification.
 
         Validation Steps:
         1. Check circuit breakers → If emergency, override to FULL close
@@ -501,6 +498,7 @@ class RiskManager:
 
         Returns:
             ExitValidation with approval status, volume, urgency
+
         """
         # Step 1: Check action
         if action == 0:  # HOLD
@@ -626,13 +624,13 @@ class RiskManager:
         LOG.error(_EXIT_REJECTED_MSG, reason)
         return ExitValidation(approved=False, volume=0, urgency=urgency, reason=reason)
 
-    def update_exposure(self, symbol: str, position_size: float):
-        """
-        Update portfolio exposure tracking (for multi-asset coordination).
+    def update_exposure(self, symbol: str, position_size: float) -> None:
+        """Update portfolio exposure tracking (for multi-asset coordination).
 
         Args:
             symbol: Trading symbol
             position_size: Current position size (0 if flat)
+
         """
         if position_size == 0:
             self.active_positions.pop(symbol, None)
@@ -645,11 +643,11 @@ class RiskManager:
         self.total_exposure_usd = sum(abs(pos) for pos in self.active_positions.values())
 
     def get_status(self) -> dict:
-        """
-        Get RiskManager status for monitoring/logging.
+        """Get RiskManager status for monitoring/logging.
 
         Returns:
             Dict with current risk state
+
         """
         return {
             "risk_budget_usd": self.risk_budget_usd,
@@ -663,12 +661,12 @@ class RiskManager:
             "circuit_breakers": self.circuit_breakers.get_status(),
         }
 
-    def update_risk_budget(self, new_budget: float):
-        """
-        Update risk budget (for adaptive risk management).
+    def update_risk_budget(self, new_budget: float) -> None:
+        """Update risk budget (for adaptive risk management).
 
         Args:
             new_budget: New risk budget in USD
+
         """
         if new_budget > 0:
             old_budget = self.risk_budget_usd
@@ -685,13 +683,13 @@ class RiskManager:
         self,
         entry: float | None = None,
         exit_threshold: float | None = None,
-    ):
-        """
-        Update confidence thresholds (for adaptive tuning).
+    ) -> None:
+        """Update confidence thresholds (for adaptive tuning).
 
         Args:
             entry: New entry confidence threshold
             exit: New exit confidence threshold
+
         """
         if entry is not None and 0.0 <= entry <= 1.0:
             old = self.min_confidence_entry
@@ -707,9 +705,8 @@ class RiskManager:
     # CIRCUIT BREAKER CONTROL - Update breakers on trade completion
     # =========================================================================
 
-    def on_trade_complete(self, pnl: float, equity: float, is_win: bool | None = None):
-        """
-        Update circuit breakers and performance tracking on trade completion.
+    def on_trade_complete(self, pnl: float, equity: float, is_win: bool | None = None) -> None:
+        """Update circuit breakers and performance tracking on trade completion.
 
         This is the CENTRAL POINT where all trade results flow through.
         Updates circuit breakers, tracks performance, triggers adaptive adjustments.
@@ -718,6 +715,7 @@ class RiskManager:
             pnl: Trade P&L (positive for profit, negative for loss)
             equity: Current account equity
             is_win: Optional explicit win/loss (if None, inferred from pnl)
+
         """
         # Update circuit breakers
         self.circuit_breakers.update_trade(pnl=pnl, equity=equity)
@@ -763,15 +761,14 @@ class RiskManager:
 
         # Check if adaptive adjustment needed (every 10 trades)
         if self.total_trades % 10 == 0:
-            losses_count  = self.total_trades - self.winning_trades
-            avg_win  = self.total_wins_pnl  / max(self.winning_trades, 1)
+            losses_count = self.total_trades - self.winning_trades
+            avg_win = self.total_wins_pnl / max(self.winning_trades, 1)
             avg_loss = self.total_losses_pnl / max(losses_count, 1)  # already absolute
             payoff_ratio = SafeMath.safe_div(avg_win, avg_loss, 0.0)
             self._consider_risk_adaptation(equity, win_rate, payoff_ratio)
 
-    def _consider_risk_adaptation(self, equity: float, win_rate: float, payoff_ratio: float = 1.0):
-        """
-        Consider adaptive risk budget adjustment based on performance.
+    def _consider_risk_adaptation(self, equity: float, win_rate: float, payoff_ratio: float = 1.0) -> None:
+        """Consider adaptive risk budget adjustment based on performance.
 
         Logic:
         - Good performance (win rate > 55%, equity growing, payoff ≥ 1.2) → Increase budget
@@ -797,12 +794,17 @@ class RiskManager:
 
         # Good performance: increase budget (max 1.5x initial)
         # Require payoff >= 1.0 (avg win ≥ avg loss) as an EV sanity check.
-        if win_rate > RISK_BUDGET_BOOST_WIN_RATE and equity_change > RISK_BUDGET_BOOST_EQUITY_GAIN and payoff_ratio >= 1.0:
+        if (
+            win_rate > RISK_BUDGET_BOOST_WIN_RATE
+            and equity_change > RISK_BUDGET_BOOST_EQUITY_GAIN
+            and payoff_ratio >= 1.0
+        ):
             new_budget = min(self.risk_budget_usd * 1.1, self.initial_risk_budget * 1.5)
             if new_budget > self.risk_budget_usd:
                 LOG.info(
                     "[RISK] Strong performance (wr=%.0f%% payoff=%.2fx) → INCREASING risk budget: $%.2f → $%.2f",
-                    win_rate * 100, payoff_ratio,
+                    win_rate * 100,
+                    payoff_ratio,
                     self.risk_budget_usd,
                     new_budget,
                 )
@@ -810,12 +812,18 @@ class RiskManager:
 
         # Poor performance: decrease budget (min 0.5x initial)
         # Trigger on: low win_rate OR bad equity OR payoff < 0.8 (losses > wins)
-        elif win_rate < RISK_BUDGET_CUT_WIN_RATE or equity_change < RISK_BUDGET_CUT_EQUITY_LOSS or payoff_ratio < RISK_BUDGET_CUT_PAYOFF_MIN:
+        elif (
+            win_rate < RISK_BUDGET_CUT_WIN_RATE
+            or equity_change < RISK_BUDGET_CUT_EQUITY_LOSS
+            or payoff_ratio < RISK_BUDGET_CUT_PAYOFF_MIN
+        ):
             new_budget = max(self.risk_budget_usd * 0.9, self.initial_risk_budget * 0.5)
             if new_budget < self.risk_budget_usd:
                 LOG.warning(
                     "[RISK] Weak performance (wr=%.0f%% payoff=%.2fx eq_chg=%.1f%%) → REDUCING risk budget: $%.2f → $%.2f",
-                    win_rate * 100, payoff_ratio, equity_change * 100,
+                    win_rate * 100,
+                    payoff_ratio,
+                    equity_change * 100,
                     self.risk_budget_usd,
                     new_budget,
                 )
@@ -830,8 +838,7 @@ class RiskManager:
         current_regime: RegimeType = RegimeType.CRITICAL,
         current_vol: float | None = None,
     ) -> RiskAssessment:
-        """
-        Provide comprehensive portfolio risk assessment.
+        """Provide comprehensive portfolio risk assessment.
 
         This is the main risk monitoring interface - call periodically
         to get full portfolio health status.
@@ -842,6 +849,7 @@ class RiskManager:
 
         Returns:
             RiskAssessment with comprehensive metrics and recommendations
+
         """
         total_var = self._calculate_total_var(current_regime, current_vol)
         risk_utilization = SafeMath.safe_div(total_var * 100.0, self.risk_budget_usd, default=0.0)
@@ -889,7 +897,7 @@ class RiskManager:
     def _calculate_total_var(self, regime: RegimeType, current_vol: float | None) -> float:
         """Calculate total portfolio Value-at-Risk."""
         total_var = 0.0
-        for _symbol, position_size in self.active_positions.items():
+        for position_size in self.active_positions.values():
             if position_size != 0:
                 var_value = self.var_estimator.estimate_var(
                     regime=regime,
@@ -971,8 +979,7 @@ class RiskManager:
         rl_thresholds = self.get_rl_recommended_thresholds()
         if rl_thresholds.get("confidence", 0) > RL_MIN_CONFIDENCE_FOR_SUGGESTION:
             recommendations.append(
-                f"RL suggests: entry={rl_thresholds['entry_threshold']:.2f} "
-                f"exit={rl_thresholds['exit_threshold']:.2f}"
+                f"RL suggests: entry={rl_thresholds['entry_threshold']:.2f} exit={rl_thresholds['exit_threshold']:.2f}"
             )
         return composite_predictor
 
@@ -1002,7 +1009,7 @@ class RiskManager:
         return predictor
 
     def get_risk_summary(self) -> str:
-        """Get human-readable risk summary"""
+        """Get human-readable risk summary."""
         if self._last_assessment is None:
             return "No risk assessment available"
 
@@ -1020,7 +1027,7 @@ class RiskManager:
 ╠══════════════════════════════════════════════════════════╣
 ║ Statistics:                                              ║
 ║   Total Trades:       {self.total_trades:>30} ║
-║   Win Rate:           {(self.winning_trades/max(self.total_trades,1)*100):>27.1f}% ║
+║   Win Rate:           {(self.winning_trades / max(self.total_trades, 1) * 100):>27.1f}% ║
 ║   Total P&L:          ${self.total_pnl:>28.2f} ║
 ║   Entries Approved:   {self.entries_approved:>30} ║
 ║   Entries Rejected:   {self.entries_rejected:>30} ║
@@ -1047,8 +1054,7 @@ class RiskManager:
         actual_outcome: bool | None = None,  # profitable if set, loss if unset
         agent_id: str = "composite",  # "trigger", "harvester", or "composite"
     ) -> None:
-        """
-        Feed decision outcomes back into RL and probability calibration.
+        """Feed decision outcomes back into RL and probability calibration.
 
         This creates the self-learning feedback loop:
         1. Track prediction accuracy by confidence level (PER AGENT)
@@ -1061,6 +1067,7 @@ class RiskManager:
             approved: Whether RiskManager approved it
             actual_outcome: Trade result (True=win, False=loss, None=pending)
             agent_id: Which agent made the prediction ("trigger"/"harvester"/"composite")
+
         """
         # Update probability calibration (PER AGENT)
         if actual_outcome is not None:
@@ -1153,15 +1160,13 @@ class RiskManager:
         if d == "entry":
             self._entry_feedback_n += 1
             self._entry_quality_ema = (
-                (1.0 - ADAPT_ENTRY_EMA_ALPHA) * self._entry_quality_ema
-                + ADAPT_ENTRY_EMA_ALPHA * outcome_f
-            )
+                1.0 - ADAPT_ENTRY_EMA_ALPHA
+            ) * self._entry_quality_ema + ADAPT_ENTRY_EMA_ALPHA * outcome_f
         elif d == "exit":
             self._exit_feedback_n += 1
             self._exit_quality_ema = (
-                (1.0 - ADAPT_EXIT_EMA_ALPHA) * self._exit_quality_ema
-                + ADAPT_EXIT_EMA_ALPHA * outcome_f
-            )
+                1.0 - ADAPT_EXIT_EMA_ALPHA
+            ) * self._exit_quality_ema + ADAPT_EXIT_EMA_ALPHA * outcome_f
         else:
             return
 
@@ -1233,26 +1238,24 @@ class RiskManager:
             )
 
     def _get_confidence_bucket(self, confidence: float) -> float:
-        """Map confidence to calibration bucket (0.5, 0.6, ..., 1.0)"""
+        """Map confidence to calibration bucket (0.5, 0.6, ..., 1.0)."""
         if confidence < CONF_BUCKET_55:
             return 0.5
-        elif confidence < CONF_BUCKET_65:
+        if confidence < CONF_BUCKET_65:
             return 0.6
-        elif confidence < CONF_BUCKET_75:
+        if confidence < CONF_BUCKET_75:
             return 0.7
-        elif confidence < CONF_BUCKET_85:
+        if confidence < CONF_BUCKET_85:
             return 0.8
-        elif confidence < CONF_BUCKET_95:
+        if confidence < CONF_BUCKET_95:
             return 0.9
-        else:
-            return 1.0
+        return 1.0
 
     def get_probability_calibration(
         self,
         agent_id: str = "composite",
     ) -> dict[float, ProbabilityCalibration]:
-        """
-        Analyze how well-calibrated agent probabilities are.
+        """Analyze how well-calibrated agent probabilities are.
 
         Args:
             agent_id: "trigger", "harvester", or "composite"
@@ -1261,6 +1264,7 @@ class RiskManager:
             Dict of confidence_bucket -> ProbabilityCalibration
 
         Well-calibrated: A model that predicts 70% confidence should win ~70% of the time
+
         """
         # Select appropriate buckets
         if agent_id == "trigger":
@@ -1294,8 +1298,7 @@ class RiskManager:
         return calibration_report
 
     def get_composite_probability_predictor(self) -> CompositeProbabilityPredictor:
-        """
-        Get composite probability prediction combining all agents.
+        """Get composite probability prediction combining all agents.
 
         This is the MAIN RISK MANAGEMENT TOOL for probability predictions.
         It shows:
@@ -1306,6 +1309,7 @@ class RiskManager:
 
         Returns:
             CompositeProbabilityPredictor with full analysis
+
         """
         # Get calibration for each agent
         trigger_calib = self.get_probability_calibration("trigger")
@@ -1343,13 +1347,9 @@ class RiskManager:
         elif trigger_avg_error < CALIBRATION_GOOD_ERROR and harvester_avg_error < CALIBRATION_GOOD_ERROR:
             recommendation = "Both agents well-calibrated - trust both equally"
         elif trigger_avg_error < harvester_avg_error * CALIBRATION_DOMINANCE_RATIO:
-            recommendation = (
-                f"Trust TriggerAgent more" f" (error: {trigger_avg_error:.1%}" f" vs {harvester_avg_error:.1%})"
-            )
+            recommendation = f"Trust TriggerAgent more (error: {trigger_avg_error:.1%} vs {harvester_avg_error:.1%})"
         elif harvester_avg_error < trigger_avg_error * CALIBRATION_DOMINANCE_RATIO:
-            recommendation = (
-                f"Trust HarvesterAgent more" f" (error: {harvester_avg_error:.1%}" f" vs {trigger_avg_error:.1%})"
-            )
+            recommendation = f"Trust HarvesterAgent more (error: {harvester_avg_error:.1%} vs {trigger_avg_error:.1%})"
         else:
             recommendation = "Both agents similarly calibrated - weight equally"
 
@@ -1380,8 +1380,7 @@ class RiskManager:
         approved: bool,
         outcome: bool,
     ) -> None:
-        """
-        Update Q-table for threshold optimization.
+        """Update Q-table for threshold optimization.
 
         State: (drawdown_level, win_rate_bucket, confidence_bucket)
         Action: (threshold_adjustment: -0.1, 0.0, +0.1)
@@ -1448,8 +1447,7 @@ class RiskManager:
         )
 
     def get_rl_recommended_thresholds(self) -> dict[str, Any]:
-        """
-        Get RL-recommended threshold adjustments based on learned Q-values.
+        """Get RL-recommended threshold adjustments based on learned Q-values.
 
         Returns:
             {
@@ -1457,6 +1455,7 @@ class RiskManager:
                 "exit_threshold": 0.55,   # Recommended exit threshold
                 "confidence": 0.8         # How confident in recommendation (0-1)
             }
+
         """
         if len(self.q_table) < RL_MIN_Q_TABLE_SIZE:  # Need sufficient learning
             return {
@@ -1473,7 +1472,7 @@ class RiskManager:
             "raise_threshold": [],
         }
 
-        for _state, actions in self.q_table.items():
+        for actions in self.q_table.values():
             for action, q_val in actions.items():
                 action_scores[action].append(q_val)
 
@@ -1505,12 +1504,12 @@ class RiskManager:
     # ============================================================================
 
     def update_returns(self, symbol: str, price_return: float) -> None:
-        """
-        Update returns history for correlation calculation.
+        """Update returns history for correlation calculation.
 
         Args:
             symbol: Trading symbol
             price_return: Price return for this bar (e.g., 0.01 for +1%)
+
         """
         if symbol not in self.returns_history:
             self.returns_history[symbol] = deque(maxlen=self.correlation_window)
@@ -1520,8 +1519,7 @@ class RiskManager:
         LOG.debug("[CORRELATION] Updated %s return: %.4f", symbol, price_return)
 
     def check_correlation_breakdown(self, current_time: float) -> CorrelationBreakdown | None:
-        """
-        Detect correlation breakdowns (flash crash indicator).
+        """Detect correlation breakdowns (flash crash indicator).
 
         Flash crashes occur when:
         1. All asset correlations suddenly approach 1.0
@@ -1530,13 +1528,16 @@ class RiskManager:
 
         Returns:
             CorrelationBreakdown if multi-symbol data available, None otherwise
+
         """
         # Need at least 2 symbols and minimum history
         if len(self.returns_history) < MIN_SYMBOLS_FOR_CORRELATION:
             return None
 
         symbols_with_data = [
-            sym for sym, returns in self.returns_history.items() if len(returns) >= min(MIN_HISTORY_FOR_CORRELATION, self.correlation_window)
+            sym
+            for sym, returns in self.returns_history.items()
+            if len(returns) >= min(MIN_HISTORY_FOR_CORRELATION, self.correlation_window)
         ]
 
         if len(symbols_with_data) < MIN_SYMBOLS_FOR_CORRELATION:
@@ -1604,8 +1605,7 @@ class RiskManager:
         symbols: list[str],
         total_capital: float,
     ) -> dict[str, float]:
-        """
-        Allocate capital using negative correlation for diversification.
+        """Allocate capital using negative correlation for diversification.
 
         Strategy:
         - Prefer negatively correlated assets (hedge each other)
@@ -1618,6 +1618,7 @@ class RiskManager:
 
         Returns:
             {symbol: allocated_capital_usd}
+
         """
         if not symbols:
             LOG.warning("[RISK] allocate_capital called with empty symbols list")
@@ -1631,7 +1632,9 @@ class RiskManager:
         # Calculate diversification score for each symbol
         # Higher score = better diversification (more negative/low correlations)
         symbols_with_data = [
-            sym for sym in symbols if sym in self.returns_history and len(self.returns_history[sym]) >= MIN_HISTORY_FOR_CORRELATION
+            sym
+            for sym in symbols
+            if sym in self.returns_history and len(self.returns_history[sym]) >= MIN_HISTORY_FOR_CORRELATION
         ]
 
         if len(symbols_with_data) < MIN_SYMBOLS_FOR_CORRELATION:

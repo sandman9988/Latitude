@@ -1,11 +1,11 @@
-"""
-Safe Mathematical Operations
+"""Safe Mathematical Operations
 Defensive programming layer for numerical operations
-Prevents NaN/Inf crashes and provides validated operations
+Prevents NaN/Inf crashes and provides validated operations.
 """
 
 import logging
 import math
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 import numpy as np
 
@@ -23,10 +23,10 @@ MIN_SAMPLE_COUNT = 2
 
 
 class SafeMath:
-    """Safe mathematical operations with validation and default handling"""
+    """Safe mathematical operations with validation and default handling."""
 
     @staticmethod
-    def to_decimal(value, digits: int):
+    def to_decimal(value, digits: int) -> Decimal:
         """Convert value to Decimal with instrument-specific digits.
 
         Args:
@@ -38,24 +38,25 @@ class SafeMath:
 
         Raises:
             ValueError: If value is NaN/Inf or digits out of range
-        """
-        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+        """
         # Validate digits range
         if not isinstance(digits, int) or not 0 <= digits <= 10:
             LOG.error("Invalid digits: %s (must be 0-10)", digits)
-            raise ValueError(f"Invalid digits: {digits} (must be 0-10)")
+            msg = f"Invalid digits: {digits} (must be 0-10)"
+            raise ValueError(msg)
 
         # Handle None
         if value is None:
             LOG.error("to_decimal received None value")
-            raise ValueError("value is None")
+            msg = "value is None"
+            raise ValueError(msg)
 
         # Check for NaN/Inf before conversion
-        if isinstance(value, (float, int, np.floating, np.integer)):
-            if not math.isfinite(float(value)):
-                LOG.error("Non-finite value in to_decimal: %s", value)
-                raise ValueError(f"Non-finite value: {value}")
+        if isinstance(value, (float, int, np.floating, np.integer)) and not math.isfinite(float(value)):
+            LOG.error("Non-finite value in to_decimal: %s", value)
+            msg = f"Non-finite value: {value}"
+            raise ValueError(msg)
 
         try:
             dec = Decimal(str(value))
@@ -63,18 +64,18 @@ class SafeMath:
             # Validate result is finite
             if not dec.is_finite():
                 LOG.error("Decimal conversion produced non-finite result: %s", dec)
-                raise ValueError(f"Decimal conversion produced non-finite result: {dec}")
+                msg = f"Decimal conversion produced non-finite result: {dec}"
+                raise ValueError(msg)
 
-            quant = Decimal("1").scaleb(-digits)
-            result = dec.quantize(quant, rounding=ROUND_HALF_UP)
-            return result
+            quant = Decimal(1).scaleb(-digits)
+            return dec.quantize(quant, rounding=ROUND_HALF_UP)
 
         except (InvalidOperation, ValueError, TypeError, OverflowError) as e:
             LOG.error("to_decimal failed for value=%s, digits=%d: %s", value, digits, e)
             raise
 
     @staticmethod
-    def quantize(value, digits: int):
+    def quantize(value, digits: int) -> Decimal:
         """Quantize an existing Decimal to instrument-specific digits.
 
         Args:
@@ -86,64 +87,63 @@ class SafeMath:
 
         Raises:
             ValueError: If digits out of range
-        """
-        from decimal import ROUND_HALF_UP, Decimal, InvalidOperation  # noqa: PLC0415
 
+        """
         # Validate digits range
         if not isinstance(digits, int) or not 0 <= digits <= 10:
             LOG.error("Invalid digits: %s (must be 0-10)", digits)
-            raise ValueError(f"Invalid digits: {digits} (must be 0-10)")
+            msg = f"Invalid digits: {digits} (must be 0-10)"
+            raise ValueError(msg)
 
         try:
-            quant = Decimal("1").scaleb(-digits)
+            quant = Decimal(1).scaleb(-digits)
             result = Decimal(value).quantize(quant, rounding=ROUND_HALF_UP)
 
             # Validate result is finite
             if not result.is_finite():
                 LOG.error("Quantize produced non-finite result: %s", result)
-                return Decimal("0").quantize(quant)
+                return Decimal(0).quantize(quant)
 
             return result
 
         except (InvalidOperation, ValueError, TypeError) as e:
             LOG.error("quantize failed for value=%s, digits=%d: %s", value, digits, e)
-            return Decimal("0").quantize(Decimal("1").scaleb(-digits))
+            return Decimal(0).quantize(Decimal(1).scaleb(-digits))
 
     @staticmethod
     def is_valid(x: float | np.ndarray) -> bool:
-        """Check if value is valid (not NaN or Inf)"""
+        """Check if value is valid (not NaN or Inf)."""
         if isinstance(x, np.ndarray):
             return bool(np.all(np.isfinite(x)))
         return math.isfinite(x)
 
     @staticmethod
     def is_nan(x: float | np.ndarray) -> bool:
-        """Check if value is NaN"""
+        """Check if value is NaN."""
         if isinstance(x, np.ndarray):
             return bool(np.any(np.isnan(x)))
         return math.isnan(x)
 
     @staticmethod
     def is_inf(x: float | np.ndarray) -> bool:
-        """Check if value is Inf"""
+        """Check if value is Inf."""
         if isinstance(x, np.ndarray):
             return bool(np.any(np.isinf(x)))
         return math.isinf(x)
 
     @staticmethod
     def is_zero(x: float, eps: float = SAFE_EPSILON) -> bool:
-        """Check if value is effectively zero"""
+        """Check if value is effectively zero."""
         return abs(x) < eps
 
     @staticmethod
     def is_not_zero(x: float, eps: float = SAFE_EPSILON) -> bool:
-        """Check if value is effectively non-zero"""
+        """Check if value is effectively non-zero."""
         return abs(x) >= eps
 
     @staticmethod
     def is_close(a: float, b: float, rel_tol: float = 1e-9, abs_tol: float = SAFE_EPSILON) -> bool:
-        """
-        Check if two floats are approximately equal.
+        """Check if two floats are approximately equal.
         Uses both relative and absolute tolerance like math.isclose().
 
         Args:
@@ -154,6 +154,7 @@ class SafeMath:
 
         Returns:
             True if values are close enough to be considered equal
+
         """
         return abs(a - b) <= max(rel_tol * max(abs(a), abs(b)), abs_tol)
 
@@ -238,19 +239,19 @@ class SafeMath:
 
     @staticmethod
     def clamp(x: float, min_val: float, max_val: float) -> float:
-        """Hard clamp to range [min_val, max_val]"""
+        """Hard clamp to range [min_val, max_val]."""
         return max(min_val, min(max_val, x))
 
     @staticmethod
     def soft_clamp(x: float, min_val: float, max_val: float) -> float:
-        """Soft clamp using tanh transformation"""
+        """Soft clamp using tanh transformation."""
         center = (min_val + max_val) / 2
         range_val = (max_val - min_val) / 2
         return center + range_val * math.tanh(x)
 
     @staticmethod
     def clamp_positive(x: float, min_val: float = SAFE_SMALL) -> float:
-        """Ensure value is positive"""
+        """Ensure value is positive."""
         return max(min_val, x)
 
     @staticmethod
@@ -265,17 +266,17 @@ class SafeMath:
 
     @staticmethod
     def is_equal(a: float, b: float, eps: float = SAFE_EPSILON) -> bool:
-        """Tolerance-based equality"""
+        """Tolerance-based equality."""
         return abs(a - b) < eps
 
     @staticmethod
     def is_greater(a: float, b: float, eps: float = SAFE_EPSILON) -> bool:
-        """Tolerance-based greater-than"""
+        """Tolerance-based greater-than."""
         return a > b + eps
 
     @staticmethod
     def is_less(a: float, b: float, eps: float = SAFE_EPSILON) -> bool:
-        """Tolerance-based less-than"""
+        """Tolerance-based less-than."""
         return a < b - eps
 
     @staticmethod
@@ -309,6 +310,7 @@ class SafeMath:
 
         Returns:
             Percentile value or default
+
         """
         # Validate percentile range
         if not 0 <= percentile <= 100:
@@ -369,7 +371,7 @@ class SafeMath:
 
     @staticmethod
     def normalize_logits(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-        """Safe softmax normalization"""
+        """Safe softmax normalization."""
         if not SafeMath.is_valid(logits):
             return np.ones(len(logits)) / len(logits)
 
@@ -387,14 +389,14 @@ class SafeMath:
 
     @staticmethod
     def running_mean_update(old_mean: float, new_value: float, count: int) -> float:
-        """Welford's online mean update"""
+        """Welford's online mean update."""
         return old_mean + (new_value - old_mean) / max(count, 1)
 
     @staticmethod
     def running_variance_update(
         old_variance: float, old_mean: float, new_mean: float, new_value: float, count: int
     ) -> float:
-        """Welford's online variance update"""
+        """Welford's online variance update."""
         if count < MIN_SAMPLE_COUNT:
             return 0.0
         delta1 = new_value - old_mean
@@ -403,17 +405,17 @@ class SafeMath:
 
 
 class RunningStats:
-    """Online statistics computation using Welford's algorithm"""
+    """Online statistics computation using Welford's algorithm."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.count = 0
         self.mean = 0.0
         self.m2 = 0.0  # Sum of squared differences
         self.min_val = float("inf")
         self.max_val = float("-inf")
 
-    def update(self, value: float):
-        """Add new value and update statistics"""
+    def update(self, value: float) -> None:
+        """Add new value and update statistics."""
         if not SafeMath.is_valid(value):
             return
 
@@ -427,28 +429,28 @@ class RunningStats:
         self.max_val = max(self.max_val, value)
 
     def get_variance(self) -> float:
-        """Get variance"""
+        """Get variance."""
         if self.count < MIN_SAMPLE_COUNT:
             return 0.0
         return self.m2 / (self.count - 1)
 
     def get_std(self) -> float:
-        """Get standard deviation"""
+        """Get standard deviation."""
         return SafeMath.safe_sqrt(self.get_variance())
 
     def get_mean(self) -> float:
-        """Get mean"""
+        """Get mean."""
         return self.mean
 
     def get_z_score(self, value: float) -> float:
-        """Get z-score for value"""
+        """Get z-score for value."""
         std = self.get_std()
         if std < SAFE_EPSILON:
             return 0.0
         return SafeMath.safe_div(value - self.mean, std, 0.0)
 
-    def reset(self):
-        """Reset statistics"""
+    def reset(self) -> None:
+        """Reset statistics."""
         self.count = 0
         self.mean = 0.0
         self.m2 = 0.0
@@ -458,7 +460,7 @@ class RunningStats:
 
 # Module-level utility functions
 def safe_array_operation(arr: np.ndarray, operation: str, default: float = 0.0) -> float:
-    """Safely apply operation to array"""
+    """Safely apply operation to array."""
     if arr is None or len(arr) == 0:
         return default
 
@@ -509,7 +511,6 @@ def rolling_std(x: np.ndarray, n: int) -> np.ndarray:
         return out
 
     # Initialize with first window using Welford's algorithm
-    count = n
     mean = np.mean(x[:n])
     m2 = np.sum((x[:n] - mean) ** 2)
 

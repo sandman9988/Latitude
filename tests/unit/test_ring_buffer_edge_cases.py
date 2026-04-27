@@ -23,6 +23,7 @@ from src.utils.ring_buffer import (
 # RollingVariance period=1 edge case (lines 195-196)
 # ===========================================================================
 
+
 class TestRollingVariancePeriodOne:
     """Period=1 buffer triggers the n_after=0 reset path."""
 
@@ -70,6 +71,7 @@ class TestRollingVariancePeriodOne:
 # RollingVariance standard edge cases
 # ===========================================================================
 
+
 class TestRollingVarianceEdgeCases:
     """Additional edge cases for RollingVariance."""
 
@@ -110,6 +112,7 @@ class TestRollingVarianceEdgeCases:
         # Variance of last 10 values [10..19] offset by base
         # Should match numpy
         import numpy as np
+
         expected = np.var(np.arange(10, 20, dtype=np.float64), ddof=1)
         assert rv.variance == pytest.approx(expected, rel=1e-6)
 
@@ -117,6 +120,7 @@ class TestRollingVarianceEdgeCases:
 # ===========================================================================
 # RollingMean edge cases
 # ===========================================================================
+
 
 class TestRollingMeanEdgeCases:
     """Edge cases for RollingMean."""
@@ -156,6 +160,7 @@ class TestRollingMeanEdgeCases:
 # ===========================================================================
 # RollingMinMax edge cases
 # ===========================================================================
+
 
 class TestRollingMinMaxEdgeCases:
     """Edge cases for RollingMinMax."""
@@ -205,6 +210,7 @@ class TestRollingMinMaxEdgeCases:
 # ===========================================================================
 # RollingStats combined tracker
 # ===========================================================================
+
 
 class TestRollingStatsEdgeCases:
     """Edge cases for the combined RollingStats tracker."""

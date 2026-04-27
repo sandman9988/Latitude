@@ -8,7 +8,7 @@ from src.persistence.atomic_persistence import AtomicPersistence
 
 
 class TestAtomicPersistence:
-    @pytest.fixture()
+    @pytest.fixture
     def ap(self, tmp_path):
         return AtomicPersistence(str(tmp_path))
 

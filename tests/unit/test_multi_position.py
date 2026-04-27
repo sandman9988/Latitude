@@ -28,7 +28,7 @@ LOG = logging.getLogger(__name__)
 class MockPosition:
     """Mock position for testing."""
 
-    def __init__(self, position_id: int, symbol: str, side: str, quantity: float, entry_price: float):
+    def __init__(self, position_id: int, symbol: str, side: str, quantity: float, entry_price: float) -> None:
         self.position_id = position_id
         self.symbol = symbol
         self.side = side  # "LONG" or "SHORT"
@@ -52,7 +52,7 @@ class MockPosition:
         self.mfe = max(self.mfe, self.unrealized_pnl)
         # MAE = Maximum Adverse Excursion (lowest profit / highest loss seen)
         # Initialize MAE on first update if not yet set
-        if self.mae == 0.0 and self.unrealized_pnl != 0.0 or self.unrealized_pnl < self.mae:
+        if (self.mae == 0.0 and self.unrealized_pnl != 0.0) or self.unrealized_pnl < self.mae:
             self.mae = self.unrealized_pnl
 
 
@@ -64,7 +64,7 @@ class MultiPositionManager:
     The actual bot should have similar logic.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.positions: dict[int, MockPosition] = {}
         self.next_position_id = 1
         self.closed_positions: list[MockPosition] = []
@@ -91,7 +91,8 @@ class MultiPositionManager:
     def close_position(self, position_id: int, exit_price: float) -> float:
         """Close a position and return realized P&L."""
         if position_id not in self.positions:
-            raise ValueError(f"Position {position_id} not found")
+            msg = f"Position {position_id} not found"
+            raise ValueError(msg)
 
         position = self.positions[position_id]
 

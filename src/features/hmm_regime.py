@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-HMM-Based Regime Detector
+"""HMM-Based Regime Detector.
 ==========================
 
 Augments the DSP variance-ratio RegimeDetector with a 3-state Gaussian HMM
@@ -55,8 +54,7 @@ HMM_COVARIANCE_TYPE: str = "full"  # "full" works well with 1D observations
 
 
 class HMMRegimeDetector(RegimeDetector):
-    """
-    Gaussian HMM regime detector with smooth probability blending.
+    """Gaussian HMM regime detector with smooth probability blending.
 
     Inherits from RegimeDetector so the existing VR-based regime is always
     available as a fallback.  The HMM layer adds posterior state probabilities
@@ -68,7 +66,7 @@ class HMMRegimeDetector(RegimeDetector):
         window_size: int = DEFAULT_WINDOW_SIZE,
         update_interval: int = DEFAULT_UPDATE_INTERVAL,
         instrument_volatility: float = 1.0,
-    ):
+    ) -> None:
         super().__init__(
             window_size=window_size,
             update_interval=update_interval,
@@ -184,8 +182,7 @@ class HMMRegimeDetector(RegimeDetector):
             LOG.warning("[HMM_REGIME] Fit failed: %s — keeping previous model", exc)
 
     def _label_states(self) -> None:
-        """
-        Assign semantic labels to HMM states based on emission parameters.
+        """Assign semantic labels to HMM states based on emission parameters.
 
         Strategy:
         - State with highest abs(mean) → Trending (momentum signal)
@@ -254,26 +251,23 @@ class HMMRegimeDetector(RegimeDetector):
             else:
                 # Fallback to uniform distribution
                 self._state_probs = np.ones(HMM_N_STATES) / HMM_N_STATES
-
-            self._state_probs = semantic_probs
         except Exception as exc:
             LOG.debug("[HMM_REGIME] Posterior update failed: %s", exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def get_regime_probabilities(self) -> np.ndarray:
-        """
-        Get posterior probabilities for each regime state.
+        """Get posterior probabilities for each regime state.
 
         Returns:
             Array of shape (3,): [p_trending, p_mean_reverting, p_neutral]
             Sums to 1.0.
+
         """
         return self._state_probs.copy()
 
     def get_blended_runway_multiplier(self) -> float:
-        """
-        Compute a continuous runway multiplier from posterior state probabilities.
+        """Compute a continuous runway multiplier from posterior state probabilities.
 
         Instead of a hard switch between 0.7/1.0/1.3, this blends:
             multiplier = Σ(p_state × mult_state)
@@ -281,22 +275,16 @@ class HMMRegimeDetector(RegimeDetector):
         Returns:
             float in range [RUNWAY_MULT_MEAN_REVERTING, RUNWAY_MULT_TRENDING]
                   i.e. typically [0.7, 1.3]
+
         """
+        if not self._hmm_fitted:
+            return self.get_regime_multiplier()
 
-        def get_blended_runway_multiplier(self) -> float:
-            """Get blended runway multiplier from HMM state probabilities.
+        if not np.all(np.isfinite(self._state_probs)):
+            LOG.warning("[HMM_REGIME] NaN in state probabilities, using VR multiplier")
+            return self.get_regime_multiplier()
 
-            Returns parent class multiplier if HMM not fitted or probabilities are invalid.
-            """
-            if not self._hmm_fitted:
-                return self.get_regime_multiplier()
-
-            # Defensive: Check for NaN in state probabilities
-            if not np.all(np.isfinite(self._state_probs)):
-                LOG.warning("[HMM_REGIME] NaN in state probabilities, using VR multiplier")
-                return self.get_regime_multiplier()
-
-            return float(np.dot(self._state_probs, self._multiplier_map))
+        return float(np.dot(self._state_probs, self._multiplier_map))
 
     def get_regime_info(self) -> dict:
         """Extended regime info including HMM posterior probabilities."""

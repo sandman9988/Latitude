@@ -77,7 +77,7 @@ class TestUpdateRegimeDefensivePaths:
         # we inject after the positive check by making prices produce inf log diff
         prices = [100.0] * 50
         prices[25] = 1e-308  # Extremely small but positive
-        prices[26] = 1e308   # Extremely large
+        prices[26] = 1e308  # Extremely large
         det.price_buffer = prices
         det._cache_invalidated = True
         det._cached_var_1 = None
@@ -313,7 +313,7 @@ class TestAddPriceIntegration:
         price = 100.0
         for _i in range(25):
             price += rng.normal(0.5, 0.3)  # Uptrend
-            regime, zeta = det.add_price(price)
+            _regime, _zeta = det.add_price(price)
         # After filling window, regime should have been updated
         assert det.current_regime != "UNKNOWN"
 

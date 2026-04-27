@@ -57,7 +57,7 @@ class TestSumTree:
     def test_sample_distribution(self):
         """Higher priority items should be sampled more often."""
         tree = SumTree(capacity=4, seed=42)
-        tree.add(1.0)   # Low priority
+        tree.add(1.0)  # Low priority
         tree.add(100.0)  # High priority
         counts = {0: 0, 1: 0}
         for _ in range(1000):
@@ -125,9 +125,7 @@ class TestPrioritizedReplayBuffer:
         assert buf.regime_tags[0] == 3
 
     def test_beta_annealing(self):
-        buf = PrioritizedReplayBuffer(
-            capacity=10, state_dim=2, beta_start=0.4, beta_frames=100
-        )
+        buf = PrioritizedReplayBuffer(capacity=10, state_dim=2, beta_start=0.4, beta_frames=100)
         assert buf._get_beta() == pytest.approx(0.4)
         buf.frame_count = 50
         beta_50 = buf._get_beta()

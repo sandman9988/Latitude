@@ -110,15 +110,15 @@ class TestCompositePredictorMath:
 
         # Verify TriggerAgent accuracy
         expected_trigger = 12 / 15
-        assert (
-            abs(composite.trigger_overall_accuracy - expected_trigger) < 0.01
-        ), f"Trigger accuracy should be {expected_trigger:.2%}"
+        assert abs(composite.trigger_overall_accuracy - expected_trigger) < 0.01, (
+            f"Trigger accuracy should be {expected_trigger:.2%}"
+        )
 
         # Verify HarvesterAgent accuracy
         expected_harvester = 10 / 20
-        assert (
-            abs(composite.harvester_overall_accuracy - expected_harvester) < 0.01
-        ), f"Harvester accuracy should be {expected_harvester:.2%}"
+        assert abs(composite.harvester_overall_accuracy - expected_harvester) < 0.01, (
+            f"Harvester accuracy should be {expected_harvester:.2%}"
+        )
 
     def test_average_calibration_error(self):
         """Test average calibration error across buckets"""
@@ -255,9 +255,9 @@ class TestCapitalAllocationMath:
         # Should allocate equally
         expected_per_symbol = total_capital / len(symbols)
         for sym in symbols:
-            assert (
-                abs(allocation[sym] - expected_per_symbol) < 1.0
-            ), f"Should allocate equally: {expected_per_symbol:.2f}"
+            assert abs(allocation[sym] - expected_per_symbol) < 1.0, (
+                f"Should allocate equally: {expected_per_symbol:.2f}"
+            )
 
     def test_allocation_sum_equals_total(self):
         """Verify allocated capital sums to total"""
@@ -280,9 +280,9 @@ class TestCapitalAllocationMath:
 
         # Sum should equal total (within rounding)
         total_allocated = sum(allocation.values())
-        assert (
-            abs(total_allocated - total_capital) < 10.0
-        ), f"Total allocation should be {total_capital:.2f}, got {total_allocated:.2f}"
+        assert abs(total_allocated - total_capital) < 10.0, (
+            f"Total allocation should be {total_capital:.2f}, got {total_allocated:.2f}"
+        )
 
     def test_diversification_score_calculation(self):
         """Test diversification score = 1 - correlation"""
@@ -411,7 +411,9 @@ class TestRiskMetricsMath:
         # Single position: concentration = 1.0
         rm.active_positions = {"BTC": 1.0}
         assessment = rm.assess_risk()
-        assert assessment.position_concentration == pytest.approx(1.0), "Single position should have concentration = 1.0"
+        assert assessment.position_concentration == pytest.approx(1.0), (
+            "Single position should have concentration = 1.0"
+        )
 
         # Two equal positions: H = (0.5^2 + 0.5^2) = 0.5
         rm.active_positions = {"BTC": 1.0, "ETH": 1.0}
@@ -423,9 +425,9 @@ class TestRiskMetricsMath:
         rm.active_positions = {"BTC": 1.0, "ETH": 1.0, "SOL": 1.0}
         assessment = rm.assess_risk()
         expected = 3 * (1 / 3) ** 2
-        assert (
-            abs(assessment.position_concentration - expected) < 0.01
-        ), f"Three equal positions should have H = {expected:.3f}"
+        assert abs(assessment.position_concentration - expected) < 0.01, (
+            f"Three equal positions should have H = {expected:.3f}"
+        )
 
     def test_win_rate_calculation(self):
         """Verify win_rate = winning_trades / total_trades"""
@@ -520,11 +522,11 @@ def test_all_calculations():
                 print(f"  ✓ {method_name}")
                 passed_tests += 1
             except AssertionError as e:
-                print(f"  ✗ {method_name}: {str(e)}")
+                print(f"  ✗ {method_name}: {e!s}")
                 failed_tests.append((class_name, method_name, str(e)))
             except Exception as e:
-                print(f"  ✗ {method_name}: ERROR - {str(e)}")
-                failed_tests.append((class_name, method_name, f"ERROR: {str(e)}"))
+                print(f"  ✗ {method_name}: ERROR - {e!s}")
+                failed_tests.append((class_name, method_name, f"ERROR: {e!s}"))
 
     print("\n" + "=" * 70)
     print(f"RESULTS: {passed_tests}/{total_tests} tests passed")
@@ -534,9 +536,9 @@ def test_all_calculations():
         for class_name, method_name, error in failed_tests:
             print(f"  - {class_name}.{method_name}")
             print(f"    {error}")
-        raise AssertionError(f"{len(failed_tests)} mathematical verification(s) failed")
-    else:
-        print("\n✓ ALL MATHEMATICAL VERIFICATIONS PASSED")
+        msg = f"{len(failed_tests)} mathematical verification(s) failed"
+        raise AssertionError(msg)
+    print("\n✓ ALL MATHEMATICAL VERIFICATIONS PASSED")
 
 
 if __name__ == "__main__":

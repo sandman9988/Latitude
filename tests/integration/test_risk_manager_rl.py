@@ -42,7 +42,7 @@ def test_probability_calibration():
             approved=True,
             actual_outcome=outcome,
         )
-        print(f"   Trade {i+1}: {'Win' if outcome else 'Loss'}")
+        print(f"   Trade {i + 1}: {'Win' if outcome else 'Loss'}")
 
     # Get calibration report
     calib = risk_mgr.get_probability_calibration()

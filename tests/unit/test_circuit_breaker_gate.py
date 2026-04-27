@@ -11,6 +11,7 @@ Tests:
   Gate simulation — entry blocked when flat + CB tripped; exit NOT blocked
   DecisionLogger — circuit_breakers_ok=False captured in log
 """
+
 import json
 
 import pytest
@@ -23,6 +24,7 @@ from src.risk.circuit_breakers import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _manager(
     max_drawdown: float = 0.20,
@@ -55,6 +57,7 @@ def _trip_consec_losses(mgr: CircuitBreakerManager) -> None:
 # BreakerState lifecycle
 # ---------------------------------------------------------------------------
 
+
 class TestBreakerState:
     def test_not_tripped_on_init(self):
         bs = BreakerState(name="Test")
@@ -78,6 +81,7 @@ class TestBreakerState:
 # ---------------------------------------------------------------------------
 # CircuitBreakerManager gate
 # ---------------------------------------------------------------------------
+
 
 class TestCircuitBreakerGate:
     def test_fresh_manager_gate_open(self):
@@ -122,6 +126,7 @@ class TestCircuitBreakerGate:
 # ---------------------------------------------------------------------------
 # update_trade + check_all integration
 # ---------------------------------------------------------------------------
+
 
 class TestUpdateTradeIntegration:
     """Verify breakers trip naturally via update_trade() + check_all()."""
@@ -169,6 +174,7 @@ class TestUpdateTradeIntegration:
 # Gate log field
 # ---------------------------------------------------------------------------
 
+
 class TestCircuitBreakerLogField:
     def test_circuit_breakers_ok_true_when_clear(self):
         mgr = _manager()
@@ -205,6 +211,7 @@ class TestCircuitBreakerLogField:
 # ---------------------------------------------------------------------------
 # Gate simulation (mirrors on_bar_close FLAT branch logic)
 # ---------------------------------------------------------------------------
+
 
 class TestOnBarCloseGateSimulation:
     """

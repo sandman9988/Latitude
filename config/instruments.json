@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "_note": "Instrument catalogue for the session selector. Add symbols here to make them available in ./run.sh select",
+  "instruments": [
+    {
+      "symbol": "XAUUSD",
+      "symbol_id": 41,
+      "label": "Gold vs USD",
+      "category": "Metals",
+      "default_qty": 0.5,
+      "available_timeframes": [1, 5, 15, 30, 60, 240],
+      "pip_size": 0.01,
+      "margin_rate": 0.005
+    },
+    {
+      "symbol": "BTCUSD",
+      "symbol_id": 10028,
+      "label": "Bitcoin vs USD",
+      "category": "Crypto",
+      "default_qty": 0.1,
+      "available_timeframes": [1, 5, 15, 30, 60, 240],
+      "pip_size": 1.0,
+      "margin_rate": 0.05
+    },
+    {
+      "symbol": "ETHUSD",
+      "symbol_id": 10031,
+      "label": "Ethereum vs USD",
+      "category": "Crypto",
+      "default_qty": 0.5,
+      "available_timeframes": [1, 5, 15, 30, 60, 240],
+      "pip_size": 0.1,
+      "margin_rate": 0.05
+    },
+    {
+      "symbol": "US30",
+      "symbol_id": 51017,
+      "label": "Dow Jones 30",
+      "category": "Indices",
+      "default_qty": 1.0,
+      "available_timeframes": [1, 5, 15, 30, 60, 240],
+      "pip_size": 1.0,
+      "margin_rate": 0.002
+    },
+    {
+      "symbol": "EURUSD",
+      "symbol_id": 1,
+      "label": "Euro vs USD",
+      "category": "Forex",
+      "default_qty": 0.1,
+      "available_timeframes": [1, 5, 15, 30, 60, 240],
+      "pip_size": 0.0001,
+      "margin_rate": 0.0033,
+      "_note": "Verify symbol_id with your broker"
+    },
+    {
+      "symbol": "GBPUSD",
+      "symbol_id": 2,
+      "label": "British Pound vs USD",
+      "category": "Forex",
+      "default_qty": 0.1,
+      "available_timeframes": [1, 5, 15, 30, 60, 240],
+      "pip_size": 0.0001,
+      "margin_rate": 0.0033,
+      "_note": "Verify symbol_id with your broker"
+    },
+    {
+      "symbol": "NAS100",
+      "symbol_id": 51018,
+      "label": "Nasdaq 100",
+      "category": "Indices",
+      "default_qty": 1.0,
+      "available_timeframes": [1, 5, 15, 30, 60, 240],
+      "pip_size": 1.0,
+      "margin_rate": 0.002,
+      "_note": "Verify symbol_id with your broker"
+    }
+  ]
+}

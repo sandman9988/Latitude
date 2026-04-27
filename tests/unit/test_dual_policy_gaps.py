@@ -25,6 +25,7 @@ from src.agents.dual_policy import DualPolicy
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_bars(n: int = 100, base_price: float = 100_000.0, step: float = 10.0) -> deque:
     """Create synthetic bars as deque of (t, o, h, l, c) tuples."""
     bars = deque(maxlen=200)
@@ -39,6 +40,7 @@ def _make_bars(n: int = 100, base_price: float = 100_000.0, step: float = 10.0) 
 # ---------------------------------------------------------------------------
 # decide_entry with friction_calculator (lines 205-219)
 # ---------------------------------------------------------------------------
+
 
 class TestDecideEntryFriction:
     def test_friction_calculator_used_when_bars_present(self):
@@ -59,7 +61,7 @@ class TestDecideEntryFriction:
         )
 
         bars = _make_bars(n=100)
-        action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
+        action, _conf, _runway = dp.decide_entry(bars, imbalance=0.0)
 
         mock_friction.calculate_total_friction.assert_called_once()
         assert action in [0, 1, 2]
@@ -74,7 +76,7 @@ class TestDecideEntryFriction:
         )
 
         bars = deque(maxlen=200)  # Empty
-        action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
+        action, _conf, _runway = dp.decide_entry(bars, imbalance=0.0)
 
         # Friction calculator should NOT be called with empty bars
         mock_friction.calculate_total_friction.assert_not_called()
@@ -84,6 +86,7 @@ class TestDecideEntryFriction:
 # ---------------------------------------------------------------------------
 # decide_entry with path_geometry (line 194)
 # ---------------------------------------------------------------------------
+
 
 class TestDecideEntryPathGeometry:
     def test_path_geometry_feasibility_read(self):
@@ -105,13 +108,14 @@ class TestDecideEntryPathGeometry:
         )
 
         bars = _make_bars(n=100)
-        action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
+        action, _conf, _runway = dp.decide_entry(bars, imbalance=0.0)
         assert action in [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------
 # decide_entry regime-adjusted entry LOG (lines 252-253)
 # ---------------------------------------------------------------------------
+
 
 class TestDecideEntryRegimeLog:
     def test_regime_log_on_long_entry(self):
@@ -123,7 +127,7 @@ class TestDecideEntryRegimeLog:
         # Force trigger to return LONG
         dp.trigger.decide = MagicMock(return_value=(1, 0.85, 0.003))
 
-        action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
+        action, conf, _runway = dp.decide_entry(bars, imbalance=0.0)
         assert action == 1
         assert conf == pytest.approx(0.85)
 
@@ -135,7 +139,7 @@ class TestDecideEntryRegimeLog:
 
         dp.trigger.decide = MagicMock(return_value=(2, 0.75, 0.002))
 
-        action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
+        action, _conf, _runway = dp.decide_entry(bars, imbalance=0.0)
         assert action == 2
 
     def test_entry_without_regime_detector(self):
@@ -145,7 +149,7 @@ class TestDecideEntryRegimeLog:
         bars = _make_bars(n=100)
         dp.trigger.decide = MagicMock(return_value=(1, 0.9, 0.005))
 
-        action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
+        action, _conf, _runway = dp.decide_entry(bars, imbalance=0.0)
         assert action == 1
         assert dp.predicted_runway == pytest.approx(0.005)
 
@@ -153,6 +157,7 @@ class TestDecideEntryRegimeLog:
 # ---------------------------------------------------------------------------
 # decide_exit CLOSE action LOG (line 308)
 # ---------------------------------------------------------------------------
+
 
 class TestDecideExitClose:
     def test_close_signal_logged(self):
@@ -174,6 +179,7 @@ class TestDecideExitClose:
 # _update_mfe_mae exception handling (lines 386-387, 390-391)
 # ---------------------------------------------------------------------------
 
+
 class TestUpdateMfeMaeExceptions:
     def test_non_float_current_price_handled(self):
         """Non-convertible current_price → no crash, MFE/MAE unchanged."""
@@ -190,15 +196,20 @@ class TestUpdateMfeMaeExceptions:
         """Non-convertible entry_price → no crash, MFE/MAE unchanged."""
         dp = DualPolicy(window=64)
         dp.current_position = 1
+
         # Use a numeric-like object that passes SafeMath.is_zero (not zero)
         # but fails float() conversion for the ep variable.
         class BadFloat:
             def __abs__(self):
                 return 1.0  # Non-zero → passes is_zero check
+
             def __lt__(self, other):
                 return False  # abs(x) < eps → False → not zero
-            def __float__(self):
-                raise ValueError("cannot convert")
+
+            def __float__(self) -> float:
+                msg = "cannot convert"
+                raise ValueError(msg)
+
         dp.entry_price = BadFloat()
 
         dp._update_mfe_mae(100.0)
@@ -210,6 +221,7 @@ class TestUpdateMfeMaeExceptions:
 # ---------------------------------------------------------------------------
 # Training-enabled paths (lines 590, 616, 646, 683)
 # ---------------------------------------------------------------------------
+
 
 class TestTrainingEnabledPaths:
     def test_add_trigger_experience_training_enabled(self):

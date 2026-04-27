@@ -75,21 +75,22 @@ class TestConv1dQNetImports:
     """Verify all three consumers import from the shared module."""
 
     def test_trigger_agent_loads_conv1d_qnet(self):
-        """TriggerAgent._load_model should use Conv1dQNet."""
+        """Agent model loading (via mixin) must use Conv1dQNet."""
         import inspect
 
-        from src.agents.trigger_agent import TriggerAgent
-        source = inspect.getsource(TriggerAgent._load_model)
+        from src.agents.agent_training_mixin import AgentTrainingMixin
+
+        source = inspect.getsource(AgentTrainingMixin._load_torch_model)
         assert "Conv1dQNet" in source
-        assert "class TriggerQNet" not in source
 
     def test_harvester_agent_loads_conv1d_qnet(self):
-        """HarvesterAgent._load_model should use Conv1dQNet."""
+        """HarvesterAgent._load_model delegates to the shared mixin loader."""
         import inspect
 
         from src.agents.harvester_agent import HarvesterAgent
+
         source = inspect.getsource(HarvesterAgent._load_model)
-        assert "Conv1dQNet" in source
+        assert "_load_torch_model" in source
         assert "class HarvesterQNet" not in source
 
     def test_policy_uses_conv1d_qnet(self):
@@ -97,6 +98,7 @@ class TestConv1dQNetImports:
         import inspect
 
         from src.core.ctrader_ddqn_paper import Policy
+
         source = inspect.getsource(Policy.__init__)
         assert "Conv1dQNet" in source
         assert "class QNet" not in source

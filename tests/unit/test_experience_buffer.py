@@ -18,6 +18,7 @@ from src.utils.experience_buffer import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _state(dim: int = 7, seed: int = 0) -> np.ndarray:
     return np.random.default_rng(seed).standard_normal(dim).astype(np.float32)
 
@@ -40,6 +41,7 @@ def _fill_buffer(buf: ExperienceBuffer, n: int = 100, dim: int = 7):
 # Experience dataclass
 # ---------------------------------------------------------------------------
 
+
 class TestExperience:
     def test_fields(self):
         e = Experience(
@@ -60,6 +62,7 @@ class TestExperience:
 # RegimeSampling enum
 # ---------------------------------------------------------------------------
 
+
 class TestRegimeSampling:
     def test_values(self):
         assert RegimeSampling.TRENDING == 0
@@ -70,6 +73,7 @@ class TestRegimeSampling:
 # ---------------------------------------------------------------------------
 # ExperienceBuffer init
 # ---------------------------------------------------------------------------
+
 
 class TestExperienceBufferInit:
     def test_defaults(self):
@@ -87,6 +91,7 @@ class TestExperienceBufferInit:
 # ---------------------------------------------------------------------------
 # add()
 # ---------------------------------------------------------------------------
+
 
 class TestAdd:
     def test_add_increments_size(self):
@@ -132,6 +137,7 @@ class TestAdd:
 # sample()
 # ---------------------------------------------------------------------------
 
+
 class TestSample:
     def test_returns_none_when_insufficient(self):
         buf = ExperienceBuffer(capacity=100)
@@ -165,6 +171,7 @@ class TestSample:
 # update_priorities()
 # ---------------------------------------------------------------------------
 
+
 class TestUpdatePriorities:
     def test_update_priorities(self):
         buf = ExperienceBuffer(capacity=200, seed=42)
@@ -195,6 +202,7 @@ class TestUpdatePriorities:
 # staleness / regime
 # ---------------------------------------------------------------------------
 
+
 class TestStalenessAndRegime:
     def test_staleness_new_experience(self):
         buf = ExperienceBuffer(capacity=10)
@@ -221,6 +229,7 @@ class TestStalenessAndRegime:
 # get_stats / size
 # ---------------------------------------------------------------------------
 
+
 class TestStats:
     def test_size_property(self):
         buf = ExperienceBuffer(capacity=50)
@@ -231,8 +240,16 @@ class TestStats:
         buf = ExperienceBuffer(capacity=50)
         _fill_buffer(buf, 20)
         stats = buf.get_stats()
-        for key in ("size", "capacity", "utilization", "total_added",
-                     "total_sampled", "beta", "current_regime", "total_priority"):
+        for key in (
+            "size",
+            "capacity",
+            "utilization",
+            "total_added",
+            "total_sampled",
+            "beta",
+            "current_regime",
+            "total_priority",
+        ):
             assert key in stats
 
     def test_utilization(self):
@@ -314,8 +331,8 @@ class TestISWeightCorrectness:
 # Staleness halflife utility
 # ---------------------------------------------------------------------------
 
-class TestStalenessHalflife:
 
+class TestStalenessHalflife:
     def test_timeframe_agnostic(self):
         """M1, M5, and H1 all produce the same wall-clock halflife."""
         h_m1 = staleness_halflife_for_timeframe(1)
@@ -342,9 +359,7 @@ class TestStalenessHalflife:
 
     def test_d1_same_wall_clock(self):
         """D1 (1440 min timeframe) gives same halflife as M5 — instrument agnostic."""
-        assert staleness_halflife_for_timeframe(1440) == pytest.approx(
-            staleness_halflife_for_timeframe(5)
-        )
+        assert staleness_halflife_for_timeframe(1440) == pytest.approx(staleness_halflife_for_timeframe(5))
 
     def test_buffer_auto_computes_halflife(self):
         """ExperienceBuffer with no explicit halflife auto-derives from timeframe."""

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Emergency position closer - submits market orders to close all positions.
+"""Emergency position closer - submits market orders to close all positions.
 Run this to clean up orphaned positions after testing.
 
 Usage:
@@ -20,14 +19,14 @@ import quickfix as fix
 import quickfix44 as fix44
 
 
-def close_positions(symbol_id: int, quantity: float, side_to_close: str):
-    """
-    Submit market order to close positions.
+def close_positions(symbol_id: int, quantity: float, side_to_close: str) -> None:
+    """Submit market order to close positions.
 
     Args:
         symbol_id: Symbol ID (e.g., 10028 for BTCUSD)
         quantity: Total quantity to close
         side_to_close: "LONG" or "SHORT" - which side to close
+
     """
     print(f"Closing {quantity} {side_to_close} positions for symbol {symbol_id}")
 
@@ -46,10 +45,10 @@ def close_positions(symbol_id: int, quantity: float, side_to_close: str):
 
     # Create session
     class SimpleApplication(fix.Application):
-        def onCreate(self, sessionID):
+        def onCreate(self, sessionID) -> None:
             print(f"Session created: {sessionID}")
 
-        def onLogon(self, sessionID):
+        def onLogon(self, sessionID) -> None:
             print(f"Logged on: {sessionID}")
 
             # Submit close order
@@ -65,19 +64,19 @@ def close_positions(symbol_id: int, quantity: float, side_to_close: str):
             fix.Session.sendToTarget(msg, sessionID)
             print(f"✓ Submitted {side_name} order: {clord_id} for {quantity}")
 
-        def onLogout(self, sessionID):
+        def onLogout(self, sessionID) -> None:
             print(f"Logged out: {sessionID}")
 
-        def toAdmin(self, message, sessionID):
+        def toAdmin(self, message, sessionID) -> None:
             pass
 
-        def fromAdmin(self, message, sessionID):
+        def fromAdmin(self, message, sessionID) -> None:
             pass
 
-        def toApp(self, message, sessionID):
+        def toApp(self, message, sessionID) -> None:
             pass
 
-        def fromApp(self, message, sessionID):
+        def fromApp(self, message, _sessionID) -> None:
             msg_type = fix.MsgType()
             message.getHeader().getField(msg_type)
 

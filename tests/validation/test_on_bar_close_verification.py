@@ -248,9 +248,9 @@ def verify_on_bar_close_sequence():
     print(f"   • Conditional (may skip): {len(optional_steps)}")
 
     for step in steps:
-        print(f"\n{'='*80}")
+        print(f"\n{'=' * 80}")
         print(f"STEP {step['num']:2d}: {step['name']} {'(REQUIRED)' if step['required'] else '(CONDITIONAL)'}")
-        print(f"{'='*80}")
+        print(f"{'=' * 80}")
         print(f"📍 Line: {step['line']}")
         print(f"✅ Verified: {step['verified']}")
         print("\n💻 CODE:")

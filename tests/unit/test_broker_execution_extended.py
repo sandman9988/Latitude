@@ -44,16 +44,18 @@ class TestAdjustPositionSizeExtended:
 class TestExecutionCostsBreakdown:
     def test_sell_fill_below_mid(self):
         model = BrokerExecutionModel()
-        costs = model.estimate_execution_costs(
-            side=OrderSide.SELL, quantity=0.10, mid_price=50000.0
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.SELL, quantity=0.10, mid_price=50000.0)
         assert costs.expected_fill_price < 50000.0
 
     def test_zero_spread_only_base_slippage(self):
         model = BrokerExecutionModel(base_slippage_bps=5.0)
         costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0,
-            spread_bps=0.0, regime="UNKNOWN", typical_quantity=0.10,
+            side=OrderSide.BUY,
+            quantity=0.10,
+            mid_price=50000.0,
+            spread_bps=0.0,
+            regime="UNKNOWN",
+            typical_quantity=0.10,
         )
         # Only base slippage + zero spread + zero size impact
         assert costs.total_slippage_bps == pytest.approx(5.0)
@@ -61,16 +63,16 @@ class TestExecutionCostsBreakdown:
     def test_small_typical_qty_large_size_impact(self):
         model = BrokerExecutionModel(size_impact_coefficient=10.0)
         costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=1.0, mid_price=50000.0,
+            side=OrderSide.BUY,
+            quantity=1.0,
+            mid_price=50000.0,
             typical_quantity=0.01,  # Very small typical → huge ratio
         )
         assert costs.size_impact_bps > 50.0
 
     def test_cost_adjusted_size_always_less(self):
         model = BrokerExecutionModel()
-        costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0)
         assert costs.cost_adjusted_size < 0.10
 
 

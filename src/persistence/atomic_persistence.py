@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""
-Atomic Persistence Module
+"""Atomic Persistence Module
 Implements crash-safe file operations with CRC32 checksums and backup/restore
-Based on Master Handbook defensive persistence requirements
+Based on Master Handbook defensive persistence requirements.
 """
 
 import contextlib
@@ -20,8 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class AtomicPersistence:
-    """
-    Atomic file operations with CRC32 checksums
+    """Atomic file operations with CRC32 checksums.
 
     Write strategy:
     1. Write to temp file
@@ -32,13 +30,12 @@ class AtomicPersistence:
 
     MAX_BACKUPS = 3  # Keep last N versions
 
-    def __init__(self, base_dir: str = "."):
+    def __init__(self, base_dir: str = ".") -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def save_json(self, data: dict[str, Any], filename: str, create_backup: bool = True) -> bool:
-        """
-        Save JSON with atomic write and CRC32
+        """Save JSON with atomic write and CRC32.
 
         Args:
             data: Dictionary to save
@@ -47,6 +44,7 @@ class AtomicPersistence:
 
         Returns:
             True if successful, False otherwise
+
         """
         target_path = self.base_dir / filename
 
@@ -72,7 +70,8 @@ class AtomicPersistence:
                 # Validate CRC32 is in expected range
                 if not isinstance(crc32, int) or crc32 < 0 or crc32 > 0xFFFFFFFF:
                     logger.error("Invalid CRC32 value: %s for %s", crc32, filename)
-                    raise ValueError(f"CRC32 calculation failed: {crc32}")
+                    msg = f"CRC32 calculation failed: {crc32}"
+                    raise ValueError(msg)
 
                 # Create envelope with CRC
                 envelope_data: dict[str, Any] = {
@@ -96,19 +95,18 @@ class AtomicPersistence:
                 logger.info("Saved %s (CRC32: %08x)", filename, crc32)
                 return True
 
-            except (OSError, ValueError) as inner_e:
+            except (OSError, ValueError):
                 # Clean up temp file on error
                 with contextlib.suppress(OSError):
                     os.unlink(temp_path)
-                raise inner_e
+                raise
 
         except (OSError, ValueError) as e:
             logger.error("Failed to save %s: %s", filename, e)
             return False
 
-    def load_json(self, filename: str, verify_crc: bool = True) -> dict[str, Any] | None:  # noqa: PLR0911
-        """
-        Load JSON with CRC32 verification
+    def load_json(self, filename: str, verify_crc: bool = True) -> dict[str, Any] | None:
+        """Load JSON with CRC32 verification.
 
         Args:
             filename: File to load (relative to base_dir)
@@ -116,6 +114,7 @@ class AtomicPersistence:
 
         Returns:
             Data dict if successful, None on error
+
         """
         target_path = self.base_dir / filename
 
@@ -160,17 +159,16 @@ class AtomicPersistence:
                             return self._restore_from_backup(filename)
 
                     logger.info("Loaded %s (CRC32: %08x)", filename, stored_crc)
-                    return cast(dict[str, Any], data)
-                else:
-                    # Legacy format (no envelope)
-                    logger.warning("%s uses legacy format (no CRC)", filename)
+                    return cast("dict[str, Any]", data)
+                # Legacy format (no envelope)
+                logger.warning("%s uses legacy format (no CRC)", filename)
 
-                    # Defensive: Validate legacy data is dict
-                    if not isinstance(envelope_data, dict):
-                        logger.error("%s: Legacy data is not a dict (type: %s)", filename, type(envelope_data))
-                        return None
+                # Defensive: Validate legacy data is dict
+                if not isinstance(envelope_data, dict):
+                    logger.error("%s: Legacy data is not a dict (type: %s)", filename, type(envelope_data))
+                    return None
 
-                    return cast(dict[str, Any], envelope_data)
+                return cast("dict[str, Any]", envelope_data)
 
             except json.JSONDecodeError as decode_e:
                 logger.error("JSON decode failed for %s: %s", filename, decode_e)
@@ -181,7 +179,7 @@ class AtomicPersistence:
             return None
 
     def _create_backup(self, target_path: Path) -> bool:
-        """Create timestamped backup of file"""
+        """Create timestamped backup of file."""
         try:
             timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             backup_name = f"{target_path.name}.{timestamp}.bak"
@@ -226,7 +224,7 @@ class AtomicPersistence:
             logger.warning("Backup cleanup failed: %s", e)
 
     def _restore_from_backup(self, filename: str) -> dict[str, Any] | None:
-        """Attempt to restore from most recent backup"""
+        """Attempt to restore from most recent backup."""
         target_path = self.base_dir / filename
         pattern = f"{filename}.*.bak"
 
@@ -249,15 +247,15 @@ class AtomicPersistence:
 
             # If it's an envelope, extract data
             if isinstance(data, dict) and "data" in data:
-                return cast(dict[str, Any], data["data"])
-            return cast(dict[str, Any], data)
+                return cast("dict[str, Any]", data["data"])
+            return cast("dict[str, Any]", data)
 
         except (OSError, json.JSONDecodeError) as e:
             logger.error("Restore from backup failed: %s", e)
             return None
 
     def list_backups(self, filename: str) -> list[str]:
-        """List available backups for a file"""
+        """List available backups for a file."""
         target_path = self.base_dir / filename
         pattern = f"{filename}.*.bak"
 
@@ -267,8 +265,7 @@ class AtomicPersistence:
 
 
 class JournaledPersistence(AtomicPersistence):
-    """
-    Extended persistence with write-ahead logging
+    """Extended persistence with write-ahead logging.
 
     Write strategy:
     1. Write operation to journal
@@ -277,7 +274,7 @@ class JournaledPersistence(AtomicPersistence):
     4. Periodically clean committed entries
     """
 
-    def __init__(self, base_dir: str = ".", journal_name: str = "persistence.journal"):
+    def __init__(self, base_dir: str = ".", journal_name: str = "persistence.journal") -> None:
         super().__init__(base_dir)
         self.journal_path = self.base_dir / journal_name
         self._recover_from_journal()
@@ -325,7 +322,7 @@ class JournaledPersistence(AtomicPersistence):
             logger.error("Journal recovery failed: %s", e)
 
     def _journal_write(self, operation: str, filename: str, data_hash: int | None = None) -> bool:
-        """Write operation to journal"""
+        """Write operation to journal."""
         try:
             entry = {
                 "timestamp": datetime.now(UTC).isoformat(),
@@ -347,7 +344,7 @@ class JournaledPersistence(AtomicPersistence):
             return False
 
     def _journal_commit(self, filename: str) -> bool:
-        """Mark journal entry as committed"""
+        """Mark journal entry as committed."""
         # For simplicity, we just log the commit
         # Full implementation would update the journal file
         logger.debug("Committed: %s", filename)

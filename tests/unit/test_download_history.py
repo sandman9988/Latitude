@@ -2,6 +2,7 @@
 Unit tests for scripts/download_ctrader_history.py
 (pure utility functions only — no network calls).
 """
+
 from __future__ import annotations
 
 import datetime
@@ -14,19 +15,17 @@ import pytest
 
 # Add scripts/ to path so we can import the module directly
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-import download_ctrader_history as dch  # noqa: E402
+import download_ctrader_history as dch
 
 # ---------------------------------------------------------------------------
 # _load_tokens_file
 # ---------------------------------------------------------------------------
 
+
 class TestLoadTokensFile:
     def test_parses_export_lines(self, tmp_path):
         f = tmp_path / "tokens"
-        f.write_text(
-            'export CTRADER_CLIENT_ID="abc123"\n'
-            'export CTRADER_CLIENT_SECRET="secret"\n'
-        )
+        f.write_text('export CTRADER_CLIENT_ID="abc123"\nexport CTRADER_CLIENT_SECRET="secret"\n')
         result = dch._load_tokens_file(f)
         assert result["CTRADER_CLIENT_ID"] == "abc123"
         assert result["CTRADER_CLIENT_SECRET"] == "secret"
@@ -37,11 +36,7 @@ class TestLoadTokensFile:
 
     def test_ignores_comments_and_blank_lines(self, tmp_path):
         f = tmp_path / "tokens"
-        f.write_text(
-            "# This is a comment\n"
-            "\n"
-            'export KEY="value"\n'
-        )
+        f.write_text('# This is a comment\n\nexport KEY="value"\n')
         result = dch._load_tokens_file(f)
         assert result == {"KEY": "value"}
 
@@ -55,6 +50,7 @@ class TestLoadTokensFile:
 # ---------------------------------------------------------------------------
 # _get_cred
 # ---------------------------------------------------------------------------
+
 
 class TestGetCred:
     def test_cli_takes_priority_over_env(self):
@@ -82,22 +78,19 @@ class TestGetCred:
 # _detect_account_id_from_fix_cfg
 # ---------------------------------------------------------------------------
 
+
 class TestDetectAccountId:
     def test_parses_demo_sendercompid(self, tmp_path):
         cfg_dir = tmp_path / "config"
         cfg_dir.mkdir()
-        (cfg_dir / "ctrader_quote.cfg").write_text(
-            "[DEFAULT]\nSenderCompID=demo.pepperstone.5179095\n"
-        )
+        (cfg_dir / "ctrader_quote.cfg").write_text("[DEFAULT]\nSenderCompID=demo.pepperstone.5179095\n")
         result = dch._detect_account_id_from_fix_cfg(tmp_path)
         assert result == "5179095"
 
     def test_parses_live_sendercompid(self, tmp_path):
         cfg_dir = tmp_path / "config"
         cfg_dir.mkdir()
-        (cfg_dir / "ctrader_quote.cfg").write_text(
-            "[DEFAULT]\nSenderCompID=live.broker.9988776\n"
-        )
+        (cfg_dir / "ctrader_quote.cfg").write_text("[DEFAULT]\nSenderCompID=live.broker.9988776\n")
         result = dch._detect_account_id_from_fix_cfg(tmp_path)
         assert result == "9988776"
 
@@ -116,6 +109,7 @@ class TestDetectAccountId:
 # ---------------------------------------------------------------------------
 # _dt_to_ms / _ms_to_dt round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestTimestampConversion:
     def test_epoch_zero(self):
@@ -140,6 +134,7 @@ class TestTimestampConversion:
 # _parse_date (CLI argument type)
 # ---------------------------------------------------------------------------
 
+
 class TestParseDate:
     def test_iso_format(self):
         assert dch._parse_date("2024-01-15") == datetime.datetime(2024, 1, 15)
@@ -152,6 +147,7 @@ class TestParseDate:
 
     def test_invalid_raises(self):
         import argparse
+
         with pytest.raises(argparse.ArgumentTypeError):
             dch._parse_date("not-a-date")
 
@@ -159,6 +155,7 @@ class TestParseDate:
 # ---------------------------------------------------------------------------
 # Timeframe mapping completeness
 # ---------------------------------------------------------------------------
+
 
 class TestTimeframePeriodMap:
     def test_common_timeframes_present(self):
@@ -182,6 +179,7 @@ class TestTimeframePeriodMap:
 # ---------------------------------------------------------------------------
 # MAX_BARS_PER_REQUEST constant
 # ---------------------------------------------------------------------------
+
 
 class TestConstants:
     def test_max_bars_is_4096(self):

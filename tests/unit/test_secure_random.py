@@ -88,6 +88,7 @@ class TestSecureRandomPassword:
 
     def test_password_empty_alphabet_raises(self):
         import pytest
+
         with pytest.raises(ValueError):
             SecureRandom.password(
                 use_digits=False,

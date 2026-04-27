@@ -29,7 +29,8 @@ from src.risk.var_estimator import VaREstimator
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
+
+@pytest.fixture
 def var_estimator():
     """VaREstimator pre-loaded with sample data."""
     est = VaREstimator(window=100, confidence=0.95)
@@ -39,12 +40,12 @@ def var_estimator():
     return est
 
 
-@pytest.fixture()
+@pytest.fixture
 def circuit_breakers():
     return CircuitBreakerManager()
 
 
-@pytest.fixture()
+@pytest.fixture
 def rm(circuit_breakers, var_estimator):
     """Standard RiskManager for most tests."""
     return RiskManager(

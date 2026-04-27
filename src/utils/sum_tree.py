@@ -1,5 +1,4 @@
-"""
-Sum Tree for Prioritized Experience Replay
+"""Sum Tree for Prioritized Experience Replay.
 
 Binary tree where each node stores the sum of its children's priorities.
 Enables O(log n) sampling and updates for experience replay.
@@ -7,14 +6,14 @@ Enables O(log n) sampling and updates for experience replay.
 References:
 - Schaul et al. (2016) "Prioritized Experience Replay"
 - OpenAI Baselines implementation
+
 """
 
 import numpy as np
 
 
 class SumTree:
-    """
-    Binary sum tree for O(log n) priority-based sampling.
+    """Binary sum tree for O(log n) priority-based sampling.
 
     Structure:
         - Leaf nodes: Store priorities for each experience
@@ -27,13 +26,13 @@ class SumTree:
         - get_priority(idx): O(1) - Retrieve leaf priority
     """
 
-    def __init__(self, capacity: int, seed: int | None = None):
-        """
-        Initialize sum tree with fixed capacity.
+    def __init__(self, capacity: int, seed: int | None = None) -> None:
+        """Initialize sum tree with fixed capacity.
 
         Args:
             capacity: Maximum number of leaf nodes (experiences)
             seed: Random seed for reproducibility (default: None for non-deterministic)
+
         """
         self.capacity = capacity
         self.write_index = 0
@@ -46,13 +45,13 @@ class SumTree:
         # Total: 2 * capacity - 1
         self.tree = np.zeros(2 * capacity - 1, dtype=np.float64)
 
-    def _propagate(self, idx: int, change: float):
-        """
-        Propagate priority change up the tree.
+    def _propagate(self, idx: int, change: float) -> None:
+        """Propagate priority change up the tree.
 
         Args:
             idx: Tree index (leaf or internal node)
             change: Delta to add to ancestors
+
         """
         parent = (idx - 1) // 2
         self.tree[parent] += change
@@ -61,8 +60,7 @@ class SumTree:
             self._propagate(parent, change)
 
     def _retrieve(self, idx: int, value: float) -> int:
-        """
-        Traverse tree to find leaf with cumulative priority >= value.
+        """Traverse tree to find leaf with cumulative priority >= value.
 
         Args:
             idx: Current node index (start at root=0)
@@ -70,6 +68,7 @@ class SumTree:
 
         Returns:
             Leaf index in tree array
+
         """
         left = 2 * idx + 1
         right = left + 1
@@ -81,20 +80,19 @@ class SumTree:
         # Traverse left if value <= left sum
         if value <= self.tree[left]:
             return self._retrieve(left, value)
-        else:
-            # Traverse right, subtract left sum from value
-            return self._retrieve(right, value - self.tree[left])
+        # Traverse right, subtract left sum from value
+        return self._retrieve(right, value - self.tree[left])
 
     def total(self) -> float:
         """Get total sum of all priorities (root value)."""
         return self.tree[0]
 
-    def add(self, priority: float):
-        """
-        Add new priority at current write position.
+    def add(self, priority: float) -> None:
+        """Add new priority at current write position.
 
         Args:
             priority: Priority value (typically |TD error|^alpha)
+
         """
         idx = self.write_index + self.capacity - 1
         self.update(idx, priority)
@@ -102,75 +100,74 @@ class SumTree:
         self.write_index = (self.write_index + 1) % self.capacity
         self.n_entries = min(self.n_entries + 1, self.capacity)
 
-    def update(self, idx: int, priority: float):
-        """
-        Update priority at tree index and propagate change.
+    def update(self, idx: int, priority: float) -> None:
+        """Update priority at tree index and propagate change.
 
         Args:
             idx: Tree index (in range [capacity-1, 2*capacity-2])
             priority: New priority value
+
         """
         change = priority - self.tree[idx]
         self.tree[idx] = priority
         self._propagate(idx, change)
 
     def get(self, idx: int) -> float:
-        """
-        Get priority at tree index.
+        """Get priority at tree index.
 
         Args:
             idx: Tree index
 
         Returns:
             Priority value
+
         """
         return self.tree[idx]
 
     def sample(self, value: float) -> int:
-        """
-        Sample leaf index by cumulative priority.
+        """Sample leaf index by cumulative priority.
 
         Args:
             value: Random value in [0, total()]
 
         Returns:
             Data index (in range [0, capacity-1])
+
         """
         tree_idx = self._retrieve(0, value)
-        data_idx = tree_idx - self.capacity + 1
-        return data_idx
+        return tree_idx - self.capacity + 1
 
     def get_priority(self, data_idx: int) -> float:
-        """
-        Get priority for data index.
+        """Get priority for data index.
 
         Args:
             data_idx: Data index in [0, capacity-1]
 
         Returns:
             Priority value
+
         """
         tree_idx = data_idx + self.capacity - 1
         return self.tree[tree_idx]
 
-    def batch_update(self, data_indices: np.ndarray, priorities: np.ndarray):
-        """
-        Batch update priorities (more efficient than individual updates).
+    def batch_update(self, data_indices: np.ndarray, priorities: np.ndarray) -> None:
+        """Batch update priorities (more efficient than individual updates).
 
         Args:
             data_indices: Array of data indices
             priorities: Array of new priority values
+
         """
         for data_idx, priority in zip(data_indices, priorities, strict=False):
             tree_idx = data_idx + self.capacity - 1
             self.update(tree_idx, priority)
 
     def get_stats(self) -> dict:
-        """
-        Get statistics about current tree state.
+        """Get statistics about current tree state.
 
         Returns:
             Dictionary with min/max/mean priorities, total sum
+
         """
         if self.n_entries == 0:
             return {"total": 0.0, "min": 0.0, "max": 0.0, "mean": 0.0, "n_entries": 0}
@@ -190,8 +187,7 @@ class SumTree:
 
 
 class PrioritizedReplayBuffer:
-    """
-    Experience replay buffer with prioritized sampling.
+    """Experience replay buffer with prioritized sampling.
 
     Key features:
     - Sum tree for O(log n) sampling by TD error
@@ -200,7 +196,7 @@ class PrioritizedReplayBuffer:
     - Priority statistics tracking
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         capacity: int,
         state_dim: int,
@@ -208,9 +204,8 @@ class PrioritizedReplayBuffer:
         beta_start: float = 0.4,
         beta_frames: int = 100000,
         epsilon: float = 1e-6,
-    ):
-        """
-        Initialize prioritized replay buffer.
+    ) -> None:
+        """Initialize prioritized replay buffer.
 
         Args:
             capacity: Maximum buffer size
@@ -219,6 +214,7 @@ class PrioritizedReplayBuffer:
             beta_start: Initial importance sampling exponent
             beta_frames: Frames to anneal beta from beta_start to 1.0
             epsilon: Small constant added to priorities
+
         """
         self.capacity = capacity
         self.state_dim = state_dim
@@ -249,16 +245,16 @@ class PrioritizedReplayBuffer:
         self.rng = np.random.default_rng()  # RNG for stratified sampling
 
     def _get_beta(self) -> float:
-        """
-        Get current beta value (annealed from beta_start to 1.0).
+        """Get current beta value (annealed from beta_start to 1.0).
 
         Returns:
             Current beta value
+
         """
         progress = min(self.frame_count / self.beta_frames, 1.0)
         return self.beta_start + progress * (1.0 - self.beta_start)
 
-    def add(  # noqa: PLR0913
+    def add(
         self,
         state: np.ndarray,
         action: int,
@@ -267,9 +263,8 @@ class PrioritizedReplayBuffer:
         done: bool,
         regime_tag: int = 0,
         timestamp: float = 0.0,
-    ):
-        """
-        Add experience with maximum priority.
+    ) -> None:
+        """Add experience with maximum priority.
 
         Args:
             state: Current state
@@ -279,6 +274,7 @@ class PrioritizedReplayBuffer:
             done: Terminal flag
             regime_tag: Optional regime identifier
             timestamp: Optional timestamp
+
         """
         # Store experience
         self.states[self.position] = state
@@ -298,8 +294,7 @@ class PrioritizedReplayBuffer:
         self.size = min(self.size + 1, self.capacity)
 
     def sample(self, batch_size: int) -> tuple:
-        """
-        Sample batch using prioritized sampling with importance weights.
+        """Sample batch using prioritized sampling with importance weights.
 
         Args:
             batch_size: Number of experiences to sample
@@ -307,13 +302,16 @@ class PrioritizedReplayBuffer:
         Returns:
             Tuple of (states, actions, rewards, next_states, dones,
                      indices, weights, regime_tags)
+
         """
         if self.size == 0:
-            raise ValueError("Cannot sample from empty buffer")
+            msg = "Cannot sample from empty buffer"
+            raise ValueError(msg)
 
         batch_size = min(batch_size, self.size)
         if batch_size <= 0:
-            raise ValueError("batch_size must be > 0")
+            msg = "batch_size must be > 0"
+            raise ValueError(msg)
 
         # Stratified sampling (divide priority range into segments)
         indices = np.zeros(batch_size, dtype=np.int32)
@@ -355,13 +353,13 @@ class PrioritizedReplayBuffer:
 
         return (states, actions, rewards, next_states, dones, indices, weights, regime_tags)
 
-    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray):
-        """
-        Update priorities based on TD errors.
+    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray) -> None:
+        """Update priorities based on TD errors.
 
         Args:
             indices: Data indices to update
             td_errors: TD error values (used to compute priorities)
+
         """
         for idx, td_error in zip(indices, td_errors, strict=False):
             # Priority = |TD error|^alpha + epsilon
@@ -376,11 +374,11 @@ class PrioritizedReplayBuffer:
         return self.size
 
     def get_stats(self) -> dict:
-        """
-        Get buffer statistics.
+        """Get buffer statistics.
 
         Returns:
             Dictionary with size, beta, priority stats
+
         """
         tree_stats = self.tree.get_stats()
 

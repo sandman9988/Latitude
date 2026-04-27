@@ -60,14 +60,14 @@ def _sample_rows(n=20, *, seed=42, include_dual_agent=False):
     return rows
 
 
-@pytest.fixture()
+@pytest.fixture
 def csv_path(tmp_path):
     path = str(tmp_path / "trades.csv")
     _make_csv(_sample_rows(20), path)
     return path
 
 
-@pytest.fixture()
+@pytest.fixture
 def dual_csv_path(tmp_path):
     path = str(tmp_path / "dual_trades.csv")
     _make_csv(_sample_rows(20, include_dual_agent=True), path)
@@ -243,6 +243,7 @@ class TestMainCli:
         assert ret == 0
         # Clean up auto-exported file
         import glob
+
         for f in glob.glob("analysis_*.json"):
             os.unlink(f)
 

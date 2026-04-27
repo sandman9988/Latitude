@@ -4,6 +4,7 @@ named constants, and edge-case protection across risk/utility modules.
 """
 
 import logging
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -13,6 +14,7 @@ import pytest
 # RiskManager division guards & named constants
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestRiskManagerCapitalAllocation:
     """Test capital allocation division safety."""
 
@@ -21,6 +23,7 @@ class TestRiskManagerCapitalAllocation:
         from src.risk.circuit_breakers import CircuitBreakerManager
         from src.risk.risk_manager import RiskManager
         from src.risk.var_estimator import VaREstimator
+
         cb = CircuitBreakerManager()
         var = VaREstimator()
         rm = RiskManager(circuit_breakers=cb, var_estimator=var)
@@ -50,7 +53,7 @@ class TestRiskManagerCapitalAllocation:
         risk_mgr.correlation_matrix = np.ones((len(symbols), len(symbols)))
         risk_mgr.returns_history = {s: list(range(100)) for s in symbols}
         # Make _compute_diversification_scores return all zeros
-        risk_mgr._compute_diversification_scores = lambda syms: {s: 0.0 for s in syms}
+        risk_mgr._compute_diversification_scores = lambda syms: dict.fromkeys(syms, 0.0)
 
         result = risk_mgr.allocate_capital_by_correlation(symbols, 100_000.0)
         assert len(result) == len(symbols)
@@ -65,14 +68,17 @@ class TestRiskManagerNamedConstants:
 
     def test_circuit_breaker_factor_exists(self):
         from src.risk.risk_manager import CIRCUIT_BREAKER_BUDGET_FACTOR
+
         assert 0 < CIRCUIT_BREAKER_BUDGET_FACTOR < 1
 
     def test_uncorrelated_reserve_exists(self):
         from src.risk.risk_manager import UNCORRELATED_RESERVE_FRACTION
+
         assert 0 < UNCORRELATED_RESERVE_FRACTION < 1
 
     def test_confidence_epsilon_exists(self):
         from src.risk.risk_manager import CONFIDENCE_EPSILON
+
         assert CONFIDENCE_EPSILON > 0
 
 
@@ -80,9 +86,11 @@ class TestRiskManagerNamedConstants:
 # SumTree batch_size guard
 # ══════════════════════════════════════════════════════════════════════════════
 
+
 class TestSumTreeBatchSizeGuard:
     def test_zero_batch_size_raises(self):
         from src.utils.sum_tree import PrioritizedReplayBuffer
+
         buf = PrioritizedReplayBuffer(capacity=100, state_dim=4)
         # Add one experience
         buf.add(np.zeros(4), 0, 1.0, np.zeros(4), False)
@@ -91,6 +99,7 @@ class TestSumTreeBatchSizeGuard:
 
     def test_normal_batch_size_works(self):
         from src.utils.sum_tree import PrioritizedReplayBuffer
+
         buf = PrioritizedReplayBuffer(capacity=100, state_dim=4)
         for i in range(10):
             buf.add(np.ones(4) * i, 0, 1.0, np.ones(4) * (i + 1), False)
@@ -101,6 +110,7 @@ class TestSumTreeBatchSizeGuard:
 # ══════════════════════════════════════════════════════════════════════════════
 # FrictionCosts silent except → logged
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestFrictionCostsLogging:
     def test_invalid_digits_logs_warning(self, caplog):
@@ -118,6 +128,7 @@ class TestFrictionCostsLogging:
 # ══════════════════════════════════════════════════════════════════════════════
 # _get_live_qty silent except → logged
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestGetLiveQtyLogging:
     def test_trade_manager_exception_logs_warning(self):
@@ -156,10 +167,10 @@ class TestHarvesterCloseRewardUnits:
         bot.entry_imbalance = 0.0
 
         class RewardSpy:
-            def __init__(self):
+            def __init__(self) -> None:
                 self.exit_pnl = None
 
-            def calculate_harvester_reward(self, **kwargs):
+            def calculate_harvester_reward(self, **kwargs: Any) -> dict:
                 self.exit_pnl = kwargs["exit_pnl"]
                 return {"harvester_reward": -1.25}
 
@@ -185,11 +196,11 @@ class TestHarvesterCloseRewardUnits:
 
         bot._add_harvester_experience_for_close(
             summary=summary,
-            pnl=350.0,
+            _pnl=350.0,
             entry_price=1.1000,
             exit_price=1.1007,
             pnl_pts=0.0007,
-            shaped_rewards={},
+            _shaped_rewards={},
             trigger_reward=0.0,
         )
 
@@ -202,6 +213,7 @@ class TestHarvesterCloseRewardUnits:
 # ══════════════════════════════════════════════════════════════════════════════
 # DDQNNetwork optimizer load → logged
 # ══════════════════════════════════════════════════════════════════════════════
+
 
 class TestDDQNOptimizerLoadLogging:
     def test_bad_optimizer_state_logs_warning(self, tmp_path, caplog):

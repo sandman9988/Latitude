@@ -41,7 +41,7 @@ def test_per_agent_calibration():
         risk_mgr.update_decision_outcome(
             decision_type="entry", confidence=0.7, approved=True, actual_outcome=outcome, agent_id="trigger"
         )
-        print(f"   Trigger trade {i+1}: {'Win' if outcome else 'Loss'}")
+        print(f"   Trigger trade {i + 1}: {'Win' if outcome else 'Loss'}")
 
     # Get TriggerAgent calibration
     trigger_calib = risk_mgr.get_probability_calibration("trigger")
@@ -64,7 +64,7 @@ def test_per_agent_calibration():
         risk_mgr.update_decision_outcome(
             decision_type="exit", confidence=0.9, approved=True, actual_outcome=outcome, agent_id="harvester"
         )
-        print(f"   Harvester trade {i+1}: {'Win' if outcome else 'Loss'}")
+        print(f"   Harvester trade {i + 1}: {'Win' if outcome else 'Loss'}")
 
     # Get HarvesterAgent calibration
     harvester_calib = risk_mgr.get_probability_calibration("harvester")
@@ -112,7 +112,7 @@ def test_composite_probability_predictor():
         outcomes = [True] * int(win_rate * 10) + [False] * int((1 - win_rate) * 10)
         for outcome in outcomes:
             risk_mgr.update_decision_outcome("entry", conf, True, outcome, "trigger")
-        print(f"   - {conf:.0%} confidence: {int(win_rate*100)}% win rate")
+        print(f"   - {conf:.0%} confidence: {int(win_rate * 100)}% win rate")
 
     # HarvesterAgent: Overconfident at all levels
     print("   HarvesterAgent (overconfident):")

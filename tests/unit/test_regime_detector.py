@@ -97,12 +97,12 @@ class TestRegimeDetectorInit:
 class TestAddPrice:
     def test_invalid_price_skipped(self):
         d = RegimeDetector()
-        regime, zeta = d.add_price(-1.0)
+        regime, _zeta = d.add_price(-1.0)
         assert regime == "UNKNOWN"
 
     def test_none_price_skipped(self):
         d = RegimeDetector()
-        regime, zeta = d.add_price(None)
+        regime, _zeta = d.add_price(None)
         assert regime == "UNKNOWN"
 
     def test_buffer_grows(self):
@@ -132,17 +132,17 @@ class TestAddPrice:
 class TestRegimeClassification:
     def test_trending_market(self):
         d = RegimeDetector(window_size=50, update_interval=5)
-        regime, zeta = _feed_prices(d, _trending_prices(60))
+        regime, _zeta = _feed_prices(d, _trending_prices(60))
         assert regime == "TRENDING"
 
     def test_mean_reverting_market(self):
         d = RegimeDetector(window_size=50, update_interval=5)
-        regime, zeta = _feed_prices(d, _mean_reverting_prices(80))
+        regime, _zeta = _feed_prices(d, _mean_reverting_prices(80))
         assert regime == "MEAN_REVERTING"
 
     def test_random_walk_transitional(self):
         d = RegimeDetector(window_size=50, update_interval=5)
-        regime, zeta = _feed_prices(d, _random_walk_prices(60))
+        regime, _zeta = _feed_prices(d, _random_walk_prices(60))
         # Random walk → near ζ≈1.0 → TRANSITIONAL
         assert regime in ("TRANSITIONAL", "TRENDING", "MEAN_REVERTING")
 
@@ -150,7 +150,7 @@ class TestRegimeClassification:
         # window_size must be > MIN_RETURNS_REQUIRED(10) so that
         # diff(prices) yields enough returns for _update_regime()
         d = RegimeDetector(window_size=12, update_interval=1)
-        regime, zeta = _feed_prices(d, [100_000.0] * 20)
+        regime, _zeta = _feed_prices(d, [100_000.0] * 20)
         assert regime == "TRANSITIONAL"
 
 

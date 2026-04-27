@@ -178,7 +178,16 @@ class TestGetStats:
         buf = ExperienceBuffer(capacity=100, seed=0)
         _fill_buffer(buf, n=50)
         stats = buf.get_stats()
-        for key in ["size", "capacity", "utilization", "total_added", "total_sampled", "beta", "current_regime", "total_priority"]:
+        for key in [
+            "size",
+            "capacity",
+            "utilization",
+            "total_added",
+            "total_sampled",
+            "beta",
+            "current_regime",
+            "total_priority",
+        ]:
             assert key in stats
 
     def test_utilization_correct(self):

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Fetch real account balance, equity, and margin from the cTrader Open API
+"""Fetch real account balance, equity, and margin from the cTrader Open API
 and write the result to data/account_balance.json.
 
 The bot and HUD read this file to display the live Pepperstone balance
@@ -59,6 +58,7 @@ OUTPUT_FILE = "data/account_balance.json"
 # Credential loading  (shared pattern with download_ctrader_history.py)
 # ---------------------------------------------------------------------------
 
+
 def _load_tokens_file(path: Path) -> dict[str, str]:
     """Parse a shell-export key=value file and return a dict."""
     result: dict[str, str] = {}
@@ -80,10 +80,13 @@ def _get_cred(name: str, tokens_file: dict[str, str], cli_value: str | None) -> 
         return os.environ[name]
     if name in tokens_file:
         return tokens_file[name]
-    raise SystemExit(
+    msg = (
         f"Missing credential {name!r}.\n"
         f"  Set it via --{name.lower().replace('_', '-')},\n"
         f"  export {name}=..., or add it to config/cTraderAppTokens."
+    )
+    raise SystemExit(
+        msg
     )
 
 
@@ -104,6 +107,7 @@ def _detect_account_id(project_root: Path) -> str | None:
 # Core: connect → auth → fetch balance → write JSON
 # ---------------------------------------------------------------------------
 
+
 def fetch_and_write(
     *,
     host: str,
@@ -113,8 +117,7 @@ def fetch_and_write(
     account_id: int,
     output_path: Path,
 ) -> dict | None:
-    """
-    Connect to cTrader Open API, authenticate, request trader info,
+    """Connect to cTrader Open API, authenticate, request trader info,
     and write balance data to *output_path*.
 
     Returns the balance dict on success, None on error.
@@ -134,25 +137,25 @@ def fetch_and_write(
 
     result: dict = {"error": None, "data": None}
 
-    def on_error(failure):
+    def on_error(failure) -> None:
         result["error"] = str(failure)
         LOG.error("Open API error: %s", failure)
         if reactor.running:
             reactor.stop()
 
-    def run(client):
+    def run(client) -> None:
         # Step 1: Application auth
         app_req = ProtoOAApplicationAuthReq()
         app_req.clientId = client_id
         app_req.clientSecret = client_secret
         app_d: defer.Deferred = defer.Deferred()
 
-        def on_app_auth(client, message):
+        def on_app_auth(_client, message) -> None:
             if message.payloadType == 2101:  # ProtoOAApplicationAuthRes
                 app_d.callback(None)
 
         client.setMessageReceivedCallback(on_app_auth)
-        client.sendProtoMessage(app_req)
+        client.send(app_req)
 
         @app_d.addCallback
         def account_auth(_):
@@ -161,12 +164,12 @@ def fetch_and_write(
             acc_req.accessToken = access_token
             acc_d: defer.Deferred = defer.Deferred()
 
-            def on_acc_auth(client, message):
+            def on_acc_auth(_client, message) -> None:
                 if message.payloadType == 2103:  # ProtoOAAccountAuthRes
                     acc_d.callback(None)
 
             client.setMessageReceivedCallback(on_acc_auth)
-            client.sendProtoMessage(acc_req)
+            client.send(acc_req)
             return acc_d
 
         @app_d.addCallback
@@ -175,13 +178,13 @@ def fetch_and_write(
             trader_req.ctidTraderAccountId = account_id
             trader_d: defer.Deferred = defer.Deferred()
 
-            def on_trader(client, message):
+            def on_trader(_client, message) -> None:
                 if message.payloadType == 2122:  # ProtoOATraderRes
                     res = Protobuf.extract(message)
                     trader = res.trader
                     # balance is in cents (integer) — divide by 10^moneyDigits
-                    money_digits = trader.moneyDigits if trader.moneyDigits else 2
-                    divisor = 10 ** money_digits
+                    money_digits = trader.moneyDigits or 2
+                    divisor = 10**money_digits
                     balance = trader.balance / divisor
 
                     now = datetime.datetime.now(datetime.UTC)
@@ -202,11 +205,11 @@ def fetch_and_write(
                     trader_d.callback(data)
 
             client.setMessageReceivedCallback(on_trader)
-            client.sendProtoMessage(trader_req)
+            client.send(trader_req)
             return trader_d
 
         @app_d.addCallback
-        def done(data):
+        def done(data) -> None:
             # Write JSON atomically
             output_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = output_path.with_suffix(".tmp")
@@ -227,7 +230,7 @@ def fetch_and_write(
 
     client = Client(host, PORT, TcpProtocol)
     client.setConnectedCallback(run)
-    client.setDisconnectedCallback(lambda c, reason: None)
+    client.setDisconnectedCallback(lambda _c, _reason: None)
     client.startService()
 
     # Timeout: if nothing happens in 20 s, stop
@@ -244,6 +247,7 @@ def fetch_and_write(
 # OAuth2 auth flow (reused from download_ctrader_history.py)
 # ---------------------------------------------------------------------------
 
+
 def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
     """Launch the OAuth2 authorisation-code flow, return an access token."""
     import http.server
@@ -255,7 +259,7 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
     auth_code: list[str] = []
 
     class _Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
+        def do_GET(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
             params = urllib.parse.parse_qs(parsed.query)
             code = params.get("code", [None])[0]
@@ -268,7 +272,8 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
                 self.send_response(400)
                 self.end_headers()
                 self.wfile.write(b"<h2>No code received.</h2>")
-        def log_message(self, *_):
+
+        def log_message(self, *_) -> None:
             pass
 
     # Parse port from redirect_uri
@@ -292,30 +297,35 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
     server.server_close()
 
     if not auth_code:
-        raise SystemExit("No authorisation code received within 120 s.")
+        msg = "No authorisation code received within 120 s."
+        raise SystemExit(msg)
 
     # Exchange code for token
     token_url = "https://openapi.ctrader.com/apps/token"
-    data = urllib.parse.urlencode({
-        "grant_type": "authorization_code",
-        "code": auth_code[0],
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "redirect_uri": redirect_uri,
-    }).encode()
+    data = urllib.parse.urlencode(
+        {
+            "grant_type": "authorization_code",
+            "code": auth_code[0],
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+        }
+    ).encode()
     req = urllib.request.Request(token_url, data=data, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         body = json.loads(resp.read())
 
     access_token = body.get("accessToken") or body.get("access_token")
     if not access_token:
-        raise SystemExit(f"Token exchange failed: {body}")
+        msg = f"Token exchange failed: {body}"
+        raise SystemExit(msg)
     return access_token
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
@@ -329,18 +339,12 @@ def main(argv: list[str] | None = None) -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("--auth", action="store_true",
-                    help="Run OAuth2 flow to obtain an access token, then exit.")
-    ap.add_argument("--loop", action="store_true",
-                    help="Run continuously, polling every --interval seconds.")
-    ap.add_argument("--interval", type=int, default=300,
-                    help="Polling interval in seconds (default: 300 = 5 min).")
-    ap.add_argument("--demo", action="store_true", default=True,
-                    help="Use demo server (default).")
-    ap.add_argument("--live", dest="demo", action="store_false",
-                    help="Use live server.")
-    ap.add_argument("--output", type=Path, default=None,
-                    help=f"Output JSON path (default: {OUTPUT_FILE}).")
+    ap.add_argument("--auth", action="store_true", help="Run OAuth2 flow to obtain an access token, then exit.")
+    ap.add_argument("--loop", action="store_true", help="Run continuously, polling every --interval seconds.")
+    ap.add_argument("--interval", type=int, default=300, help="Polling interval in seconds (default: 300 = 5 min).")
+    ap.add_argument("--demo", action="store_true", default=True, help="Use demo server (default).")
+    ap.add_argument("--live", dest="demo", action="store_false", help="Use live server.")
+    ap.add_argument("--output", type=Path, default=None, help=f"Output JSON path (default: {OUTPUT_FILE}).")
     ap.add_argument("--client-id", help="OAuth2 client ID")
     ap.add_argument("--client-secret", help="OAuth2 client secret")
     ap.add_argument("--access-token", help="OAuth2 access token")
@@ -368,11 +372,7 @@ def main(argv: list[str] | None = None) -> int:
 
     access_token = _get_cred("CTRADER_ACCESS_TOKEN", tokens_file, args.access_token)
 
-    raw_account = (
-        args.account_id
-        or os.environ.get("CTRADER_ACCOUNT_ID")
-        or _detect_account_id(root)
-    )
+    raw_account = args.account_id or os.environ.get("CTRADER_ACCOUNT_ID") or _detect_account_id(root)
     if not raw_account:
         ap.error("Cannot determine account ID.  Set CTRADER_ACCOUNT_ID or pass --account-id.")
     account_id = int(raw_account)
@@ -400,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
 
     stop = False
 
-    def _sigterm(*_):
+    def _sigterm(*_) -> None:
         nonlocal stop
         stop = True
 
@@ -408,13 +408,20 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, _sigterm)
 
     import subprocess
+
     cmd_base = [
-        sys.executable, __file__,
-        "--client-id", client_id,
-        "--client-secret", client_secret,
-        "--access-token", access_token,
-        "--account-id", str(account_id),
-        "--output", str(output_path),
+        sys.executable,
+        __file__,
+        "--client-id",
+        client_id,
+        "--client-secret",
+        client_secret,
+        "--access-token",
+        access_token,
+        "--account-id",
+        str(account_id),
+        "--output",
+        str(output_path),
     ]
     if not args.demo:
         cmd_base.append("--live")

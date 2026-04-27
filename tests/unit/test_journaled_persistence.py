@@ -17,6 +17,7 @@ from src.persistence.journaled_persistence import Journal, JournalEntry
 
 # ── JournalEntry ────────────────────────────────────────────────────────────
 
+
 class TestJournalEntry:
     def test_create(self):
         entry = JournalEntry(seq=1, ts="2025-01-01T00:00:00Z", op="test", data={"k": "v"})
@@ -31,6 +32,7 @@ class TestJournalEntry:
 
 
 # ── Journal init ────────────────────────────────────────────────────────────
+
 
 class TestJournalInit:
     def test_creates_directory(self, tmp_path):
@@ -66,6 +68,7 @@ class TestJournalInit:
 
 # ── _get_last_sequence ──────────────────────────────────────────────────────
 
+
 class TestGetLastSequence:
     def test_empty_file(self, tmp_path):
         jp = tmp_path / "journal.log"
@@ -89,6 +92,7 @@ class TestGetLastSequence:
 
 
 # ── log_operation ───────────────────────────────────────────────────────────
+
 
 class TestLogOperation:
     def test_returns_sequence(self, tmp_path):
@@ -131,6 +135,7 @@ class TestLogOperation:
 
 # ── Typed log helpers ──────────────────────────────────────────────────────
 
+
 class TestTypedLogHelpers:
     @pytest.fixture
     def journal(self, tmp_path):
@@ -140,6 +145,7 @@ class TestTypedLogHelpers:
 
     def test_log_trade_open(self, journal):
         import numpy as np
+
         seq = journal.log_trade_open("ORD1", "BUY", 0.01, 2000.0, entry_state=np.zeros(5))
         assert seq >= 1
         entry = journal.recent_operations[-1]
@@ -179,6 +185,7 @@ class TestTypedLogHelpers:
 
 # ── Checkpoint ──────────────────────────────────────────────────────────────
 
+
 class TestCheckpoint:
     def test_checkpoint_creates_file(self, tmp_path):
         j = Journal(str(tmp_path / "j.log"), checkpoint_interval=1000)
@@ -209,6 +216,7 @@ class TestCheckpoint:
 
 
 # ── replay_from_checkpoint ──────────────────────────────────────────────────
+
 
 class TestReplay:
     def test_replay_all_ops(self, tmp_path):
@@ -295,6 +303,7 @@ class TestReplay:
 
 # ── get_recent_operations ──────────────────────────────────────────────────
 
+
 class TestGetRecentOperations:
     def test_returns_recent(self, tmp_path):
         j = Journal(str(tmp_path / "j.log"), checkpoint_interval=1000)
@@ -315,6 +324,7 @@ class TestGetRecentOperations:
 
 # ── Context manager ────────────────────────────────────────────────────────
 
+
 class TestContextManager:
     def test_with_statement(self, tmp_path):
         jp = str(tmp_path / "j.log")
@@ -331,6 +341,7 @@ class TestContextManager:
 
 
 # ── Journal rotation ───────────────────────────────────────────────────────
+
 
 class TestJournalRotation:
     def test_should_rotate_false_for_small(self, tmp_path):

@@ -14,6 +14,7 @@ from src.persistence.learned_parameters import (
 # AdaptiveParam
 # ---------------------------------------------------------------------------
 
+
 class TestAdaptiveParam:
     def test_init_defaults(self):
         p = AdaptiveParam(name="x", value=0.5, min_bound=0.0, max_bound=1.0)
@@ -79,6 +80,7 @@ class TestAdaptiveParam:
 # ---------------------------------------------------------------------------
 # InstrumentParameters
 # ---------------------------------------------------------------------------
+
 
 class TestInstrumentParameters:
     def test_add_and_get(self):
@@ -149,8 +151,9 @@ class TestInstrumentParameters:
 # LearnedParametersManager
 # ---------------------------------------------------------------------------
 
+
 class TestLearnedParametersManager:
-    @pytest.fixture()
+    @pytest.fixture
     def manager(self, tmp_path):
         path = tmp_path / "params.json"
         return LearnedParametersManager(persistence_path=path)

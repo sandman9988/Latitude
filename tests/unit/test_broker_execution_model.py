@@ -18,6 +18,7 @@ from src.core.broker_execution_model import (
 
 # ── OrderSide ──────────────────────────────────────────────────────────────
 
+
 class TestOrderSide:
     def test_buy_value(self):
         assert OrderSide.BUY.value == 1
@@ -27,6 +28,7 @@ class TestOrderSide:
 
 
 # ── ExecutionCosts ─────────────────────────────────────────────────────────
+
 
 class TestExecutionCosts:
     def test_create(self):
@@ -43,6 +45,7 @@ class TestExecutionCosts:
 
 
 # ── BrokerExecutionModel defaults ─────────────────────────────────────────
+
 
 class TestBrokerInit:
     def test_default_params(self):
@@ -67,6 +70,7 @@ class TestBrokerInit:
 
 # ── estimate_execution_costs ──────────────────────────────────────────────
 
+
 class TestEstimateExecutionCosts:
     @pytest.fixture
     def model(self):
@@ -81,45 +85,31 @@ class TestEstimateExecutionCosts:
         )
 
     def test_buy_pays_above_mid(self, model):
-        costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0)
         assert costs.expected_fill_price > 50000.0
 
     def test_sell_receives_below_mid(self, model):
-        costs = model.estimate_execution_costs(
-            side=OrderSide.SELL, quantity=0.10, mid_price=50000.0
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.SELL, quantity=0.10, mid_price=50000.0)
         assert costs.expected_fill_price < 50000.0
 
     def test_spread_cost_is_half_spread(self, model):
-        costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, spread_bps=10.0
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, spread_bps=10.0)
         assert costs.spread_cost_bps == pytest.approx(5.0)
 
     def test_uses_typical_spread_when_none(self, model):
-        costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, spread_bps=None
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, spread_bps=None)
         assert costs.spread_cost_bps == model.typical_spread_bps / 2.0
 
     def test_base_slippage_present(self, model):
-        costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN"
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         assert costs.base_slippage_bps == pytest.approx(2.0)
 
     def test_no_regime_adjustment_for_unknown(self, model):
-        costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN"
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         assert costs.regime_adjustment_bps == pytest.approx(0.0)
 
     def test_volatile_regime_increases_cost(self, model):
-        normal = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN"
-        )
+        normal = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         volatile = model.estimate_execution_costs(
             side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="TRANSITIONAL"
         )
@@ -127,18 +117,14 @@ class TestEstimateExecutionCosts:
         assert volatile.regime_adjustment_bps > 0
 
     def test_trending_regime_increases_cost(self, model):
-        normal = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN"
-        )
+        normal = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         trending = model.estimate_execution_costs(
             side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="TRENDING"
         )
         assert trending.total_slippage_bps > normal.total_slippage_bps
 
     def test_mean_reverting_decreases_cost(self, model):
-        normal = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN"
-        )
+        normal = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         mr = model.estimate_execution_costs(
             side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="MEAN_REVERTING"
         )
@@ -167,19 +153,21 @@ class TestEstimateExecutionCosts:
             max_total_cost_bps=50.0,
         )
         costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=10.0, mid_price=50000.0,
-            regime="TRANSITIONAL", typical_quantity=0.10,
+            side=OrderSide.BUY,
+            quantity=10.0,
+            mid_price=50000.0,
+            regime="TRANSITIONAL",
+            typical_quantity=0.10,
         )
         assert costs.total_slippage_bps <= 50.0
 
     def test_cost_adjusted_size_less_than_original(self, model):
-        costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0
-        )
+        costs = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0)
         assert costs.cost_adjusted_size < 0.10
 
 
 # ── _get_regime_multiplier ────────────────────────────────────────────────
+
 
 class TestRegimeMultiplier:
     def test_transitional(self):
@@ -204,6 +192,7 @@ class TestRegimeMultiplier:
 
 
 # ── adjust_position_size_for_costs ────────────────────────────────────────
+
 
 class TestAdjustPositionSize:
     def test_adjusted_less_than_target(self):
@@ -244,6 +233,7 @@ class TestAdjustPositionSize:
 
 
 # ── State dict ─────────────────────────────────────────────────────────────
+
 
 class TestStateDict:
     def test_get_state_dict(self):

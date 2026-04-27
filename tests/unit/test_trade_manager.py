@@ -23,12 +23,12 @@ from src.core.trade_manager import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def mock_session_id():
     return MagicMock()
 
 
-@pytest.fixture()
+@pytest.fixture
 def manager(mock_session_id):
     """Basic TradeManager with paper_mode enabled."""
     return TradeManager(
@@ -66,6 +66,7 @@ class TestOrder:
     def test_remaining_qty_after_partial_fill(self):
         o = Order("c1", "1", Side.BUY, OrdType.LIMIT, 1.0, price=100.0)
         from src.utils.safe_math import SafeMath
+
         o.filled_qty = SafeMath.to_decimal(0.3, 2)
         assert float(o.remaining_qty()) == pytest.approx(0.7, abs=0.01)
 

@@ -1,5 +1,4 @@
-"""
-Agent Training Mixin — Shared DDQN online-learning logic
+"""Agent Training Mixin — Shared DDQN online-learning logic.
 =========================================================
 Eliminates ~250 lines of near-identical code that was duplicated
 between TriggerAgent and HarvesterAgent.
@@ -123,6 +122,8 @@ class AgentTrainingMixin:
     min_experiences: int = 0
     batch_size: int = 0
     training_steps: int = 0
+    _last_loss: float = 0.0
+    _last_training_time: str = ""
     last_state: np.ndarray | None = None
     ddqn: Any = None  # DDQNNetwork
 
@@ -295,6 +296,7 @@ class AgentTrainingMixin:
 
         Returns:
             Dictionary with training metrics, or None if insufficient data.
+
         """
         if not self.enable_training:
             return None
@@ -375,6 +377,9 @@ class AgentTrainingMixin:
             LOG.warning("[%s] No DDQN network - only updating priorities (no weight updates)", self._AGENT_TAG)
 
         self.training_steps += 1
+        self._last_loss = float(metrics.get("loss", 0.0))
+        import datetime as _dt  # noqa: PLC0415
+        self._last_training_time = _dt.datetime.now(_dt.UTC).isoformat()
 
         log_interval = (
             TRAINING_LOG_INTERVAL_EARLY if self.training_steps < TRAINING_STEPS_EARLY else TRAINING_LOG_INTERVAL_LATE
@@ -447,6 +452,9 @@ class AgentTrainingMixin:
             "total_sampled": buffer_stats["total_sampled"],
             "beta": buffer_stats["beta"],
             "ready_to_train": buffer_stats["size"] >= self.min_experiences,
+            "loss": self._last_loss,
+            "tau": float(self.ddqn.tau) if self.ddqn is not None else 0.005,
+            "last_training_time": self._last_training_time,
         }
         # Let subclasses append agent-specific keys
         stats.update(self._extra_training_stats())

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-BarExperienceCache
+"""BarExperienceCache.
 ==================
 Write raw-bar trade snapshots to a JSONL file so completed trades can be
 replayed through the current feature pipeline for offline DDQN training.
@@ -54,23 +53,24 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections import deque
 
 LOG = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SCHEMA_VERSION: int = 1
-DEFAULT_BARS_TO_STORE: int = 120   # Enough for all rolling stats (30-bar MA + headroom)
-MAX_CACHE_SIZE_MB: float = 500.0   # Soft cap — log warning when exceeded
+DEFAULT_BARS_TO_STORE: int = 120  # Enough for all rolling stats (30-bar MA + headroom)
+MAX_CACHE_SIZE_MB: float = 500.0  # Soft cap — log warning when exceeded
 
 
 def _default_cache_path(symbol: str, timeframe_minutes: int) -> str:
-    """
-    Build a per-instrument cache path.
+    """Build a per-instrument cache path.
 
     Examples
     --------
@@ -78,6 +78,7 @@ def _default_cache_path(symbol: str, timeframe_minutes: int) -> str:
     'data/training_cache_XAUUSD_M15.jsonl'
     >>> _default_cache_path("BTCUSD", 240)
     'data/training_cache_BTCUSD_M240.jsonl'
+
     """
     safe = symbol.replace("/", "-").replace("\\", "-")
     data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
@@ -85,8 +86,7 @@ def _default_cache_path(symbol: str, timeframe_minutes: int) -> str:
 
 
 class BarExperienceCache:
-    """
-    Thread-unsafe but exception-safe JSONL writer for bar-level trade experiences.
+    """Thread-unsafe but exception-safe JSONL writer for bar-level trade experiences.
 
     Writes one line per completed trade. Errors are always swallowed so the
     live bot is never disrupted by cache I/O failures.
@@ -120,14 +120,15 @@ class BarExperienceCache:
             self._ensure_dir()
             LOG.info(
                 "[CACHE] BarExperienceCache init: %s tf=%dm file=%s",
-                symbol, timeframe_minutes, self.cache_file,
+                symbol,
+                timeframe_minutes,
+                self.cache_file,
             )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def snapshot_entry(self, bars: deque) -> None:
-        """
-        Capture the current bars window at trade-entry time.
+        """Capture the current bars window at trade-entry time.
 
         Call this inside on_entry() *after* the position is confirmed so the
         snapshot reflects the market state the TriggerAgent actually saw.
@@ -136,11 +137,11 @@ class BarExperienceCache:
             return
         try:
             self._entry_bars_snapshot = self._serialise_bars(bars)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOG.debug("[CACHE] snapshot_entry failed: %s", exc)
             self._entry_bars_snapshot = None
 
-    def record_trade(  # noqa: PLR0913
+    def record_trade(
         self,
         *,
         bars: deque,
@@ -158,8 +159,7 @@ class BarExperienceCache:
         vpin_z: float = 0.0,
         depth_ratio: float = 1.0,
     ) -> None:
-        """
-        Append one trade record to the JSONL cache.
+        """Append one trade record to the JSONL cache.
 
         Call this immediately after adding both trigger and harvester experiences
         to the live PER buffer so all labels are ready.
@@ -198,7 +198,7 @@ class BarExperienceCache:
             # Reset entry snapshot so a missed snapshot_entry is obvious at next trade
             self._entry_bars_snapshot = None
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOG.warning("[CACHE] record_trade failed (trade not cached): %s", exc)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -223,9 +223,7 @@ class BarExperienceCache:
         try:
             size_mb = self.cache_file.stat().st_size / (1024 * 1024)
             if size_mb > MAX_CACHE_SIZE_MB:
-                LOG.warning(
-                    "[CACHE] training_cache.jsonl is %.1f MB — consider archiving.", size_mb
-                )
+                LOG.warning("[CACHE] training_cache.jsonl is %.1f MB — consider archiving.", size_mb)
         except OSError:
             pass
 

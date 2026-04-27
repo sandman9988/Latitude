@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Feature Engine - Instrument-Agnostic Feature Calculation
+"""Feature Engine - Instrument-Agnostic Feature Calculation.
 ==========================================================
 
 Handbook Reference: Section 4.7 - Feature Engineering
@@ -58,16 +57,14 @@ BALANCED_RANGE_POSITION: Final[float] = 0.5
 
 
 class LogNormalizer:
-    """
-    Logarithmic normalization (NOT Z-score)
-    Handbook Section 4.2: "Log-returns, BPS normalization"
+    """Logarithmic normalization (NOT Z-score)
+    Handbook Section 4.2: "Log-returns, BPS normalization".
     """
 
     @staticmethod
     def to_log_return(prices: np.ndarray) -> np.ndarray:
-        """
-        Convert prices to log-returns: r_t = ln(P_t / P_{t-1})
-        Additive across time, instrument-agnostic
+        """Convert prices to log-returns: r_t = ln(P_t / P_{t-1})
+        Additive across time, instrument-agnostic.
         """
         if len(prices) < MIN_PRICE_POINTS:
             return np.array([])
@@ -81,19 +78,18 @@ class LogNormalizer:
 
     @staticmethod
     def to_bps(value: float) -> float:
-        """Convert decimal to basis points (1 BPS = 0.0001 = 0.01%)"""
+        """Convert decimal to basis points (1 BPS = 0.0001 = 0.01%)."""
         return value * BPS_MULTIPLIER
 
     @staticmethod
     def from_bps(value: float) -> float:
-        """Convert basis points to decimal"""
+        """Convert basis points to decimal."""
         return value / BPS_MULTIPLIER
 
     @staticmethod
     def log_normalize(values: np.ndarray, baseline: float = 1.0) -> np.ndarray:
-        """
-        Logarithmic normalization: ln(value / baseline)
-        NOT z-score (mean=0, std=1) - preserves multiplicative relationships
+        """Logarithmic normalization: ln(value / baseline)
+        NOT z-score (mean=0, std=1) - preserves multiplicative relationships.
         """
         if len(values) == 0:
             return np.array([])
@@ -103,12 +99,11 @@ class LogNormalizer:
         normalized = np.log(values_positive / baseline)
 
         # Clean NaN/Inf
-        return cast(np.ndarray, np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0))
+        return cast("np.ndarray", np.nan_to_num(normalized, nan=0.0, posinf=0.0, neginf=0.0))
 
 
 class RogerSatchellVolatility:
-    """
-    Roger-Satchell Volatility Estimator
+    """Roger-Satchell Volatility Estimator.
 
     Advantages over Parkinson/Garman-Klass:
     - Handles trending markets (drift-independent)
@@ -120,16 +115,15 @@ class RogerSatchellVolatility:
     Handbook Reference: Section 4.7 - "Roger-Satchell volatility"
     """
 
-    def __init__(self, min_bars: int = 10):
-        """
-        Args:
-            min_bars: Minimum bars for calculation (defensive)
+    def __init__(self, min_bars: int = 10) -> None:
+        """Args:
+        min_bars: Minimum bars for calculation (defensive).
+
         """
         self.min_bars = max(5, min_bars)
 
     def calculate(self, highs: np.ndarray, lows: np.ndarray, opens: np.ndarray, closes: np.ndarray) -> dict[str, float]:
-        """
-        Calculate Roger-Satchell volatility
+        """Calculate Roger-Satchell volatility.
 
         Returns:
             {
@@ -137,6 +131,7 @@ class RogerSatchellVolatility:
                 'rs_variance': float,    # Variance component
                 'valid': bool            # Calculation succeeded
             }
+
         """
         result = {"rs_volatility": 0.0, "rs_variance": 0.0, "valid": False}
 
@@ -177,8 +172,7 @@ class RogerSatchellVolatility:
 
 
 class OmegaRatio:
-    """
-    Omega Ratio - Probability-weighted ratio of gains to losses
+    """Omega Ratio - Probability-weighted ratio of gains to losses.
 
     Omega(threshold) = E[max(R - threshold, 0)] / E[max(threshold - R, 0)]
 
@@ -190,16 +184,15 @@ class OmegaRatio:
     Handbook Reference: "Omega % (upside potential / downside risk ratio)"
     """
 
-    def __init__(self, threshold_bps: float = 0.0):
-        """
-        Args:
-            threshold_bps: Threshold in basis points (default 0 = breakeven)
+    def __init__(self, threshold_bps: float = 0.0) -> None:
+        """Args:
+        threshold_bps: Threshold in basis points (default 0 = breakeven).
+
         """
         self.threshold = threshold_bps / BPS_MULTIPLIER  # Convert BPS to decimal
 
     def calculate(self, returns: np.ndarray) -> dict[str, float]:
-        """
-        Calculate Omega ratio
+        """Calculate Omega ratio.
 
         Returns:
             {
@@ -209,6 +202,7 @@ class OmegaRatio:
                 'downside': float,     # Expected downside
                 'valid': bool
             }
+
         """
         result = {"omega": 1.0, "omega_pct": 100.0, "upside": 0.0, "downside": 0.0, "valid": False}
 
@@ -246,8 +240,7 @@ class OmegaRatio:
 
 
 class PhysicsFeatures:
-    """
-    Physics-Based Price Features
+    """Physics-Based Price Features.
 
     Treats price as position, derives:
     - Velocity (momentum) = dP/dt
@@ -263,12 +256,11 @@ class PhysicsFeatures:
     Handbook Reference: "Physics: momentum, acceleration, jerk"
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize PhysicsFeatures calculator. No configuration required."""
 
     def calculate(self, log_returns: np.ndarray) -> dict[str, float]:
-        """
-        Calculate physics-based features from log-returns
+        """Calculate physics-based features from log-returns.
 
         Args:
             log_returns: Array of log-returns (already normalized)
@@ -283,6 +275,7 @@ class PhysicsFeatures:
                 'accel_std': float,     # Volatility of acceleration
                 'valid': bool
             }
+
         """
         result = {
             "velocity": 0.0,
@@ -346,15 +339,13 @@ class PhysicsFeatures:
 
 
 class LogReturnStatistics:
-    """
-    Statistical features from log-returns
+    """Statistical features from log-returns.
 
     All normalized logarithmically (NOT z-score)
     """
 
     def calculate(self, log_returns: np.ndarray) -> dict[str, float]:
-        """
-        Calculate statistical features
+        """Calculate statistical features.
 
         Returns:
             {
@@ -368,6 +359,7 @@ class LogReturnStatistics:
                 'asymmetry_ratio': float,   # Upside/downside
                 'valid': bool
             }
+
         """
         result = {
             "mean_return": 0.0,
@@ -438,15 +430,13 @@ class LogReturnStatistics:
 
 
 class RangeFeatures:
-    """
-    BPS-normalized range features
+    """BPS-normalized range features.
 
     All normalized to basis points (instrument-agnostic)
     """
 
     def calculate(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> dict[str, float]:
-        """
-        Calculate range-based features
+        """Calculate range-based features.
 
         Returns:
             {
@@ -457,6 +447,7 @@ class RangeFeatures:
                 'range_expansion': float,    # Rate of range change
                 'valid': bool
             }
+
         """
         result = {
             "true_range_bps": 0.0,
@@ -527,8 +518,7 @@ class RangeFeatures:
 
 
 class FeatureEngine:
-    """
-    Master Feature Engine - Instrument-Agnostic Feature Calculation
+    """Master Feature Engine - Instrument-Agnostic Feature Calculation.
 
     Combines all feature calculators following handbook principles:
     - NO magic numbers
@@ -540,12 +530,12 @@ class FeatureEngine:
     Handbook Reference: Section 4.7 - Feature Engineering
     """
 
-    def __init__(self, adaptive_window: bool = True, min_window: int = 20, max_window: int = 100):
-        """
-        Args:
-            adaptive_window: Use volatility-adaptive window sizes
-            min_window: Minimum window size
-            max_window: Maximum window size
+    def __init__(self, adaptive_window: bool = True, min_window: int = 20, max_window: int = 100) -> None:
+        """Args:
+        adaptive_window: Use volatility-adaptive window sizes
+        min_window: Minimum window size
+        max_window: Maximum window size.
+
         """
         self.adaptive_window = adaptive_window
         self.min_window = min_window
@@ -562,8 +552,7 @@ class FeatureEngine:
         logger.info("FeatureEngine initialized with adaptive windows")
 
     def _determine_window(self, volatility: float) -> int:
-        """
-        Adaptive window sizing based on volatility
+        """Adaptive window sizing based on volatility.
 
         High volatility → smaller window (faster adaptation)
         Low volatility → larger window (more stable estimates)
@@ -576,21 +565,20 @@ class FeatureEngine:
         vol_ratio = SafeMath.safe_div(volatility, BASELINE_VOL, default=1.0)
 
         target_window = self.max_window / vol_ratio
-        window = int(SafeMath.clamp(target_window, self.min_window, self.max_window))
+        return int(SafeMath.clamp(target_window, self.min_window, self.max_window))
 
-        return window
 
     def calculate_all(
         self, highs: np.ndarray, lows: np.ndarray, opens: np.ndarray, closes: np.ndarray
     ) -> dict[str, float | int | bool]:
-        """
-        Calculate all features from OHLC data
+        """Calculate all features from OHLC data.
 
         Args:
             highs, lows, opens, closes: Price arrays (same length)
 
         Returns:
             Dictionary with all features (30+ features)
+
         """
         features: dict[str, float | int | bool] = {"valid": False, "window_size": self.min_window}
 
@@ -654,7 +642,7 @@ class FeatureEngine:
         return features
 
     def get_feature_names(self) -> list[str]:
-        """Get list of all feature names"""
+        """Get list of all feature names."""
         test_rng = default_rng(42)
         dummy_data = test_rng.standard_normal(100) + 100  # Dummy prices
         features = self.calculate_all(dummy_data, dummy_data * 0.99, dummy_data * 1.01, dummy_data)

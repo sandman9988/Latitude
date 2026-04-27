@@ -1,5 +1,4 @@
-"""
-ring_buffer.py
+"""ring_buffer.py.
 ==============
 O(1) rolling statistics using ring buffers.
 
@@ -35,6 +34,7 @@ import logging
 import math
 import sys
 from collections import deque
+from typing import Iterator
 
 LOG = logging.getLogger(__name__)
 
@@ -45,25 +45,25 @@ MIN_SPEEDUP_EXPECTED: float = 1.5
 
 
 class RingBuffer:
-    """
-    Fixed-size circular buffer with O(1) append.
+    """Fixed-size circular buffer with O(1) append.
 
     When buffer fills, oldest value is automatically discarded.
     Useful as base for rolling statistics.
     """
 
-    def __init__(self, capacity: int):
-        """
-        Args:
-            capacity: Maximum number of elements to store
+    def __init__(self, capacity: int) -> None:
+        """Args:
+        capacity: Maximum number of elements to store.
+
         """
         if capacity < 1:
-            raise ValueError(f"Capacity must be >= 1, got {capacity}")
+            msg = f"Capacity must be >= 1, got {capacity}"
+            raise ValueError(msg)
         self.capacity = capacity
         self.buffer: deque[float] = deque(maxlen=capacity)
         self.count = 0  # Total items added (not capped at capacity)
 
-    def append(self, value: float):
+    def append(self, value: float) -> None:
         """Add new value, discarding oldest if full."""
         self.buffer.append(value)
         self.count += 1
@@ -80,14 +80,13 @@ class RingBuffer:
         """Access by index (0 = oldest, -1 = newest)."""
         return self.buffer[index]
 
-    def __iter__(self):
+    def __iter__(self) -> "Iterator[float]":
         """Iterate from oldest to newest."""
         return iter(self.buffer)
 
 
 class RollingMean:
-    """
-    O(1) rolling mean using incremental update.
+    """O(1) rolling mean using incremental update.
 
     Instead of recalculating sum()/N every bar:
     1. Track running sum
@@ -98,22 +97,22 @@ class RollingMean:
     Complexity: O(1) per update vs O(N) for naive approach.
     """
 
-    def __init__(self, period: int):
-        """
-        Args:
-            period: Rolling window size
+    def __init__(self, period: int) -> None:
+        """Args:
+        period: Rolling window size.
+
         """
         self.period = period
         self.buffer = RingBuffer(period)
         self.sum = 0.0
         self.value = 0.0  # Current mean
 
-    def update(self, new_value: float):
-        """
-        Add new value and update mean incrementally.
+    def update(self, new_value: float) -> None:
+        """Add new value and update mean incrementally.
 
         Args:
             new_value: New data point
+
         """
         if self.buffer.is_full():
             # Remove oldest value from sum
@@ -134,8 +133,7 @@ class RollingMean:
 
 
 class RollingVariance:
-    """
-    O(1) rolling variance using Welford's algorithm.
+    """O(1) rolling variance using Welford's algorithm.
 
     Welford's algorithm:
     - Numerically stable (avoids catastrophic cancellation)
@@ -149,11 +147,11 @@ class RollingVariance:
     Reference: https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford's_online_algorithm
     """
 
-    def __init__(self, period: int, min_periods: int = 2):
-        """
-        Args:
-            period: Rolling window size
-            min_periods: Minimum samples before variance is valid (default 2)
+    def __init__(self, period: int, min_periods: int = 2) -> None:
+        """Args:
+        period: Rolling window size
+        min_periods: Minimum samples before variance is valid (default 2).
+
         """
         self.period = period
         self.min_periods = max(2, min_periods)
@@ -166,14 +164,14 @@ class RollingVariance:
         self.variance = 0.0
         self.std = 0.0
 
-    def update(self, new_value: float):
-        """
-        Add new value and update variance incrementally.
+    def update(self, new_value: float) -> None:
+        """Add new value and update variance incrementally.
 
         Uses Welford's algorithm for numerical stability.
 
         Args:
             new_value: New data point
+
         """
         n = len(self.buffer)
 
@@ -217,7 +215,7 @@ class RollingVariance:
             self.variance = 0.0
             self.std = 0.0
 
-    def _reset(self):
+    def _reset(self) -> None:
         """Reset tracker to initial state (for recovery from corrupted state)."""
         self.buffer = RingBuffer(self.period)
         self.mean = 0.0
@@ -236,8 +234,7 @@ class RollingVariance:
 
 
 class RollingMinMax:
-    """
-    O(1) amortized rolling min/max using monotonic deque.
+    """O(1) amortized rolling min/max using monotonic deque.
 
     Traditional approach: O(N) to find min/max over window
     Monotonic deque: O(1) amortized per update
@@ -251,10 +248,10 @@ class RollingMinMax:
     For max: same logic but decreasing order.
     """
 
-    def __init__(self, period: int):
-        """
-        Args:
-            period: Rolling window size
+    def __init__(self, period: int) -> None:
+        """Args:
+        period: Rolling window size.
+
         """
         self.period = period
         self.min_deque: deque[tuple[float, int]] = deque()  # (value, index)
@@ -264,12 +261,12 @@ class RollingMinMax:
         self.min_value = float("inf")
         self.max_value = float("-inf")
 
-    def update(self, new_value: float):
-        """
-        Add new value and update min/max.
+    def update(self, new_value: float) -> None:
+        """Add new value and update min/max.
 
         Args:
             new_value: New data point
+
         """
         current_idx = self.index
         self.index += 1
@@ -306,24 +303,23 @@ class RollingMinMax:
 
 
 class RollingStats:
-    """
-    Combined O(1) rolling statistics.
+    """Combined O(1) rolling statistics.
 
     Tracks mean, std, min, max simultaneously with constant-time updates.
     Ideal for real-time trading systems.
     """
 
-    def __init__(self, period: int):
-        """
-        Args:
-            period: Rolling window size
+    def __init__(self, period: int) -> None:
+        """Args:
+        period: Rolling window size.
+
         """
         self.period = period
         self.mean_tracker = RollingMean(period)
         self.var_tracker = RollingVariance(period)
         self.minmax_tracker = RollingMinMax(period)
 
-    def update(self, new_value: float):
+    def update(self, new_value: float) -> None:
         """Add new value and update all stats."""
         self.mean_tracker.update(new_value)
         self.var_tracker.update(new_value)

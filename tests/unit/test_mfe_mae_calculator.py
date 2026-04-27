@@ -77,15 +77,15 @@ class TestLongPosition:
         assert self.calc.mfe == 10.0  # MFE stays at peak
 
     def test_mae_is_monotonically_increasing(self):
-        self.calc.update(90.0)   # MAE=10
-        self.calc.update(95.0)   # price recovers
+        self.calc.update(90.0)  # MAE=10
+        self.calc.update(95.0)  # price recovers
         assert self.calc.mae == 10.0  # MAE stays at worst
 
     def test_mfe_and_mae_both_accumulate(self):
         self.calc.update(110.0)  # MFE=10
-        self.calc.update(88.0)   # MAE=12
+        self.calc.update(88.0)  # MAE=12
         self.calc.update(115.0)  # MFE=15
-        self.calc.update(85.0)   # MAE=15
+        self.calc.update(85.0)  # MAE=15
         assert self.calc.mfe == 15.0
         assert self.calc.mae == 15.0
 
@@ -112,8 +112,8 @@ class TestShortPosition:
         assert self.calc.mae == 5.0
 
     def test_mfe_monotonic_short(self):
-        self.calc.update(90.0)   # MFE=10
-        self.calc.update(95.0)   # price rebounds
+        self.calc.update(90.0)  # MFE=10
+        self.calc.update(95.0)  # price rebounds
         assert self.calc.mfe == 10.0
 
     def test_mae_monotonic_short(self):
@@ -132,14 +132,14 @@ class TestWinnerToLoser:
         calc = MFEMAECalculator()
         calc.start(100.0, 1)
         calc.update(110.0)  # was profitable
-        calc.update(95.0)   # now losing
+        calc.update(95.0)  # now losing
         assert calc.winner_to_loser is True
 
     def test_wtl_clears_on_recovery(self):
         calc = MFEMAECalculator()
         calc.start(100.0, 1)
         calc.update(110.0)  # profit
-        calc.update(95.0)   # loss → WTL
+        calc.update(95.0)  # loss → WTL
         calc.update(105.0)  # recovery → WTL clears
         assert calc.winner_to_loser is False
 
@@ -152,7 +152,7 @@ class TestWinnerToLoser:
     def test_wtl_short_position(self):
         calc = MFEMAECalculator()
         calc.start(100.0, -1)
-        calc.update(90.0)   # profit for short
+        calc.update(90.0)  # profit for short
         calc.update(105.0)  # loss → WTL
         assert calc.winner_to_loser is True
 
@@ -201,8 +201,13 @@ class TestEdgeCases:
         calc.update(110.0)
         s = calc.get_summary()
         assert set(s.keys()) == {
-            "entry_price", "direction", "mfe", "mae",
-            "best_profit", "worst_loss", "winner_to_loser",
+            "entry_price",
+            "direction",
+            "mfe",
+            "mae",
+            "best_profit",
+            "worst_loss",
+            "winner_to_loser",
         }
         assert s["direction"] == "LONG"
         assert s["mfe"] == 10.0

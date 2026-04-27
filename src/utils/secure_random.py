@@ -1,5 +1,4 @@
-"""
-Secure Random Number Generation Utilities
+"""Secure Random Number Generation Utilities.
 ==========================================
 Provides cryptographically secure random number generation for security-sensitive contexts.
 
@@ -24,11 +23,11 @@ For non-security randomness, use:
 
 import secrets
 import string
+from typing import Any
 
 
 class SecureRandom:
-    """
-    Cryptographically secure random number generation.
+    """Cryptographically secure random number generation.
 
     Uses Python's secrets module, which is designed for security-sensitive applications.
     All methods use a CSPRNG (cryptographically secure pseudorandom number generator)
@@ -40,8 +39,7 @@ class SecureRandom:
 
     @staticmethod
     def token_hex(nbytes: int = 32) -> str:
-        """
-        Generate a secure random hex token.
+        """Generate a secure random hex token.
 
         Args:
             nbytes: Number of random bytes (default 32)
@@ -53,13 +51,13 @@ class SecureRandom:
             >>> token = SecureRandom.token_hex(16)
             >>> len(token)
             32
+
         """
         return secrets.token_hex(nbytes)
 
     @staticmethod
     def token_urlsafe(nbytes: int = 32) -> str:
-        """
-        Generate a secure random URL-safe token.
+        """Generate a secure random URL-safe token.
 
         Uses base64 encoding, safe for URLs and filenames.
 
@@ -71,13 +69,13 @@ class SecureRandom:
 
         Example:
             >>> api_key = SecureRandom.token_urlsafe(32)
+
         """
         return secrets.token_urlsafe(nbytes)
 
     @staticmethod
     def token_bytes(nbytes: int = 32) -> bytes:
-        """
-        Generate secure random bytes.
+        """Generate secure random bytes.
 
         Args:
             nbytes: Number of random bytes (default 32)
@@ -87,13 +85,13 @@ class SecureRandom:
 
         Example:
             >>> key = SecureRandom.token_bytes(32)  # 256-bit key
+
         """
         return secrets.token_bytes(nbytes)
 
     @staticmethod
     def randbelow(exclusive_upper_bound: int) -> int:
-        """
-        Generate a secure random integer in range [0, n).
+        """Generate a secure random integer in range [0, n).
 
         Args:
             exclusive_upper_bound: Upper bound (exclusive)
@@ -103,13 +101,13 @@ class SecureRandom:
 
         Example:
             >>> dice_roll = SecureRandom.randbelow(6) + 1  # 1-6
+
         """
         return secrets.randbelow(exclusive_upper_bound)
 
     @staticmethod
-    def choice(sequence: list | tuple | str):
-        """
-        Choose a secure random element from a sequence.
+    def choice(sequence: list | tuple | str) -> Any:
+        """Choose a secure random element from a sequence.
 
         Args:
             sequence: Non-empty sequence
@@ -119,13 +117,13 @@ class SecureRandom:
 
         Example:
             >>> action = SecureRandom.choice(['allow', 'deny'])
+
         """
         return secrets.choice(sequence)
 
     @staticmethod
     def session_token(length: int = 32) -> str:
-        """
-        Generate a secure session token.
+        """Generate a secure session token.
 
         Suitable for session IDs, CSRF tokens, etc.
 
@@ -137,13 +135,13 @@ class SecureRandom:
 
         Example:
             >>> session_id = SecureRandom.session_token()
+
         """
         return secrets.token_hex(length)
 
     @staticmethod
     def api_key(length: int = 32) -> str:
-        """
-        Generate a secure API key.
+        """Generate a secure API key.
 
         URL-safe format, suitable for API authentication.
 
@@ -155,6 +153,7 @@ class SecureRandom:
 
         Example:
             >>> api_key = SecureRandom.api_key()
+
         """
         return secrets.token_urlsafe(length)
 
@@ -166,8 +165,7 @@ class SecureRandom:
         use_lowercase: bool = True,
         use_punctuation: bool = False,
     ) -> str:
-        """
-        Generate a secure random password.
+        """Generate a secure random password.
 
         Args:
             length: Password length (default 16)
@@ -181,6 +179,7 @@ class SecureRandom:
 
         Example:
             >>> pwd = SecureRandom.password(20, use_punctuation=True)
+
         """
         # Table-driven: map each flag to its character set
         charsets = [
@@ -192,7 +191,8 @@ class SecureRandom:
         enabled = [cs for flag, cs in charsets if flag]
 
         if not enabled:
-            raise ValueError("At least one character set must be enabled")
+            msg = "At least one character set must be enabled"
+            raise ValueError(msg)
 
         alphabet = "".join(enabled)
 
@@ -209,8 +209,7 @@ class SecureRandom:
 
     @staticmethod
     def nonce(nbytes: int = 16) -> str:
-        """
-        Generate a cryptographic nonce (number used once).
+        """Generate a cryptographic nonce (number used once).
 
         Suitable for OAuth state parameters, challenge-response, etc.
 
@@ -222,13 +221,13 @@ class SecureRandom:
 
         Example:
             >>> nonce = SecureRandom.nonce()
+
         """
         return secrets.token_hex(nbytes)
 
     @staticmethod
     def compare_digest(a: str | bytes, b: str | bytes) -> bool:
-        """
-        Timing-attack resistant string comparison.
+        """Timing-attack resistant string comparison.
 
         Use this to compare security tokens, passwords, etc.
         Regular == comparison can leak timing information.
@@ -243,6 +242,7 @@ class SecureRandom:
         Example:
             >>> if SecureRandom.compare_digest(provided_token, stored_token):
             ...     # Token is valid
+
         """
         return secrets.compare_digest(a, b)
 

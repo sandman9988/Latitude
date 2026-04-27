@@ -11,8 +11,7 @@ from src.core.reward_integrity_monitor import RewardIntegrityMonitor, RewardPnLP
 # ---------------------------------------------------------------------------
 class TestRewardPnLPair:
     def test_fields(self):
-        p = RewardPnLPair(ts="2025-01-01T00:00:00Z", reward=1.0, pnl=2.0,
-                          components={"a": 0.5}, trade_id=1)
+        p = RewardPnLPair(ts="2025-01-01T00:00:00Z", reward=1.0, pnl=2.0, components={"a": 0.5}, trade_id=1)
         assert p.reward == pytest.approx(1.0)
         assert p.pnl == pytest.approx(2.0)
         assert p.trade_id == 1
@@ -31,8 +30,10 @@ class TestInit:
 
     def test_custom_params(self):
         m = RewardIntegrityMonitor(
-            correlation_threshold=0.5, min_samples=10,
-            max_history=100, outlier_std_threshold=2.0,
+            correlation_threshold=0.5,
+            min_samples=10,
+            max_history=100,
+            outlier_std_threshold=2.0,
         )
         assert m.correlation_threshold == pytest.approx(0.5)
         assert m.min_samples == 10
@@ -69,8 +70,7 @@ class TestAddTrade:
 
     def test_component_tracking(self):
         m = RewardIntegrityMonitor()
-        m.add_trade(reward=1.0, pnl=2.0,
-                     reward_components={"capture": 0.6, "wtl": 0.3, "total_reward": 1.0})
+        m.add_trade(reward=1.0, pnl=2.0, reward_components={"capture": 0.6, "wtl": 0.3, "total_reward": 1.0})
         # total_reward should be skipped
         assert "capture" in m.component_sums
         assert "wtl" in m.component_sums
@@ -216,8 +216,7 @@ class TestComponentBalance:
     def test_balanced_components(self):
         m = RewardIntegrityMonitor()
         for _ in range(10):
-            m.add_trade(reward=1.0, pnl=1.0,
-                         reward_components={"a": 0.4, "b": 0.3, "c": 0.3})
+            m.add_trade(reward=1.0, pnl=1.0, reward_components={"a": 0.4, "b": 0.3, "c": 0.3})
         result = m._analyze_component_balance()
         assert result["status"] == "balanced"
         assert "percentages" in result
@@ -225,8 +224,7 @@ class TestComponentBalance:
     def test_dominated_component(self):
         m = RewardIntegrityMonitor()
         for _ in range(10):
-            m.add_trade(reward=1.0, pnl=1.0,
-                         reward_components={"big": 10.0, "small": 0.1})
+            m.add_trade(reward=1.0, pnl=1.0, reward_components={"big": 10.0, "small": 0.1})
         result = m._analyze_component_balance()
         assert result["status"] == "dominated"
         assert result["dominant_component"] == "big"
@@ -266,8 +264,7 @@ class TestReset:
     def test_reset_clears_all(self):
         m = RewardIntegrityMonitor()
         for i in range(10):
-            m.add_trade(reward=float(i), pnl=float(i),
-                         reward_components={"a": float(i)})
+            m.add_trade(reward=float(i), pnl=float(i), reward_components={"a": float(i)})
         m.gaming_alerts.append({"test": True})
         m.last_check_result = {"status": "ok"}
 

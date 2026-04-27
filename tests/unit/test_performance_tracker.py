@@ -31,6 +31,7 @@ def _add_trades(pt: PerformanceTracker, pnls: list[float]):
 # Init
 # ---------------------------------------------------------------------------
 
+
 class TestPerformanceTrackerInit:
     def test_defaults(self):
         pt = PerformanceTracker()
@@ -47,6 +48,7 @@ class TestPerformanceTrackerInit:
 # ---------------------------------------------------------------------------
 # add_trade
 # ---------------------------------------------------------------------------
+
 
 class TestAddTrade:
     def test_increments_count(self):
@@ -67,15 +69,14 @@ class TestAddTrade:
 
     def test_pnl_none_treated_as_zero(self):
         pt = PerformanceTracker()
-        pt.add_trade(pnl=None, entry_time=_T0, exit_time=_T1,
-                     direction="LONG", entry_price=100_000, exit_price=100_000)
+        pt.add_trade(pnl=None, entry_time=_T0, exit_time=_T1, direction="LONG", entry_price=100_000, exit_price=100_000)
         assert pt.total_pnl == pytest.approx(0.0)
 
     def test_negative_mfe_clamped(self):
         pt = PerformanceTracker()
-        pt.add_trade(pnl=10, entry_time=_T0, exit_time=_T1,
-                     direction="LONG", entry_price=100_000, exit_price=100_010,
-                     mfe=-5)
+        pt.add_trade(
+            pnl=10, entry_time=_T0, exit_time=_T1, direction="LONG", entry_price=100_000, exit_price=100_010, mfe=-5
+        )
         assert pt.trades[0]["mfe"] == pytest.approx(0.0)
 
     def test_invalid_quality_string_replaced(self):
@@ -100,6 +101,7 @@ class TestAddTrade:
 # Drawdown
 # ---------------------------------------------------------------------------
 
+
 class TestDrawdown:
     def test_no_drawdown_on_wins(self):
         pt = PerformanceTracker()
@@ -120,6 +122,7 @@ class TestDrawdown:
 # ---------------------------------------------------------------------------
 # Consecutive streaks
 # ---------------------------------------------------------------------------
+
 
 class TestStreaks:
     def test_consecutive_wins(self):
@@ -142,6 +145,7 @@ class TestStreaks:
 # ---------------------------------------------------------------------------
 # get_metrics
 # ---------------------------------------------------------------------------
+
 
 class TestGetMetrics:
     def test_win_rate(self):
@@ -188,9 +192,15 @@ class TestGetMetrics:
 
     def test_wtl_count(self):
         pt = PerformanceTracker()
-        pt.add_trade(pnl=-10, entry_time=_T0, exit_time=_T1,
-                     direction="LONG", entry_price=100_000, exit_price=99_990,
-                     winner_to_loser=True)
+        pt.add_trade(
+            pnl=-10,
+            entry_time=_T0,
+            exit_time=_T1,
+            direction="LONG",
+            entry_price=100_000,
+            exit_price=99_990,
+            winner_to_loser=True,
+        )
         m = pt.get_metrics()
         assert m["winner_to_loser_count"] == 1
 
@@ -198,19 +208,35 @@ class TestGetMetrics:
         pt = PerformanceTracker()
         _add_trades(pt, [10, -5])
         m = pt.get_metrics()
-        for key in ("total_trades", "winning_trades", "losing_trades", "win_rate",
-                     "total_pnl", "avg_winner", "avg_loser", "profit_factor",
-                     "expectancy", "sharpe_ratio", "sortino_ratio", "omega_ratio",
-                     "initial_equity", "current_equity", "total_return",
-                     "max_drawdown", "current_drawdown",
-                     "max_consecutive_wins", "max_consecutive_losses",
-                     "winner_to_loser_count"):
+        for key in (
+            "total_trades",
+            "winning_trades",
+            "losing_trades",
+            "win_rate",
+            "total_pnl",
+            "avg_winner",
+            "avg_loser",
+            "profit_factor",
+            "expectancy",
+            "sharpe_ratio",
+            "sortino_ratio",
+            "omega_ratio",
+            "initial_equity",
+            "current_equity",
+            "total_return",
+            "max_drawdown",
+            "current_drawdown",
+            "max_consecutive_wins",
+            "max_consecutive_losses",
+            "winner_to_loser_count",
+        ):
             assert key in m
 
 
 # ---------------------------------------------------------------------------
 # Dashboard / history
 # ---------------------------------------------------------------------------
+
 
 class TestDashboardAndHistory:
     def test_print_dashboard_returns_str(self):

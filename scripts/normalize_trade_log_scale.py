@@ -71,7 +71,8 @@ def read_jsonl(path: Path) -> list[dict]:
             try:
                 rec = json.loads(stripped)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"{path}:{line_no}: invalid JSON: {exc}") from exc
+                msg = f"{path}:{line_no}: invalid JSON: {exc}"
+                raise ValueError(msg) from exc
             if isinstance(rec, dict):
                 trades.append(rec)
     return trades

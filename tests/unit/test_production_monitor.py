@@ -11,6 +11,7 @@ from src.monitoring.production_monitor import Alert, ProductionMonitor, TradingM
 # TradingMetrics / Alert dataclasses
 # ---------------------------------------------------------------------------
 
+
 class TestDataclasses:
     def test_trading_metrics_fields(self):
         m = TradingMetrics(
@@ -56,8 +57,9 @@ class TestDataclasses:
 # ProductionMonitor
 # ---------------------------------------------------------------------------
 
+
 class TestProductionMonitor:
-    @pytest.fixture()
+    @pytest.fixture
     def monitor(self, tmp_path):
         return ProductionMonitor(
             http_enabled=False,

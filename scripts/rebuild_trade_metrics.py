@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.persistence.trade_log_reader import read_all_trades  # noqa: E402
-from src.utils.metrics_calculator import period_metrics  # noqa: E402
+from src.persistence.trade_log_reader import read_all_trades
+from src.utils.metrics_calculator import period_metrics
 
 _TF_TO_MINUTES = {
     "M1": 1,
@@ -63,7 +63,7 @@ def _parse_dt(value: Any) -> datetime | None:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value))
     except ValueError:
         return None
     if parsed.tzinfo is None:
@@ -104,7 +104,7 @@ def _close_or_entry_dt(trade: dict[str, Any]) -> datetime | None:
     return _parse_dt(trade.get("exit_time") or trade.get("entry_time"))
 
 
-def build_performance_snapshot(  # noqa: PLR0913
+def build_performance_snapshot(
     trades: list[dict[str, Any]],
     *,
     trading_mode: str,
@@ -119,7 +119,8 @@ def build_performance_snapshot(  # noqa: PLR0913
     now = now or datetime.now(UTC)
     now = now.replace(tzinfo=UTC) if now.tzinfo is None else now.astimezone(UTC)
     trades = [
-        trade for trade in trades
+        trade
+        for trade in trades
         if trade_matches_scope(
             trade,
             trading_mode=trading_mode,
@@ -274,7 +275,8 @@ def main() -> int:
     trade_log = args.trade_log or (data_dir / "trade_log.jsonl")
     trades = read_all_trades(trade_log)
     scoped_trades = [
-        trade for trade in trades
+        trade
+        for trade in trades
         if trade_matches_scope(
             trade,
             trading_mode=args.trading_mode,

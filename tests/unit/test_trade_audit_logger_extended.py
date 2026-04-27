@@ -33,7 +33,8 @@ class TestSingleton:
         # Reset singleton
         monkeypatch.setattr(tal_module, "_audit_logger_instance", None)
         monkeypatch.setattr(
-            tal_module, "TradeAuditLogger",
+            tal_module,
+            "TradeAuditLogger",
             lambda **kw: TradeAuditLogger(log_dir=str(tmp_path), **kw),
         )
         instance = get_trade_audit_logger()
@@ -50,7 +51,7 @@ class TestSingleton:
 # Lifecycle methods not covered yet
 # ---------------------------------------------------------------------------
 class TestPositionLifecycle:
-    @pytest.fixture()
+    @pytest.fixture
     def audit(self, tmp_path):
         return TradeAuditLogger(log_dir=str(tmp_path), filename="test.jsonl")
 
@@ -63,10 +64,7 @@ class TestPositionLifecycle:
         assert cancel[0]["ticket"] == "T100"
 
     def test_log_position_close_with_bars(self, audit):
-        audit.log_position_close(
-            "POS001", 91900.0, 49.0, 75.0, 25.0, "T200",
-            bars_held=34, close_reason="StopLoss"
-        )
+        audit.log_position_close("POS001", 91900.0, 49.0, 75.0, 25.0, "T200", bars_held=34, close_reason="StopLoss")
         entries = _read_entries(audit)
         close = [e for e in entries if e["event_type"] == "POSITION_CLOSE"]
         assert close[0]["data"]["bars_held"] == 34
@@ -78,7 +76,7 @@ class TestPositionLifecycle:
 # Ticket tracking
 # ---------------------------------------------------------------------------
 class TestTicketTracking:
-    @pytest.fixture()
+    @pytest.fixture
     def audit(self, tmp_path):
         return TradeAuditLogger(log_dir=str(tmp_path), filename="test.jsonl")
 
@@ -102,7 +100,7 @@ class TestTicketTracking:
 # State persistence
 # ---------------------------------------------------------------------------
 class TestStatePersistence:
-    @pytest.fixture()
+    @pytest.fixture
     def audit(self, tmp_path):
         return TradeAuditLogger(log_dir=str(tmp_path), filename="test.jsonl")
 
@@ -123,7 +121,7 @@ class TestStatePersistence:
 # Reconciliation & errors
 # ---------------------------------------------------------------------------
 class TestReconciliationAndErrors:
-    @pytest.fixture()
+    @pytest.fixture
     def audit(self, tmp_path):
         return TradeAuditLogger(log_dir=str(tmp_path), filename="test.jsonl")
 
@@ -168,7 +166,7 @@ class TestReconciliationAndErrors:
 # Sequence & threading
 # ---------------------------------------------------------------------------
 class TestSequenceAndThreading:
-    @pytest.fixture()
+    @pytest.fixture
     def audit(self, tmp_path):
         return TradeAuditLogger(log_dir=str(tmp_path), filename="test.jsonl")
 
@@ -199,13 +197,13 @@ class TestSequenceAndThreading:
     def test_ticket_field_absent_when_not_provided(self, audit):
         audit.log_order_submit("ORD001", "BUY", 0.1)
         entries = _read_entries(audit)
-        submit = [e for e in entries if e["event_type"] == "ORDER_SUBMIT"][0]
+        submit = next(e for e in entries if e["event_type"] == "ORDER_SUBMIT")
         assert "ticket" not in submit
 
     def test_ticket_field_present_when_provided(self, audit):
         audit.log_order_submit("ORD001", "BUY", 0.1, ticket="T100")
         entries = _read_entries(audit)
-        submit = [e for e in entries if e["event_type"] == "ORDER_SUBMIT"][0]
+        submit = next(e for e in entries if e["event_type"] == "ORDER_SUBMIT")
         assert submit["ticket"] == "T100"
 
     def test_session_id_in_all_entries(self, audit):

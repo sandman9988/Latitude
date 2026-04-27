@@ -26,6 +26,7 @@ from src.training.offline_trainer import OfflineTrainer, z_omega
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _make_csv(rows: list[dict], headers: list[str]) -> str:
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=headers)
@@ -40,20 +41,22 @@ def _bar_rows(n: int = 20, base: float = 90000.0, step: float = 10.0) -> list[di
     for i in range(n):
         t = t0 + timedelta(minutes=i * 5)
         o = base + i * step
-        rows.append({
-            "Date & Time": t.strftime("%Y-%m-%d %H:%M:%S"),
-            "Open": f"{o:.2f}",
-            "High": f"{o + 5:.2f}",
-            "Low":  f"{o - 5:.2f}",
-            "Close": f"{o + 2:.2f}",
-        })
+        rows.append(
+            {
+                "Date & Time": t.strftime("%Y-%m-%d %H:%M:%S"),
+                "Open": f"{o:.2f}",
+                "High": f"{o + 5:.2f}",
+                "Low": f"{o - 5:.2f}",
+                "Close": f"{o + 2:.2f}",
+            }
+        )
     return rows
 
 
 # ── z_omega ───────────────────────────────────────────────────────────────────
 
-class TestZOmega:
 
+class TestZOmega:
     def test_all_gains_returns_inf(self):
         """All positive returns → no losses → +inf."""
         returns = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
@@ -97,8 +100,8 @@ class TestZOmega:
 
 # ── _detect_columns ───────────────────────────────────────────────────────────
 
-class TestDetectColumns:
 
+class TestDetectColumns:
     def test_ctrader_style(self):
         headers = ["Date & Time", "Open", "High", "Low", "Close"]
         col_map = _detect_columns(headers)
@@ -132,8 +135,8 @@ class TestDetectColumns:
 
 # ── _parse_datetime ───────────────────────────────────────────────────────────
 
-class TestParseDatetime:
 
+class TestParseDatetime:
     def test_iso_format(self):
         dt = _parse_datetime("2026-01-05 10:30:00")
         assert dt is not None
@@ -162,8 +165,8 @@ class TestParseDatetime:
 
 # ── load_csv ──────────────────────────────────────────────────────────────────
 
-class TestLoadCSV:
 
+class TestLoadCSV:
     def test_ctrader_csv(self, tmp_path):
         rows = _bar_rows(30)
         content = _make_csv(rows, ["Date & Time", "Open", "High", "Low", "Close"])
@@ -173,7 +176,7 @@ class TestLoadCSV:
         bars = load_csv(str(f))
         assert len(bars) == 30
         # Each bar is (datetime, o, h, low, c, spread_pts)
-        t, o, h, low, c, sp = bars[0]
+        t, _o, h, low, _c, sp = bars[0]
         assert isinstance(t, datetime)
         assert h >= low
         assert sp == 0.0  # no spread column in this fixture
@@ -203,7 +206,7 @@ class TestLoadCSV:
         """Bars where high < low should be silently dropped."""
         rows = _bar_rows(10)
         rows[3]["High"] = "100.0"
-        rows[3]["Low"]  = "200.0"   # Low > High → malformed
+        rows[3]["Low"] = "200.0"  # Low > High → malformed
         content = _make_csv(rows, ["Date & Time", "Open", "High", "Low", "Close"])
         f = tmp_path / "test.csv"
         f.write_text(content)
@@ -213,42 +216,27 @@ class TestLoadCSV:
 
 # ── load_jsonl_cache ──────────────────────────────────────────────────────────
 
+
 class TestLoadJSONLCache:
-
-    def _make_cache(self, n_records: int, n_bars: int = 10) -> str:
-        lines = []
-        t0 = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
-        for i in range(n_records):
-            entry_bars = []
-            for j in range(n_bars):
-                t = t0 + timedelta(minutes=(i * n_bars + j) * 5)
-                entry_bars.append([t.isoformat(), 90000.0 + j, 90005.0 + j,
-                                   89995.0 + j, 90002.0 + j])
-            lines.append(json.dumps({
-                "version": 1,
-                "ts_recorded": t0.isoformat(),
-                "symbol": "XAUUSD",
-                "timeframe_minutes": 5,
-                "entry_bars": entry_bars,
-                "exit_bars": entry_bars[-3:],
-            }))
-        return "\n".join(lines) + "\n"
-
-    def test_basic_load(self, tmp_path):
-        content = self._make_cache(5, n_bars=10)
-        f = tmp_path / "training_cache.jsonl"
-        f.write_text(content)
-        bars = load_jsonl_cache(str(f))
-        # 5 records × 10 bars, but exit_bars overlap → some deduplication expected
-        assert len(bars) > 0
+    def test_basic_load(self, xauusd_m5_cache_file):
+        """Load real XAUUSD M5 bars from the live BarExperienceCache JSONL file."""
+        bars = load_jsonl_cache(str(xauusd_m5_cache_file))
+        assert len(bars) >= 100
         assert all(isinstance(b[0], datetime) for b in bars)
+        # Bars should be sorted and have realistic XAUUSD prices (> 1000)
+        prices = [b[4] for b in bars]
+        assert all(p > 1000.0 for p in prices), "Expected XAUUSD prices > $1000"
+        timestamps = [b[0] for b in bars]
+        assert timestamps == sorted(timestamps), "Bars must be time-sorted"
 
-    def test_corrupt_line_skipped(self, tmp_path):
-        content = self._make_cache(3) + "this is not json\n"
-        f = tmp_path / "training_cache.jsonl"
-        f.write_text(content)
-        bars = load_jsonl_cache(str(f))
-        assert len(bars) > 0
+    def test_corrupt_line_skipped(self, xauusd_m5_cache_file, tmp_path):
+        """Appending a corrupt line to real data should not affect valid bar count."""
+        original = xauusd_m5_cache_file.read_text()
+        corrupt_path = tmp_path / "corrupt_cache.jsonl"
+        corrupt_path.write_text(original + "this is not json\n")
+        bars_clean = load_jsonl_cache(str(xauusd_m5_cache_file))
+        bars_corrupt = load_jsonl_cache(str(corrupt_path))
+        assert len(bars_corrupt) == len(bars_clean)
 
     def test_file_not_found(self):
         with pytest.raises(FileNotFoundError):
@@ -257,12 +245,11 @@ class TestLoadJSONLCache:
 
 # ── sliding_windows ───────────────────────────────────────────────────────────
 
-class TestSlidingWindows:
 
+class TestSlidingWindows:
     def _fake_bars(self, n: int):
         t0 = datetime(2026, 1, 5, tzinfo=UTC)
-        return [(t0 + timedelta(minutes=i*5), float(i), float(i)+1,
-                 float(i)-1, float(i)) for i in range(n)]
+        return [(t0 + timedelta(minutes=i * 5), float(i), float(i) + 1, float(i) - 1, float(i)) for i in range(n)]
 
     def test_window_count(self):
         bars = self._fake_bars(20)
@@ -287,18 +274,18 @@ class TestSlidingWindows:
 
 # ── bars_to_deque ─────────────────────────────────────────────────────────────
 
-class TestBarsToDeque:
 
+class TestBarsToDeque:
     def test_deque_creation(self):
         t0 = datetime(2026, 1, 5, tzinfo=UTC)
-        bars = [(t0 + timedelta(minutes=i*5), 100.0, 101.0, 99.0, 100.5) for i in range(20)]
+        bars = [(t0 + timedelta(minutes=i * 5), 100.0, 101.0, 99.0, 100.5) for i in range(20)]
         d = bars_to_deque(bars, maxlen=50)
         assert len(d) == 20
         assert isinstance(d, deque)
 
     def test_maxlen_respected(self):
         t0 = datetime(2026, 1, 5, tzinfo=UTC)
-        bars = [(t0 + timedelta(minutes=i*5), 100.0, 101.0, 99.0, 100.5) for i in range(100)]
+        bars = [(t0 + timedelta(minutes=i * 5), 100.0, 101.0, 99.0, 100.5) for i in range(100)]
         d = bars_to_deque(bars, maxlen=30)
         assert d.maxlen == 30
         assert len(d) == 30
@@ -306,10 +293,11 @@ class TestBarsToDeque:
 
 # ── BarExperienceCache ────────────────────────────────────────────────────────
 
-class TestBarExperienceCache:
 
+class TestBarExperienceCache:
     def test_disabled_cache_writes_nothing(self, tmp_path):
         from src.training.bar_experience_cache import BarExperienceCache
+
         cache = BarExperienceCache(
             symbol="XAUUSD",
             cache_file=str(tmp_path / "cache.jsonl"),
@@ -318,19 +306,24 @@ class TestBarExperienceCache:
         cache.snapshot_entry(deque())
         cache.record_trade(
             bars=deque(),
-            trigger_action=1, trigger_reward=0.1, capture_reward=0.2,
-            entry_price=90000.0, exit_price=90100.0, pnl_pts=100.0,
-            mfe=150.0, mae=0.0,
+            trigger_action=1,
+            trigger_reward=0.1,
+            capture_reward=0.2,
+            entry_price=90000.0,
+            exit_price=90100.0,
+            pnl_pts=100.0,
+            mfe=150.0,
+            mae=0.0,
         )
         assert not (tmp_path / "cache.jsonl").exists()
 
     def test_record_written_to_jsonl(self, tmp_path):
         from src.training.bar_experience_cache import BarExperienceCache
+
         t0 = datetime(2026, 1, 5, tzinfo=UTC)
         bars = deque(maxlen=100)
         for i in range(30):
-            bars.append((t0 + timedelta(minutes=i*5), 90000.0+i, 90005.0+i,
-                         89995.0+i, 90002.0+i))
+            bars.append((t0 + timedelta(minutes=i * 5), 90000.0 + i, 90005.0 + i, 89995.0 + i, 90002.0 + i))
 
         cache_path = tmp_path / "cache.jsonl"
         cache = BarExperienceCache(
@@ -342,9 +335,16 @@ class TestBarExperienceCache:
         cache.snapshot_entry(bars)
         cache.record_trade(
             bars=bars,
-            trigger_action=1, trigger_reward=0.05, capture_reward=0.3,
-            entry_price=90000.0, exit_price=90100.0, pnl_pts=100.0,
-            mfe=150.0, mae=20.0, regime="TRENDING", was_explore=False,
+            trigger_action=1,
+            trigger_reward=0.05,
+            capture_reward=0.3,
+            entry_price=90000.0,
+            exit_price=90100.0,
+            pnl_pts=100.0,
+            mfe=150.0,
+            mae=20.0,
+            regime="TRENDING",
+            was_explore=False,
         )
 
         assert cache_path.exists()
@@ -361,37 +361,58 @@ class TestBarExperienceCache:
 
     def test_multiple_trades_accumulate(self, tmp_path):
         from src.training.bar_experience_cache import BarExperienceCache
+
         cache_path = tmp_path / "cache.jsonl"
         cache = BarExperienceCache(cache_file=str(cache_path))
         for _ in range(5):
             cache.record_trade(
-                bars=deque(), trigger_action=0, trigger_reward=0.0,
-                capture_reward=0.0, entry_price=1.0, exit_price=1.0,
-                pnl_pts=0.0, mfe=0.0, mae=0.0,
+                bars=deque(),
+                trigger_action=0,
+                trigger_reward=0.0,
+                capture_reward=0.0,
+                entry_price=1.0,
+                exit_price=1.0,
+                pnl_pts=0.0,
+                mfe=0.0,
+                mae=0.0,
             )
         assert cache.record_count() == 5
 
     def test_entry_snapshot_cleared_after_record(self, tmp_path):
         from src.training.bar_experience_cache import BarExperienceCache
+
         cache = BarExperienceCache(cache_file=str(tmp_path / "c.jsonl"))
-        bars = deque([(datetime(2026,1,5,tzinfo=UTC), 1.0, 1.1, 0.9, 1.0)])
+        bars = deque([(datetime(2026, 1, 5, tzinfo=UTC), 1.0, 1.1, 0.9, 1.0)])
         cache.snapshot_entry(bars)
         assert cache._entry_bars_snapshot is not None
         cache.record_trade(
-            bars=bars, trigger_action=0, trigger_reward=0.0,
-            capture_reward=0.0, entry_price=1.0, exit_price=1.0,
-            pnl_pts=0.0, mfe=0.0, mae=0.0,
+            bars=bars,
+            trigger_action=0,
+            trigger_reward=0.0,
+            capture_reward=0.0,
+            entry_price=1.0,
+            exit_price=1.0,
+            pnl_pts=0.0,
+            mfe=0.0,
+            mae=0.0,
         )
         assert cache._entry_bars_snapshot is None
 
     def test_schema_version_in_record(self, tmp_path):
         from src.training.bar_experience_cache import SCHEMA_VERSION, BarExperienceCache
+
         cache_path = tmp_path / "cache.jsonl"
         cache = BarExperienceCache(cache_file=str(cache_path))
         cache.record_trade(
-            bars=deque(), trigger_action=1, trigger_reward=0.1,
-            capture_reward=0.2, entry_price=90000.0, exit_price=90100.0,
-            pnl_pts=100.0, mfe=150.0, mae=0.0,
+            bars=deque(),
+            trigger_action=1,
+            trigger_reward=0.1,
+            capture_reward=0.2,
+            entry_price=90000.0,
+            exit_price=90100.0,
+            pnl_pts=100.0,
+            mfe=150.0,
+            mae=0.0,
         )
         rec = json.loads(cache_path.read_text().strip())
         assert rec["version"] == SCHEMA_VERSION
@@ -406,7 +427,6 @@ class TestBarExperienceCache:
 
 
 class TestRetrainEligibility:
-
     def test_threshold_mode_retries_below_threshold(self):
         assert to._retrain_eligible({"z_omega": 0.9, "error": None}, threshold=1.0, negative_only=False)
 
@@ -432,7 +452,6 @@ class TestRetrainEligibility:
 
 
 class TestOfflineAcceptance:
-
     def test_bot_checkpoint_dir_is_scoped(self, tmp_path):
         path = to._bot_checkpoint_dir(tmp_path / "ckpt", "XAU/USD+", 15)
         assert path == tmp_path / "ckpt" / "XAU_USD_M15"
@@ -442,18 +461,22 @@ class TestOfflineAcceptance:
         assert path == tmp_path / "ckpt" / "XAUUSD_M5" / "fresh_long"
 
     def test_select_best_skips_rejected_candidates(self):
-        best = to.select_best([
-            {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
-            {"symbol": "XAUUSD", "timeframe_minutes": 15, "z_omega": 2.0, "accepted": True},
-        ])
+        best = to.select_best(
+            [
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
+                {"symbol": "XAUUSD", "timeframe_minutes": 15, "z_omega": 2.0, "accepted": True},
+            ]
+        )
         assert best["XAUUSD"]["timeframe_minutes"] == 15
 
     def test_select_best_per_bot_keeps_timeframes_separate(self):
-        best = to.select_best_per_bot([
-            {"symbol": "XAUUSD", "timeframe_minutes": 1, "z_omega": 3.0, "accepted": True},
-            {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 1.6, "accepted": True},
-            {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
-        ])
+        best = to.select_best_per_bot(
+            [
+                {"symbol": "XAUUSD", "timeframe_minutes": 1, "z_omega": 3.0, "accepted": True},
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 1.6, "accepted": True},
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
+            ]
+        )
 
         assert best[("XAUUSD", 1)]["z_omega"] == 3.0
         assert best[("XAUUSD", 5)]["z_omega"] == 1.6
@@ -514,14 +537,18 @@ class TestOfflineAcceptance:
             encoding="utf-8",
         )
         (tmp_path / "data" / "universe.json").write_text(
-            json.dumps({
-                "version": 1,
-                "instruments": [{
-                    "symbol": "XAUUSD",
-                    "timeframe_minutes": 5,
-                    "z_omega": 0.8793465150180925,
-                }],
-            }),
+            json.dumps(
+                {
+                    "version": 1,
+                    "instruments": [
+                        {
+                            "symbol": "XAUUSD",
+                            "timeframe_minutes": 5,
+                            "z_omega": 0.8793465150180925,
+                        }
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -535,27 +562,33 @@ class TestOfflineAcceptance:
         ckpt = tmp_path / "data" / "checkpoints"
         ckpt.mkdir(parents=True)
         (ckpt / "offline_champions.json").write_text(
-            json.dumps({
-                "version": 1,
-                "champions": {
-                    "XAUUSD_M5": {
-                        "symbol": "XAUUSD",
-                        "timeframe_minutes": 5,
-                        "z_omega": 1.6088,
-                    }
-                },
-            }),
+            json.dumps(
+                {
+                    "version": 1,
+                    "champions": {
+                        "XAUUSD_M5": {
+                            "symbol": "XAUUSD",
+                            "timeframe_minutes": 5,
+                            "z_omega": 1.6088,
+                        }
+                    },
+                }
+            ),
             encoding="utf-8",
         )
         (tmp_path / "data" / "universe.json").write_text(
-            json.dumps({
-                "version": 1,
-                "instruments": [{
-                    "symbol": "XAUUSD",
-                    "timeframe_minutes": 5,
-                    "z_omega": 0.8793465150180925,
-                }],
-            }),
+            json.dumps(
+                {
+                    "version": 1,
+                    "instruments": [
+                        {
+                            "symbol": "XAUUSD",
+                            "timeframe_minutes": 5,
+                            "z_omega": 0.8793465150180925,
+                        }
+                    ],
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -603,16 +636,20 @@ class TestOfflineAcceptance:
         assert result["candidate_deploy_deferred"] is False
 
     def test_training_variants_are_bounded_and_unique(self):
-        args = type("Args", (), {
-            "tournament_variants": 6,
-            "n_epochs": 3,
-            "train_every": 4,
-            "epsilon_start": 0.4,
-            "epsilon_end": 0.05,
-            "penalty_scale": 1.0,
-            "focused_cap_passes": 2,
-            "warm_start": True,
-        })()
+        args = type(
+            "Args",
+            (),
+            {
+                "tournament_variants": 6,
+                "n_epochs": 3,
+                "train_every": 4,
+                "epsilon_start": 0.4,
+                "epsilon_end": 0.05,
+                "penalty_scale": 1.0,
+                "focused_cap_passes": 2,
+                "warm_start": True,
+            },
+        )()
 
         variants = to._build_training_variants(args)
 
@@ -635,10 +672,11 @@ class TestOfflineAcceptance:
 
 # ── discover_jobs (from train_offline) ────────────────────────────────────────
 
-class TestDiscoverJobs:
 
+class TestDiscoverJobs:
     def test_detect_symbol_and_tf_from_filename(self, tmp_path):
         from train_offline import discover_jobs
+
         f = tmp_path / "XAUUSD_M5.csv"
         f.write_text("Date & Time,Open,High,Low,Close\n")
         jobs = discover_jobs([str(tmp_path)])
@@ -648,6 +686,7 @@ class TestDiscoverJobs:
 
     def test_detect_symbol_from_scoped_training_cache_filename(self, tmp_path):
         from train_offline import discover_jobs
+
         f = tmp_path / "training_cache_XAUUSD_M15.jsonl"
         f.write_text('{"entry_bars": []}\n')
         jobs = discover_jobs([str(tmp_path)])
@@ -657,6 +696,7 @@ class TestDiscoverJobs:
 
     def test_detect_m_minutes_from_scoped_training_cache_filename(self, tmp_path):
         from train_offline import discover_jobs
+
         f = tmp_path / "training_cache_XAUUSD_M240.jsonl"
         f.write_text('{"entry_bars": []}\n')
         jobs = discover_jobs([str(tmp_path)])
@@ -666,6 +706,7 @@ class TestDiscoverJobs:
 
     def test_symbol_filter(self, tmp_path):
         from train_offline import discover_jobs
+
         (tmp_path / "XAUUSD_M5.csv").write_text("Date & Time,Open,High,Low,Close\n")
         (tmp_path / "EURUSD_M5.csv").write_text("Date & Time,Open,High,Low,Close\n")
         jobs = discover_jobs([str(tmp_path)], symbol_filter=["XAUUSD"])
@@ -673,6 +714,7 @@ class TestDiscoverJobs:
 
     def test_tf_filter(self, tmp_path):
         from train_offline import discover_jobs
+
         (tmp_path / "XAUUSD_M5.csv").write_text("Date & Time,Open,High,Low,Close\n")
         (tmp_path / "XAUUSD_H1.csv").write_text("Date & Time,Open,High,Low,Close\n")
         jobs = discover_jobs([str(tmp_path)], tf_filter=["H1"])
@@ -680,6 +722,7 @@ class TestDiscoverJobs:
 
     def test_nonexistent_path_skipped(self, tmp_path):
         from train_offline import discover_jobs
+
         jobs = discover_jobs(["/nonexistent/path"])
         assert jobs == []
 
@@ -713,16 +756,20 @@ class TestDiscoverJobs:
                 px = 4800.0 + idx + bar_idx * 0.01
                 bars.append([ts.isoformat(), px, px + 0.5, px - 0.5, px + 0.1])
             ratio = idx - 3
-            lines.append(json.dumps({
-                "version": 1,
-                "ts_recorded": (now - timedelta(hours=idx)).isoformat(),
-                "symbol": "XAUUSD",
-                "timeframe_minutes": 5,
-                "pnl_pts": float(ratio),
-                "mfe": 1.0,
-                "entry_bars": bars,
-                "exit_bars": bars[-5:],
-            }))
+            lines.append(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "ts_recorded": (now - timedelta(hours=idx)).isoformat(),
+                        "symbol": "XAUUSD",
+                        "timeframe_minutes": 5,
+                        "pnl_pts": float(ratio),
+                        "mfe": 1.0,
+                        "entry_bars": bars,
+                        "exit_bars": bars[-5:],
+                    }
+                )
+            )
         cache.write_text("\n".join(lines) + "\n")
 
         windows = to._load_focused_cap_replay_windows([str(cache)], "XAUUSD", 5, 7.0, 2)
@@ -732,6 +779,7 @@ class TestDiscoverJobs:
 
 
 # ── OfflineTrainer new methods ────────────────────────────────────────────────
+
 
 def _make_bars(n: int = 200) -> list:
     t0 = datetime(2026, 1, 5, 0, 0, tzinfo=UTC)
@@ -784,6 +832,7 @@ class TestRunFocusedReplay:
             focused_replay_passes=3,
         )
         from unittest.mock import MagicMock
+
         steps, trades = trainer._run_focused_replay(MagicMock(), "test")
         assert steps == 0
         assert trades == 0
@@ -799,6 +848,7 @@ class TestRunFocusedReplay:
             focused_replay_passes=0,
         )
         from unittest.mock import MagicMock
+
         steps, trades = trainer._run_focused_replay(MagicMock(), "test")
         assert steps == 0
         assert trades == 0
@@ -814,6 +864,7 @@ class TestRunFocusedReplay:
             focused_replay_passes=2,
         )
         from unittest.mock import MagicMock
+
         steps, trades = trainer._run_focused_replay(MagicMock(), "test")
         assert steps == 0
         assert trades == 0

@@ -36,8 +36,8 @@ LOG = logging.getLogger(__name__)
 # Initialization
 # ---------------------------------------------------------------------------
 
-class TestTriggerInit:
 
+class TestTriggerInit:
     def test_default_init(self):
         ta = TriggerAgent(window=64, n_features=7)
         assert ta.window == 64
@@ -74,8 +74,8 @@ class TestTriggerInit:
 # decide() basics
 # ---------------------------------------------------------------------------
 
-class TestTriggerDecide:
 
+class TestTriggerDecide:
     def test_decide_already_in_position_returns_no_entry(self):
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
@@ -87,7 +87,7 @@ class TestTriggerDecide:
     def test_decide_already_short_returns_no_entry(self):
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
-        action, conf, runway = ta.decide(state, current_position=-1)
+        action, _conf, _runway = ta.decide(state, current_position=-1)
         assert action == 0
 
     def test_decide_flat_position_returns_valid_action(self):
@@ -106,7 +106,7 @@ class TestTriggerDecide:
         ta.disable_gates = False
         state = rng.standard_normal((64, 7)).astype(np.float32)
         # Set a very low feasibility
-        action, conf, runway = ta.decide(state, current_position=0, feasibility=0.0)
+        action, _conf, _runway = ta.decide(state, current_position=0, feasibility=0.0)
         assert action == 0  # Blocked by feasibility gate
 
     @patch.dict(os.environ, {"PAPER_MODE": "1"})
@@ -118,7 +118,7 @@ class TestTriggerDecide:
         # so all three actions (0=NO_ENTRY, 1=LONG, 2=SHORT) are valid
         seen_actions = set()
         for _ in range(100):
-            action, conf, runway = ta.decide(state, current_position=0)
+            action, _conf, _runway = ta.decide(state, current_position=0)
             assert action in [0, 1, 2], f"Unexpected action {action}"
             seen_actions.add(action)
         # With 100 trials and weights [2,1,1] we should see all 3 actions
@@ -136,8 +136,8 @@ class TestTriggerDecide:
 # Fallback strategy
 # ---------------------------------------------------------------------------
 
-class TestFallbackStrategy:
 
+class TestFallbackStrategy:
     def test_fallback_empty_state(self):
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((0, 7), dtype=np.float32)
@@ -177,7 +177,7 @@ class TestFallbackStrategy:
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
         state[-1, 2] = 0.35  # Medium positive MA diff
-        state[-1, 0] = 0.3   # ret1 confirms momentum
+        state[-1, 0] = 0.3  # ret1 confirms momentum
 
         # Without adjustment — should trigger LONG (live threshold=0.3, 0.35>0.3)
         _action_no_adj = ta._fallback_strategy(state, regime_threshold_adj=0.0)
@@ -191,7 +191,7 @@ class TestFallbackStrategy:
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
         state[-1, 2] = 0.25  # Near threshold
-        state[-1, 4] = 0.9   # Strong positive imbalance → tilts LONG easier
+        state[-1, 4] = 0.9  # Strong positive imbalance → tilts LONG easier
         action = ta._fallback_strategy(state)
         # With tilt, the effective threshold for LONG is lower
         assert action in [0, 1]  # May or may not trigger depending on threshold
@@ -208,8 +208,8 @@ class TestFallbackStrategy:
         """Strong opposing VPIN z-score (< −2σ) vetoes a LONG entry."""
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
-        state[-1, 2] = 0.5   # MA diff → LONG
-        state[-1, 0] = 0.3   # ret1 confirms
+        state[-1, 2] = 0.5  # MA diff → LONG
+        state[-1, 0] = 0.3  # ret1 confirms
         state[-1, 5] = -3.0  # Strong sell-side flow: veto
         action = ta._fallback_strategy(state)
         assert action == 0  # Vetoed by VPIN
@@ -218,9 +218,9 @@ class TestFallbackStrategy:
         """Strong opposing VPIN z-score (> +2σ) vetoes a SHORT entry."""
         ta = TriggerAgent(window=64, n_features=7)
         state = np.zeros((64, 7), dtype=np.float32)
-        state[-1, 2] = -0.5   # MA diff → SHORT
-        state[-1, 0] = -0.3   # ret1 confirms
-        state[-1, 5] = 3.0    # Strong buy-side flow: veto SHORT
+        state[-1, 2] = -0.5  # MA diff → SHORT
+        state[-1, 0] = -0.3  # ret1 confirms
+        state[-1, 5] = 3.0  # Strong buy-side flow: veto SHORT
         action = ta._fallback_strategy(state)
         assert action == 0  # Vetoed by VPIN
 
@@ -261,7 +261,7 @@ class TestFallbackStrategy:
             return s
 
         _, _, runway_quiet = ta._fallback_decide(_state(-2.0))
-        _, _, runway_hot   = ta._fallback_decide(_state(2.0))
+        _, _, runway_hot = ta._fallback_decide(_state(2.0))
         assert runway_hot > runway_quiet
 
 
@@ -269,8 +269,8 @@ class TestFallbackStrategy:
 # Utility methods
 # ---------------------------------------------------------------------------
 
-class TestTriggerUtils:
 
+class TestTriggerUtils:
     def test_softmax_basic(self):
         ta = TriggerAgent(window=64, n_features=7)
         q = np.array([1.0, 2.0, 3.0])
@@ -283,7 +283,7 @@ class TestTriggerUtils:
         q = np.array([1.0, 1.0, 1.0])
         probs = ta._softmax(q)
         assert abs(probs.sum() - 1.0) < 1e-6
-        np.testing.assert_allclose(probs, [1/3, 1/3, 1/3], atol=1e-6)
+        np.testing.assert_allclose(probs, [1 / 3, 1 / 3, 1 / 3], atol=1e-6)
 
     def test_softmax_large_values(self):
         ta = TriggerAgent(window=64, n_features=7)
@@ -344,8 +344,8 @@ class TestTriggerUtils:
 # Update from trade
 # ---------------------------------------------------------------------------
 
-class TestTriggerUpdateFromTrade:
 
+class TestTriggerUpdateFromTrade:
     def test_update_from_trade_positive_runway(self):
         ta = TriggerAgent(window=64, n_features=7)
         # Should not crash, just logs
@@ -376,8 +376,8 @@ class TestTriggerUpdateFromTrade:
 # Platt parameter updates
 # ---------------------------------------------------------------------------
 
-class TestPlattUpdate:
 
+class TestPlattUpdate:
     def test_update_platt_params_training_enabled(self):
         ta = TriggerAgent(window=64, n_features=7, enable_training=True)
         old_a = ta.platt_a
@@ -400,8 +400,8 @@ class TestPlattUpdate:
 # Experience buffer and training
 # ---------------------------------------------------------------------------
 
-class TestTriggerTraining:
 
+class TestTriggerTraining:
     def test_add_experience_no_buffer(self):
         ta = TriggerAgent(window=64, n_features=7, enable_training=False)
         state = np.zeros((64, 7), dtype=np.float32)
@@ -433,8 +433,8 @@ class TestTriggerTraining:
 # EWMA Runway Calibration (Enhancement A)
 # ---------------------------------------------------------------------------
 
-class TestEWMARunwayCalibration:
 
+class TestEWMARunwayCalibration:
     def test_confidence_gate_bypassed_while_runway_unreliable(self):
         ta = TriggerAgent(window=64, n_features=7)
         ta.paper_mode = False
@@ -463,6 +463,7 @@ class TestEWMARunwayCalibration:
     def test_calibration_updates_after_trade(self):
         """After enough trades in a bucket, EWMA should be populated."""
         from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
+
         ta = TriggerAgent(window=64, n_features=7)
         # Simulate entries with Q=1.0 (bucket 1: [0.6, 1.2])
         for _i in range(RUNWAY_CAL_MIN_SAMPLES + 1):
@@ -485,6 +486,7 @@ class TestEWMARunwayCalibration:
     def test_ewma_adapts_over_time(self):
         """EWMA should track changing MFE values."""
         from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
+
         ta = TriggerAgent(window=64, n_features=7)
         # Fill bucket with 0.002 first
         for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):
@@ -526,6 +528,7 @@ class TestEWMARunwayCalibration:
     def test_calibrated_value_clipped_to_bounds(self):
         """Calibrated runway should be clipped to [Q_RUNWAY_MIN, Q_RUNWAY_MAX]."""
         from src.agents.trigger_agent import RUNWAY_CAL_MIN_SAMPLES
+
         ta = TriggerAgent(window=64, n_features=7)
         # Feed extreme (very high) MFE
         for _ in range(RUNWAY_CAL_MIN_SAMPLES + 1):

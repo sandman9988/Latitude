@@ -8,6 +8,7 @@ Verify that harvester generates exit signals when thresholds are hit:
 3. Soft time stop (50 bars + profit)
 4. Hard time stop (80 bars)
 """
+
 import sys
 
 import numpy as np
@@ -43,8 +44,7 @@ def test_profit_target():
             print(f"✓ EXIT TRIGGERED at MFE={pct:.1f}%, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        else:
-            print(f"  HOLD at MFE={pct:.1f}%, action={action}")
+        print(f"  HOLD at MFE={pct:.1f}%, action={action}")
 
     assert exit_triggered, "No exit triggered at profit target"
 
@@ -74,8 +74,7 @@ def test_stop_loss():
             print(f"✓ EXIT TRIGGERED at MAE={pct:.1f}%, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        else:
-            print(f"  HOLD at MAE={pct:.1f}%, action={action}")
+        print(f"  HOLD at MAE={pct:.1f}%, action={action}")
 
     assert exit_triggered, "No exit triggered at stop loss"
 
@@ -102,8 +101,7 @@ def test_soft_time_stop():
             print(f"✓ EXIT TRIGGERED at bars_held={bars}, MFE=6.0%, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        else:
-            print(f"  HOLD at bars_held={bars}")
+        print(f"  HOLD at bars_held={bars}")
 
     assert exit_triggered, "No exit triggered at soft time stop"
 
@@ -130,8 +128,7 @@ def test_hard_time_stop():
             print(f"✓ EXIT TRIGGERED at bars_held={bars}, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        else:
-            print(f"  HOLD at bars_held={bars}")
+        print(f"  HOLD at bars_held={bars}")
 
     assert exit_triggered, "No exit triggered at hard time stop"
 

@@ -141,10 +141,18 @@ class TestGetMetrics:
         am.on_bar_close()
         am.on_trade_executed()
         m = am.get_metrics()
-        for key in ("bars_since_trade", "total_bars", "total_trades",
-                     "activity_score", "is_stagnant", "exploration_active",
-                     "trade_freq_24h", "trade_freq_1h",
-                     "inactivity_penalty", "exploration_bonus"):
+        for key in (
+            "bars_since_trade",
+            "total_bars",
+            "total_trades",
+            "activity_score",
+            "is_stagnant",
+            "exploration_active",
+            "trade_freq_24h",
+            "trade_freq_1h",
+            "inactivity_penalty",
+            "exploration_bonus",
+        ):
             assert key in m
 
 
@@ -161,7 +169,7 @@ class TestCounterfactualAnalyzer:
     def test_perfect_exit(self):
         """Exit exactly at MFE → small timing bonus, no penalty."""
         ca = CounterfactualAnalyzer()
-        reward, metrics = ca.analyze_exit(
+        _reward, metrics = ca.analyze_exit(
             entry_price=100.0,
             exit_price=105.0,
             mfe=5.0,
@@ -175,11 +183,11 @@ class TestCounterfactualAnalyzer:
     def test_early_exit_from_winner(self):
         """Exit before MFE with profit → penalty for leaving money."""
         ca = CounterfactualAnalyzer()
-        reward, metrics = ca.analyze_exit(
+        _reward, metrics = ca.analyze_exit(
             entry_price=100.0,
             exit_price=103.0,  # Captured 3
-            mfe=5.0,           # Could have captured 5
-            mfe_bar_offset=10, # Exited far from MFE
+            mfe=5.0,  # Could have captured 5
+            mfe_bar_offset=10,  # Exited far from MFE
             direction=1,
         )
         assert metrics["early_exit_penalty"] < 0
@@ -188,9 +196,9 @@ class TestCounterfactualAnalyzer:
     def test_short_direction(self):
         """Short trade: entry_price > exit_price is profitable."""
         ca = CounterfactualAnalyzer()
-        reward, metrics = ca.analyze_exit(
+        _reward, metrics = ca.analyze_exit(
             entry_price=100.0,
-            exit_price=95.0,   # Short profit
+            exit_price=95.0,  # Short profit
             mfe=5.0,
             mfe_bar_offset=1,
             direction=-1,
@@ -200,7 +208,7 @@ class TestCounterfactualAnalyzer:
     def test_losing_trade_no_early_exit_penalty(self):
         """Losing trade → no early-exit penalty (only applies to winners)."""
         ca = CounterfactualAnalyzer()
-        reward, metrics = ca.analyze_exit(
+        _reward, metrics = ca.analyze_exit(
             entry_price=100.0,
             exit_price=98.0,  # Loss
             mfe=2.0,

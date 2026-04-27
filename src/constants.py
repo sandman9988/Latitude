@@ -1,5 +1,4 @@
-"""
-Central Constants Module — Single Source of Truth
+"""Central Constants Module — Single Source of Truth.
 ==================================================
 All magic numbers and shared thresholds live here.
 Every consuming module MUST import from this file instead of
@@ -93,9 +92,10 @@ def get_amd_optimized_batch_size(state_dim: int, default: int = DEFAULT_BATCH_SI
 
     Returns:
         Optimal batch size for the hardware
+
     """
     try:
-        from src.constants_amd import get_optimal_batch_size, is_amd_gpu
+        from src.constants_amd import get_optimal_batch_size, is_amd_gpu  # noqa: PLC0415
 
         if is_amd_gpu():
             return get_optimal_batch_size(state_dim)
@@ -112,9 +112,10 @@ def get_amd_optimized_buffer_capacity(default: int) -> int:
 
     Returns:
         Optimal buffer capacity for the hardware (50K for AMD, default otherwise)
+
     """
     try:
-        from src.constants_amd import AMD_TRIGGER_BUFFER_CAPACITY, is_amd_gpu
+        from src.constants_amd import AMD_TRIGGER_BUFFER_CAPACITY, is_amd_gpu  # noqa: PLC0415
 
         if is_amd_gpu():
             return AMD_TRIGGER_BUFFER_CAPACITY
@@ -160,18 +161,34 @@ MIN_SOFT_PROFIT_PCT: float = 0.20  # Min unrealized profit % for soft-time-stop 
 PROFIT_TARGET_PCT_DEFAULT: float = 0.45  # Target profit as % of entry price
 STOP_LOSS_PCT_DEFAULT: float = 0.40  # Max adverse excursion % before forced exit
 
-BREAKEVEN_TRIGGER_PCT: float = 0.40  # MFE % to move stop to breakeven
-TRAILING_STOP_ACTIVATION_PCT: float = 0.35  # MFE % required to activate trailing stop
-TRAILING_STOP_DISTANCE_PCT: float = 0.15  # Distance to trail behind peak MFE
+BREAKEVEN_TRIGGER_PCT: float = 0.30  # MFE % to move stop to breakeven
+TRAILING_STOP_ACTIVATION_PCT: float = 0.25  # MFE % required to activate trailing stop
+TRAILING_STOP_DISTANCE_PCT: float = 0.12  # Distance to trail behind peak MFE
 
 CAPTURE_DECAY_THRESHOLD: float = 0.35  # Exit if current_profit/MFE ratio < this
 CAPTURE_DECAY_MIN_MFE_PCT: float = 0.10  # Apply capture-decay only above this MFE %
 
-MICRO_WINNER_MFE_THRESHOLD_PCT: float = 0.05  # Min MFE to activate micro-winner protection
-MICRO_WINNER_GIVEBACK_PCT: float = 0.30  # Exit if giving back > this fraction of MFE
+MICRO_WINNER_MFE_THRESHOLD_PCT: float = 0.10  # Min MFE to activate micro-winner protection
+MICRO_WINNER_GIVEBACK_PCT: float = 0.40  # Exit if giving back > this fraction of MFE
 
 # Hard per-trade max-loss-USD cap — defense-in-depth against tail risk.
 # Data shows 45 trades with loss > $100 account for -$11,760 in total losses.
 # With this cap the system goes from -$4,140 to +$3,119 at $100 cap.
 MAX_LOSS_PER_TRADE_USD: float = 100.0  # Absolute dollar cap per trade
 GHOST_RECONCILE_COOLDOWN_BARS: int = 3  # Bars to skip entry after ghost reconcile
+
+# ── CAPTURE HEALTH MONITORING ─────────────────────────────────────────────────
+# Two-tier reactive system:
+#   Tier 1 — IMMEDIATE: single large-delta trade (big MFE, tiny capture) → act at once.
+#   Tier 2 — ROLLING EMA: persistent low capture over N TF-adaptive trades → act.
+# Stable recovery: small relax requiring 2× min samples to prevent whipsawing.
+
+CAPTURE_EMA_ALPHA: float = 0.35          # Fast EMA — half-life ≈ 2 trades
+CAPTURE_LARGE_DELTA_MFE_MULT: float = 1.5  # "Large" = MFE > 1.5× trailing activation pct
+CAPTURE_LARGE_DELTA_CAP_MAX: float = 0.20  # Immediate trigger if capture < 20% of large MFE
+CAPTURE_ALERT_THRESHOLD: float = 0.25    # Rolling EMA alert level → tighten
+CAPTURE_CRITICAL_THRESHOLD: float = 0.10  # Rolling EMA critical → emergency reset
+CAPTURE_STABLE_THRESHOLD: float = 0.55   # Above this = healthy, relax very slowly
+CAPTURE_TIGHTEN_IMMEDIATE: float = 0.75  # Factor on large delta: scale to 75% of current
+CAPTURE_TIGHTEN_ALERT: float = 0.82      # Factor on rolling alert: scale to 82% of current
+CAPTURE_RELAX_FACTOR: float = 0.97       # Relax 3% per trade when stably healthy

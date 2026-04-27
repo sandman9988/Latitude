@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Trade Analyzer - Comprehensive analysis of trading performance
+"""Trade Analyzer - Comprehensive analysis of trading performance
 Analyzes CSV exports from TradeExporter with detailed metrics and visualizations.
 """
 
@@ -22,24 +21,26 @@ CAPTURE_EFFICIENCY_THRESHOLD = 0.5
 class TradeAnalyzer:
     """Analyze trade history from CSV exports."""
 
-    def __init__(self, csv_path: str):
+    def __init__(self, csv_path: str) -> None:
         """Load trades from CSV file."""
         self.csv_path = Path(csv_path)
         if not self.csv_path.exists():
-            raise FileNotFoundError(f"CSV file not found: {csv_path}")
+            msg = f"CSV file not found: {csv_path}"
+            raise FileNotFoundError(msg)
 
         self.df = pd.read_csv(csv_path)
         self._validate_data()
         self._prepare_data()
 
-    def _validate_data(self):
+    def _validate_data(self) -> None:
         """Validate required columns exist."""
         required = ["trade_num", "entry_time", "exit_time", "pnl", "result"]
         missing = [col for col in required if col not in self.df.columns]
         if missing:
-            raise ValueError(f"Missing required columns: {missing}")
+            msg = f"Missing required columns: {missing}"
+            raise ValueError(msg)
 
-    def _prepare_data(self):
+    def _prepare_data(self) -> None:
         """Prepare data for analysis."""
         # Convert timestamps
         self.df["entry_time"] = pd.to_datetime(self.df["entry_time"])
@@ -266,7 +267,7 @@ class TradeAnalyzer:
             "pct_above_50": (self.df["capture_efficiency"] > CAPTURE_EFFICIENCY_THRESHOLD).sum() / len(self.df) * 100,
         }
 
-    def export_analysis(self, output_path: str = None) -> str:
+    def export_analysis(self, output_path: str | None = None) -> str:
         """Export comprehensive analysis to JSON."""
         if output_path is None:
             timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -292,9 +293,7 @@ class TradeAnalyzer:
 
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(out.parent), prefix=f".{out.name}_", suffix=".tmp"
-        )
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(out.parent), prefix=f".{out.name}_", suffix=".tmp")
         try:
             with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
                 json.dump(analysis, f, indent=2, default=str)
@@ -308,22 +307,21 @@ class TradeAnalyzer:
 
         return output_path
 
-    def _convert_types(self, obj):  # noqa: PLR0911
+    def _convert_types(self, obj):
         """Convert numpy/pandas types to Python native types for JSON."""
         if isinstance(obj, dict):
             return {k: self._convert_types(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
+        if isinstance(obj, list):
             return [self._convert_types(item) for item in obj]
-        elif isinstance(obj, (np.integer, np.int64)):
+        if isinstance(obj, (np.integer, np.int64)):
             return int(obj)
-        elif isinstance(obj, (np.floating, np.float64)):
+        if isinstance(obj, (np.floating, np.float64)):
             return float(obj)
-        elif isinstance(obj, np.ndarray):
+        if isinstance(obj, np.ndarray):
             return obj.tolist()
-        elif pd.isna(obj):
+        if pd.isna(obj):
             return None
-        else:
-            return obj
+        return obj
 
     def _print_mfe_mae_section(self, stats: dict) -> None:
         """Print MFE/MAE and duration sub-sections (only when data is available)."""
@@ -331,12 +329,12 @@ class TradeAnalyzer:
             print(f"\n{'MFE/MAE ANALYSIS':-^80}")
             print(f"Average MFE:         ${stats['avg_mfe']:>10.2f}")
             print(f"Average MAE:         ${stats['avg_mae']:>10.2f}")
-            print(f"Avg Capture Eff:     {stats['avg_capture_efficiency']*100:>9.2f}%")
+            print(f"Avg Capture Eff:     {stats['avg_capture_efficiency'] * 100:>9.2f}%")
 
         if stats["avg_duration_seconds"] is not None:
             print(f"\n{'DURATION ANALYSIS':-^80}")
-            print(f"Avg Duration:        {stats['avg_duration_seconds']/60:>10.1f} minutes")
-            print(f"Median Duration:     {stats['median_duration_seconds']/60:>10.1f} minutes")
+            print(f"Avg Duration:        {stats['avg_duration_seconds'] / 60:>10.1f} minutes")
+            print(f"Median Duration:     {stats['median_duration_seconds'] / 60:>10.1f} minutes")
 
     def _print_dual_agent_section(self, dual: dict) -> None:
         """Print dual-agent analysis sub-section."""
@@ -354,7 +352,7 @@ class TradeAnalyzer:
         if dual.get("avg_runway_error_pct") is not None:
             print(f"\nRunway Prediction Error: {dual['avg_runway_error_pct']:.2f}%")
 
-    def print_report(self):  # noqa: PLR0915
+    def print_report(self) -> None:
         """Print comprehensive analysis report to console."""
         stats = self.get_summary_stats()
 
@@ -365,7 +363,7 @@ class TradeAnalyzer:
         print(f"Period: {stats['first_trade']} to {stats['last_trade']}")
         print(f"\n{'OVERALL PERFORMANCE':-^80}")
         print(f"Total Trades:        {stats['total_trades']:>10}")
-        print(f"Winning Trades:      {stats['winning_trades']:>10} ({stats['win_rate']*100:>6.2f}%)")
+        print(f"Winning Trades:      {stats['winning_trades']:>10} ({stats['win_rate'] * 100:>6.2f}%)")
         print(f"Losing Trades:       {stats['losing_trades']:>10}")
         print(f"\nTotal PnL:           ${stats['total_pnl']:>10.2f}")
         print(f"Average Win:         ${stats['avg_win']:>10.2f}")
@@ -388,7 +386,7 @@ class TradeAnalyzer:
         print(f"{'Hour':<10} {'Total PnL':<15} {'Avg PnL':<15} {'Trades':<10} {'Win Rate'}")
         for hour, row in hourly.iterrows():
             print(
-                f"{hour:02d}:00      ${row['total_pnl']:<13.2f} ${row['avg_pnl']:<13.2f} {int(row['num_trades']):<10} {row['win_rate']*100:.1f}%"
+                f"{hour:02d}:00      ${row['total_pnl']:<13.2f} ${row['avg_pnl']:<13.2f} {int(row['num_trades']):<10} {row['win_rate'] * 100:.1f}%"
             )
 
         # Daily analysis
@@ -397,7 +395,7 @@ class TradeAnalyzer:
         print(f"{'Day':<15} {'Total PnL':<15} {'Avg PnL':<15} {'Trades':<10} {'Win Rate'}")
         for day, row in daily.iterrows():
             print(
-                f"{day:<15} ${row['total_pnl']:<13.2f} ${row['avg_pnl']:<13.2f} {int(row['num_trades']):<10} {row['win_rate']*100:.1f}%"
+                f"{day:<15} ${row['total_pnl']:<13.2f} ${row['avg_pnl']:<13.2f} {int(row['num_trades']):<10} {row['win_rate'] * 100:.1f}%"
             )
 
         self._print_dual_agent_section(self.analyze_dual_agents())
@@ -408,8 +406,8 @@ class TradeAnalyzer:
         print(f"{'Trade#':<10} {'Time':<20} {'Dir':<8} {'PnL':<15} {'MFE':<15} {'Capture'}")
         for _, trade in best.iterrows():
             print(
-                f"{int(trade['trade_num']):<10} {str(trade['entry_time']):<20} {trade['direction']:<8} "
-                f"${trade['pnl']:<13.2f} ${trade['mfe']:<13.2f} {trade['capture_efficiency']*100:.1f}%"
+                f"{int(trade['trade_num']):<10} {trade['entry_time']!s:<20} {trade['direction']:<8} "
+                f"${trade['pnl']:<13.2f} ${trade['mfe']:<13.2f} {trade['capture_efficiency'] * 100:.1f}%"
             )
 
         print(f"\n{'WORST TRADES (Top 5)':-^80}")
@@ -417,16 +415,15 @@ class TradeAnalyzer:
         print(f"{'Trade#':<10} {'Time':<20} {'Dir':<8} {'PnL':<15} {'MAE'}")
         for _, trade in worst.iterrows():
             print(
-                f"{int(trade['trade_num']):<10} {str(trade['entry_time']):<20} {trade['direction']:<8} "
+                f"{int(trade['trade_num']):<10} {trade['entry_time']!s:<20} {trade['direction']:<8} "
                 f"${trade['pnl']:<13.2f} ${trade['mae']:<13.2f}"
             )
 
         print("=" * 80)
 
 
-def main():
+def main() -> int:
     """CLI entry point."""
-
     parser = argparse.ArgumentParser(description="Analyze trading performance from CSV exports")
     parser.add_argument("csv_file", help="Path to trades CSV file")
     parser.add_argument("--export", "-e", help="Export analysis to JSON file")

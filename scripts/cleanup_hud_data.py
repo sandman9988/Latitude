@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Data Cleanup & Archive
+"""Data Cleanup & Archive.
 ======================
 Cleans up HUD data directory:
 1. Archives files older than 7 days
@@ -44,7 +43,7 @@ def analyze_data_dir():
     """Analyze what needs cleanup."""
     if not DATA_DIR.exists():
         print("❌ Data directory not found")
-        return
+        return None
 
     print("\n" + "=" * 100)
     print("📋 DATA CLEANUP ANALYSIS")
@@ -96,7 +95,7 @@ def analyze_data_dir():
     return stale_files, backups_to_delete
 
 
-def execute_cleanup(dry_run: bool = True):
+def execute_cleanup(dry_run: bool = True) -> None:
     """Execute the cleanup operations."""
     if not DATA_DIR.exists():
         print("❌ Data directory not found")
@@ -148,7 +147,7 @@ def execute_cleanup(dry_run: bool = True):
         print("\n✓ Dry-run complete. Run with --execute to apply changes.")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Clean up stale HUD data files")
     parser.add_argument("--analyze", action="store_true", help="Analyze what will be cleaned")
     parser.add_argument("--execute", action="store_true", help="Execute cleanup operations")

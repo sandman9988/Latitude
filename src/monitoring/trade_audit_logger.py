@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Trade Audit Logger - Central Immutable Trade Log
+"""Trade Audit Logger - Central Immutable Trade Log.
 =================================================
 Comprehensive, append-only audit trail for ALL trade-related actions.
 
@@ -42,8 +41,7 @@ LOG = logging.getLogger(__name__)
 
 
 class TradeAuditLogger:
-    """
-    Central immutable audit log for all trade-related actions.
+    """Central immutable audit log for all trade-related actions.
 
     Thread-safe, append-only logger that records every trade event
     in chronological order. Once written, entries cannot be modified.
@@ -58,13 +56,13 @@ class TradeAuditLogger:
         audit.log_position_open("10028_ticket_186675801", "LONG", 0.1, 91851.0, ticket="186675801")
     """
 
-    def __init__(self, log_dir: str = "logs/audit", filename: str = "trade_audit.jsonl"):
-        """
-        Initialize trade audit logger.
+    def __init__(self, log_dir: str = "logs/audit", filename: str = "trade_audit.jsonl") -> None:
+        """Initialize trade audit logger.
 
         Args:
             log_dir: Directory for audit log files
             filename: Log filename (JSON Lines format)
+
         """
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -76,15 +74,15 @@ class TradeAuditLogger:
         # Log session start
         self._write_entry("SESSION_START", {"session_id": self.session_id}, "INFO")
 
-    def _write_entry(self, event_type: str, data: dict[str, Any], severity: str = "INFO", ticket: str | None = None):
-        """
-        Write an immutable audit log entry.
+    def _write_entry(self, event_type: str, data: dict[str, Any], severity: str = "INFO", ticket: str | None = None) -> None:
+        """Write an immutable audit log entry.
 
         Args:
             event_type: Event type identifier
             data: Event-specific data dictionary
             severity: Event severity (INFO, WARNING, ERROR, CRITICAL)
             ticket: Broker ticket number if applicable
+
         """
         with self.lock:
             self.sequence += 1
@@ -115,7 +113,7 @@ class TradeAuditLogger:
     # ORDER LIFECYCLE
     # ==========================================================================
 
-    def log_order_submit(  # noqa: PLR0913
+    def log_order_submit(
         self,
         order_id: str,
         side: str,
@@ -124,9 +122,8 @@ class TradeAuditLogger:
         ticket: str | None = None,
         symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
         order_type: str = "MARKET",
-    ):
-        """
-        Log order submission.
+    ) -> None:
+        """Log order submission.
 
         Args:
             order_id: Internal order ID (ClOrdID)
@@ -136,6 +133,7 @@ class TradeAuditLogger:
             ticket: Expected broker ticket if known
             symbol: Trading symbol
             order_type: MARKET, LIMIT, STOP, etc.
+
         """
         self._write_entry(
             "ORDER_SUBMIT",
@@ -150,7 +148,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_order_accept(self, order_id: str, broker_order_id: str | None = None, ticket: str | None = None):
+    def log_order_accept(self, order_id: str, broker_order_id: str | None = None, ticket: str | None = None) -> None:
         """Log order accepted by broker."""
         self._write_entry(
             "ORDER_ACCEPT",
@@ -161,7 +159,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_order_reject(self, order_id: str, reason: str, reject_code: str | None = None):
+    def log_order_reject(self, order_id: str, reason: str, reject_code: str | None = None) -> None:
         """Log order rejection."""
         self._write_entry(
             "ORDER_REJECT",
@@ -173,7 +171,7 @@ class TradeAuditLogger:
             severity="WARNING",
         )
 
-    def log_order_fill(  # noqa: PLR0913
+    def log_order_fill(
         self,
         order_id: str,
         fill_price: float,
@@ -181,9 +179,8 @@ class TradeAuditLogger:
         ticket: str,
         fill_id: str | None = None,
         is_partial: bool = False,
-    ):
-        """
-        Log order fill/execution.
+    ) -> None:
+        """Log order fill/execution.
 
         Args:
             order_id: Internal order ID
@@ -192,6 +189,7 @@ class TradeAuditLogger:
             ticket: Broker position ticket (Tag 721)
             fill_id: Broker execution ID
             is_partial: True if partial fill
+
         """
         self._write_entry(
             "ORDER_FILL",
@@ -205,7 +203,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_order_cancel(self, order_id: str, reason: str = "User requested", ticket: str | None = None):
+    def log_order_cancel(self, order_id: str, reason: str = "User requested", ticket: str | None = None) -> None:
         """Log order cancellation."""
         self._write_entry(
             "ORDER_CANCEL",
@@ -220,7 +218,7 @@ class TradeAuditLogger:
     # POSITION LIFECYCLE
     # ==========================================================================
 
-    def log_position_open(  # noqa: PLR0913
+    def log_position_open(
         self,
         position_id: str,
         direction: str,
@@ -228,9 +226,8 @@ class TradeAuditLogger:
         entry_price: float,
         ticket: str,
         symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
-    ):
-        """
-        Log position opening.
+    ) -> None:
+        """Log position opening.
 
         Args:
             position_id: Internal position ID (e.g., "10028_ticket_186675801")
@@ -239,6 +236,7 @@ class TradeAuditLogger:
             entry_price: Entry execution price
             ticket: Broker ticket number
             symbol: Trading symbol
+
         """
         self._write_entry(
             "POSITION_OPEN",
@@ -254,7 +252,7 @@ class TradeAuditLogger:
 
     def log_position_update(
         self, position_id: str, net_qty: float, avg_price: float, ticket: str, update_reason: str = "Fill"
-    ):
+    ) -> None:
         """Log position quantity/price update."""
         self._write_entry(
             "POSITION_UPDATE",
@@ -267,7 +265,7 @@ class TradeAuditLogger:
             ticket=ticket,
         )
 
-    def log_position_close(  # noqa: PLR0913
+    def log_position_close(
         self,
         position_id: str,
         exit_price: float,
@@ -277,9 +275,8 @@ class TradeAuditLogger:
         ticket: str,
         bars_held: int = 0,
         close_reason: str = "Signal",
-    ):
-        """
-        Log position closing.
+    ) -> None:
+        """Log position closing.
 
         Args:
             position_id: Internal position ID
@@ -290,6 +287,7 @@ class TradeAuditLogger:
             ticket: Broker ticket number
             bars_held: Duration in bars
             close_reason: Reason for closing (Signal, StopLoss, TakeProfit, etc.)
+
         """
         self._write_entry(
             "POSITION_CLOSE",
@@ -315,9 +313,8 @@ class TradeAuditLogger:
         position_id: str,
         order_id: str | None = None,
         symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests
-    ):
-        """
-        Log broker ticket assignment to position.
+    ) -> None:
+        """Log broker ticket assignment to position.
 
         Critical for hedging mode reconciliation.
         """
@@ -333,7 +330,7 @@ class TradeAuditLogger:
 
     def log_ticket_tracker_created(
         self, ticket: str, position_id: str, direction: str, entry_price: float, quantity: float
-    ):
+    ) -> None:
         """Log MFE/MAE tracker creation for ticket."""
         self._write_entry(
             "TRACKER_CREATED",
@@ -348,7 +345,7 @@ class TradeAuditLogger:
 
     def log_ticket_tracker_removed(
         self, ticket: str, position_id: str, final_mfe: float, final_mae: float, bars_held: int
-    ):
+    ) -> None:
         """Log MFE/MAE tracker removal for ticket."""
         self._write_entry(
             "TRACKER_REMOVED",
@@ -365,7 +362,7 @@ class TradeAuditLogger:
     # STATE PERSISTENCE
     # ==========================================================================
 
-    def log_state_save(self, state_file: str, num_tickets: int, net_position: float, checksum: str | None = None):
+    def log_state_save(self, state_file: str, num_tickets: int, net_position: float, checksum: str | None = None) -> None:
         """Log state persistence event."""
         self._write_entry(
             "STATE_SAVE",
@@ -379,7 +376,7 @@ class TradeAuditLogger:
 
     def log_state_load(
         self, state_file: str, num_tickets_loaded: int, net_position_loaded: float, checksum_valid: bool = True
-    ):
+    ) -> None:
         """Log state recovery event."""
         self._write_entry(
             "STATE_LOAD",
@@ -398,7 +395,7 @@ class TradeAuditLogger:
 
     def log_reconciliation(
         self, expected_positions: int, broker_positions: int, discrepancies: list[str], reconciled: bool
-    ):
+    ) -> None:
         """Log position reconciliation result."""
         self._write_entry(
             "RECONCILIATION",
@@ -411,7 +408,7 @@ class TradeAuditLogger:
             severity="WARNING" if not reconciled else "INFO",
         )
 
-    def log_orphaned_position(self, ticket: str, quantity: float, action_taken: str):
+    def log_orphaned_position(self, ticket: str, quantity: float, action_taken: str) -> None:
         """Log discovery of orphaned broker position."""
         self._write_entry(
             "ORPHANED_POSITION",
@@ -425,7 +422,7 @@ class TradeAuditLogger:
 
     def log_error(
         self, error_type: str, error_message: str, context: dict[str, Any] | None = None, ticket: str | None = None
-    ):
+    ) -> None:
         """Log trade-related error."""
         self._write_entry(
             "ERROR",
@@ -448,14 +445,14 @@ _audit_lock = threading.Lock()
 
 
 def get_trade_audit_logger() -> TradeAuditLogger:
-    """
-    Get singleton instance of trade audit logger.
+    """Get singleton instance of trade audit logger.
 
     Thread-safe singleton pattern ensures only one logger instance
     exists across the entire application.
 
     Returns:
         TradeAuditLogger: Global audit logger instance
+
     """
     global _audit_logger_instance  # noqa: PLW0603 — singleton pattern
 

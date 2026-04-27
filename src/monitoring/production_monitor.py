@@ -1,5 +1,4 @@
-"""
-Production Monitoring - Metrics Collection & Alerting
+"""Production Monitoring - Metrics Collection & Alerting.
 
 Provides real-time metrics for production trading bot monitoring:
 - P&L tracking (realized, unrealized, daily, cumulative)
@@ -26,6 +25,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass
+from typing import Any
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
@@ -101,13 +101,12 @@ class Alert:
 
 
 class ProductionMonitor:
-    """
-    Production monitoring for trading bot.
+    """Production monitoring for trading bot.
 
     Collects metrics, detects alert conditions, exposes data via HTTP/JSON.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         # Alert thresholds
         alert_no_trade_hours: float = 4.0,
@@ -120,7 +119,7 @@ class ProductionMonitor:
         # HTTP server
         http_enabled: bool = True,
         http_port: int = 8765,
-    ):
+    ) -> None:
         self.alert_no_trade_hours = alert_no_trade_hours
         self.alert_drawdown_pct = alert_drawdown_pct
         self.alert_memory_pct = alert_memory_pct
@@ -141,7 +140,7 @@ class ProductionMonitor:
         # Start time
         self.start_time = time.time()
 
-    def update_metrics(self, **kwargs) -> None:
+    def update_metrics(self, **kwargs: Any) -> None:
         """Update current metrics.
 
         Accepts the same keyword arguments as ``TradingMetrics`` fields.
@@ -210,7 +209,7 @@ class ProductionMonitor:
             elif alert.severity == "warning":
                 logger.warning("⚠️  ALERT [WARNING] %s: %s", alert.category, alert.message)
 
-    def _check_alerts(self):
+    def _check_alerts(self) -> None:
         """Check for alert conditions."""
         if not self.metrics:
             return
@@ -226,7 +225,7 @@ class ProductionMonitor:
                 Alert(
                     severity="critical",
                     category="trade",
-                    message=f"No trades for {self.metrics.last_trade_mins_ago/60:.1f} hours",
+                    message=f"No trades for {self.metrics.last_trade_mins_ago / 60:.1f} hours",
                     metric_value=self.metrics.last_trade_mins_ago / 60,
                     threshold=self.alert_no_trade_hours,
                     timestamp=time.time(),
@@ -301,7 +300,7 @@ class ProductionMonitor:
         self.active_alerts = new_alerts
         self._log_new_alerts(new_alerts)
 
-    def _save_metrics(self):
+    def _save_metrics(self) -> None:
         """Save metrics to JSON file."""
         if not self.metrics:
             return
@@ -347,7 +346,7 @@ class ProductionMonitor:
 
         return json.dumps(data, indent=2)
 
-    def start_http_server(self):
+    def start_http_server(self) -> None:
         """Start HTTP server for metrics endpoint."""
         if not self.http_enabled:
             return
@@ -355,7 +354,7 @@ class ProductionMonitor:
         monitor = self
 
         class MetricsHandler(BaseHTTPRequestHandler):
-            def do_GET(self):
+            def do_GET(self) -> None:
                 if self.path == "/metrics":
                     self.send_response(200)
                     self.send_header("Content-type", "application/json")
@@ -371,7 +370,7 @@ class ProductionMonitor:
                     self.send_response(404)
                     self.end_headers()
 
-            def log_message(self, format, *args):
+            def log_message(self, _fmt: str, *args: Any) -> None:
                 # Suppress HTTP logs
                 pass
 
@@ -379,13 +378,13 @@ class ProductionMonitor:
             self.http_server = HTTPServer(("0.0.0.0", self.http_port), MetricsHandler)
             self.http_thread = Thread(target=self.http_server.serve_forever, daemon=True)
             self.http_thread.start()
-            logger.info(f"📊 Metrics HTTP server started on port {self.http_port}")
-            logger.info(f"   Endpoints: http://localhost:{self.http_port}/metrics")
-            logger.info(f"              http://localhost:{self.http_port}/health")
+            logger.info("📊 Metrics HTTP server started on port %s", self.http_port)
+            logger.info("   Endpoints: http://localhost:%s/metrics", self.http_port)
+            logger.info("              http://localhost:%s/health", self.http_port)
         except Exception as e:
-            logger.error(f"Failed to start HTTP server: {e}")
+            logger.error("Failed to start HTTP server: %s", e)
 
-    def stop_http_server(self):
+    def stop_http_server(self) -> None:
         """Stop HTTP server."""
         if self.http_server:
             self.http_server.shutdown()
@@ -412,7 +411,7 @@ if __name__ == "__main__":
     )
 
     metrics_json = json.loads(monitor.get_metrics_json())
-    if abs(metrics_json["metrics"]["realized_pnl_day"] - 150.50) < 0.01:  # noqa: PLR2004 — test sentinel
+    if abs(metrics_json["metrics"]["realized_pnl_day"] - 150.50) < 0.01:
         print("  ✓ Metrics updated correctly")
     else:
         print("  ✗ Metrics update failed")
@@ -472,7 +471,7 @@ if __name__ == "__main__":
     if temp_file.exists():
         with open(temp_file) as f:
             saved = json.load(f)
-        if saved["metrics"]["trades_total"] == 42:  # noqa: PLR2004 — test sentinel
+        if saved["metrics"]["trades_total"] == 42:
             print("  ✓ Metrics persisted to file")
         else:
             print("  ✗ Metrics file mismatch")
@@ -495,7 +494,7 @@ if __name__ == "__main__":
 
         response = urllib.request.urlopen("http://localhost:8766/metrics", timeout=2)
         data = json.loads(response.read())
-        if data["metrics"]["trades_today"] == 5:  # noqa: PLR2004 — test sentinel
+        if data["metrics"]["trades_today"] == 5:
             print("  ✓ HTTP server working")
         else:
             print("  ✗ HTTP response mismatch")

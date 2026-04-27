@@ -28,22 +28,21 @@ from src.risk.friction_costs import (
 # ---------------------------------------------------------------------------
 def _make_calc(**overrides):
     """Build a FrictionCalculator with mocked file-based init."""
-    defaults = dict(symbol="BTCUSD", symbol_id=10028, timeframe="M5", broker="test")
+    defaults = {"symbol": "BTCUSD", "symbol_id": 10028, "timeframe": "M5", "broker": "test"}
     defaults.update(overrides)
 
     with (
         patch.object(FrictionCalculator, "_load_symbol_specs_from_config"),
         patch.object(FrictionCalculator, "_load_learned_parameters"),
     ):
-        calc = FrictionCalculator(**defaults)
-    return calc
+        return FrictionCalculator(**defaults)
 
 
 # ===================================================================
 # Commission – PERCENTAGE type
 # ===================================================================
 class TestCommissionPercentage:
-    @pytest.fixture()
+    @pytest.fixture
     def calc(self):
         c = _make_calc()
         c.costs.commission_type = "PERCENTAGE"
@@ -85,7 +84,7 @@ class TestCommissionPercentage:
 # Swap – PIPS path
 # ===================================================================
 class TestSwapPips:
-    @pytest.fixture()
+    @pytest.fixture
     def calc(self):
         c = _make_calc()
         c.costs.swap_type = "PIPS"
@@ -137,7 +136,7 @@ class TestSwapPips:
 # Swap – PERCENTAGE path
 # ===================================================================
 class TestSwapPercentage:
-    @pytest.fixture()
+    @pytest.fixture
     def calc(self):
         c = _make_calc()
         c.costs.swap_type = "PERCENTAGE"
@@ -148,9 +147,7 @@ class TestSwapPercentage:
         return c
 
     def test_percentage_buy_crosses_rollover(self, calc):
-        swap = calc.calculate_swap(
-            0.1, "BUY", holding_days=0.5, crosses_rollover=True, price=95000.0
-        )
+        swap = calc.calculate_swap(0.1, "BUY", holding_days=0.5, crosses_rollover=True, price=95000.0)
         # notional = 0.1 * 1.0 * 95000 = 9500
         # daily_rate = -2.5 / 100 / 365
         # swap = 9500 * daily_rate * 1 (at least 1 rollover)
@@ -160,15 +157,11 @@ class TestSwapPercentage:
         assert swap == pytest.approx(expected, rel=1e-4)
 
     def test_percentage_zero_price_returns_zero(self, calc):
-        swap = calc.calculate_swap(
-            0.1, "BUY", holding_days=1.0, crosses_rollover=True, price=0.0
-        )
+        swap = calc.calculate_swap(0.1, "BUY", holding_days=1.0, crosses_rollover=True, price=0.0)
         assert swap == pytest.approx(0.0)
 
     def test_percentage_sell(self, calc):
-        swap = calc.calculate_swap(
-            0.1, "SELL", holding_days=0.5, crosses_rollover=True, price=95000.0
-        )
+        swap = calc.calculate_swap(0.1, "SELL", holding_days=0.5, crosses_rollover=True, price=95000.0)
         notional = 0.1 * 1.0 * 95000.0
         daily = -1.0 / 100 / 365
         assert swap == pytest.approx(notional * daily * 1, rel=1e-4)
@@ -188,7 +181,7 @@ class TestSwapUnknownType:
 # calculate_total_friction
 # ===================================================================
 class TestTotalFriction:
-    @pytest.fixture()
+    @pytest.fixture
     def calc(self):
         c = _make_calc()
         # Inject a known spread
@@ -248,7 +241,7 @@ class TestIsSpreadAcceptable:
         # Add enough spread data to form a learned max
         for _ in range(150):
             calc.spread_tracker.update(95000.0, 95002.0, 1.0)
-        ok, current, max_acc = calc.is_spread_acceptable(multiplier=3.0)
+        ok, current, _max_acc = calc.is_spread_acceptable(multiplier=3.0)
         assert ok is True
         assert current == pytest.approx(2.0)
 
@@ -258,14 +251,14 @@ class TestIsSpreadAcceptable:
             calc.spread_tracker.update(95000.0, 95002.0, 1.0)
         # Spike the spread
         calc.spread_tracker.update(95000.0, 95050.0, 1.0)
-        ok, current, max_acc = calc.is_spread_acceptable(multiplier=2.0)
+        ok, current, _max_acc = calc.is_spread_acceptable(multiplier=2.0)
         # current = 50.0, max_acc = min*2 ≈ 4.0 → not acceptable
         assert ok is False
         assert current == pytest.approx(50.0)
 
     def test_no_data_returns_acceptable(self):
         calc = _make_calc()
-        ok, current, max_acc = calc.is_spread_acceptable()
+        ok, _current, _max_acc = calc.is_spread_acceptable()
         # current_spread = 0 → not finite or <=0 → True
         assert ok is True
 
@@ -278,9 +271,16 @@ class TestGetStatistics:
         calc = _make_calc()
         stats = calc.get_statistics()
         for key in (
-            "symbol", "avg_spread_pips", "min_spread_pips", "max_spread_pips",
-            "current_spread_pips", "commission_per_lot", "swap_long", "swap_short",
-            "base_slippage", "last_updated",
+            "symbol",
+            "avg_spread_pips",
+            "min_spread_pips",
+            "max_spread_pips",
+            "current_spread_pips",
+            "commission_per_lot",
+            "swap_long",
+            "swap_short",
+            "base_slippage",
+            "last_updated",
         ):
             assert key in stats
 
@@ -372,7 +372,7 @@ class TestRefreshDerivedCosts:
 # infer_digits_from_price – extended
 # ===================================================================
 class TestInferDigitsExtended:
-    @pytest.fixture()
+    @pytest.fixture
     def calc(self):
         return _make_calc()
 

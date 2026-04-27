@@ -15,6 +15,7 @@ from src.risk.friction_costs import (
 # SymbolCosts dataclass
 # ---------------------------------------------------------------------------
 
+
 class TestSymbolCosts:
     def test_defaults(self):
         sc = SymbolCosts(symbol="BTCUSD", symbol_id=10028)
@@ -27,8 +28,9 @@ class TestSymbolCosts:
 # SpreadTracker
 # ---------------------------------------------------------------------------
 
+
 class TestSpreadTracker:
-    @pytest.fixture()
+    @pytest.fixture
     def tracker(self):
         return SpreadTracker(window_size=100)
 
@@ -111,8 +113,9 @@ class TestSpreadTracker:
 # SlippageModel
 # ---------------------------------------------------------------------------
 
+
 class TestSlippageModel:
-    @pytest.fixture()
+    @pytest.fixture
     def model(self):
         return SlippageModel()
 
@@ -157,11 +160,13 @@ class TestSlippageModel:
 # FrictionCalculator
 # ---------------------------------------------------------------------------
 
+
 class TestFrictionCalculator:
-    @pytest.fixture()
+    @pytest.fixture
     def calc(self, tmp_path):
         """Create FrictionCalculator with tmp persistence to avoid file side-effects."""
         from src.persistence.learned_parameters import LearnedParametersManager
+
         pm = LearnedParametersManager(persistence_path=tmp_path / "params.json")
         return FrictionCalculator(symbol="BTCUSD", param_manager=pm)
 

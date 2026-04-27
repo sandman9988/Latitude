@@ -117,7 +117,7 @@ def test_circuit_breaker_integration():
     for i in range(3):
         circuit_breakers.update_trade(pnl=-10.0, equity=10000.0 - (i + 1) * 10)
         circuit_breakers.check_all()  # Check breakers after each trade
-        print(f"   Loss {i+1}: PnL=-10.0")
+        print(f"   Loss {i + 1}: PnL=-10.0")
 
     assert circuit_breakers.is_any_tripped(), "Breaker should be tripped"
     print("   ✓ Circuit breaker tripped")

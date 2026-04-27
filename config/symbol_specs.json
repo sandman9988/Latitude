@@ -13,9 +13,11 @@
     "pip_value_per_lot": 0.01,
     "swap_long": -0.5,
     "swap_short": -0.3,
-    "triple_swap_day": 3
+    "triple_swap_day": 3,
+    "commission_per_lot": 3.5,
+    "commission_type": "ABSOLUTE"
   },
-  
+
   "XAUUSD": {
     "symbol_id": 41,
     "digits": 2,
@@ -27,7 +29,9 @@
     "pip_value_per_lot": 1.0,
     "swap_long": -7.2,
     "swap_short": 4.33,
-    "triple_swap_day": 3
+    "triple_swap_day": 3,
+    "commission_per_lot": 3.5,
+    "commission_type": "ABSOLUTE"
   },
   
   "EURUSD": {

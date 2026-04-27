@@ -16,14 +16,14 @@ Version: 1.0.0
 
 import os
 import sys
-import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 # Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.resolve()))
 
 
 class TestAMDDeviceDetection(unittest.TestCase):
@@ -35,18 +35,20 @@ class TestAMDDeviceDetection(unittest.TestCase):
             from src.core.ddqn_network import _select_device
 
             device = _select_device()
-            self.assertEqual(device.type, "cpu")
+            assert device.type == "cpu"
 
     def test_select_device_cuda_available(self):
         """Test device selection uses CUDA when available."""
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"):
-                with patch("torch.cuda.get_device_properties") as mock_props:
-                    mock_props.return_value.total_memory = 8 * 1024**3  # 8GB
-                    from src.core.ddqn_network import _select_device
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"),
+            patch("torch.cuda.get_device_properties") as mock_props,
+        ):
+            mock_props.return_value.total_memory = 8 * 1024**3  # 8GB
+            from src.core.ddqn_network import _select_device
 
-                    device = _select_device()
-                    self.assertEqual(device.type, "cuda")
+            device = _select_device()
+            assert device.type == "cuda"
 
     def test_get_amd_optimizations_no_gpu(self):
         """Test AMD optimizations when no GPU available."""
@@ -54,49 +56,55 @@ class TestAMDDeviceDetection(unittest.TestCase):
             from src.core.ddqn_network import _get_amd_optimizations
 
             opts = _get_amd_optimizations()
-            self.assertFalse(opts["fp16_enabled"])
-            self.assertFalse(opts["bf16_enabled"])
-            self.assertEqual(opts["optimal_batch"], 64)
+            assert not opts["fp16_enabled"]
+            assert not opts["bf16_enabled"]
+            assert opts["optimal_batch"] == 64
 
     def test_get_amd_optimizations_navi33(self):
         """Test AMD optimizations for Navi 33 (RX 7600)."""
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"):
-                with patch("torch.cuda.get_device_properties") as mock_props:
-                    mock_props.return_value.total_memory = 8 * 1024**3  # 8GB
-                    from src.core.ddqn_network import _get_amd_optimizations
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"),
+            patch("torch.cuda.get_device_properties") as mock_props,
+        ):
+            mock_props.return_value.total_memory = 8 * 1024**3  # 8GB
+            from src.core.ddqn_network import _get_amd_optimizations
 
-                    opts = _get_amd_optimizations()
-                    self.assertTrue(opts["is_amd"])
-                    self.assertTrue(opts["is_navi33"])
-                    self.assertTrue(opts["bf16_enabled"])  # RDNA 3 has native BF16
-                    self.assertEqual(opts["optimal_batch"], 32)  # 8GB VRAM -> 32 batch
+            opts = _get_amd_optimizations()
+            assert opts["is_amd"]
+            assert opts["is_navi33"]
+            assert opts["bf16_enabled"]  # RDNA 3 has native BF16
+            assert opts["optimal_batch"] == 32  # 8GB VRAM -> 32 batch
 
     def test_get_amd_optimizations_navi31(self):
         """Test AMD optimizations for Navi 31 (RX 7900)."""
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7900 XTX"):
-                with patch("torch.cuda.get_device_properties") as mock_props:
-                    mock_props.return_value.total_memory = 24 * 1024**3  # 24GB
-                    from src.core.ddqn_network import _get_amd_optimizations
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7900 XTX"),
+            patch("torch.cuda.get_device_properties") as mock_props,
+        ):
+            mock_props.return_value.total_memory = 24 * 1024**3  # 24GB
+            from src.core.ddqn_network import _get_amd_optimizations
 
-                    opts = _get_amd_optimizations()
-                    self.assertTrue(opts["is_amd"])
-                    self.assertTrue(opts["is_navi31"])
-                    self.assertTrue(opts["bf16_enabled"])
-                    self.assertEqual(opts["optimal_batch"], 128)  # 24GB VRAM -> 128 batch
+            opts = _get_amd_optimizations()
+            assert opts["is_amd"]
+            assert opts["is_navi31"]
+            assert opts["bf16_enabled"]
+            assert opts["optimal_batch"] == 128  # 24GB VRAM -> 128 batch
 
     def test_get_amd_optimizations_nvidia(self):
         """Test AMD optimizations return False for NVIDIA GPU."""
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch("torch.cuda.get_device_name", return_value="NVIDIA GeForce RTX 3080"):
-                with patch("torch.cuda.get_device_properties") as mock_props:
-                    mock_props.return_value.total_memory = 10 * 1024**3  # 10GB
-                    from src.core.ddqn_network import _get_amd_optimizations
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.get_device_name", return_value="NVIDIA GeForce RTX 3080"),
+            patch("torch.cuda.get_device_properties") as mock_props,
+        ):
+            mock_props.return_value.total_memory = 10 * 1024**3  # 10GB
+            from src.core.ddqn_network import _get_amd_optimizations
 
-                    opts = _get_amd_optimizations()
-                    self.assertFalse(opts["is_amd"])
-                    self.assertFalse(opts["bf16_enabled"])  # Only enabled for AMD by default
+            opts = _get_amd_optimizations()
+            assert not opts["is_amd"]
+            assert not opts["bf16_enabled"]  # Only enabled for AMD by default
 
 
 class TestBF16Training(unittest.TestCase):
@@ -115,9 +123,9 @@ class TestBF16Training(unittest.TestCase):
             from src.core.ddqn_network import DEVICE, DDQNNetwork
 
             # BF16 should be False on CPU
-            self.assertEqual(DEVICE.type, "cpu")
+            assert DEVICE.type == "cpu"
             net = DDQNNetwork(state_dim=10, n_actions=3, use_bf16=False)
-            self.assertFalse(net._use_bf16)
+            assert not net._use_bf16
 
     def test_bf16_enabled_for_amd_gpu(self):
         """Test BF16 is enabled for AMD RDNA 3 GPUs."""
@@ -125,20 +133,22 @@ class TestBF16Training(unittest.TestCase):
         mock_device = MagicMock()
         mock_device.type = "cuda"
 
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"):
-                with patch("torch.cuda.get_device_properties") as mock_props:
-                    mock_props.return_value.total_memory = 8 * 1024**3
-                    with patch("torch.as_tensor") as mock_tensor:
-                        # Mock tensor operations to avoid CUDA
-                        mock_tensor.return_value = MagicMock()
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"),
+            patch("torch.cuda.get_device_properties") as mock_props,
+            patch("torch.as_tensor") as mock_tensor,
+        ):
+            mock_props.return_value.total_memory = 8 * 1024**3
+            # Mock tensor operations to avoid CUDA
+            mock_tensor.return_value = MagicMock()
 
-                        # Test BF16 flag is set correctly for AMD
-                        from src.core.ddqn_network import _get_amd_optimizations
+            # Test BF16 flag is set correctly for AMD
+            from src.core.ddqn_network import _get_amd_optimizations
 
-                        opts = _get_amd_optimizations()
-                        # BF16 should be enabled for RDNA 3
-                        self.assertTrue(opts.get("bf16_enabled", False))
+            opts = _get_amd_optimizations()
+            # BF16 should be enabled for RDNA 3
+            assert opts.get("bf16_enabled", False)
 
     def test_bf16_manual_override(self):
         """Test BF16 flag can be manually set."""
@@ -151,7 +161,7 @@ class TestBF16Training(unittest.TestCase):
 
         # The flag should be True for AMD GPUs with BF16 support
         # or False otherwise
-        self.assertIsInstance(opts.get("bf16_enabled", False), bool)
+        assert isinstance(opts.get("bf16_enabled", False), bool)
 
     def test_train_batch_bf16_autocast(self):
         """Test that train_batch returns bf16_enabled in result."""
@@ -159,22 +169,10 @@ class TestBF16Training(unittest.TestCase):
         # The actual autocast behavior is tested in integration tests
 
         # Test that the result dict includes bf16_enabled field
-        expected_keys = [
-            "loss",
-            "l2_loss",
-            "total_loss",
-            "mean_q",
-            "mean_td_error",
-            "max_td_error",
-            "grad_norm",
-            "td_errors",
-            "adaptive_tau",
-            "bf16_enabled",
-        ]
 
         # Verify the expected structure exists
         # Actual training test requires CUDA and is done in integration tests
-        self.assertTrue(True)  # Placeholder - structure verified in integration tests
+        assert True  # Placeholder - structure verified in integration tests
 
 
 class TestFloat16Storage(unittest.TestCase):
@@ -186,19 +184,21 @@ class TestFloat16Storage(unittest.TestCase):
 
         # Explicitly disable float16
         buf = ExperienceBuffer(capacity=1000, use_float16=False)
-        self.assertFalse(buf._use_float16)
+        assert not buf._use_float16
 
     def test_float16_enabled_for_amd(self):
         """Test float16 storage is enabled for AMD GPUs."""
-        with patch("torch.cuda.is_available", return_value=True):
-            with patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"):
-                with patch("torch.cuda.get_device_properties") as mock_props:
-                    mock_props.return_value.total_memory = 8 * 1024**3
-                    from src.utils.experience_buffer import ExperienceBuffer
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.get_device_name", return_value="AMD Radeon RX 7600"),
+            patch("torch.cuda.get_device_properties") as mock_props,
+        ):
+            mock_props.return_value.total_memory = 8 * 1024**3
+            from src.utils.experience_buffer import ExperienceBuffer
 
-                    buf = ExperienceBuffer(capacity=1000)
-                    # Float16 should be enabled for AMD
-                    # Note: This depends on AMD_OPTS being loaded
+            ExperienceBuffer(capacity=1000)
+            # Float16 should be enabled for AMD
+            # Note: This depends on AMD_OPTS being loaded
 
     def test_float16_manual_override(self):
         """Test float16 storage can be manually overridden."""
@@ -206,11 +206,11 @@ class TestFloat16Storage(unittest.TestCase):
 
         # Force float16 off
         buf = ExperienceBuffer(capacity=1000, use_float16=False)
-        self.assertFalse(buf._use_float16)
+        assert not buf._use_float16
 
         # Force float16 on
         buf = ExperienceBuffer(capacity=1000, use_float16=True)
-        self.assertTrue(buf._use_float16)
+        assert buf._use_float16
 
     def test_float16_storage_conversion(self):
         """Test that states are stored in float16 when enabled."""
@@ -226,8 +226,8 @@ class TestFloat16Storage(unittest.TestCase):
 
         # Verify stored in float16
         exp = buf.data[0]
-        self.assertEqual(exp.state.dtype, np.float16)
-        self.assertEqual(exp.next_state.dtype, np.float16)
+        assert exp.state.dtype == np.float16
+        assert exp.next_state.dtype == np.float16
 
     def test_float16_sampling_conversion(self):
         """Test that sampled states are converted back to float32."""
@@ -244,11 +244,11 @@ class TestFloat16Storage(unittest.TestCase):
 
         # Sample batch
         batch = buf.sample(batch_size=4)
-        self.assertIsNotNone(batch)
+        assert batch is not None
 
         # Verify states are float32 (converted back for training)
-        self.assertEqual(batch["states"].dtype, np.float32)
-        self.assertEqual(batch["next_states"].dtype, np.float32)
+        assert batch["states"].dtype == np.float32
+        assert batch["next_states"].dtype == np.float32
 
     def test_float16_memory_savings(self):
         """Test that float16 storage reduces memory usage."""
@@ -273,13 +273,13 @@ class TestFloat16Storage(unittest.TestCase):
         exp_fp16 = buf_fp16.data[0]
 
         # Float16 should use half the memory for states
-        self.assertEqual(exp_fp32.state.dtype, np.float32)
-        self.assertEqual(exp_fp16.state.dtype, np.float16)
+        assert exp_fp32.state.dtype == np.float32
+        assert exp_fp16.state.dtype == np.float16
 
         # Size comparison (rough estimate)
         size_fp32 = exp_fp32.state.nbytes
         size_fp16 = exp_fp16.state.nbytes
-        self.assertLess(size_fp16, size_fp32)
+        assert size_fp16 < size_fp32
 
 
 class TestAMDOptimalBatchSize(unittest.TestCase):
@@ -291,7 +291,7 @@ class TestAMDOptimalBatchSize(unittest.TestCase):
 
         batch = get_optimal_batch_size(state_dim=32)
         # Should be larger for smaller state
-        self.assertGreater(batch, 16)
+        assert batch > 16
 
     def test_get_optimal_batch_size_medium_state(self):
         """Test optimal batch size for medium state dimension."""
@@ -299,8 +299,8 @@ class TestAMDOptimalBatchSize(unittest.TestCase):
 
         batch = get_optimal_batch_size(state_dim=128)
         # Default should be reasonable
-        self.assertGreaterEqual(batch, 16)
-        self.assertLessEqual(batch, 128)
+        assert batch >= 16
+        assert batch <= 128
 
     def test_get_buffer_capacity_for_vram(self):
         """Test buffer capacity scaling with VRAM."""
@@ -308,15 +308,15 @@ class TestAMDOptimalBatchSize(unittest.TestCase):
 
         # 8GB VRAM -> 50K capacity
         cap_8gb = get_buffer_capacity_for_vram(vram_gb=8.0)
-        self.assertEqual(cap_8gb, 50_000)
+        assert cap_8gb == 50000
 
         # 16GB VRAM -> 100K capacity
         cap_16gb = get_buffer_capacity_for_vram(vram_gb=16.0)
-        self.assertEqual(cap_16gb, 100_000)
+        assert cap_16gb == 100000
 
         # 4GB VRAM -> 25K capacity
         cap_4gb = get_buffer_capacity_for_vram(vram_gb=4.0)
-        self.assertEqual(cap_4gb, 25_000)
+        assert cap_4gb == 25000
 
 
 class TestAMDConstants(unittest.TestCase):
@@ -335,14 +335,14 @@ class TestAMDConstants(unittest.TestCase):
             AMD_USE_FLOAT16_STATES,
         )
 
-        self.assertEqual(AMD_BATCH_SIZE_SMALL, 32)
-        self.assertEqual(AMD_BATCH_SIZE_MEDIUM, 64)
-        self.assertEqual(AMD_BATCH_SIZE_LARGE, 128)
-        self.assertEqual(AMD_GRADIENT_ACCUMULATION_STEPS, 2)
-        self.assertEqual(AMD_TRIGGER_BUFFER_CAPACITY, 50_000)
-        self.assertEqual(AMD_HARVESTER_BUFFER_CAPACITY, 50_000)
-        self.assertTrue(AMD_USE_BF16)
-        self.assertTrue(AMD_USE_FLOAT16_STATES)
+        assert AMD_BATCH_SIZE_SMALL == 32
+        assert AMD_BATCH_SIZE_MEDIUM == 64
+        assert AMD_BATCH_SIZE_LARGE == 128
+        assert AMD_GRADIENT_ACCUMULATION_STEPS == 2
+        assert AMD_TRIGGER_BUFFER_CAPACITY == 50000
+        assert AMD_HARVESTER_BUFFER_CAPACITY == 50000
+        assert AMD_USE_BF16
+        assert AMD_USE_FLOAT16_STATES
 
     def test_amd_config_function(self):
         """Test get_amd_config returns valid configuration."""
@@ -350,16 +350,16 @@ class TestAMDConstants(unittest.TestCase):
 
         config = get_amd_config()
 
-        self.assertIn("buffer_capacity", config)
-        self.assertIn("batch_size", config)
-        self.assertIn("precision", config)
-        self.assertIn("memory", config)
-        self.assertIn("hardware", config)
+        assert "buffer_capacity" in config
+        assert "batch_size" in config
+        assert "precision" in config
+        assert "memory" in config
+        assert "hardware" in config
 
         # Check structure
-        self.assertEqual(config["buffer_capacity"]["trigger"], 50_000)
-        self.assertEqual(config["batch_size"]["gradient_accumulation"], 2)
-        self.assertTrue(config["precision"]["bf16"])
+        assert config["buffer_capacity"]["trigger"] == 50000
+        assert config["batch_size"]["gradient_accumulation"] == 2
+        assert config["precision"]["bf16"]
 
 
 class TestROCMEnvironment(unittest.TestCase):
@@ -370,7 +370,7 @@ class TestROCMEnvironment(unittest.TestCase):
         import pathlib
 
         rocm_env_path = pathlib.Path(__file__).parent.parent.parent / "config" / "rocm_env.sh"
-        self.assertTrue(rocm_env_path.exists(), f"ROCM env file not found at {rocm_env_path}")
+        assert rocm_env_path.exists(), f"ROCM env file not found at {rocm_env_path}"
 
     def test_rocm_env_variables_defined(self):
         """Test that key ROCm environment variables are defined."""
@@ -384,7 +384,7 @@ class TestROCMEnvironment(unittest.TestCase):
         ]
 
         for var in required_vars:
-            self.assertIn(var, AMD_ROCM_ENV_VARS)
+            assert var in AMD_ROCM_ENV_VARS
 
     def test_configure_rocm_environment(self):
         """Test configure_rocm_environment sets environment variables."""
@@ -398,8 +398,8 @@ class TestROCMEnvironment(unittest.TestCase):
         configure_rocm_environment()
 
         # Check values are set
-        self.assertEqual(os.environ.get("HSA_OVERRIDE_GFX_VERSION"), "11.0.2")
-        self.assertEqual(os.environ.get("MIOPEN_FIND_MODE"), "1")
+        assert os.environ.get("HSA_OVERRIDE_GFX_VERSION") == "11.0.2"
+        assert os.environ.get("MIOPEN_FIND_MODE") == "1"
 
 
 class TestIntegration(unittest.TestCase):
@@ -416,15 +416,15 @@ class TestIntegration(unittest.TestCase):
         opts = _get_amd_optimizations()
 
         # Verify structure - only check keys that are always present
-        self.assertIn("bf16_enabled", opts)
-        self.assertIn("optimal_batch", opts)
+        assert "bf16_enabled" in opts
+        assert "optimal_batch" in opts
         # is_amd is only present when AMD GPU is detected
 
         # Test ExperienceBuffer with float16
         from src.utils.experience_buffer import ExperienceBuffer
 
         buf = ExperienceBuffer(capacity=100, use_float16=True)
-        self.assertTrue(buf._use_float16)
+        assert buf._use_float16
 
         # Add and sample
         buf.set_current_regime(0)
@@ -434,7 +434,7 @@ class TestIntegration(unittest.TestCase):
 
         # Verify float16 storage
         exp = buf.data[0]
-        self.assertEqual(exp.state.dtype, np.float16)
+        assert exp.state.dtype == np.float16
 
     def test_experience_buffer_with_float16(self):
         """Test experience buffer end-to-end with float16."""
@@ -452,8 +452,8 @@ class TestIntegration(unittest.TestCase):
 
         # Sample batch
         batch = buf.sample(batch_size=4)
-        self.assertIsNotNone(batch)
-        self.assertEqual(batch["states"].dtype, np.float32)
+        assert batch is not None
+        assert batch["states"].dtype == np.float32
 
 
 if __name__ == "__main__":

@@ -1,5 +1,4 @@
-"""
-non_repaint_guards.py
+"""non_repaint_guards.py.
 ====================
 Prevents look-ahead bias by enforcing non-repaint access to bar data.
 
@@ -41,12 +40,10 @@ TEST_BAR_VALUE_4: float = 104.0
 class NonRepaintError(Exception):
     """Raised when attempting to access bar[0] before bar close."""
 
-    pass
 
 
 class NonRepaintBarAccess:
-    """
-    Wrapper for time-series data that prevents look-ahead bias.
+    """Wrapper for time-series data that prevents look-ahead bias.
 
     Enforces:
     - bar[0] (current incomplete bar) can ONLY be accessed after mark_bar_closed()
@@ -59,11 +56,11 @@ class NonRepaintBarAccess:
     3. Backtest results are over-optimistic (non-repaintable in live)
     """
 
-    def __init__(self, name: str, max_lookback: int = 500):
-        """
-        Args:
-            name: Series identifier for error messages (e.g., "close", "rsi")
-            max_lookback: Maximum bars to store
+    def __init__(self, name: str, max_lookback: int = 500) -> None:
+        """Args:
+        name: Series identifier for error messages (e.g., "close", "rsi")
+        max_lookback: Maximum bars to store.
+
         """
         self.name = name
         self.max_lookback = max_lookback
@@ -71,9 +68,8 @@ class NonRepaintBarAccess:
         self.is_bar_closed = False
         self.bar_count = 0
 
-    def append(self, value: float):
-        """
-        Add new bar data. Called when new bar forms.
+    def append(self, value: float) -> None:
+        """Add new bar data. Called when new bar forms.
 
         Workflow:
         1. on_bar_close() calls mark_bar_closed()
@@ -86,9 +82,8 @@ class NonRepaintBarAccess:
         # Reset bar closed flag when new data arrives (new bar started)
         self.is_bar_closed = False
 
-    def mark_bar_closed(self):
-        """
-        Explicitly mark current bar as closed.
+    def mark_bar_closed(self) -> None:
+        """Explicitly mark current bar as closed.
         ONLY after this can get_current() be called.
 
         Call this in your on_bar_close() handler.
@@ -96,17 +91,15 @@ class NonRepaintBarAccess:
         self.is_bar_closed = True
         LOG.debug("[%s] Bar %d marked closed - bar[0] access now permitted", self.name, self.bar_count)
 
-    def mark_bar_opened(self):
-        """
-        Mark new bar as opened (incomplete).
+    def mark_bar_opened(self) -> None:
+        """Mark new bar as opened (incomplete).
         Call this after processing bar close, before next tick.
         """
         self.is_bar_closed = False
         LOG.debug("[%s] Bar %d opened - bar[0] access now restricted", self.name, self.bar_count + 1)
 
     def get_current(self, allow_incomplete: bool = False) -> float:
-        """
-        Get current bar value (bar[0]).
+        """Get current bar value (bar[0]).
 
         Args:
             allow_incomplete: If True, allows access even during bar formation.
@@ -118,22 +111,26 @@ class NonRepaintBarAccess:
         Raises:
             NonRepaintError: If bar not closed and allow_incomplete=False
             IndexError: If no data available
+
         """
         if not self.data:
-            raise IndexError(f"[{self.name}] No data available")
+            msg = f"[{self.name}] No data available"
+            raise IndexError(msg)
 
         if not self.is_bar_closed and not allow_incomplete:
-            raise NonRepaintError(
+            msg = (
                 f"[{self.name}] Cannot access bar[0] before bar close. "
                 f"Current bar #{self.bar_count} is still forming. "
                 f"Call mark_bar_closed() first or use safe_get_previous(1)."
+            )
+            raise NonRepaintError(
+                msg
             )
 
         return self.data[-1]
 
     def safe_get_previous(self, bars_ago: int) -> float | None:
-        """
-        Safely get historical bar value.
+        """Safely get historical bar value.
 
         Args:
             bars_ago: How many bars back (1 = previous closed bar, 2 = 2 bars ago, etc.)
@@ -145,9 +142,11 @@ class NonRepaintBarAccess:
         Note:
             This is ALWAYS safe - historical bars never repaint.
             bars_ago=1 gets bar[1], which is the most recent CLOSED bar.
+
         """
         if bars_ago < 1:
-            raise ValueError(f"[{self.name}] bars_ago must be >= 1 (got {bars_ago}). Use get_current() for bar[0].")
+            msg = f"[{self.name}] bars_ago must be >= 1 (got {bars_ago}). Use get_current() for bar[0]."
+            raise ValueError(msg)
 
         if bars_ago >= len(self.data):
             return None
@@ -158,8 +157,7 @@ class NonRepaintBarAccess:
         return self.data[index]
 
     def get_series(self, count: int, offset: int = 1) -> list[float]:
-        """
-        Get historical series of bars.
+        """Get historical series of bars.
 
         Args:
             count: Number of bars to retrieve
@@ -172,15 +170,17 @@ class NonRepaintBarAccess:
 
         Example:
             get_series(5, offset=1) -> [bar[1], bar[2], bar[3], bar[4], bar[5]]
+
         """
         if offset < 0:
-            raise ValueError(f"[{self.name}] offset must be >= 0")
+            msg = f"[{self.name}] offset must be >= 0"
+            raise ValueError(msg)
 
         # Special case: if bar is closed and offset=0, we can include bar[0]
         if offset == 0 and not self.is_bar_closed:
+            msg = f"[{self.name}] Cannot use offset=0 when bar not closed. Use offset=1 or call mark_bar_closed() first."
             raise NonRepaintError(
-                f"[{self.name}] Cannot use offset=0 when bar not closed. "
-                f"Use offset=1 or call mark_bar_closed() first."
+                msg
             )
 
         result = []
@@ -212,8 +212,7 @@ class NonRepaintBarAccess:
 
 
 class NonRepaintIndicator:
-    """
-    Base class for indicators that respect non-repaint discipline.
+    """Base class for indicators that respect non-repaint discipline.
 
     Ensures:
     - Indicators only update on bar close
@@ -227,18 +226,18 @@ class NonRepaintIndicator:
                 return rsi_value
     """
 
-    def __init__(self, name: str, period: int):
+    def __init__(self, name: str, period: int) -> None:
         self.name = name
         self.period = period
         self.values: deque[float] = deque(maxlen=500)
         self.is_ready = False
 
-    def update(self, new_value: float):
-        """
-        Update indicator with new value (called on bar close).
+    def update(self, new_value: float) -> None:
+        """Update indicator with new value (called on bar close).
 
         Args:
             new_value: Newly calculated indicator value from closed bar
+
         """
         self.values.append(new_value)
         if len(self.values) >= self.period:

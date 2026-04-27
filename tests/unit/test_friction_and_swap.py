@@ -48,7 +48,9 @@ def test_friction_breakdown_includes_swap_overnight(fc_xauusd):
 def test_friction_pct_uses_contract_size(monkeypatch):
     # Build a HarvesterAgent with a friction calculator whose contract_size is 100 (XAUUSD)
     fc = FrictionCalculator(symbol="XAUUSD", symbol_id=41, timeframe="M5", broker="default")
-    harvester = HarvesterAgent(window=64, n_features=10, enable_training=False, symbol="XAUUSD", timeframe="M5", friction_calculator=fc)
+    harvester = HarvesterAgent(
+        window=64, n_features=10, enable_training=False, symbol="XAUUSD", timeframe="M5", friction_calculator=fc
+    )
 
     entry_price = 4600.0
     pct = harvester.get_friction_cost_pct(entry_price=entry_price, quantity=0.1, side="BUY")

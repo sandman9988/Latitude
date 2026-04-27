@@ -19,8 +19,7 @@ from src.persistence.learned_parameters import LearnedParametersManager
 @pytest.fixture
 def param_manager(tmp_path):
     """Create a LearnedParametersManager with temp file."""
-    pm = LearnedParametersManager(persistence_path=tmp_path / "params.json")
-    return pm
+    return LearnedParametersManager(persistence_path=tmp_path / "params.json")
 
 
 @pytest.fixture
@@ -111,8 +110,8 @@ class TestHarvesterRewardKeyErrors:
             mfe=100.0,
             mae=10.0,
             was_wtl=False,
-            bars_held=10,
-            bars_from_mfe_to_exit=2,
+            _bars_held=10,
+            _bars_from_mfe_to_exit=2,
         )
 
         # With fallback capture_mult=2.0, magnitude_scale=min(100/10,2)=2.0:
@@ -137,7 +136,7 @@ class TestHarvesterRewardKeyErrors:
             mfe=100.0,
             mae=10.0,
             was_wtl=True,
-            bars_held=10,
+            _bars_held=10,
         )
 
         # wtl_mult fallback = 3.0, giveback_ratio = clamp(1 - 80/100, 0.5, 2.0) = 0.5
@@ -157,8 +156,8 @@ class TestHarvesterRewardKeyErrors:
             mfe=100.0,
             mae=50.0,
             was_wtl=True,
-            bars_held=20,
-            bars_from_mfe_to_exit=5,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=5,
         )
 
         # capture: (50/100 - 0.7) * 2.0 * 2.0 = -0.8 (magnitude_scale=2.0, baseline fallback=10.0)
@@ -207,7 +206,7 @@ class TestHarvesterRewardQuality:
             mfe=100.0,
             mae=5.0,
             was_wtl=False,
-            bars_held=10,
+            _bars_held=10,
         )
         assert result["quality"] == "EXCELLENT"
 
@@ -219,7 +218,7 @@ class TestHarvesterRewardQuality:
             mfe=100.0,
             mae=5.0,
             was_wtl=False,
-            bars_held=10,
+            _bars_held=10,
         )
         assert result["quality"] == "GOOD"
 
@@ -231,7 +230,7 @@ class TestHarvesterRewardQuality:
             mfe=100.0,
             mae=5.0,
             was_wtl=False,
-            bars_held=10,
+            _bars_held=10,
         )
         assert result["quality"] == "FAIR"
 
@@ -243,7 +242,7 @@ class TestHarvesterRewardQuality:
             mfe=100.0,
             mae=5.0,
             was_wtl=False,
-            bars_held=10,
+            _bars_held=10,
         )
         assert result["quality"] == "POOR"
 
@@ -254,7 +253,7 @@ class TestHarvesterRewardQuality:
             mfe=0.0,
             mae=5.0,
             was_wtl=False,
-            bars_held=10,
+            _bars_held=10,
         )
         assert result["capture_efficiency"] < 0
         assert result["capture_ratio"] == pytest.approx(0.0)
@@ -267,20 +266,20 @@ class TestHarvesterRewardQuality:
             mfe=100.0,
             mae=60.0,
             was_wtl=False,
-            bars_held=20,
-            bars_from_mfe_to_exit=10,
+            _bars_held=20,
+            _bars_from_mfe_to_exit=10,
         )
         # drawdown_ratio = 60/100 = 0.6 > 0.3 → penalty = -1.0 * (0.6-0.3) = -0.3
         assert result["timing_penalty"] == pytest.approx(-0.3)
 
     def test_timing_zero_when_no_bars(self, shaper):
-        """bars_held=0 or bars_from_mfe=0 → no timing penalty."""
+        """_bars_held=0 or bars_from_mfe=0 → no timing penalty."""
         shaper._get_param = MagicMock(return_value=2.0)
         result = shaper.calculate_harvester_reward(
             exit_pnl=80.0,
             mfe=100.0,
             mae=5.0,
             was_wtl=False,
-            bars_held=0,
+            _bars_held=0,
         )
         assert result["timing_penalty"] == pytest.approx(0.0)

@@ -1,5 +1,4 @@
-"""
-Broker Execution Model - Realistic Slippage & Execution Cost Modeling
+"""Broker Execution Model - Realistic Slippage & Execution Cost Modeling.
 
 Models asymmetric slippage based on:
 - Order side (buy/sell)
@@ -29,14 +28,15 @@ RegimeType = Literal["TRENDING", "MEAN_REVERTING", "TRANSITIONAL", "UNKNOWN"]
 # ---------------------------------------------------------------------------
 # Self-test sentinel constants — used only in the _test_* functions below
 # ---------------------------------------------------------------------------
-_TEST_MID_PRICE: float = 50000.0              # reference mid price (BTC-like)
-_TEST_QTY: float = 0.10                       # reference lot size for tests
+_TEST_MID_PRICE: float = 50000.0  # reference mid price (BTC-like)
+_TEST_QTY: float = 0.10  # reference lot size for tests
 _TEST_ZERO_IMPACT_TOLERANCE_BPS: float = 0.01  # near-zero bps tolerance
-_TEST_MIN_LARGE_IMPACT_BPS: float = 10.0       # minimum impact expected for a large order
-_TEST_COST_CAP_BPS: float = 50.0              # cost-cap value matched in _test_cost_cap()
+_TEST_MIN_LARGE_IMPACT_BPS: float = 10.0  # minimum impact expected for a large order
+_TEST_COST_CAP_BPS: float = 50.0  # cost-cap value matched in _test_cost_cap()
+
 
 class OrderSide(Enum):
-    """Order side for slippage calculation"""
+    """Order side for slippage calculation."""
 
     BUY = 1
     SELL = 2
@@ -44,7 +44,7 @@ class OrderSide(Enum):
 
 @dataclass
 class ExecutionCosts:
-    """Complete execution cost breakdown"""
+    """Complete execution cost breakdown."""
 
     base_slippage_bps: float  # Base slippage in basis points
     regime_adjustment_bps: float  # Regime-based adjustment
@@ -56,8 +56,7 @@ class ExecutionCosts:
 
 
 class BrokerExecutionModel:
-    """
-    Models realistic execution costs for position sizing and reward calculation.
+    """Models realistic execution costs for position sizing and reward calculation.
 
     Asymmetric slippage model:
     - BUY orders: Pay offer + slippage (worse execution when buying)
@@ -79,7 +78,7 @@ class BrokerExecutionModel:
         adjusted_qty = costs.cost_adjusted_size
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         typical_spread_bps: float = 5.0,
         base_slippage_bps: float = 2.0,
@@ -88,9 +87,8 @@ class BrokerExecutionModel:
         mean_reverting_multiplier: float = 0.8,
         size_impact_coefficient: float = 10.0,
         max_total_cost_bps: float = 50.0,
-    ):
-        """
-        Initialize execution model with cost parameters.
+    ) -> None:
+        """Initialize execution model with cost parameters.
 
         Args:
             typical_spread_bps: Typical bid-ask spread (basis points)
@@ -100,6 +98,7 @@ class BrokerExecutionModel:
             mean_reverting_multiplier: Slippage multiplier in mean-reverting regime
             size_impact_coefficient: Market impact scaling (bps per lot)
             max_total_cost_bps: Maximum total execution cost (safety cap)
+
         """
         self.typical_spread_bps = typical_spread_bps
         self.base_slippage_bps = base_slippage_bps
@@ -119,7 +118,7 @@ class BrokerExecutionModel:
             size_impact_coefficient,
         )
 
-    def estimate_execution_costs(  # noqa: PLR0913
+    def estimate_execution_costs(
         self,
         side: OrderSide,
         quantity: float,
@@ -128,8 +127,7 @@ class BrokerExecutionModel:
         regime: RegimeType = "UNKNOWN",
         typical_quantity: float = 0.10,
     ) -> ExecutionCosts:
-        """
-        Estimate total execution costs for an order.
+        """Estimate total execution costs for an order.
 
         Args:
             side: BUY or SELL
@@ -141,6 +139,7 @@ class BrokerExecutionModel:
 
         Returns:
             ExecutionCosts with complete breakdown
+
         """
         # Spread cost (half-spread for market orders)
         if spread_bps is None:
@@ -206,7 +205,7 @@ class BrokerExecutionModel:
     def _get_regime_multiplier(self, regime: RegimeType) -> float:
         """Get slippage multiplier for given regime."""
         _multipliers: dict[str, float] = {
-            "TRANSITIONAL": self.volatile_multiplier,   # High volatility/uncertainty
+            "TRANSITIONAL": self.volatile_multiplier,  # High volatility/uncertainty
             "TRENDING": self.trending_multiplier,
             "MEAN_REVERTING": self.mean_reverting_multiplier,
         }
@@ -220,8 +219,7 @@ class BrokerExecutionModel:
         spread_bps: float | None = None,
         regime: RegimeType = "UNKNOWN",
     ) -> float:
-        """
-        Adjust position size downward to account for execution costs.
+        """Adjust position size downward to account for execution costs.
 
         This ensures that the agent's actual capital at risk matches the
         target after accounting for slippage.
@@ -235,6 +233,7 @@ class BrokerExecutionModel:
 
         Returns:
             Cost-adjusted quantity (always <= target_quantity)
+
         """
         costs = self.estimate_execution_costs(
             side=side,
@@ -268,7 +267,7 @@ class BrokerExecutionModel:
             "max_total_cost_bps": self.max_total_cost_bps,
         }
 
-    def load_state_dict(self, state: dict):
+    def load_state_dict(self, state: dict) -> None:
         """Load model parameters from persistence."""
         self.typical_spread_bps = state.get("typical_spread_bps", 5.0)
         self.base_slippage_bps = state.get("base_slippage_bps", 2.0)
@@ -285,7 +284,7 @@ class BrokerExecutionModel:
 # ============================================================================
 
 
-def _test_basic_execution_costs():
+def _test_basic_execution_costs() -> None:
     """Test basic execution cost calculation."""
     model = BrokerExecutionModel(
         typical_spread_bps=5.0,
@@ -311,7 +310,7 @@ def _test_basic_execution_costs():
     LOG.info("✓ _test_basic_execution_costs PASSED")
 
 
-def _test_asymmetric_slippage():
+def _test_asymmetric_slippage() -> None:
     """Test that BUY and SELL have asymmetric impact."""
     model = BrokerExecutionModel()
 
@@ -335,7 +334,7 @@ def _test_asymmetric_slippage():
     LOG.info("✓ _test_asymmetric_slippage PASSED")
 
 
-def _test_regime_impact():
+def _test_regime_impact() -> None:
     """Test regime multipliers."""
     model = BrokerExecutionModel(
         base_slippage_bps=10.0, volatile_multiplier=2.0, trending_multiplier=1.5, mean_reverting_multiplier=0.8
@@ -364,7 +363,7 @@ def _test_regime_impact():
     LOG.info("✓ _test_regime_impact PASSED")
 
 
-def _test_size_impact():
+def _test_size_impact() -> None:
     """Test that larger orders have more impact."""
     model = BrokerExecutionModel(size_impact_coefficient=10.0)
 
@@ -389,7 +388,7 @@ def _test_size_impact():
     LOG.info("✓ _test_size_impact PASSED")
 
 
-def _test_cost_cap():
+def _test_cost_cap() -> None:
     """Test maximum cost cap."""
     model = BrokerExecutionModel(
         base_slippage_bps=100.0,  # Unrealistically high
@@ -402,12 +401,14 @@ def _test_cost_cap():
     )
 
     # Should be capped
-    assert costs.total_slippage_bps <= _TEST_COST_CAP_BPS, f"Cost should be capped at 50 bps, got {costs.total_slippage_bps}"
+    assert costs.total_slippage_bps <= _TEST_COST_CAP_BPS, (
+        f"Cost should be capped at 50 bps, got {costs.total_slippage_bps}"
+    )
 
     LOG.info("✓ _test_cost_cap PASSED")
 
 
-def _test_position_size_adjustment():
+def _test_position_size_adjustment() -> None:
     """Test position size adjustment."""
     model = BrokerExecutionModel()
 

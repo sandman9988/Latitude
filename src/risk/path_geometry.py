@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Path Geometry Module - Entry Trigger Features
+"""Path Geometry Module - Entry Trigger Features.
 ==============================================
 Implements PathGeometry from C# skeleton (Core/PathGeometry.cs)
 
@@ -35,8 +34,7 @@ LOG = logging.getLogger(__name__)
 
 
 class PathGeometry:
-    """
-    Calculate path geometry features for entry trigger evaluation.
+    """Calculate path geometry features for entry trigger evaluation.
 
     Features (all Rogers-Satchell normalized where applicable):
     - efficiency: Path efficiency (0..1) - displacement / total path length
@@ -52,7 +50,7 @@ class PathGeometry:
     - High feasibility → Good entry opportunity
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize PathGeometry calculator."""
         self._prev_ret = 0.0
         self._prev_gamma = 0.0
@@ -73,8 +71,7 @@ class PathGeometry:
         sigma: float,
         sigma_long: float = 0.0,
     ) -> dict[str, float]:
-        """
-        Calculate path geometry from recent price bars.
+        """Calculate path geometry from recent price bars.
 
         Args:
             bars: Deque of (t, o, h, l, c) tuples (at least 3 bars needed)
@@ -87,6 +84,7 @@ class PathGeometry:
 
         Returns:
             Dictionary with keys: efficiency, gamma, jerk, runway, feasibility
+
         """
         # Need at least 3 bars: c0, c1, c2
         if len(bars) < MIN_BARS_FOR_GEOMETRY or sigma <= 0:
@@ -179,11 +177,11 @@ class PathGeometry:
         return self.last
 
     def get_feature_vector(self) -> np.ndarray:
-        """
-        Get geometry features as numpy array for RL state.
+        """Get geometry features as numpy array for RL state.
 
         Returns:
             Array: [efficiency, gamma, jerk, runway, feasibility]
+
         """
         return np.array(
             [

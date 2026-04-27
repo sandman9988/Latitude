@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""
-Standalone Emergency Close - Manually close all positions
+"""Standalone Emergency Close - Manually close all positions.
 
 Can be run while bot is running or standalone.
 Handles both netting and hedging modes.
 """
+
 import argparse
 import logging
 import os
@@ -15,14 +15,14 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import quickfix as fix  # noqa: E402
-import quickfix44 as fix44  # noqa: E402
+import quickfix as fix
+import quickfix44 as fix44
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 LOG = logging.getLogger(__name__)
 
 
-def close_via_running_bot():
+def close_via_running_bot() -> bool:
     """Close positions via running bot's TradeManagerIntegration.
 
     Not supported from external scripts — logs guidance and returns False.
@@ -44,18 +44,18 @@ class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
         self.orders_submitted = 0
         self.orders_filled = 0
 
-    def onCreate(self, session_id):
+    def onCreate(self, session_id) -> None:
         LOG.info("Session created: %s", session_id)
         self.session_id = session_id
 
-    def onLogon(self, session_id):
+    def onLogon(self, session_id) -> None:
         LOG.info("Logged on: %s", session_id)
         self._request_positions(session_id)
 
-    def onLogout(self, session_id):
+    def onLogout(self, session_id) -> None:
         LOG.info("Logged out: %s", session_id)
 
-    def toAdmin(self, message, _session_id):
+    def toAdmin(self, message, _session_id) -> None:
         msg_type = fix.MsgType()
         message.getHeader().getField(msg_type)
         if msg_type.getValue() == "A":  # Logon
@@ -63,19 +63,19 @@ class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
             password = os.environ.get("CTRADER_PASSWORD_TRADE")
 
             if not username or not password:
-                LOG.error("Missing CTRADER_USERNAME or" " CTRADER_PASSWORD_TRADE environment variables")
+                LOG.error("Missing CTRADER_USERNAME or CTRADER_PASSWORD_TRADE environment variables")
                 sys.exit(1)
 
             message.setField(fix.Username(username))
             message.setField(fix.Password(password))
 
-    def fromAdmin(self, _message, _session_id):
+    def fromAdmin(self, _message, _session_id) -> None:
         """No admin message handling needed for emergency close."""
 
-    def toApp(self, _message, _session_id):
+    def toApp(self, _message, _session_id) -> None:
         """No outgoing message processing needed."""
 
-    def fromApp(self, message, _session_id):
+    def fromApp(self, message, _session_id) -> None:
         msg_type = fix.MsgType()
         message.getHeader().getField(msg_type)
 
@@ -84,7 +84,7 @@ class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
         elif msg_type.getValue() == "8":  # Execution Report
             self._handle_execution_report(message)
 
-    def _request_positions(self, session_id):
+    def _request_positions(self, session_id) -> None:
         """Send RequestForPositions to broker."""
         msg = fix44.RequestForPositions()
         msg.setField(fix.PosReqID(f"emergency_{int(time.time())}"))
@@ -97,7 +97,7 @@ class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
         fix.Session.sendToTarget(msg, session_id)
         LOG.info("✓ Requested positions from broker")
 
-    def _handle_position_report(self, message):
+    def _handle_position_report(self, message) -> None:
         """Parse position report and submit close orders."""
         symbol = fix.Symbol()
         message.getField(symbol)
@@ -154,7 +154,7 @@ class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
 
         return long_qty, short_qty
 
-    def _submit_close(self, side_str, qty):
+    def _submit_close(self, side_str, qty) -> None:
         """Submit market order to close position."""
         clord_id = f"EMERGENCY_{int(time.time() * 1000)}_{self.orders_submitted}"
 
@@ -175,7 +175,7 @@ class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
             clord_id,
         )
 
-    def _handle_execution_report(self, message):
+    def _handle_execution_report(self, message) -> None:
         """Handle order fill confirmation."""
         exec_type = fix.ExecType()
         message.getField(exec_type)
@@ -197,7 +197,7 @@ class EmergencyCloseApp(fix.Application):  # pylint: disable=arguments-renamed
             )
 
 
-def close_via_fix_session():
+def close_via_fix_session() -> bool | None:
     """Close positions using standalone FIX session."""
     try:
         settings = fix.SessionSettings("config/ctrader_trade.cfg")
@@ -227,7 +227,7 @@ def close_via_fix_session():
         return False
 
 
-def main():
+def main() -> int:
     """Parse arguments and execute emergency position close."""
     parser = argparse.ArgumentParser(description="Emergency position closer")
     parser.add_argument(

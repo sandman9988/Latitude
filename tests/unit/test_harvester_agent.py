@@ -370,12 +370,12 @@ class TestPreAllocatedStateBuffers:
         market_state2 = rng.standard_normal((64, 7)).astype(np.float32)
 
         # First call allocates buffers
-        full_state1 = ha._build_full_state(market_state1, mfe=50.0, mae=10.0, ticks_held=30, entry_price=1000.0)
+        ha._build_full_state(market_state1, mfe=50.0, mae=10.0, ticks_held=30, entry_price=1000.0)
         buffer_id_1 = id(ha._combined_state)
         pos_buffer_id_1 = id(ha._pos_features)
 
         # Second call reuses buffers
-        full_state2 = ha._build_full_state(market_state2, mfe=60.0, mae=5.0, ticks_held=40, entry_price=1000.0)
+        ha._build_full_state(market_state2, mfe=60.0, mae=5.0, ticks_held=40, entry_price=1000.0)
         buffer_id_2 = id(ha._combined_state)
         pos_buffer_id_2 = id(ha._pos_features)
 
@@ -428,7 +428,7 @@ class TestPreAllocatedStateBuffers:
         market_state = rng.standard_normal((64, 7)).astype(np.float32)
 
         # Call decide to trigger state building
-        action, conf = ha.decide(
+        _action, _conf = ha.decide(
             market_state=market_state,
             mfe=50.0,
             mae=10.0,
@@ -447,7 +447,7 @@ class TestPreAllocatedStateBuffers:
         market_state = rng.standard_normal((64, 7)).astype(np.float32)
 
         # Call decide to trigger state building
-        action, conf = ha.decide(
+        _action, _conf = ha.decide(
             market_state=market_state,
             mfe=50.0,
             mae=10.0,

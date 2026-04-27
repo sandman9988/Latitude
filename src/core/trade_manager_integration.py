@@ -1,5 +1,4 @@
-"""
-TradeManager Integration
+"""TradeManager Integration.
 
 Production-ready integration of TradeManager with CTraderFixApp
 to centralize all order and position management.
@@ -16,9 +15,11 @@ from typing import TYPE_CHECKING
 try:
     import quickfix as fix
 except ImportError:
-    class fix:  # type: ignore[no-redef]
+
+    class fix:  # type: ignore[no-redef]  # noqa: N801
         class Message:
             pass
+
 
 from src.core.trade_manager import Order, Side, TradeManager
 from src.monitoring.trade_audit_logger import get_trade_audit_logger
@@ -33,25 +34,24 @@ LOG = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level constants (replaces magic literals in comparisons)
 # ---------------------------------------------------------------------------
-_PRICE_NORMALIZE_TOLERANCE: float = 1e-10   # float tolerance for price-normalization diff check
-_MIN_OPEN_POSITION_QTY: float = 0.0001      # minimum qty considered an open position
+_PRICE_NORMALIZE_TOLERANCE: float = 1e-10  # float tolerance for price-normalization diff check
+_MIN_OPEN_POSITION_QTY: float = 0.0001  # minimum qty considered an open position
 
 _MSG_RECOVERED_ENTRY = "[INTEGRATION] ✓ Notified DualPolicy of recovered entry @ %.5f dir=%d (MFE=%.4f MAE=%.4f)"
 
 
 class TradeManagerIntegration:
-    """
-    Production TradeManager integration with CTraderFixApp.
+    """Production TradeManager integration with CTraderFixApp.
 
     Centralizes order management with state persistence and recovery.
     """
 
-    def __init__(self, app: CTraderFixApp):
-        """
-        Initialize TradeManager integration.
+    def __init__(self, app: CTraderFixApp) -> None:
+        """Initialize TradeManager integration.
 
         Args:
             app: CTraderFixApp instance with active FIX sessions
+
         """
         self.app = app
         self.trade_manager: TradeManager | None = None
@@ -87,14 +87,14 @@ class TradeManagerIntegration:
         LOG.info("[INTEGRATION] TradeManager integration initialized")
 
     def has_any_open_positions(self) -> bool:
-        """
-        Check if there are ANY open positions (hedging mode aware).
+        """Check if there are ANY open positions (hedging mode aware).
 
         In hedging mode, net position can be 0 even with open positions
         (e.g., 0.1 LONG + 0.1 SHORT = 0 net). This checks for actual positions.
 
         Returns:
             bool: True if any positions are open (by ticket or MFE/MAE tracker)
+
         """
         # Check ticket-tracked positions
         LOG.info("[POSITION-CHECK] position_tickets=%s", self.position_tickets)
@@ -112,9 +112,8 @@ class TradeManagerIntegration:
         LOG.info("[INTEGRATION] No positions found - returning False")
         return False
 
-    def cleanup_stale_trackers(self):
-        """
-        Remove all MFE/MAE trackers when no positions exist.
+    def cleanup_stale_trackers(self) -> None:
+        """Remove all MFE/MAE trackers when no positions exist.
 
         CRITICAL: Prevents epsilon-greedy learning from being blocked by orphaned trackers.
         Called when position count is confirmed to be 0.
@@ -135,8 +134,7 @@ class TradeManagerIntegration:
             LOG.warning("[CLEANUP] Removed %d stale path recorders", recorder_count)
 
     def reconcile_ghost_positions(self) -> bool:
-        """
-        Detect and clear ghost hedged positions that block new entries.
+        """Detect and clear ghost hedged positions that block new entries.
 
         Ghost positions occur when hedged LONG+SHORT positions (net=0) leave
         stale entries in position_tickets after both legs close. This causes
@@ -145,15 +143,14 @@ class TradeManagerIntegration:
 
         Returns:
             True if ghost positions were cleaned up, False if no action taken.
+
         """
         cur_pos = getattr(self.app, "cur_pos", 0)
         if cur_pos != 0:
             return False  # Legitimately in a position
 
         has_tickets = bool(self.position_tickets)
-        has_trackers = (
-            hasattr(self.app, "mfe_mae_trackers") and bool(self.app.mfe_mae_trackers)
-        )
+        has_trackers = hasattr(self.app, "mfe_mae_trackers") and bool(self.app.mfe_mae_trackers)
 
         if not has_tickets and not has_trackers:
             return False  # No ghost state
@@ -193,7 +190,10 @@ class TradeManagerIntegration:
                 ghost_summary["close_reason"] = "GHOST_RECONCILE"
                 LOG.warning(
                     "[GHOST-RECONCILE] Recovering trade: pos_id=%s ticket=%s entry=%.5f mid=%.5f",
-                    pos_id, ghost_summary["ticket"], ghost_summary["entry_price"], mid_price,
+                    pos_id,
+                    ghost_summary["ticket"],
+                    ghost_summary["entry_price"],
+                    mid_price,
                 )
                 self._process_trade_completion_if_available(ghost_summary, mid_price)
 
@@ -206,20 +206,17 @@ class TradeManagerIntegration:
         # Persist the cleaned state
         self._persist_state()
 
-        LOG.warning(
-            "[GHOST-RECONCILE] Ghost position cleanup complete. "
-            "Entry path is now unblocked."
-        )
+        LOG.warning("[GHOST-RECONCILE] Ghost position cleanup complete. Entry path is now unblocked.")
         return True
 
     def initialize_trade_manager(self) -> bool:
-        """
-        Initialize TradeManager once TRADE session is connected.
+        """Initialize TradeManager once TRADE session is connected.
 
         Call this from CTraderFixApp.onCreate() after TRADE session login.
 
         Returns:
             True if initialization successful, False otherwise
+
         """
         if not self.app.trade_sid:
             LOG.warning("[INTEGRATION] Cannot initialize - TRADE session not connected")
@@ -297,12 +294,18 @@ class TradeManagerIntegration:
         tracker_summary["winner_to_loser"] = was_wtl
         capture_ratio = (pnl / mfe) if mfe > 0 else 0.0
         self.app.policy.on_exit(
-            exit_price=order.avg_price, capture_ratio=capture_ratio,
-            was_wtl=was_wtl, entry_confidence=getattr(self.app, "entry_confidence", 0.5),
+            exit_price=order.avg_price,
+            capture_ratio=capture_ratio,
+            was_wtl=was_wtl,
+            entry_confidence=getattr(self.app, "entry_confidence", 0.5),
         )
         LOG.info(
             "[INTEGRATION] ✓ Notified DualPolicy of exit @ %.5f capture=%.2f%% wtl=%s mfe=%.4f mae=%.4f",
-            order.avg_price, capture_ratio * 100, was_wtl, mfe, mae,
+            order.avg_price,
+            capture_ratio * 100,
+            was_wtl,
+            mfe,
+            mae,
         )
         return tracker_summary
 
@@ -348,16 +351,22 @@ class TradeManagerIntegration:
 
         if hasattr(self.app, "_calculate_position_pnl"):
             pnl = self.app._calculate_position_pnl(
-                entry_price=entry_price, exit_price=order.avg_price,
-                direction=direction, quantity=order.filled_qty,
+                entry_price=entry_price,
+                exit_price=order.avg_price,
+                direction=direction,
+                quantity=order.filled_qty,
             )
         else:
             direction_sign = 1 if tracker_direction > 0 else -1
             pnl = (order.avg_price - entry_price) * direction_sign * order.filled_qty * self.app.contract_size
 
         self.audit.log_position_close(
-            position_id=position_id_to_remove, exit_price=order.avg_price,
-            pnl=pnl, mfe=mfe, mae=mae, ticket=closed_ticket,
+            position_id=position_id_to_remove,
+            exit_price=order.avg_price,
+            pnl=pnl,
+            mfe=mfe,
+            mae=mae,
+            ticket=closed_ticket,
         )
 
         with self.app._tracker_lock:
@@ -385,7 +394,10 @@ class TradeManagerIntegration:
             tracker_summary["close_reason"] = _harvester_reason or "Signal"
         LOG.info(
             "[TRADE_RECORD] close: ticket=%s pos_id=%s pnl=%.4f close_reason=%s",
-            closed_ticket, position_id_to_remove, pnl, tracker_summary["close_reason"],
+            closed_ticket,
+            position_id_to_remove,
+            pnl,
+            tracker_summary["close_reason"],
         )
         return position_id_to_remove, tracker_summary
 
@@ -406,9 +418,10 @@ class TradeManagerIntegration:
                         entry_time=getattr(self.app, "trade_entry_time", None),
                     )
                     LOG.info(
-                        "[INTEGRATION] ✓ Restored DualPolicy entry after hedging close: "
-                        "price=%.5f dir=%d (tracker=%s)",
-                        tracker.entry_price, tracker.direction, pid,
+                        "[INTEGRATION] ✓ Restored DualPolicy entry after hedging close: price=%.5f dir=%d (tracker=%s)",
+                        tracker.entry_price,
+                        tracker.direction,
+                        pid,
                     )
                 break
 
@@ -444,7 +457,8 @@ class TradeManagerIntegration:
                 del self.position_tickets[stale_ticket]
                 LOG.info(
                     "[INTEGRATION] Removed stale ticket %s (position_id=%s) via reverse lookup",
-                    stale_ticket, position_id,
+                    stale_ticket,
+                    position_id,
                 )
 
     def _sync_position_after_exit(self) -> None:
@@ -477,8 +491,10 @@ class TradeManagerIntegration:
         with self.app._tracker_lock:
             if position_id not in self.app.mfe_mae_trackers:
                 from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
+
                 self.app.mfe_mae_trackers[position_id] = MFEMAETracker(
-                    position_id, filled_qty=order.filled_qty,
+                    position_id,
+                    filled_qty=order.filled_qty,
                 )
                 self.app.mfe_mae_trackers[position_id].position_ticket = order.position_ticket
             self.app.mfe_mae_trackers[position_id].start_tracking(order.avg_price, direction)
@@ -503,6 +519,7 @@ class TradeManagerIntegration:
             return
         if position_id not in self.app.path_recorders:
             from src.core.ctrader_ddqn_paper import PathRecorder  # noqa: PLC0415
+
             self.app.path_recorders[position_id] = PathRecorder(position_id)
         self.app.path_recorders[position_id].start_recording(order.filled_at, order.avg_price, direction)
 
@@ -524,7 +541,8 @@ class TradeManagerIntegration:
         self.position_direction = self.app.cur_pos
         LOG.info(
             "[INTEGRATION] Position synced from fill: cur_pos=%d net_qty=%.6f",
-            self.app.cur_pos, self.trade_manager.position.net_qty,
+            self.app.cur_pos,
+            self.trade_manager.position.net_qty,
         )
         self._persist_state()
 
@@ -538,14 +556,22 @@ class TradeManagerIntegration:
 
         if hasattr(self.app, "param_manager"):
             distance = self.app.param_manager.get(
-                self.app.symbol, "trailing_stop_distance_pct",
-                timeframe=self.app.timeframe_label, broker="default", default=0.20,
+                self.app.symbol,
+                "trailing_stop_distance_pct",
+                timeframe=self.app.timeframe_label,
+                broker="default",
+                default=0.20,
             )
             self.enable_trailing_stop(distance_pct=float(distance))
-            sl_pct = float(self.app.param_manager.get(
-                self.app.symbol, "hard_sl_pct",
-                timeframe=self.app.timeframe_label, broker="default", default=2.5,
-            ))
+            sl_pct = float(
+                self.app.param_manager.get(
+                    self.app.symbol,
+                    "hard_sl_pct",
+                    timeframe=self.app.timeframe_label,
+                    broker="default",
+                    default=2.5,
+                )
+            )
             self.hard_sl_pct = sl_pct
         self._submit_hard_sl(order.avg_price, 1 if order.side.name == "BUY" else -1)
 
@@ -566,6 +592,7 @@ class TradeManagerIntegration:
             else entry_price * (1.0 + self.hard_sl_pct / 100.0)  # SHORT: stop above entry
         )
         from src.core.trade_manager import Side  # noqa: PLC0415
+
         sl_side = Side.SELL if direction > 0 else Side.BUY
         try:
             order = self.trade_manager.submit_stop_order(
@@ -578,7 +605,10 @@ class TradeManagerIntegration:
                 self.hard_sl_order = order
                 LOG.info(
                     "[HARD-SL] ✓ Placed %s stop @ %.5f (entry=%.5f sl_pct=%.2f%%)",
-                    sl_side.name, sl_price, entry_price, self.hard_sl_pct,
+                    sl_side.name,
+                    sl_price,
+                    entry_price,
+                    self.hard_sl_pct,
                 )
             else:
                 LOG.warning("[HARD-SL] ⚠ Order returned None — no hard SL placed")
@@ -595,9 +625,8 @@ class TradeManagerIntegration:
                 LOG.warning("[HARD-SL] Failed to cancel hard stop: %s", e)
         self.hard_sl_order = None
 
-    def on_order_filled(self, order: Order):
-        """
-        Callback when order fills.
+    def on_order_filled(self, order: Order) -> None:
+        """Callback when order fills.
 
         FIX P0-2: Proper callback-based state updates (no race conditions)
         FIX P0-6: Position validation after order execution
@@ -605,8 +634,11 @@ class TradeManagerIntegration:
         """
         LOG.info(
             "[INTEGRATION] Order filled: %s qty=%.6f @%.5f clOrdID=%s ticket=%s",
-            order.side.name, order.filled_qty, order.avg_price,
-            order.clord_id, order.position_ticket or "N/A",
+            order.side.name,
+            order.filled_qty,
+            order.avg_price,
+            order.clord_id,
+            order.position_ticket or "N/A",
         )
 
         if order.clord_id in self.exit_order_to_ticket:
@@ -623,9 +655,8 @@ class TradeManagerIntegration:
 
         self._open_hedged_position(order, position_id)
 
-    def on_order_rejected(self, order: Order):
-        """
-        Callback when order is rejected.
+    def on_order_rejected(self, order: Order) -> None:
+        """Callback when order is rejected.
 
         FIX P0-4: State already cleared in main bot's on_exec_report
         """
@@ -642,8 +673,7 @@ class TradeManagerIntegration:
             pass
 
     def enter_position(self, side: int, quantity: float) -> bool:
-        """
-        Enter position using TradeManager with validation.
+        """Enter position using TradeManager with validation.
 
         Args:
             side: 1 for LONG, 2 for SHORT (agent action values)
@@ -651,6 +681,7 @@ class TradeManagerIntegration:
 
         Returns:
             True if order submitted, False otherwise
+
         """
         if not self.trade_manager:
             LOG.error("[INTEGRATION] TradeManager not initialized")
@@ -675,23 +706,22 @@ class TradeManagerIntegration:
             if order:
                 LOG.info("[INTEGRATION] ✓ Order submitted: %s %.6f lots", fix_side.name, safe_qty)
                 return True
-            else:
-                LOG.error("[INTEGRATION] ❌ Order submission returned None")
-                return False
+            LOG.error("[INTEGRATION] ❌ Order submission returned None")
+            return False
 
         except Exception as e:
             LOG.error("[INTEGRATION] ❌ Order submission exception: %s", e, exc_info=True)
             return False
 
     def enable_trailing_stop(self, distance_pct: float = 0.20) -> bool:
-        """
-        Enable trailing stop for current position.
+        """Enable trailing stop for current position.
 
         Args:
             distance_pct: Stop distance as % of price (e.g., 0.20 = 20 pips)
 
         Returns:
             True if trailing stop enabled, False otherwise
+
         """
         pos_dir = self._resolve_trailing_stop_position()
         if pos_dir == 0:
@@ -741,9 +771,8 @@ class TradeManagerIntegration:
             summary = self.app.mfe_mae_tracker.get_summary()
             self.entry_price = summary.get("entry_price", mid)
 
-    def update_trailing_stop(self, current_price: float):
-        """
-        Update trailing stop based on current price.
+    def update_trailing_stop(self, current_price: float) -> None:
+        """Update trailing stop based on current price.
         Called by HarvesterAgent on each bar/tick.
 
         Logic:
@@ -752,6 +781,7 @@ class TradeManagerIntegration:
 
         Args:
             current_price: Current market price (mid/bid/ask)
+
         """
         if not self.trailing_stop_active or not self.trade_manager:
             return
@@ -777,6 +807,7 @@ class TradeManagerIntegration:
     def _is_valid_trailing_price(self, current_price: float) -> bool:
         """Validate current price before applying trailing stop logic."""
         import math  # noqa: PLC0415
+
         if math.isfinite(current_price) and current_price > 0:
             return True
         LOG.error("[TRAILING-STOP] Invalid price: %s", current_price)
@@ -819,12 +850,12 @@ class TradeManagerIntegration:
         )
         self._submit_stop_order(new_stop)
 
-    def _submit_stop_order(self, stop_price: float):
-        """
-        Submit or modify stop loss order at specified price.
+    def _submit_stop_order(self, stop_price: float) -> None:
+        """Submit or modify stop loss order at specified price.
 
         Args:
             stop_price: Stop loss trigger price (will be normalized to broker digits)
+
         """
         if not self.trade_manager:
             return
@@ -868,7 +899,7 @@ class TradeManagerIntegration:
             except Exception as e:
                 LOG.error("[TRAILING-STOP] Failed to submit stop: %s", e)
 
-    def disable_trailing_stop(self):
+    def disable_trailing_stop(self) -> None:
         """Disable trailing stop and cancel stop order."""
         if self.trailing_stop_order and self.trade_manager:
             try:
@@ -884,9 +915,8 @@ class TradeManagerIntegration:
         self.entry_price = None
         self.position_direction = 0
 
-    def close_position(self, position_id: str | None = None, reason: str = "MANUAL") -> bool:  # noqa: PLR0911
-        """
-        Close a specific position by ID or ticket.
+    def close_position(self, position_id: str | None = None, reason: str = "MANUAL") -> bool:
+        """Close a specific position by ID or ticket.
 
         Args:
             position_id: Position tracker ID (e.g., "10028_ticket_12345678")
@@ -895,6 +925,7 @@ class TradeManagerIntegration:
 
         Returns:
             True if order submitted, False otherwise
+
         """
         if not self.trade_manager:
             LOG.error("[INTEGRATION] TradeManager not initialized")
@@ -969,7 +1000,10 @@ class TradeManagerIntegration:
             self.exit_order_to_ticket[order.clord_id] = f"_NET_{pos_dir}"
             LOG.info(
                 "[INTEGRATION] Closing net position: %s %.6f (reason=%s clOrdID=%s)",
-                exit_side.name, self.app.qty, reason, order.clord_id,
+                exit_side.name,
+                self.app.qty,
+                reason,
+                order.clord_id,
             )
         return order is not None
 
@@ -978,12 +1012,12 @@ class TradeManagerIntegration:
 
         Returns:
             True if order submitted, False otherwise
+
         """
         return self.close_position(position_id=None, reason="LEGACY_EXIT")
 
-    def handle_execution_report(self, msg: fix.Message):
-        """
-        Route ExecutionReport to TradeManager.
+    def handle_execution_report(self, msg: fix.Message) -> None:
+        """Route ExecutionReport to TradeManager.
 
         Replace CTraderFixApp.on_exec_report() with this.
         """
@@ -992,9 +1026,8 @@ class TradeManagerIntegration:
         else:
             LOG.warning("[INTEGRATION] ExecutionReport received but TradeManager not initialized")
 
-    def handle_position_report(self, msg: fix.Message):
-        """
-        Route PositionReport to TradeManager.
+    def handle_position_report(self, msg: fix.Message) -> None:
+        """Route PositionReport to TradeManager.
 
         Replace CTraderFixApp.on_position_report() with this.
         """
@@ -1017,24 +1050,24 @@ class TradeManagerIntegration:
             LOG.warning("[INTEGRATION] PositionReport received but TradeManager not initialized")
 
     def get_current_position(self) -> int:
-        """
-        Get current position direction.
+        """Get current position direction.
 
         Returns:
             1 for LONG, -1 for SHORT, 0 for FLAT
+
         """
         if not self.trade_manager:
             return 0
         return self.trade_manager.get_position_direction(min_qty=self.app.qty * 0.5)
 
     def get_statistics(self) -> dict:
-        """Get TradeManager statistics"""
+        """Get TradeManager statistics."""
         if self.trade_manager:
             return self.trade_manager.get_statistics()
         return {}
 
-    def _persist_state(self):
-        """Persist current position and trailing stop state for crash recovery"""
+    def _persist_state(self) -> None:
+        """Persist current position and trailing stop state for crash recovery."""
         try:
             position_data = self._collect_position_data()
             active_trackers = self._collect_active_trackers()
@@ -1086,7 +1119,8 @@ class TradeManagerIntegration:
             if not (entry_price and entry_price > 0 and direction and direction != 0):
                 # Persist ticket with minimal fallback so it isn't silently lost on restart
                 LOG.warning(
-                    "[INTEGRATION] Persisting ticket %s with fallback data (no tracker found)", ticket,
+                    "[INTEGRATION] Persisting ticket %s with fallback data (no tracker found)",
+                    ticket,
                 )
                 position_tickets[ticket] = {
                     "position_id": pos_id,
@@ -1136,6 +1170,7 @@ class TradeManagerIntegration:
         if not (position_data and self.trade_manager):
             return False
         from src.core.trade_manager import Position  # noqa: PLC0415
+
         recovered_pos = Position.from_dict(position_data)
         has_position = (
             abs(recovered_pos.long_qty) > _MIN_OPEN_POSITION_QTY
@@ -1149,15 +1184,20 @@ class TradeManagerIntegration:
             LOG.info(
                 "[INTEGRATION] 🔄 POSITION RECOVERED: long=%.6f short=%.6f net=%.6f "
                 "direction=%s trackers=%d tickets=%d (persisted_at=%s)",
-                recovered_pos.long_qty, recovered_pos.short_qty, recovered_pos.net_qty,
-                _dir, len(state.get("active_trackers", {})), len(state.get("position_tickets", {})),
+                recovered_pos.long_qty,
+                recovered_pos.short_qty,
+                recovered_pos.net_qty,
+                _dir,
+                len(state.get("active_trackers", {})),
+                len(state.get("position_tickets", {})),
                 state.get("persisted_at", "unknown"),
             )
             if not (has_trackers or has_tickets):
                 LOG.warning(
                     "[INTEGRATION] ⚠️ Position recovered with NO trackers/tickets "
                     "(long=%.6f short=%.6f) — position tracked but entry metadata unavailable",
-                    recovered_pos.long_qty, recovered_pos.short_qty,
+                    recovered_pos.long_qty,
+                    recovered_pos.short_qty,
                 )
             return True
         return False
@@ -1187,6 +1227,7 @@ class TradeManagerIntegration:
         if not (active_trackers and hasattr(self.app, "mfe_mae_trackers")):
             return
         from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
+
         for pos_id, tracker_data in active_trackers.items():
             if self._restore_single_tracker(pos_id, tracker_data, MFEMAETracker):
                 LOG.info(
@@ -1234,6 +1275,7 @@ class TradeManagerIntegration:
         import datetime as _dt  # noqa: PLC0415
 
         from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
+
         for ticket, ticket_data in position_tickets.items():
             position_id = ticket_data["position_id"]
             tracker_is_new = position_id not in self.app.mfe_mae_trackers
@@ -1251,16 +1293,25 @@ class TradeManagerIntegration:
                     self.app.trade_entry_time = _dt.datetime.fromisoformat(entry_time_str)
             LOG.info(
                 "[HEDGING] ✓ Recovered position ticket=%s: pos_id=%s entry=%.5f dir=%d qty=%.6f",
-                ticket, position_id, ticket_data["entry_price"], ticket_data["direction"], ticket_data["quantity"],
+                ticket,
+                position_id,
+                ticket_data["entry_price"],
+                ticket_data["direction"],
+                ticket_data["quantity"],
             )
 
     def _call_policy_recovery(self, direction: int, entry_price: float, mfe: float = 0.0, mae: float = 0.0) -> None:
         """Call policy.on_recovery (or on_entry fallback) and log the result."""
         import datetime as dt  # noqa: PLC0415
+
         if hasattr(self.app.policy, "on_recovery"):
             self.app.policy.on_recovery(
-                direction=direction, entry_price=entry_price,
-                entry_time=dt.datetime.now(dt.UTC), mfe=mfe, mae=mae, ticks_held=0,
+                direction=direction,
+                entry_price=entry_price,
+                entry_time=dt.datetime.now(dt.UTC),
+                mfe=mfe,
+                mae=mae,
+                ticks_held=0,
             )
         else:
             self.app.policy.on_entry(direction=direction, entry_price=entry_price, entry_time=dt.datetime.now(dt.UTC))
@@ -1308,6 +1359,7 @@ class TradeManagerIntegration:
         pos_id = f"{self.app.symbol_id}_net"
         if hasattr(self.app, "mfe_mae_trackers"):
             from src.core.ctrader_ddqn_paper import MFEMAETracker  # noqa: PLC0415
+
             if pos_id not in self.app.mfe_mae_trackers:
                 self.app.mfe_mae_trackers[pos_id] = MFEMAETracker(pos_id)
             self.app.mfe_mae_trackers[pos_id].start_tracking(self.entry_price, self.position_direction)
@@ -1337,8 +1389,11 @@ class TradeManagerIntegration:
             return
         try:
             self.app.policy._update_mfe_mae(mid_price)
-            LOG.info("[INTEGRATION] ✓ Forced MFE/MAE update after recovery: MFE=%.4f MAE=%.4f",
-                     self.app.policy.mfe, self.app.policy.mae)
+            LOG.info(
+                "[INTEGRATION] ✓ Forced MFE/MAE update after recovery: MFE=%.4f MAE=%.4f",
+                self.app.policy.mfe,
+                self.app.policy.mae,
+            )
         except Exception as e:
             LOG.warning("[INTEGRATION] Failed to force MFE/MAE update: %s", e)
 
@@ -1347,6 +1402,7 @@ class TradeManagerIntegration:
 
         Returns:
             True if position was recovered, False otherwise
+
         """
         try:
             LOG.info("[INTEGRATION] Attempting to load state from: %s", self.state_filename)
@@ -1357,13 +1413,15 @@ class TradeManagerIntegration:
 
             LOG.info(
                 "[INTEGRATION] State loaded: has_position=%s trackers=%d",
-                bool(state.get("position")), len(state.get("active_trackers", {})),
+                bool(state.get("position")),
+                len(state.get("active_trackers", {})),
             )
 
             if str(state.get("symbol_id")) != str(self.app.symbol_id):
                 LOG.warning(
                     "[INTEGRATION] State symbol mismatch: %s vs %s, skipping recovery",
-                    state.get("symbol_id"), self.app.symbol_id,
+                    state.get("symbol_id"),
+                    self.app.symbol_id,
                 )
                 return False
 
@@ -1397,13 +1455,13 @@ class TradeManagerIntegration:
             LOG.error("[INTEGRATION] State recovery failed: %s", e, exc_info=True)
             return False
 
-    def _validate_position_after_fill(self, expected_direction: int, order: Order):
-        """
-        FIX P0-6: Validate position matches expected state after order fill.
+    def _validate_position_after_fill(self, expected_direction: int, order: Order) -> None:
+        """FIX P0-6: Validate position matches expected state after order fill.
 
         Args:
             expected_direction: Expected position direction (1=LONG, -1=SHORT)
             order: The filled order
+
         """
         try:
             # Give TradeManager a moment to process PositionReport
@@ -1451,8 +1509,7 @@ class TradeManagerIntegration:
         return "FLAT"
 
     def _get_position_id_for_order(self, order: Order) -> str:
-        """
-        Determine position ID for an order.
+        """Determine position ID for an order.
 
         MULTI-POSITION: Generate unique ID for each position to support
         multiple concurrent positions. Uses order ID or timestamp to ensure uniqueness.
@@ -1462,6 +1519,7 @@ class TradeManagerIntegration:
 
         Returns:
             Position ID string
+
         """
         # Try to get hedge position ID from order/TradeManager
         if hasattr(order, "pos_maint_rpt_id") and order.pos_maint_rpt_id:
@@ -1484,14 +1542,14 @@ class TradeManagerIntegration:
 
         return f"{self.app.symbol_id}_{int(time.time() * 1000)}"
 
-    def _cleanup_position_trackers(self, position_id: str):
-        """
-        Clean up trackers for closed position.
+    def _cleanup_position_trackers(self, position_id: str) -> None:
+        """Clean up trackers for closed position.
 
         MULTI-POSITION: Remove trackers to free memory.
 
         Args:
             position_id: Position that was closed
+
         """
         if hasattr(self.app, "mfe_mae_trackers"):
             self.app.mfe_mae_trackers.pop(position_id, None)

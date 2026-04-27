@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Learned Parameters System - Adaptive Parameters with Soft Bounds
+"""Learned Parameters System - Adaptive Parameters with Soft Bounds.
 =================================================================
 
 Handbook Reference: Section 4.3 - Learned Parameters System
@@ -39,8 +38,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AdaptiveParam:
-    """
-    Individual adaptive parameter with momentum-based updates
+    """Individual adaptive parameter with momentum-based updates.
 
     Handbook: "Soft bounds via tanh clamping, not hard limits"
     """
@@ -56,14 +54,14 @@ class AdaptiveParam:
     last_update_time: float = 0.0
 
     def update(self, gradient: float) -> float:
-        """
-        Update parameter with momentum-based gradient descent
+        """Update parameter with momentum-based gradient descent.
 
         Args:
             gradient: Direction and magnitude of update
 
         Returns:
             New parameter value
+
         """
         # Momentum update: v = β*v + α*∇
         self.velocity = self.momentum * self.velocity + self.learning_rate * gradient
@@ -87,33 +85,32 @@ class AdaptiveParam:
 
         return self.value
 
-    def reset_velocity(self):
-        """Reset momentum (useful when regime changes)"""
+    def reset_velocity(self) -> None:
+        """Reset momentum (useful when regime changes)."""
         self.velocity = 0.0
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for serialization"""
+        """Convert to dictionary for serialization."""
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AdaptiveParam":
-        """Create from dictionary"""
+        """Create from dictionary."""
         return cls(**data)
 
 
 class InstrumentParameters:
-    """
-    Parameter set for a specific instrument × timeframe × broker
+    """Parameter set for a specific instrument × timeframe × broker.
 
     Handbook: "Parameters adapt per instrument × timeframe × broker"
     """
 
-    def __init__(self, symbol: str, timeframe: str = "M1", broker: str = "default"):
-        """
-        Args:
-            symbol: Trading symbol (e.g., "BTC/USD")
-            timeframe: Timeframe (e.g., "M1", "M15")
-            broker: Broker identifier
+    def __init__(self, symbol: str, timeframe: str = "M1", broker: str = "default") -> None:
+        """Args:
+        symbol: Trading symbol (e.g., "BTC/USD")
+        timeframe: Timeframe (e.g., "M1", "M15")
+        broker: Broker identifier.
+
         """
         self.symbol = symbol
         self.timeframe = timeframe
@@ -121,7 +118,7 @@ class InstrumentParameters:
         self.params: dict[str, AdaptiveParam] = {}
         self.creation_time = time.time()
 
-    def add_param(  # noqa: PLR0913
+    def add_param(
         self,
         name: str,
         initial_value: float,
@@ -129,9 +126,8 @@ class InstrumentParameters:
         max_bound: float,
         learning_rate: float = 0.01,
         momentum: float = 0.9,
-    ):
-        """
-        Add a new adaptive parameter
+    ) -> None:
+        """Add a new adaptive parameter.
 
         Args:
             name: Parameter name
@@ -140,6 +136,7 @@ class InstrumentParameters:
             max_bound: Maximum allowed value (soft)
             learning_rate: Learning rate for updates
             momentum: Momentum factor (0-1)
+
         """
         self.params[name] = AdaptiveParam(
             name=name,
@@ -151,25 +148,32 @@ class InstrumentParameters:
             last_update_time=time.time(),
         )
         logger.debug(
-            f"Added parameter '{name}' for {self.symbol}: {initial_value} (bounds: [{min_bound}, {max_bound}])"
+            "Added parameter '%s' for %s: %s (bounds: [%s, %s])",
+            name,
+            self.symbol,
+            initial_value,
+            min_bound,
+            max_bound,
         )
 
     def get(self, name: str, default: float | None = None) -> float:
-        """Get parameter value"""
+        """Get parameter value."""
         if name in self.params:
             return self.params[name].value
         if default is not None:
             return default
-        raise KeyError(f"Parameter '{name}' not found for {self.symbol}")
+        msg = f"Parameter '{name}' not found for {self.symbol}"
+        raise KeyError(msg)
 
     def update(self, name: str, gradient: float) -> float:
-        """Update parameter with gradient"""
+        """Update parameter with gradient."""
         if name not in self.params:
-            raise KeyError(f"Parameter '{name}' not found for {self.symbol}")
+            msg = f"Parameter '{name}' not found for {self.symbol}"
+            raise KeyError(msg)
         return self.params[name].update(gradient)
 
-    def reset_velocity(self, name: str | None = None):
-        """Reset momentum for one or all parameters"""
+    def reset_velocity(self, name: str | None = None) -> None:
+        """Reset momentum for one or all parameters."""
         if name:
             if name in self.params:
                 self.params[name].reset_velocity()
@@ -178,19 +182,18 @@ class InstrumentParameters:
                 param.reset_velocity()
 
     def get_staleness(self, name: str) -> float:
-        """
-        Get parameter staleness in seconds
+        """Get parameter staleness in seconds.
 
         Returns:
             Seconds since last update
+
         """
         if name not in self.params:
             return float("inf")
         return time.time() - self.params[name].last_update_time
 
     def is_stale(self, name: str, threshold_seconds: float = 86400) -> bool:
-        """
-        Check if parameter is stale (not updated recently)
+        """Check if parameter is stale (not updated recently).
 
         Args:
             name: Parameter name
@@ -198,11 +201,12 @@ class InstrumentParameters:
 
         Returns:
             True if stale
+
         """
         return self.get_staleness(name) > threshold_seconds
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for serialization"""
+        """Convert to dictionary for serialization."""
         return {
             "symbol": self.symbol,
             "timeframe": self.timeframe,
@@ -213,7 +217,7 @@ class InstrumentParameters:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "InstrumentParameters":
-        """Create from dictionary"""
+        """Create from dictionary."""
         instance = cls(symbol=data["symbol"], timeframe=data["timeframe"], broker=data["broker"])
         instance.creation_time = data["creation_time"]
         instance.params = {name: AdaptiveParam.from_dict(param_data) for name, param_data in data["params"].items()}
@@ -221,21 +225,20 @@ class InstrumentParameters:
 
 
 class LearnedParametersManager:
-    """
-    Global parameter manager - handles all instruments
+    """Global parameter manager - handles all instruments.
 
     Handbook: "Complete parameter persistence with staleness tracking"
     """
 
-    def __init__(self, persistence_path: Path | None = None):
-        """
-        Args:
-            persistence_path: Where to save/load parameters
+    def __init__(self, persistence_path: Path | None = None) -> None:
+        """Args:
+        persistence_path: Where to save/load parameters.
+
         """
         self.instruments: dict[str, InstrumentParameters] = {}
-        self.persistence_path = persistence_path or Path(
-            os.environ.get("CTRADER_DATA_DIR", "data")
-        ) / "learned_parameters.json"
+        self.persistence_path = (
+            persistence_path or Path(os.environ.get("CTRADER_DATA_DIR", "data")) / "learned_parameters.json"
+        )
         self.persistence_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Atomic persistence (with CRC32 and backups)
@@ -248,8 +251,7 @@ class LearnedParametersManager:
         self.load()
 
     def _get_default_specs(self) -> dict[str, dict[str, Any]]:
-        """
-        Get default parameter specifications
+        """Get default parameter specifications.
 
         Returns dictionary of:
         {
@@ -821,6 +823,32 @@ class LearnedParametersManager:
                 "momentum": 0.9,
                 "description": "Fractional regime threshold adjustment magnitude (instrument-agnostic, replaces TRIGGER_ADJUST_* constants)",
             },
+            # Runway prediction accuracy EMAs — updated per trade, persisted across restarts.
+            # Managed by TFAgent._close_position via set_value (direct write, no momentum).
+            "runway_delta_ema": {
+                "default": 0.0,
+                "min": -10000.0,
+                "max": 10000.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "Signed EMA of (predicted_runway_pts - actual_mfe); positive = over-predicted",
+            },
+            "runway_accuracy_ema": {
+                "default": 0.5,
+                "min": 0.0,
+                "max": 1.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "EMA of 1 - |runway_delta|/max_err in [0,1]; 1.0 = perfect prediction",
+            },
+            "conf_calib_err_ema": {
+                "default": 0.5,
+                "min": 0.0,
+                "max": 1.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "Brier score EMA of (entry_confidence - trade_outcome)^2; 0.0 = perfectly calibrated",
+            },
             # Fallback MA-diff threshold — learned per instrument instead of
             # hardcoded LIVE_BASE_THRESHOLD / PAPER_BASE_THRESHOLD constants.
             "fallback_base_threshold": {
@@ -916,8 +944,7 @@ class LearnedParametersManager:
         }
 
     def get_instrument(self, symbol: str, timeframe: str = "M1", broker: str = "default") -> InstrumentParameters:
-        """
-        Get or create instrument parameter set
+        """Get or create instrument parameter set.
 
         Args:
             symbol: Trading symbol
@@ -926,6 +953,7 @@ class LearnedParametersManager:
 
         Returns:
             InstrumentParameters instance
+
         """
         key = f"{symbol}_{timeframe}_{broker}"
 
@@ -945,7 +973,7 @@ class LearnedParametersManager:
                 )
 
             self.instruments[key] = instrument
-            logger.info(f"Created parameter set for {key} with {len(self.param_specs)} parameters")
+            logger.info("Created parameter set for %s with %s parameters", key, len(self.param_specs))
         else:
             # Backfill any params added to param_specs after initial creation.
             # This handles schema evolution: new learned params introduced in
@@ -964,7 +992,7 @@ class LearnedParametersManager:
                     )
                     added.append(param_name)
             if added:
-                logger.info(f"Backfilled {len(added)} new param(s) for {key}: {added}")
+                logger.info("Backfilled %s new param(s) for %s: %s", len(added), key, added)
 
         return self.instruments[key]
 
@@ -976,7 +1004,7 @@ class LearnedParametersManager:
         broker: str = "default",
         default: float | None = None,
     ) -> float:
-        """Get parameter value for instrument"""
+        """Get parameter value for instrument."""
         instrument = self.get_instrument(symbol, timeframe, broker)
         return instrument.get(param_name, default)
 
@@ -988,11 +1016,11 @@ class LearnedParametersManager:
         timeframe: str = "M1",
         broker: str = "default",
     ) -> float:
-        """Update parameter for instrument"""
+        """Update parameter for instrument."""
         instrument = self.get_instrument(symbol, timeframe, broker)
         new_value = instrument.update(param_name, gradient)
 
-        logger.debug(f"Updated {symbol} {param_name}: {new_value:.4f} (gradient: {gradient:.4f})")
+        logger.debug("Updated %s %s: %.4f (gradient: %.4f)", symbol, param_name, new_value, gradient)
 
         return new_value
 
@@ -1004,8 +1032,7 @@ class LearnedParametersManager:
         timeframe: str = "M1",
         broker: str = "default",
     ) -> float:
-        """
-        Directly set a parameter value, bypassing the momentum/gradient mechanism.
+        """Directly set a parameter value, bypassing the momentum/gradient mechanism.
 
         Use this for EMA-style self-calibrating baselines (e.g. mfe_p50_baseline)
         where the caller manages the smoothing and just wants to write the result.
@@ -1023,23 +1050,26 @@ class LearnedParametersManager:
 
         Returns:
             Clamped value actually stored
+
         """
         instrument = self.get_instrument(symbol, timeframe, broker)
         if param_name not in instrument.params:
-            raise KeyError(f"Parameter '{param_name}' not found for {symbol}")
+            msg = f"Parameter '{param_name}' not found for {symbol}"
+            raise KeyError(msg)
         param = instrument.params[param_name]
         clamped = max(param.min_bound, min(param.max_bound, value))
         param.value = clamped
         import time  # noqa: PLC0415
+
         param.last_update_time = time.time()
         param.update_count += 1
         # Reset velocity so momentum does not carry stale direction forward
         param.velocity = 0.0
-        logger.debug(f"Set {symbol} {param_name} = {clamped:.4f} (direct)")
+        logger.debug("Set %s %s = %.4f (direct)", symbol, param_name, clamped)
         return clamped
 
-    def save(self):
-        """Save all parameters to disk using atomic persistence with CRC32"""
+    def save(self) -> None:
+        """Save all parameters to disk using atomic persistence with CRC32."""
         try:
             data = {
                 "version": "1.0",
@@ -1052,21 +1082,22 @@ class LearnedParametersManager:
 
             if success:
                 logger.info(
-                    f"Saved {len(self.instruments)} instrument parameter sets "
-                    f"to {self.persistence_path} (atomic + CRC32)"
+                    "Saved %s instrument parameter sets to %s (atomic + CRC32)",
+                    len(self.instruments),
+                    self.persistence_path,
                 )
             else:
                 logger.error("Failed to save parameters atomically")
 
         except Exception as e:
-            logger.error(f"Failed to save parameters: {e}", exc_info=True)
+            logger.error("Failed to save parameters: %s", e, exc_info=True)
 
     def load(self) -> bool:
-        """
-        Load parameters from disk using atomic persistence with CRC32 verification
+        """Load parameters from disk using atomic persistence with CRC32 verification.
 
         Returns:
             True if loaded successfully
+
         """
         try:
             if not self.persistence_path.exists():
@@ -1082,7 +1113,7 @@ class LearnedParametersManager:
 
             # Validate version
             if data.get("version") != "1.0":
-                logger.warning(f"Version mismatch: {data.get('version')} != 1.0")
+                logger.warning("Version mismatch: %s != 1.0", data.get("version"))
                 return False
 
             # Load instruments
@@ -1091,25 +1122,26 @@ class LearnedParametersManager:
                 self.instruments[key] = instrument
 
             logger.info(
-                f"Loaded {len(self.instruments)} instrument parameter sets "
-                f"from {self.persistence_path} (CRC32 verified)"
+                "Loaded %s instrument parameter sets from %s (CRC32 verified)",
+                len(self.instruments),
+                self.persistence_path,
             )
 
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load parameters: {e}", exc_info=True)
+            logger.error("Failed to load parameters: %s", e, exc_info=True)
             return False
 
     def check_staleness(self, threshold_seconds: float = 86400) -> dict[str, list]:
-        """
-        Check for stale parameters across all instruments
+        """Check for stale parameters across all instruments.
 
         Args:
             threshold_seconds: Staleness threshold (default 24h)
 
         Returns:
             Dictionary of {instrument_key: [stale_param_names]}
+
         """
         stale_params = {}
 
@@ -1121,7 +1153,7 @@ class LearnedParametersManager:
         return stale_params
 
     def get_summary(self) -> dict[str, Any]:
-        """Get summary statistics"""
+        """Get summary statistics."""
         total_params = sum(len(inst.params) for inst in self.instruments.values())
 
         return {
@@ -1156,7 +1188,7 @@ if __name__ == "__main__":
     # Positive gradient (increase)
     for i in range(5):
         new_val = param.update(0.2)
-        print(f"Update {i+1}: value={new_val:.4f}, velocity={param.velocity:.4f}")
+        print(f"Update {i + 1}: value={new_val:.4f}, velocity={param.velocity:.4f}")
 
     print(f"After 5 positive updates: {param.value:.4f}")
     print("Bounded to [0, 1]: ✓" if 0 <= param.value <= 1 else "✗ OUT OF BOUNDS")
@@ -1211,7 +1243,7 @@ if __name__ == "__main__":
     # Simulate positive gradient (increase reward)
     for i in range(5):
         new_val = manager.update(_TEST_SYMBOL, "capture_multiplier", 0.1)
-        print(f"  Update {i+1}: {new_val:.4f}")
+        print(f"  Update {i + 1}: {new_val:.4f}")
 
     final_capture = manager.get(_TEST_SYMBOL, "capture_multiplier")
     print(f"Final capture_multiplier: {final_capture:.4f}")
@@ -1275,16 +1307,15 @@ if __name__ == "__main__":
     print("Applying large positive gradients:")
     for i in range(10):
         val = narrow_param.update(1.0)  # Large gradient
-        print(f"  Iteration {i+1}: {val:.6f}")
+        print(f"  Iteration {i + 1}: {val:.6f}")
 
     print(f"\nFinal value: {narrow_param.value:.6f}")
     print(f"Asymptotically approaches {narrow_param.max_bound}, never exceeds ✓")
 
     # Cleanup
-    import os
-
-    if os.path.exists(_TEST_PARAMS_FILE):
-        os.remove(_TEST_PARAMS_FILE)
+    _test_path = Path(_TEST_PARAMS_FILE)
+    if _test_path.exists():
+        _test_path.unlink()
         print("\n✓ Cleanup: Removed test file")
 
     print("\n" + "=" * 80)

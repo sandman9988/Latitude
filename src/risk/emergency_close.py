@@ -1,5 +1,4 @@
-"""
-Emergency Position Closer - Circuit Breaker Integration
+"""Emergency Position Closer - Circuit Breaker Integration.
 
 Robustly closes ALL positions when circuit breakers trip.
 Handles both netting and hedging modes.
@@ -18,31 +17,30 @@ MIN_OPEN_POSITION_QTY: float = 0.0001
 
 
 class EmergencyPositionCloser:
-    """
-    Emergency position closer for circuit breaker integration.
+    """Emergency position closer for circuit breaker integration.
 
     Closes ALL positions immediately when called, with retry logic.
     """
 
-    def __init__(self, trade_integration: "TradeManagerIntegration"):
-        """
-        Initialize emergency closer.
+    def __init__(self, trade_integration: "TradeManagerIntegration") -> None:
+        """Initialize emergency closer.
 
         Args:
             trade_integration: TradeManagerIntegration instance with TradeManager
+
         """
         self.trade_integration = trade_integration
         self.app = trade_integration.app
 
     def close_all_positions(self, reason: str = "CIRCUIT_BREAKER") -> bool:
-        """
-        Close ALL open positions immediately.
+        """Close ALL open positions immediately.
 
         Args:
             reason: Reason for emergency close (for logging)
 
         Returns:
             True if all closes submitted successfully, False otherwise
+
         """
         LOG.warning("🚨 EMERGENCY CLOSE INITIATED: %s", reason)
 
@@ -113,8 +111,7 @@ class EmergencyPositionCloser:
         return False, 0
 
     def _close_by_position_id(self, position_id: str, reason: str) -> bool:
-        """
-        Close a specific position by ID.
+        """Close a specific position by ID.
 
         Args:
             position_id: Position tracker ID
@@ -122,6 +119,7 @@ class EmergencyPositionCloser:
 
         Returns:
             True if close order submitted, False otherwise
+
         """
         try:
             return self.trade_integration.close_position(position_id=position_id, reason=reason)
@@ -130,8 +128,7 @@ class EmergencyPositionCloser:
             return False
 
     def _close_net_position(self, _quantity: float, reason: str) -> bool:
-        """
-        Close net position (netting mode fallback).
+        """Close net position (netting mode fallback).
 
         Args:
             quantity: Quantity to close
@@ -139,6 +136,7 @@ class EmergencyPositionCloser:
 
         Returns:
             True if close order submitted, False otherwise
+
         """
         try:
             return self.trade_integration.close_position(position_id=None, reason=reason)
@@ -147,11 +145,11 @@ class EmergencyPositionCloser:
             return False
 
     def verify_all_closed(self) -> bool:
-        """
-        Verify all positions are closed.
+        """Verify all positions are closed.
 
         Returns:
             True if no positions remain, False otherwise
+
         """
         # Check trackers
         if hasattr(self.app, "mfe_mae_trackers") and self.app.mfe_mae_trackers:
@@ -166,7 +164,11 @@ class EmergencyPositionCloser:
         # Check TradeManager
         if self.trade_integration.trade_manager:
             position = self.trade_integration.trade_manager.get_position()
-            if abs(position.net_qty) > MIN_OPEN_POSITION_QTY or abs(position.long_qty) > MIN_OPEN_POSITION_QTY or abs(position.short_qty) > MIN_OPEN_POSITION_QTY:
+            if (
+                abs(position.net_qty) > MIN_OPEN_POSITION_QTY
+                or abs(position.long_qty) > MIN_OPEN_POSITION_QTY
+                or abs(position.short_qty) > MIN_OPEN_POSITION_QTY
+            ):
                 LOG.warning(
                     "[EMERGENCY] TradeManager still shows positions: long=%.6f short=%.6f net=%.6f",
                     position.long_qty,
@@ -180,14 +182,14 @@ class EmergencyPositionCloser:
 
 
 def create_emergency_closer(trade_integration: "TradeManagerIntegration") -> EmergencyPositionCloser:
-    """
-    Factory function to create emergency closer.
+    """Factory function to create emergency closer.
 
     Args:
         trade_integration: TradeManagerIntegration instance
 
     Returns:
         EmergencyPositionCloser instance
+
     """
     return EmergencyPositionCloser(trade_integration)
 

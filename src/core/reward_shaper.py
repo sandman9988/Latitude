@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""
-Reward Shaper - Asymmetric component-based reward calculation
-Python port of MASTER_HANDBOOK.md Section 4.6 - Reward Shaping
+"""Reward Shaper - Asymmetric component-based reward calculation
+Python port of MASTER_HANDBOOK.md Section 4.6 - Reward Shaping.
 
 Implements three reward components:
 1. Capture Efficiency: Rewards capturing high % of MFE
@@ -70,9 +69,9 @@ ZERO_MFE_LOSS_CAP_MULT: float = 5.0
 # Session quality multiplier: MFE during high-liquidity sessions is "worth
 # more" because the signal is cleaner and slippage lower.  Pure results
 # weighting — no bar counting.
-SESSION_BONUS_OVERLAP: float = 1.3   # London/NY overlap
-SESSION_BONUS_LONDON: float = 1.15   # London session
-SESSION_BONUS_NY: float = 1.15       # New York session
+SESSION_BONUS_OVERLAP: float = 1.3  # London/NY overlap
+SESSION_BONUS_LONDON: float = 1.15  # London session
+SESSION_BONUS_NY: float = 1.15  # New York session
 SESSION_BONUS_OFFPEAK: float = 0.85  # Asian/overnight
 
 # Runway quality thresholds (for trigger reward calculation)
@@ -87,8 +86,7 @@ CAPTURE_QUALITY_FAIR: float = 0.4
 
 
 class RewardShaper:
-    """
-    Asymmetric reward shaper for DDQN training.
+    """Asymmetric reward shaper for DDQN training.
     Implements component-based rewards with adaptive weights.
 
     Now uses LearnedParametersManager (DRY - single source of truth)
@@ -102,7 +100,7 @@ class RewardShaper:
         broker: str = "default",
         param_manager: LearnedParametersManager | None = None,
         activity_monitor: ActivityMonitor | None = None,
-    ):
+    ) -> None:
         self.symbol = symbol
         self.timeframe = timeframe
         self.broker = broker
@@ -178,7 +176,7 @@ class RewardShaper:
         if not exit_time or self._event_engine is None:
             return 1.0
         try:
-            dt = datetime.fromisoformat(exit_time.replace("Z", "+00:00")) if isinstance(exit_time, str) else exit_time
+            dt = datetime.fromisoformat(exit_time) if isinstance(exit_time, str) else exit_time
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=UTC)
 
@@ -195,8 +193,7 @@ class RewardShaper:
             return 1.0
 
     def calculate_capture_efficiency_reward(self, exit_pnl: float, mfe: float) -> float:
-        """
-        Reward based on how much of MFE was captured at exit.
+        """Reward based on how much of MFE was captured at exit.
 
         Formula from handbook:
         capture_ratio = exit_pnl / mfe
@@ -208,6 +205,7 @@ class RewardShaper:
 
         Returns:
             Capture efficiency reward (positive if above target, negative if below)
+
         """
         if mfe <= 0:
             return 0.0
@@ -234,8 +232,7 @@ class RewardShaper:
     def calculate_wtl_penalty(
         self, was_wtl: bool, mfe: float, exit_pnl: float, bars_from_mfe_to_exit: int = 0
     ) -> float:
-        """
-        Penalty for Winner-to-Loser trades (had profit, ended in loss).
+        """Penalty for Winner-to-Loser trades (had profit, ended in loss).
 
         Formula from handbook:
         if was_winner_to_loser AND mfe > threshold:
@@ -252,6 +249,7 @@ class RewardShaper:
 
         Returns:
             Penalty (negative reward) for WTL, 0 otherwise
+
         """
         # Get adaptive parameters
         wtl_penalty_mult = self._get_param("wtl_penalty_multiplier")
@@ -282,8 +280,7 @@ class RewardShaper:
         return penalty
 
     def calculate_opportunity_cost(self, potential_mfe: float, signal_strength: float = 1.0) -> float:
-        """
-        Penalty for missed opportunities (didn't enter when signal was strong).
+        """Penalty for missed opportunities (didn't enter when signal was strong).
 
         Formula from handbook:
         if potential_mfe > threshold AND signal_strength > 0.5:
@@ -296,6 +293,7 @@ class RewardShaper:
 
         Returns:
             Opportunity cost penalty (negative reward)
+
         """
         # Get adaptive parameters
         opportunity_mult = self._get_param("opportunity_multiplier")
@@ -321,8 +319,7 @@ class RewardShaper:
         return penalty
 
     def calculate_total_reward(self, trade_data: dict) -> dict[str, float]:
-        """
-        Calculate total reward from all components.
+        """Calculate total reward from all components.
 
         Args:
             trade_data: Dictionary with keys:
@@ -337,6 +334,7 @@ class RewardShaper:
 
         Returns:
             Dictionary with component rewards and total (6 components)
+
         """
         # Extract trade data
         exit_pnl = trade_data.get("exit_pnl", 0.0)
@@ -422,9 +420,8 @@ class RewardShaper:
             ),
         }
 
-    def update_baselines(self, mfe: float):
-        """
-        Soft-update the per-instrument MFE baselines after each trade.
+    def update_baselines(self, mfe: float) -> None:
+        """Soft-update the per-instrument MFE baselines after each trade.
 
         Uses an exponential moving average with alpha=0.05 (slow decay so the
         baseline tracks the instrument's typical move scale without overreacting
@@ -441,6 +438,7 @@ class RewardShaper:
 
         Args:
             mfe: Actual Maximum Favorable Excursion for the closed trade
+
         """
         if mfe <= 0:
             return
@@ -451,8 +449,7 @@ class RewardShaper:
         current_p50 = self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED)
         new_p50 = (1 - alpha) * current_p50 + alpha * mfe
         self.param_manager.set_value(
-            self.symbol, "mfe_p50_baseline", new_p50,
-            timeframe=self.timeframe, broker=self.broker
+            self.symbol, "mfe_p50_baseline", new_p50, timeframe=self.timeframe, broker=self.broker
         )
 
         # p75 baseline (high-end proxy: EMA with upward bias on large moves)
@@ -462,13 +459,11 @@ class RewardShaper:
         p75_alpha = 0.10 if mfe > current_p75 else 0.03
         new_p75 = (1 - p75_alpha) * current_p75 + p75_alpha * mfe
         self.param_manager.set_value(
-            self.symbol, "opportunity_p75_baseline", new_p75,
-            timeframe=self.timeframe, broker=self.broker
+            self.symbol, "opportunity_p75_baseline", new_p75, timeframe=self.timeframe, broker=self.broker
         )
 
-    def adapt_weights(self, performance_delta: float):
-        """
-        Adjust reward component weights based on trade outcome feedback.
+    def adapt_weights(self, performance_delta: float) -> None:
+        """Adjust reward component weights based on trade outcome feedback.
 
         Uses component-outcome correlation: if a component's recent average
         reward correlates with positive trade outcomes (performance_delta > 0),
@@ -481,6 +476,7 @@ class RewardShaper:
         Args:
             performance_delta: Trade outcome proxy (positive = profitable trade,
                 negative = losing trade). Typically exit_pnl or capture_ratio.
+
         """
         if not self.param_manager:
             return
@@ -504,10 +500,7 @@ class RewardShaper:
 
             current = self._get_weight(param_name, default)
             new_val = max(0.2, min(2.0, current + gradient))
-            self.param_manager.set_value(
-                self.symbol, param_name, new_val,
-                timeframe=self.timeframe, broker=self.broker
-            )
+            self.param_manager.set_value(self.symbol, param_name, new_val, timeframe=self.timeframe, broker=self.broker)
 
     def get_statistics(self) -> dict:
         """Return statistics about reward components."""
@@ -540,30 +533,29 @@ class RewardShaper:
         stats = self.get_statistics()
         context = f"{self.symbol}_{self.timeframe}_{self.broker}"
 
-        summary = f"""
+        return f"""
 ╔══════════════════════════════════════════════════════════════════╗
     ║               REWARD SHAPER SUMMARY - {context:^20}          ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 📊 REWARD STATISTICS
-   Total Rewards Calculated: {stats['total_rewards_calculated']}
+   Total Rewards Calculated: {stats["total_rewards_calculated"]}
 
 ⚙️  ADAPTIVE MULTIPLIERS (from LearnedParametersManager)
-   Capture Multiplier:       {stats['parameters']['capture_multiplier']:.2f}
-   WTL Penalty Multiplier:   {stats['parameters']['wtl_penalty_multiplier']:.2f}
-   Opportunity Multiplier:   {stats['parameters']['opportunity_multiplier']:.2f}
+   Capture Multiplier:       {stats["parameters"]["capture_multiplier"]:.2f}
+   WTL Penalty Multiplier:   {stats["parameters"]["wtl_penalty_multiplier"]:.2f}
+   Opportunity Multiplier:   {stats["parameters"]["opportunity_multiplier"]:.2f}
 
 🎚️  COMPONENT WEIGHTS (Adaptive)
-   Capture Efficiency:       {stats['weights']['capture']:.1f}
-   WTL Penalty:              {stats['weights']['wtl']:.1f}
-   Opportunity Cost:         {stats['weights']['opportunity']:.1f}
+   Capture Efficiency:       {stats["weights"]["capture"]:.1f}
+   WTL Penalty:              {stats["weights"]["wtl"]:.1f}
+   Opportunity Cost:         {stats["weights"]["opportunity"]:.1f}
 
 📈 AVERAGE COMPONENT REWARDS
-   Capture Efficiency:       {stats['avg_capture_reward']:+.4f}
-   WTL Penalty:              {stats['avg_wtl_reward']:+.4f}
-   Opportunity Cost:         {stats['avg_opportunity_reward']:+.4f}
+   Capture Efficiency:       {stats["avg_capture_reward"]:+.4f}
+   WTL Penalty:              {stats["avg_wtl_reward"]:+.4f}
+   Opportunity Cost:         {stats["avg_opportunity_reward"]:+.4f}
 """
-        return summary
 
     # ========================================================================
     # Phase 3.2: Specialized Dual-Agent Rewards
@@ -573,7 +565,7 @@ class RewardShaper:
         self,
         actual_mfe: float,
         predicted_runway: float,
-        direction: int = 1,       # noqa: ARG002  # NOSONAR
+        direction: int = 1,  # noqa: ARG002  # NOSONAR
         entry_price: float = 0.0,  # noqa: ARG002  # NOSONAR
     ) -> dict[str, float]:
         """Calculate reward for TriggerAgent (entry specialist).
@@ -595,6 +587,7 @@ class RewardShaper:
 
         Returns:
             Dict with 'runway_reward', 'utilization', 'error_pct'
+
         """
         if predicted_runway <= 0:
             # Invalid prediction - large penalty
@@ -644,13 +637,13 @@ class RewardShaper:
             "predicted_runway": predicted_runway,
         }
 
-    def calculate_harvester_reward(  # noqa: PLR0913
+    def calculate_harvester_reward(
         self,
         exit_pnl: float,
         mfe: float,
         was_wtl: bool = False,
-        bars_held: int = 0,
-        bars_from_mfe_to_exit: int = 0,
+        _bars_held: int = 0,
+        _bars_from_mfe_to_exit: int = 0,
         mae: float = 0.0,
         exit_time: str = "",
     ) -> dict[str, float]:
@@ -663,7 +656,7 @@ class RewardShaper:
         4. Session quality multiplier (London/NY overlap > overnight)
 
         All components are timeframe-agnostic: no bar counts in reward signal.
-        bars_held / bars_from_mfe_to_exit accepted for backward compat but
+        _bars_held / _bars_from_mfe_to_exit accepted for backward compat but
         not used in reward calculation.
 
         Args:
@@ -677,6 +670,7 @@ class RewardShaper:
 
         Returns:
             Dict with component rewards and total
+
         """
         # 1. Capture efficiency (with magnitude scaling)
         if mfe > 0:
@@ -698,7 +692,7 @@ class RewardShaper:
             except (KeyError, TypeError):
                 baseline_mfe = max(BASELINE_MFE_SEED, 0.01)
             magnitude_scale = min(mfe / baseline_mfe, 2.0)  # Cap at 2x
-            magnitude_scale = max(magnitude_scale, 0.3)       # Floor at 0.3 (micro-moves still learn)
+            magnitude_scale = max(magnitude_scale, 0.3)  # Floor at 0.3 (micro-moves still learn)
 
             r_capture = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult * magnitude_scale))
         else:
@@ -785,7 +779,7 @@ class RewardShaper:
             return "FAIR"
         return "POOR"
 
-    def calculate_dual_agent_rewards(  # noqa: PLR0913
+    def calculate_dual_agent_rewards(
         self,
         # Trigger data
         actual_mfe: float,
@@ -800,8 +794,7 @@ class RewardShaper:
         bars_from_mfe_to_exit: int = 0,
         exit_time: str = "",
     ) -> dict[str, float]:
-        """
-        Calculate rewards for both trigger and harvester agents.
+        """Calculate rewards for both trigger and harvester agents.
 
         This is the main reward method for dual-agent mode.
 
@@ -811,14 +804,18 @@ class RewardShaper:
                 - harvester_reward: HarvesterAgent reward
                 - total_reward: Combined reward for overall performance
                 - All component breakdowns
+
         """
         # Calculate individual agent rewards
-        trigger_result = self.calculate_trigger_reward(
-            actual_mfe, predicted_runway, direction, entry_price
-        )
+        trigger_result = self.calculate_trigger_reward(actual_mfe, predicted_runway, direction, entry_price)
         harvester_result = self.calculate_harvester_reward(
-            exit_pnl, actual_mfe, was_wtl, bars_held, bars_from_mfe_to_exit,
-            mae=mae, exit_time=exit_time,
+            exit_pnl,
+            actual_mfe,
+            was_wtl,
+            bars_held,
+            bars_from_mfe_to_exit,
+            mae=mae,
+            exit_time=exit_time,
         )
         # Trigger: 40% weight (entry quality)
         # Harvester: 60% weight (exit execution is harder)
@@ -913,11 +910,11 @@ if __name__ == "__main__":
     # Test 7: HarvesterAgent - Excellent capture
     print("\n=== Test 7: HarvesterAgent - Excellent Capture (85%) ===")
     harvester_result = shaper.calculate_harvester_reward(
-        exit_pnl=0.0034,  # 34 pips captured
-        mfe=0.0040,  # 40 pips MFE
+        exit_pnl=0.0034,
+        mfe=0.0040,
         was_wtl=False,
-        bars_held=15,
-        bars_from_mfe_to_exit=3,
+        _bars_held=15,
+        _bars_from_mfe_to_exit=3,
     )
     print(f"Harvester Reward: {harvester_result['harvester_reward']:+.4f}")
     print(f"Capture Ratio: {harvester_result['capture_ratio']:.1%}")
@@ -930,11 +927,11 @@ if __name__ == "__main__":
     # Test 8: HarvesterAgent - WTL scenario
     print("\n=== Test 8: HarvesterAgent - Winner-to-Loser ===")
     harvester_result2 = shaper.calculate_harvester_reward(
-        exit_pnl=-0.0010,  # -10 pips (loss)
-        mfe=0.0040,  # Had 40 pips profit
+        exit_pnl=-0.0010,
+        mfe=0.0040,
         was_wtl=True,
-        bars_held=30,
-        bars_from_mfe_to_exit=25,  # Waited 25 bars after MFE
+        _bars_held=30,
+        _bars_from_mfe_to_exit=25,
     )
     print(f"Harvester Reward: {harvester_result2['harvester_reward']:+.4f}")
     print(f"Capture Ratio: {harvester_result2['capture_ratio']:.1%}")

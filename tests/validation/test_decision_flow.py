@@ -144,7 +144,7 @@ def test_bar_builder():
     print("\nTesting BarBuilder...")
 
     class SimpleBarBuilder:
-        def __init__(self, timeframe_minutes=1):
+        def __init__(self, timeframe_minutes=1) -> None:
             self.timeframe_minutes = timeframe_minutes
             self.bucket = None
             self.o = self.h = self.l = self.c = None

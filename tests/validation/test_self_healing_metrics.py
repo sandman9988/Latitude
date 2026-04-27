@@ -275,7 +275,7 @@ class TestSelfHealingEdgeCases:
     def test_decision_quality_empty(self):
         """decision_quality with empty data must return zeros, not crash."""
         dq = decision_quality([])
-        assert dq.get("avg_conf_win", -1) == pytest.approx(0.0)
+        assert dq.get("avg_conf_win", -1) == pytest.approx(0.0, abs=1e-9)
         assert dq.get("exit_reasons") == {}
         assert dq.get("capture_quality") == {}
 

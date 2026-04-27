@@ -13,6 +13,7 @@ The previous ``tests/validation/test_hud_plumbing.py`` only checked a handful
 of helper attributes; those assertions are preserved here alongside the much
 stronger rendering checks so we do not lose coverage.
 """
+
 from __future__ import annotations
 
 import io
@@ -20,7 +21,7 @@ import json
 import re
 from collections import Counter
 from contextlib import redirect_stdout
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -34,7 +35,11 @@ from src.monitoring.hud_tabbed import (
     _visible_width,
 )
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
 # ─── Fixtures ─────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def hud(tmp_path: Path) -> TabbedHUD:
@@ -44,64 +49,89 @@ def hud(tmp_path: Path) -> TabbedHUD:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
 
-    (data_dir / "bot_config.json").write_text(json.dumps({
-        "symbol": "XAUUSD",
-        "timeframe_minutes": 15,
-        "trading_mode": "paper",
-        "starting_equity": 10000,
-    }))
+    (data_dir / "bot_config.json").write_text(
+        json.dumps(
+            {
+                "symbol": "XAUUSD",
+                "timeframe_minutes": 15,
+                "trading_mode": "paper",
+                "starting_equity": 10000,
+            }
+        )
+    )
 
     # Two running bots — drives the ALL BOTS panel rows.
     for sym, tf in [("XAUUSD", 15), ("EURUSD", 60)]:
-        (data_dir / f"paper_stats_{sym}_M{tf}.json").write_text(json.dumps({
-            "symbol": sym, "timeframe_minutes": tf, "trading_mode": "paper",
-            "updated_at": "2026-04-23T01:00:00+00:00",
-            "connection_healthy": True, "quote_ok": True,
-            "bar_count": 123,
-            "trigger_buffer": 500, "harvester_buffer": 250,
-            "total_trades": 2 if sym == "XAUUSD" else 1,
-            "total_pnl": 12345.67 if sym == "XAUUSD" else -12.34,
-            "win_rate": 0.5 if sym == "XAUUSD" else 0.0,
-        }))
+        (data_dir / f"paper_stats_{sym}_M{tf}.json").write_text(
+            json.dumps(
+                {
+                    "symbol": sym,
+                    "timeframe_minutes": tf,
+                    "trading_mode": "paper",
+                    "updated_at": "2026-04-23T01:00:00+00:00",
+                    "connection_healthy": True,
+                    "quote_ok": True,
+                    "bar_count": 123,
+                    "trigger_buffer": 500,
+                    "harvester_buffer": 250,
+                    "total_trades": 2 if sym == "XAUUSD" else 1,
+                    "total_pnl": 12345.67 if sym == "XAUUSD" else -12.34,
+                    "win_rate": 0.5 if sym == "XAUUSD" else 0.0,
+                }
+            )
+        )
 
     # Mixed-mode trade log — drives period/symbol/mode breakdown tables.
     trades = []
     for _ in range(5):
-        trades.append({
-            "symbol": "XAUUSD", "timeframe_minutes": 15, "trading_mode": "paper",
-            "entry_time": "2026-04-20T00:00:00+00:00",
-            "exit_time":  "2026-04-20T01:00:00+00:00",
-            "pnl": 12.5,
-            "mfe": 25.0,
-            "capture_ratio": 0.5,
-        })
+        trades.append(
+            {
+                "symbol": "XAUUSD",
+                "timeframe_minutes": 15,
+                "trading_mode": "paper",
+                "entry_time": "2026-04-20T00:00:00+00:00",
+                "exit_time": "2026-04-20T01:00:00+00:00",
+                "pnl": 12.5,
+                "mfe": 25.0,
+                "capture_ratio": 0.5,
+            }
+        )
     for _ in range(3):
-        trades.append({
-            "symbol": "EURUSD", "timeframe_minutes": 60, "trading_mode": "live",
-            "entry_time": "2026-04-20T00:00:00+00:00",
-            "exit_time":  "2026-04-20T01:00:00+00:00",
-            "pnl": -7.2,
-            "mfe": 10.0,
-            "capture_ratio": -0.72,
-        })
+        trades.append(
+            {
+                "symbol": "EURUSD",
+                "timeframe_minutes": 60,
+                "trading_mode": "live",
+                "entry_time": "2026-04-20T00:00:00+00:00",
+                "exit_time": "2026-04-20T01:00:00+00:00",
+                "pnl": -7.2,
+                "mfe": 10.0,
+                "capture_ratio": -0.72,
+            }
+        )
     tl = data_dir / "trade_log.jsonl"
     tl.write_text("\n".join(json.dumps(t) for t in trades) + "\n")
 
     # A single decision-log entry so the decision log tab renders its table
     audit_dir = data_dir / "logs" / "audit"
     audit_dir.mkdir(parents=True)
-    (audit_dir / "decisions.jsonl").write_text(json.dumps({
-        "timestamp": "2026-04-22T14:00:00+00:00",
-        "timeframe": "M15",
-        "timeframe_minutes": 15,
-        "trading_mode": "paper",
-        "agent": "trigger",
-        "decision": "LONG",
-        "confidence": 0.834,
-        "context": {"regime": "TREND", "vpin_z": 0.5},
-        "reasoning": {"feasibility": 0.82, "predicted_runway": 0.6, "q_spread": 0.02},
-        "trade_id": "abcd1234",
-    }) + "\n")
+    (audit_dir / "decisions.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-04-22T14:00:00+00:00",
+                "timeframe": "M15",
+                "timeframe_minutes": 15,
+                "trading_mode": "paper",
+                "agent": "trigger",
+                "decision": "LONG",
+                "confidence": 0.834,
+                "context": {"regime": "TREND", "vpin_z": 0.5},
+                "reasoning": {"feasibility": 0.82, "predicted_runway": 0.6, "q_spread": 0.02},
+                "trade_id": "abcd1234",
+            }
+        )
+        + "\n"
+    )
 
     hud = TabbedHUD()
     hud.data_dir = data_dir
@@ -122,6 +152,7 @@ def _render_tab(hud: TabbedHUD, tab: str) -> str:
 
 
 # ─── Visible-width / ANSI helpers ─────────────────────────────────────────
+
 
 class TestHelpers:
     def test_strip_ansi_removes_all_csi_sequences(self):
@@ -146,6 +177,7 @@ class TestHelpers:
 
 # ─── Table alignment (structural) ─────────────────────────────────────────
 
+
 def _extract_table(frame: str, header_regex: str) -> tuple[str, list[str], list[str]]:
     """Pull the header line matching *header_regex* and every line between it
     and the next blank line out of *frame*.  Returns (header, separators, rows)."""
@@ -165,7 +197,8 @@ def _extract_table(frame: str, header_regex: str) -> tuple[str, list[str], list[
                     rows.append(lines[j])
                 j += 1
             return header, seps, rows
-    raise AssertionError(f"header matching {header_regex!r} not found in frame")
+    msg = f"header matching {header_regex!r} not found in frame"
+    raise AssertionError(msg)
 
 
 class TestTableAlignment:
@@ -196,8 +229,9 @@ class TestTableAlignment:
         frame = _render_tab(hud, "performance")
         # May appear multiple times (paper, live, combined) — every block must align.
         lines = frame.split("\n")
-        headers = [i for i, ln in enumerate(lines)
-                   if re.search(r"^\s+Period\s+Trades\s+Win%\s+PnL \$\s+TQR", _strip_ansi(ln))]
+        headers = [
+            i for i, ln in enumerate(lines) if re.search(r"^\s+Period\s+Trades\s+Win%\s+PnL \$\s+TQR", _strip_ansi(ln))
+        ]
         assert headers, "PERIOD table header not found"
         for idx in headers:
             w = _visible_width(lines[idx])
@@ -220,9 +254,7 @@ class TestTableAlignment:
 
     def test_per_symbol_tf_mode_alignment(self, hud: TabbedHUD):
         frame = _render_tab(hud, "performance")
-        header, seps, rows = _extract_table(
-            frame, r"^\s+Symbol\s+TF\s+Mode\s+Trades\s+Win%\s+PnL"
-        )
+        header, seps, rows = _extract_table(frame, r"^\s+Symbol\s+TF\s+Mode\s+Trades\s+Win%\s+PnL")
         w = _visible_width(header)
         for s in seps:
             assert _visible_width(s) == w
@@ -233,8 +265,7 @@ class TestTableAlignment:
         frame = _render_tab(hud, "log")
         lines = frame.split("\n")
         for i, ln in enumerate(lines):
-            if re.search(r"^\s+Time\s+Bot\s+Mode\s+Agent\s+Decision\s+Conf\s+Detail",
-                         _strip_ansi(ln)):
+            if re.search(r"^\s+Time\s+Bot\s+Mode\s+Agent\s+Decision\s+Conf\s+Detail", _strip_ansi(ln)):
                 # Separator on the very next non-blank line
                 j = i + 1
                 while j < len(lines) and not _strip_ansi(lines[j]).strip():
@@ -256,27 +287,37 @@ class TestTableAlignment:
     def test_decision_log_skips_unscoped_root_when_scoped_logs_exist(self, tmp_path: Path):
         root_audit = tmp_path / "logs" / "audit"
         root_audit.mkdir(parents=True)
-        (root_audit / "decisions.jsonl").write_text(json.dumps({
-            "timestamp": "2026-04-24T17:30:00+00:00",
-            "trading_mode": "paper",
-            "agent": "TriggerAgent",
-            "decision": "NO_ENTRY",
-            "confidence": 0.47,
-            "context": {"price": 4723.18},
-            "reasoning": {},
-        }) + "\n")
+        (root_audit / "decisions.jsonl").write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-04-24T17:30:00+00:00",
+                    "trading_mode": "paper",
+                    "agent": "TriggerAgent",
+                    "decision": "NO_ENTRY",
+                    "confidence": 0.47,
+                    "context": {"price": 4723.18},
+                    "reasoning": {},
+                }
+            )
+            + "\n"
+        )
 
         scoped_audit = tmp_path / "paper_XAUUSD_M5" / "logs" / "audit"
         scoped_audit.mkdir(parents=True)
-        (scoped_audit / "decisions.jsonl").write_text(json.dumps({
-            "timestamp": "2026-04-24T17:25:00+00:00",
-            "trading_mode": "paper",
-            "agent": "TriggerAgent",
-            "decision": "LONG",
-            "confidence": 0.82,
-            "context": {"price": 4720.0},
-            "reasoning": {"feasibility": 0.7},
-        }) + "\n")
+        (scoped_audit / "decisions.jsonl").write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-04-24T17:25:00+00:00",
+                    "trading_mode": "paper",
+                    "agent": "TriggerAgent",
+                    "decision": "LONG",
+                    "confidence": 0.82,
+                    "context": {"price": 4720.0},
+                    "reasoning": {"feasibility": 0.7},
+                }
+            )
+            + "\n"
+        )
 
         hud = TabbedHUD()
         hud.data_dir = tmp_path
@@ -288,6 +329,7 @@ class TestTableAlignment:
 
 
 # ─── Duplicate-row checks ────────────────────────────────────────────────
+
 
 class TestNoDuplicateRows:
     def test_all_bots_panel_has_one_row_per_bot(self, hud: TabbedHUD):
@@ -357,9 +399,7 @@ class TestNoDuplicateRows:
                 m = re.match(r"\s+(\S+(?:\s\w+)?)\s+\d", bare)
                 if m:
                     label = m.group(1).strip()
-                    assert label not in current, (
-                        f"duplicate period row {label!r} in performance block"
-                    )
+                    assert label not in current, f"duplicate period row {label!r} in performance block"
                     current.add(label)
         if current:
             block_keys.append(current)
@@ -367,6 +407,7 @@ class TestNoDuplicateRows:
 
 
 # ─── Frame-level render pipeline ──────────────────────────────────────────
+
 
 class TestFramePipeline:
     def test_compose_viewport_keeps_footer_visible_when_body_is_long(self, hud: TabbedHUD):
@@ -385,7 +426,7 @@ class TestFramePipeline:
         assert "FOOTER CONTROLS" in lines[-2]
         assert "FOOTER BOTTOM" in lines[-1]
         assert any("body scroll" in _strip_ansi(line) for line in lines)
-        assert any(line.endswith("│\x1b[0m") or line.endswith("█\x1b[0m") for line in lines)
+        assert any(line.endswith(("│\x1b[0m", "█\x1b[0m")) for line in lines)
 
     def test_mouse_click_on_tab_range_switches_tab(self, hud: TabbedHUD):
         hud._term_width = lambda: 120  # type: ignore[method-assign]
@@ -414,8 +455,8 @@ class TestFramePipeline:
         hud._render()
         out = capsys.readouterr().out
         assert "\x1b[2J" in out, "every paint must clear the screen first"
-        assert "\x1b[H" in out,  "must home the cursor after clearing"
-        assert "\x1b[J" in out,  "must erase below after writing the frame"
+        assert "\x1b[H" in out, "must home the cursor after clearing"
+        assert "\x1b[J" in out, "must erase below after writing the frame"
 
     def test_tab_switch_repaints_from_a_clean_slate(self, hud: TabbedHUD, capsys):
         """Switching from a long tab (log/performance) to a short tab must
@@ -430,9 +471,7 @@ class TestFramePipeline:
         out = capsys.readouterr().out
         # The paint starts with a full clear, so any content from tab 2 is
         # wiped before tab 1 is written.
-        assert out.startswith("\x1b[2J\x1b[H"), (
-            "tab switch must begin with ESC[2J ESC[H"
-        )
+        assert out.startswith("\x1b[2J\x1b[H"), "tab switch must begin with ESC[2J ESC[H"
 
     def test_render_is_idempotent_when_frame_unchanged(self, hud: TabbedHUD, capsys):
         """Flicker prevention — when the rendered frame hasn't changed we
@@ -442,29 +481,37 @@ class TestFramePipeline:
         hud._render()
         capsys.readouterr()
         hud._force_redraw = False
-        hud._render()                     # same frame key — should be silent
+        hud._render()  # same frame key — should be silent
         out = capsys.readouterr().out
         assert out == "", "idempotent re-render should write nothing"
 
 
 # ─── Legacy plumbing sanity (from the retired test_hud_plumbing.py) ───────
 
+
 class TestPlumbing:
     def test_sparkline_generation(self, hud: TabbedHUD):
         s = hud._create_sparkline([10, -5, 15, 20, -10, 25, 30])
-        assert s and isinstance(s, str)
+        assert s
+        assert isinstance(s, str)
 
     def test_pnl_colour_coding(self, hud: TabbedHUD):
-        assert hud._pnl_color(100)  == _ANSI_G
-        assert hud._pnl_color(-50)  == _ANSI_R
-        assert hud._pnl_color(0)    == _ANSI_Y
+        assert hud._pnl_color(100) == _ANSI_G
+        assert hud._pnl_color(-50) == _ANSI_R
+        assert hud._pnl_color(0) == _ANSI_Y
 
     def test_tab_configuration(self, hud: TabbedHUD):
         assert len(hud.TABS) == 7
         assert hud.TABS["6"] == "log"
         assert hud.TABS["7"] == "trades"
         assert hud.TAB_ORDER == [
-            "overview", "performance", "training", "risk", "market", "log", "trades",
+            "overview",
+            "performance",
+            "training",
+            "risk",
+            "market",
+            "log",
+            "trades",
         ]
 
     def test_trade_history_uses_normalized_capture_ratio(self, hud: TabbedHUD):
@@ -478,19 +525,29 @@ class TestPlumbing:
     def test_capture_ratio_prefers_negative_derived_value_for_losses(self, hud: TabbedHUD):
         # Stored ratio can be stale/clamped at 0.0 in some historical records.
         # When pnl<0 and mfe>0, tab-7 must surface negative capture.
-        ratio = hud._capture_ratio_for_trade({
-            "pnl": -10.0,
-            "mfe": 5.0,
-            "capture_ratio": 0.0,
-        })
+        # _capture_ratio_for_trade now uses derived pnl_pts/mfe_pts as primary
+        # path, so we must provide entry_price/exit_price/mfe_points/direction.
+        ratio = hud._capture_ratio_for_trade(
+            {
+                "pnl": -10.0,
+                "mfe": 5.0,
+                "capture_ratio": 0.0,
+                "direction": "LONG",
+                "entry_price": 100.0,
+                "exit_price": 90.0,
+                "mfe_points": 5.0,
+            }
+        )
         assert ratio == pytest.approx(-2.0)
 
     def test_capture_ratio_parses_string_fields(self, hud: TabbedHUD):
-        ratio = hud._capture_ratio_for_trade({
-            "pnl": "-7.5",
-            "mfe": "3.0",
-            "capture_ratio": "-2.5",
-        })
+        ratio = hud._capture_ratio_for_trade(
+            {
+                "pnl": "-7.5",
+                "mfe": "3.0",
+                "capture_ratio": "-2.5",
+            }
+        )
         assert ratio == pytest.approx(-2.5)
 
     def test_training_tab_shows_dynamic_rl_confidence_floors(self, hud: TabbedHUD):

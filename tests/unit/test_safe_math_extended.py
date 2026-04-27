@@ -24,39 +24,45 @@ from src.utils.safe_math import (
 
 # ── SafeMath.to_decimal / quantize ──────────────────────────────────────────
 
+
 class TestToDecimalQuantize:
     def test_to_decimal_basic(self):
         from decimal import Decimal
+
         result = SafeMath.to_decimal(1.23456, 2)
         assert result == Decimal("1.23")
 
     def test_to_decimal_five_digits(self):
         from decimal import Decimal
+
         result = SafeMath.to_decimal(1.234567, 5)
         assert result == Decimal("1.23457")
 
     def test_to_decimal_invalid(self):
         from decimal import Decimal
-        result = SafeMath.to_decimal("not_a_number", 2)
-        assert result == Decimal("0.00")
+
+        with pytest.raises((ValueError, Exception)):
+            SafeMath.to_decimal("not_a_number", 2)
 
     def test_to_decimal_none(self):
-        from decimal import Decimal
-        result = SafeMath.to_decimal(None, 3)
-        assert result == Decimal("0.000")
+        with pytest.raises(ValueError):
+            SafeMath.to_decimal(None, 3)
 
     def test_quantize_basic(self):
         from decimal import Decimal
+
         result = SafeMath.quantize(Decimal("1.23456"), 3)
         assert result == Decimal("1.235")
 
     def test_quantize_invalid(self):
         from decimal import Decimal
+
         result = SafeMath.quantize("bad", 2)
         assert result == Decimal("0.00")
 
 
 # ── SafeMath type checks ───────────────────────────────────────────────────
+
 
 class TestTypeChecks:
     def test_is_valid_float(self):
@@ -99,6 +105,7 @@ class TestTypeChecks:
 
 # ── SafeMath comparison helpers ─────────────────────────────────────────────
 
+
 class TestComparisonHelpers:
     def test_is_close(self):
         assert SafeMath.is_close(1.0, 1.0 + 1e-12) is True
@@ -122,6 +129,7 @@ class TestComparisonHelpers:
 
 
 # ── SafeMath safe operations ───────────────────────────────────────────────
+
 
 class TestSafeOperations:
     def test_safe_div_normal(self):
@@ -196,6 +204,7 @@ class TestSafeOperations:
 
 # ── Clamp operations ──────────────────────────────────────────────────────
 
+
 class TestClampOperations:
     def test_clamp_within_range(self):
         assert SafeMath.clamp(5.0, 0.0, 10.0) == pytest.approx(5.0)
@@ -223,6 +232,7 @@ class TestClampOperations:
 
 
 # ── Aggregate operations ─────────────────────────────────────────────────
+
 
 class TestAggregateOperations:
     def test_safe_mean_normal(self):
@@ -270,6 +280,7 @@ class TestAggregateOperations:
 
 # ── normalize_logits ──────────────────────────────────────────────────────
 
+
 class TestNormalizeLogits:
     def test_uniform_logits(self):
         result = SafeMath.normalize_logits(np.array([0.0, 0.0, 0.0]))
@@ -294,6 +305,7 @@ class TestNormalizeLogits:
 
 # ── Running mean/variance ────────────────────────────────────────────────
 
+
 class TestRunningUpdates:
     def test_running_mean_update(self):
         mean = 0.0
@@ -312,6 +324,7 @@ class TestRunningUpdates:
 
 
 # ── RunningStats ─────────────────────────────────────────────────────────
+
 
 class TestRunningStats:
     def test_empty_stats(self):
@@ -389,6 +402,7 @@ class TestRunningStats:
 
 
 # ── safe_array_operation ────────────────────────────────────────────────────
+
 
 class TestSafeArrayOperation:
     def test_mean(self):

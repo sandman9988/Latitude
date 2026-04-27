@@ -10,9 +10,12 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from src.persistence.learned_parameters import LearnedParametersManager
 from src.persistence.trade_log_reader import read_all_trades
+
+if TYPE_CHECKING:
+    from src.persistence.learned_parameters import LearnedParametersManager
 
 LOG = logging.getLogger(__name__)
 _CAPTURE_EFFICIENCY_FLOOR = 0.45
@@ -60,7 +63,7 @@ class MonitorSuggestion:
 
 
 class RewardShapingMonitor:
-    def __init__(self, symbol: str, param_manager: LearnedParametersManager, **kwargs):
+    def __init__(self, symbol: str, param_manager: LearnedParametersManager, **kwargs: Any) -> None:
         self.symbol = symbol
         self.param_manager = param_manager
         self._legacy_kwargs = dict(kwargs)
@@ -132,9 +135,8 @@ class RewardShapingMonitor:
         )
 
         data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
-        decision_log_path_explicit = (
-            "decision_log_path" in self._legacy_kwargs
-            or bool(os.environ.get("REWARD_MONITOR_DECISION_LOG_PATH", "").strip())
+        decision_log_path_explicit = "decision_log_path" in self._legacy_kwargs or bool(
+            os.environ.get("REWARD_MONITOR_DECISION_LOG_PATH", "").strip()
         )
         self.trade_log_path = Path(
             self._legacy_kwargs.pop(
@@ -156,9 +158,8 @@ class RewardShapingMonitor:
             "REWARD_MONITOR_ALLOW_UNSCOPED_DECISIONS",
             default=False,
         )
-        risk_metrics_path_explicit = (
-            "risk_metrics_path" in self._legacy_kwargs
-            or bool(os.environ.get("REWARD_MONITOR_RISK_METRICS_PATH", "").strip())
+        risk_metrics_path_explicit = "risk_metrics_path" in self._legacy_kwargs or bool(
+            os.environ.get("REWARD_MONITOR_RISK_METRICS_PATH", "").strip()
         )
         _risk_default = data_dir / f"risk_metrics_{self.symbol}_M{self._timeframe_minutes()}.json"
         if not _risk_default.exists():
@@ -240,11 +241,7 @@ class RewardShapingMonitor:
         context = payload.get("context", {}) if isinstance(payload.get("context"), dict) else {}
         scope = payload.get("scope", {}) if isinstance(payload.get("scope"), dict) else {}
         sym = str(
-            payload.get("symbol")
-            or details.get("symbol")
-            or context.get("symbol")
-            or scope.get("symbol")
-            or ""
+            payload.get("symbol") or details.get("symbol") or context.get("symbol") or scope.get("symbol") or ""
         ).upper()
 
         raw_tfm = (
@@ -258,13 +255,17 @@ class RewardShapingMonitor:
         except (TypeError, ValueError):
             tfm = 0
         if tfm <= 0:
-            tf_label = str(
-                payload.get("timeframe")
-                or details.get("timeframe")
-                or context.get("timeframe")
-                or scope.get("timeframe")
-                or ""
-            ).strip().upper()
+            tf_label = (
+                str(
+                    payload.get("timeframe")
+                    or details.get("timeframe")
+                    or context.get("timeframe")
+                    or scope.get("timeframe")
+                    or ""
+                )
+                .strip()
+                .upper()
+            )
             tfm = self._timeframe_label_to_minutes(tf_label)
         return sym, tfm
 
@@ -432,10 +433,7 @@ class RewardShapingMonitor:
     def _decision_matches_scope(self, entry: dict) -> bool:
         """Strict per-bot decision scoping with controlled legacy fallback."""
         source_path = entry.get("_source_path")
-        explicit_legacy = (
-            self._decision_log_path_explicit
-            and not self._path_has_any_scope(self.decision_log_path)
-        )
+        explicit_legacy = self._decision_log_path_explicit and not self._path_has_any_scope(self.decision_log_path)
         return self._payload_matches_scope(
             entry,
             source_path=source_path,
@@ -549,9 +547,8 @@ class RewardShapingMonitor:
                 with open(self.risk_metrics_path, encoding="utf-8") as fh:
                     payload = json.load(fh)
                 if isinstance(payload, dict):
-                    explicit_legacy = (
-                        self._risk_metrics_path_explicit
-                        and not self._path_has_any_scope(self.risk_metrics_path)
+                    explicit_legacy = self._risk_metrics_path_explicit and not self._path_has_any_scope(
+                        self.risk_metrics_path
                     )
                     if not self._payload_matches_scope(
                         payload,
@@ -698,7 +695,11 @@ class RewardShapingMonitor:
     ) -> list[MonitorSuggestion]:
         out: list[MonitorSuggestion] = []
         if regime_bucket == "TRENDING":
-            threshold = max(1, math.floor(opportunity_count * self.target_trending_participation)) if opportunity_count > 0 else 1
+            threshold = (
+                max(1, math.floor(opportunity_count * self.target_trending_participation))
+                if opportunity_count > 0
+                else 1
+            )
             if trade_count < threshold:
                 out.append(self._suggest("entry_confidence_threshold", -0.03, "raise_trade_participation_trending"))
                 out.append(self._suggest("feasibility_threshold", -0.03, "reduce_entry_friction_trending"))
@@ -708,7 +709,9 @@ class RewardShapingMonitor:
                 out.append(self._suggest("feasibility_threshold", 0.05, "enforce_zero_trades_ranging"))
         elif regime_bucket == "MEAN_REVERTING":
             mr_threshold = (
-                max(1, math.floor(opportunity_count * self.target_mean_reverting_participation)) if opportunity_count > 0 else 1
+                max(1, math.floor(opportunity_count * self.target_mean_reverting_participation))
+                if opportunity_count > 0
+                else 1
             )
             if trade_count > mr_threshold:
                 out.append(self._suggest("entry_confidence_threshold", 0.03, "increase_selectivity_mean_reverting"))
@@ -816,7 +819,11 @@ class RewardShapingMonitor:
             and isinstance(d_ppt, (int, float))
             and (
                 (d_pf <= _QUALITY_PF_DROP_PCT and d_ppt <= _QUALITY_PNL_PER_TRADE_DROP_PCT)
-                or (isinstance(d_payoff, (int, float)) and d_payoff <= _QUALITY_PAYOFF_DROP_PCT and d_ppt <= _QUALITY_PNL_PER_TRADE_DROP_PCT)
+                or (
+                    isinstance(d_payoff, (int, float))
+                    and d_payoff <= _QUALITY_PAYOFF_DROP_PCT
+                    and d_ppt <= _QUALITY_PNL_PER_TRADE_DROP_PCT
+                )
                 or d_ppt <= (_QUALITY_PNL_PER_TRADE_DROP_PCT - 0.20)
             )
         ):

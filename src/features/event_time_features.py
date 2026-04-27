@@ -1,7 +1,6 @@
-"""
-Event-Relative Time Features
+"""Event-Relative Time Features
 Convert absolute time to event-relative coordinates
-Handbook Section 9.4 - Event-Relative Time
+Handbook Section 9.4 - Event-Relative Time.
 
 Instead of "Tuesday 14:30", use "30 mins after London open, 6 hours before rollover"
 """
@@ -10,7 +9,7 @@ import calendar
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Final
+from typing import ClassVar, Final
 
 from src.utils.safe_math import SafeMath
 
@@ -25,7 +24,7 @@ FULL_DAY_MINUTES: Final[int] = 24 * 60
 
 @dataclass
 class SessionTimes:
-    """Trading session times in UTC"""
+    """Trading session times in UTC."""
 
     name: str
     open_hour: int
@@ -34,17 +33,16 @@ class SessionTimes:
     close_minute: int
 
     def get_open_minutes(self) -> int:
-        """Get session open in minutes from UTC midnight"""
+        """Get session open in minutes from UTC midnight."""
         return self.open_hour * 60 + self.open_minute
 
     def get_close_minutes(self) -> int:
-        """Get session close in minutes from UTC midnight"""
+        """Get session close in minutes from UTC midnight."""
         return self.close_hour * 60 + self.close_minute
 
 
 class EventTimeFeatureEngine:
-    """
-    Calculate time features relative to market events
+    """Calculate time features relative to market events.
 
     Provides normalized features for:
     - Session proximity (London open/close, NY open/close)
@@ -54,7 +52,7 @@ class EventTimeFeatureEngine:
     """
 
     # Major trading sessions (UTC)
-    SESSIONS = {
+    SESSIONS: ClassVar[dict] = {
         "SYDNEY": SessionTimes("Sydney", 21, 0, 6, 0),  # 21:00-06:00 UTC
         "TOKYO": SessionTimes("Tokyo", 23, 0, 8, 0),  # 23:00-08:00 UTC
         "LONDON": SessionTimes("London", 7, 0, 16, 0),  # 07:00-16:00 UTC
@@ -66,19 +64,19 @@ class EventTimeFeatureEngine:
     ROLLOVER_UTC_MINUTE = 0
 
     def __init__(self) -> None:
-        """Initialize event time feature engine"""
+        """Initialize event time feature engine."""
         self.cache: dict[str, dict] = {}
         self.last_update_minute = -1
 
     def calculate_features(self, dt: datetime | None = None) -> dict[str, float]:
-        """
-        Calculate all event-relative time features
+        """Calculate all event-relative time features.
 
         Args:
             dt: Datetime to calculate features for (UTC), defaults to now
 
         Returns:
             Dictionary of normalized features
+
         """
         if dt is None:
             dt = datetime.now(UTC)
@@ -160,8 +158,7 @@ class EventTimeFeatureEngine:
         return features
 
     def _calc_session_proximity(self, dt: datetime, event_minutes: int) -> tuple[float, float]:
-        """
-        Calculate minutes to and from an event
+        """Calculate minutes to and from an event.
 
         Args:
             dt: Current datetime (UTC)
@@ -171,6 +168,7 @@ class EventTimeFeatureEngine:
             (minutes_to_event, minutes_from_event)
             - minutes_to_event: positive if event is ahead, negative if passed
             - minutes_from_event: positive if event has passed, negative if upcoming
+
         """
         current_minutes = dt.hour * 60 + dt.minute
 
@@ -189,7 +187,7 @@ class EventTimeFeatureEngine:
         return minutes_to, minutes_from
 
     def _is_session_active(self, dt: datetime, session: SessionTimes) -> bool:
-        """Check if a session is currently active"""
+        """Check if a session is currently active."""
         current_minutes = dt.hour * 60 + dt.minute
         open_minutes = session.get_open_minutes()
         close_minutes = session.get_close_minutes()
@@ -197,12 +195,10 @@ class EventTimeFeatureEngine:
         # Handle overnight sessions (e.g., Sydney: 21:00-06:00)
         if open_minutes > close_minutes:
             return current_minutes >= open_minutes or current_minutes < close_minutes
-        else:
-            return open_minutes <= current_minutes < close_minutes
+        return open_minutes <= current_minutes < close_minutes
 
     def _normalize_minutes(self, minutes: float, max_range: float = float(HALF_DAY_MINUTES)) -> float:
-        """
-        Normalize minutes to [-1, 1] range
+        """Normalize minutes to [-1, 1] range.
 
         Args:
             minutes: Minutes value
@@ -210,12 +206,12 @@ class EventTimeFeatureEngine:
 
         Returns:
             Normalized value in [-1, 1]
+
         """
         return SafeMath.clamp(minutes / max_range, -1.0, 1.0)
 
     def _calc_week_progress(self, dt: datetime) -> float:
-        """
-        Calculate progress through trading week (0-1)
+        """Calculate progress through trading week (0-1).
 
         FX week: Sunday 21:00 UTC to Friday 21:00 UTC
         """
@@ -242,7 +238,7 @@ class EventTimeFeatureEngine:
         return SafeMath.clamp(progress, 0.0, 1.0)
 
     def _calc_month_progress(self, dt: datetime) -> float:
-        """Calculate progress through month (0-1)"""
+        """Calculate progress through month (0-1)."""
         day_of_month = dt.day
         days_in_month = calendar.monthrange(dt.year, dt.month)[1]
 
@@ -253,18 +249,18 @@ class EventTimeFeatureEngine:
         return SafeMath.clamp(progress, 0.0, 1.0)
 
     def get_active_sessions(self, dt: datetime | None = None) -> list:
-        """Get list of currently active session names"""
+        """Get list of currently active session names."""
         if dt is None:
             dt = datetime.now(UTC)
 
         return [name for name, session in self.SESSIONS.items() if self._is_session_active(dt, session)]
 
     def get_next_major_event(self, dt: datetime | None = None) -> tuple[str, float]:
-        """
-        Get the next major market event and minutes until it
+        """Get the next major market event and minutes until it.
 
         Returns:
             (event_name, minutes_until)
+
         """
         if dt is None:
             dt = datetime.now(UTC)
@@ -298,8 +294,7 @@ class EventTimeFeatureEngine:
         return events[0]
 
     def is_high_liquidity_period(self, dt: datetime | None = None) -> bool:
-        """
-        Check if current time is a high liquidity period
+        """Check if current time is a high liquidity period.
 
         High liquidity = session overlap or major session active
         """
@@ -325,7 +320,7 @@ class EventTimeFeatureEngine:
 # ==============================================================================
 
 
-def main() -> None:  # noqa: PLR0915
+def main() -> None:
     """Run event time features test suite."""
     print("=" * 80)
     print("EVENT-RELATIVE TIME FEATURES - TEST SUITE")
@@ -352,7 +347,7 @@ def main() -> None:  # noqa: PLR0915
         to_close = features.get(f"{session}_mins_to_close", 0)
 
         label = "ACTIVE" if is_active else "CLOSED"
-        print(f"  {session.title():12s}: {label:8s}" f" | Open in: {to_open:+.3f}" f" | Close in: {to_close:+.3f}")
+        print(f"  {session.title():12s}: {label:8s} | Open in: {to_open:+.3f} | Close in: {to_close:+.3f}")
 
     # Rollover
     print("\nRollover:")

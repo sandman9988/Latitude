@@ -22,14 +22,13 @@ from src.risk.friction_costs import (
 # Helper – FrictionCalculator without config / persistence side-effects
 # ---------------------------------------------------------------------------
 def _make_calc(**overrides):
-    defaults = dict(symbol="BTCUSD", symbol_id=10028, timeframe="M5", broker="test")
+    defaults = {"symbol": "BTCUSD", "symbol_id": 10028, "timeframe": "M5", "broker": "test"}
     defaults.update(overrides)
     with (
         patch.object(FrictionCalculator, "_load_symbol_specs_from_config"),
         patch.object(FrictionCalculator, "_load_learned_parameters"),
     ):
-        calc = FrictionCalculator(**defaults)
-    return calc
+        return FrictionCalculator(**defaults)
 
 
 # ===================================================================
@@ -93,7 +92,6 @@ class TestSpreadTrackerValidation:
         # We need spread_pips = (ask - bid) / pip_size to be NaN
         # NaN is produced by 0/0 but that's caught earlier
         # This path is very hard to trigger naturally; test with patching
-        pass
 
     def test_negative_spread_rejected(self):
         """Line 125-126: negative spread_pips → return."""
@@ -572,7 +570,7 @@ class TestCheckSpreadAcceptable:
         """Line 1011: non-finite effective_multiplier → default 2.0."""
         calc = _make_calc()
         calc.spread_tracker.update(99.0, 101.0, 1.0)
-        ok, current, threshold = calc.is_spread_acceptable(multiplier=float("nan"))
+        ok, current, _threshold = calc.is_spread_acceptable(multiplier=float("nan"))
         assert isinstance(ok, bool)
         assert math.isfinite(current)
 
@@ -580,7 +578,7 @@ class TestCheckSpreadAcceptable:
         """Line 1020: non-finite current_spread → (True, 0.0, ...)."""
         calc = _make_calc()
         # No data → current = 0 → should return acceptable
-        ok, current, threshold = calc.is_spread_acceptable()
+        ok, _current, _threshold = calc.is_spread_acceptable()
         assert ok is True
 
     def test_non_finite_max_returns_acceptable(self):
@@ -588,7 +586,7 @@ class TestCheckSpreadAcceptable:
         calc = _make_calc()
         calc.spread_tracker.update(99.0, 101.0, 1.0)
         # With only 1 sample, learned_max_spread may return inf
-        ok, current, threshold = calc.is_spread_acceptable()
+        ok, _current, _threshold = calc.is_spread_acceptable()
         assert ok is True
 
 

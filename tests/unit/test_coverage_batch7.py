@@ -123,7 +123,7 @@ from src.risk.risk_manager import CorrelationBreakdown, RiskAssessment, RiskMana
 from src.risk.var_estimator import RegimeType, VaREstimator
 
 
-@pytest.fixture()
+@pytest.fixture
 def _rm():
     """Build a RiskManager with warm VaR estimator."""
     est = VaREstimator(window=100, confidence=0.95)
@@ -173,8 +173,7 @@ class TestAssessRiskUtilization:
         _rm.active_positions = {"BTCUSD": 0.5}
         assessment = _rm.assess_risk()
         # Single position → concentration = 1.0 > 0.9
-        assert any("concentration" in r.lower() or "diversification" in r.lower()
-                    for r in assessment.recommendations)
+        assert any("concentration" in r.lower() or "diversification" in r.lower() for r in assessment.recommendations)
 
 
 class TestAssessRiskCompositeException:

@@ -20,6 +20,7 @@ rng = np.random.default_rng(42)
 
 # ── _QNet (internal MLP) ──────────────────────────────────────────────────────
 
+
 class TestQNet:
     def test_output_shape(self):
         net = _QNet(state_dim=10, hidden1=128, hidden2=64, n_actions=3)
@@ -61,6 +62,7 @@ class TestQNet:
 
 # ── DDQNNetwork.__init__ ──────────────────────────────────────────────────────
 
+
 class TestDDQNNetworkInit:
     def test_default_dimensions(self):
         net = DDQNNetwork(state_dim=10, n_actions=3, seed=42)
@@ -92,6 +94,7 @@ class TestDDQNNetworkInit:
 
 
 # ── Forward / Predict ─────────────────────────────────────────────────────────
+
 
 class TestForwardPredict:
     @pytest.fixture
@@ -137,6 +140,7 @@ class TestForwardPredict:
 
 # ── Train batch ───────────────────────────────────────────────────────────────
 
+
 class TestTrainBatch:
     @pytest.fixture
     def net(self):
@@ -144,20 +148,28 @@ class TestTrainBatch:
 
     def _make_batch(self, batch_size=8, state_dim=4, n_actions=3):
         rng_local = np.random.default_rng(123)
-        return dict(
-            states=rng_local.standard_normal((batch_size, state_dim)).astype(np.float32),
-            actions=rng_local.integers(0, n_actions, batch_size),
-            rewards=rng_local.standard_normal(batch_size).astype(np.float32),
-            next_states=rng_local.standard_normal((batch_size, state_dim)).astype(np.float32),
-            dones=rng_local.choice([0.0, 1.0], batch_size, p=[0.8, 0.2]).astype(np.float32),
-            weights=np.ones(batch_size, dtype=np.float32),
-        )
+        return {
+            "states": rng_local.standard_normal((batch_size, state_dim)).astype(np.float32),
+            "actions": rng_local.integers(0, n_actions, batch_size),
+            "rewards": rng_local.standard_normal(batch_size).astype(np.float32),
+            "next_states": rng_local.standard_normal((batch_size, state_dim)).astype(np.float32),
+            "dones": rng_local.choice([0.0, 1.0], batch_size, p=[0.8, 0.2]).astype(np.float32),
+            "weights": np.ones(batch_size, dtype=np.float32),
+        }
 
     def test_returns_expected_keys(self, net):
         batch = self._make_batch()
         result = net.train_batch(**batch)
-        for key in ("loss", "l2_loss", "total_loss", "mean_q", "mean_td_error",
-                     "max_td_error", "grad_norm", "td_errors"):
+        for key in (
+            "loss",
+            "l2_loss",
+            "total_loss",
+            "mean_q",
+            "mean_td_error",
+            "max_td_error",
+            "grad_norm",
+            "td_errors",
+        ):
             assert key in result, f"Missing key: {key}"
 
     def test_loss_is_nonneg(self, net):
@@ -203,14 +215,14 @@ class TestTrainBatch:
     def test_gradient_clipping(self):
         net = DDQNNetwork(state_dim=4, n_actions=3, grad_clip_norm=0.1, seed=42)
         rng_local = np.random.default_rng(123)
-        batch = dict(
-            states=rng_local.standard_normal((8, 4)).astype(np.float32),
-            actions=rng_local.integers(0, 3, 8),
-            rewards=rng_local.standard_normal(8).astype(np.float32) * 100,  # large rewards → large gradients
-            next_states=rng_local.standard_normal((8, 4)).astype(np.float32),
-            dones=np.zeros(8, dtype=np.float32),
-            weights=np.ones(8, dtype=np.float32),
-        )
+        batch = {
+            "states": rng_local.standard_normal((8, 4)).astype(np.float32),
+            "actions": rng_local.integers(0, 3, 8),
+            "rewards": rng_local.standard_normal(8).astype(np.float32) * 100,  # large rewards → large gradients
+            "next_states": rng_local.standard_normal((8, 4)).astype(np.float32),
+            "dones": np.zeros(8, dtype=np.float32),
+            "weights": np.ones(8, dtype=np.float32),
+        }
         result = net.train_batch(**batch)
         assert result["grad_norm"] >= 0
 
@@ -218,14 +230,14 @@ class TestTrainBatch:
         """Training on identical batch should eventually reduce loss."""
         net = DDQNNetwork(state_dim=4, n_actions=3, learning_rate=0.01, seed=42)
         rng_local = np.random.default_rng(42)
-        batch = dict(
-            states=rng_local.standard_normal((16, 4)).astype(np.float32),
-            actions=rng_local.integers(0, 3, 16),
-            rewards=rng_local.standard_normal(16).astype(np.float32),
-            next_states=rng_local.standard_normal((16, 4)).astype(np.float32),
-            dones=np.zeros(16, dtype=np.float32),
-            weights=np.ones(16, dtype=np.float32),
-        )
+        batch = {
+            "states": rng_local.standard_normal((16, 4)).astype(np.float32),
+            "actions": rng_local.integers(0, 3, 16),
+            "rewards": rng_local.standard_normal(16).astype(np.float32),
+            "next_states": rng_local.standard_normal((16, 4)).astype(np.float32),
+            "dones": np.zeros(16, dtype=np.float32),
+            "weights": np.ones(16, dtype=np.float32),
+        }
         losses = []
         for _ in range(20):
             result = net.train_batch(**batch)
@@ -236,6 +248,7 @@ class TestTrainBatch:
 
 # ── Hard target update ────────────────────────────────────────────────────────
 
+
 class TestHardUpdate:
     def test_hard_update_copies_exactly(self):
         net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
@@ -245,8 +258,8 @@ class TestHardUpdate:
                 p.add_(1.0)
         # Verify online ≠ target
         assert not torch.equal(
-            list(net.online.parameters())[0],
-            list(net.target.parameters())[0],
+            next(iter(net.online.parameters())),
+            next(iter(net.target.parameters())),
         )
         net.hard_update_target()
         # Now they should match exactly
@@ -255,6 +268,7 @@ class TestHardUpdate:
 
 
 # ── Save / Load weights ──────────────────────────────────────────────────────
+
 
 class TestSaveLoadWeights:
     def test_save_and_load_roundtrip(self, tmp_path):
@@ -298,14 +312,14 @@ class TestSaveLoadWeights:
         filepath = str(tmp_path / "weights")
         net = DDQNNetwork(state_dim=4, n_actions=3, seed=42)
         rng_local = np.random.default_rng(1)
-        batch = dict(
-            states=rng_local.standard_normal((4, 4)).astype(np.float32),
-            actions=rng_local.integers(0, 3, 4),
-            rewards=rng_local.standard_normal(4).astype(np.float32),
-            next_states=rng_local.standard_normal((4, 4)).astype(np.float32),
-            dones=np.zeros(4, dtype=np.float32),
-            weights=np.ones(4, dtype=np.float32),
-        )
+        batch = {
+            "states": rng_local.standard_normal((4, 4)).astype(np.float32),
+            "actions": rng_local.integers(0, 3, 4),
+            "rewards": rng_local.standard_normal(4).astype(np.float32),
+            "next_states": rng_local.standard_normal((4, 4)).astype(np.float32),
+            "dones": np.zeros(4, dtype=np.float32),
+            "weights": np.ones(4, dtype=np.float32),
+        }
         for _ in range(5):
             net.train_batch(**batch)
         assert net.training_steps == 5

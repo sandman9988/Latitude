@@ -29,13 +29,13 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
-import train_offline as to   # noqa: E402  # isort: skip
+import train_offline as to  # isort: skip
 
 # ---------------------------------------------------------------------------
 # Named constants (avoid magic literals in assertions)
 # ---------------------------------------------------------------------------
-_TF_H1_MINUTES = 60     # minutes per H1 bar
-_TF_H4_MINUTES = 240    # minutes per H4 bar
+_TF_H1_MINUTES = 60  # minutes per H1 bar
+_TF_H4_MINUTES = 240  # minutes per H4 bar
 
 # ---------------------------------------------------------------------------
 # Synthetic bar generator
@@ -45,21 +45,22 @@ _TF_H4_MINUTES = 240    # minutes per H4 bar
 # train/val splits at the default 80/20 ratio.
 # ---------------------------------------------------------------------------
 
+
 def _synthetic_csv(path: Path, n: int = 400, seed: int = 42) -> None:
     """Write N synthetic XAUUSD-style bars to *path*."""
     rng = np.random.default_rng(seed)
-    t0  = datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
+    t0 = datetime(2024, 1, 2, 0, 0, tzinfo=UTC)
     price = 2000.0
     with path.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["Date & Time", "Open", "High", "Low", "Close", "Volume"])
         for i in range(n):
-            ts  = t0 + timedelta(hours=4 * i)          # H4 bars
-            ret = rng.normal(0, 0.003) * price          # ~0.3 % move per bar
-            o   = round(price, 2)
-            c   = round(price + ret, 2)
-            h   = round(max(o, c) + abs(rng.normal(0, 0.001) * price), 2)
-            lo  = round(min(o, c) - abs(rng.normal(0, 0.001) * price), 2)
+            ts = t0 + timedelta(hours=4 * i)  # H4 bars
+            ret = rng.normal(0, 0.003) * price  # ~0.3 % move per bar
+            o = round(price, 2)
+            c = round(price + ret, 2)
+            h = round(max(o, c) + abs(rng.normal(0, 0.001) * price), 2)
+            lo = round(min(o, c) - abs(rng.normal(0, 0.001) * price), 2)
             vol = int(rng.integers(100, 1000))
             w.writerow([ts.strftime("%Y-%m-%d %H:%M:%S"), o, h, lo, c, vol])
             price = c  # random walk: next open = this close
@@ -89,13 +90,15 @@ def _entry(instruments: list[dict], symbol: str, tf: int | None = None) -> dict 
 # _register_universe  (pure file-I/O unit tests — no training)
 # ---------------------------------------------------------------------------
 
-class TestRegisterUniverse:
 
+class TestRegisterUniverse:
     def test_creates_file_when_absent(self, tmp_path, monkeypatch):
         uni = tmp_path / "universe.json"
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
 
-        to._register_universe("EURUSD", _TF_H1_MINUTES, z_omega=2.5, weights_path="data/checkpoints/best/EURUSD_trigger.npz")
+        to._register_universe(
+            "EURUSD", _TF_H1_MINUTES, z_omega=2.5, weights_path="data/checkpoints/best/EURUSD_trigger.npz"
+        )
 
         assert uni.exists()
         inst = _entry(_read_universe(uni)["instruments"], "EURUSD", _TF_H1_MINUTES)
@@ -167,14 +170,14 @@ class TestRegisterUniverse:
 # _STAGE_ORDER correctness
 # ---------------------------------------------------------------------------
 
-class TestStageOrder:
 
+class TestStageOrder:
     def test_pipeline_order(self):
         s = to._STAGE_ORDER
-        assert s.index("UNTRAINED")         < s.index("OFFLINE_TRAINING")
-        assert s.index("OFFLINE_TRAINING")  < s.index("PAPER")
-        assert s.index("PAPER")             < s.index("MICRO")
-        assert s.index("MICRO")             < s.index("LIVE")
+        assert s.index("UNTRAINED") < s.index("OFFLINE_TRAINING")
+        assert s.index("OFFLINE_TRAINING") < s.index("PAPER")
+        assert s.index("PAPER") < s.index("MICRO")
+        assert s.index("MICRO") < s.index("LIVE")
 
     def test_all_five_stages_present(self):
         for stage in ("UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"):
@@ -194,8 +197,8 @@ class TestStageOrder:
 # --workers 1             → single worker keeps wall-clock time manageable
 # ---------------------------------------------------------------------------
 
-class TestAutoPromoteCLI:
 
+class TestAutoPromoteCLI:
     def test_real_training_promotes_to_paper(self, tmp_path, monkeypatch):
         """
         Full end-to-end: generate CSV → run actual DDQN training →
@@ -208,13 +211,18 @@ class TestAutoPromoteCLI:
         csv_file = tmp_path / "XAUUSD_H4.csv"
         _synthetic_csv(csv_file, n=400, seed=1)
 
-        ret = to.main([
-            str(csv_file),
-            "--checkpoint-dir", str(tmp_path / "ckpt"),
-            "--auto-promote",
-            "--paper-threshold", "0.0",   # promote regardless of ZOmega
-            "--workers", "1",
-        ])
+        ret = to.main(
+            [
+                str(csv_file),
+                "--checkpoint-dir",
+                str(tmp_path / "ckpt"),
+                "--auto-promote",
+                "--paper-threshold",
+                "0.0",  # promote regardless of ZOmega
+                "--workers",
+                "1",
+            ]
+        )
 
         assert ret == 0
         assert uni.exists(), "universe.json was not created"
@@ -236,13 +244,18 @@ class TestAutoPromoteCLI:
         csv_file = tmp_path / "EURUSD_H1.csv"
         _synthetic_csv(csv_file, n=400, seed=2)
 
-        to.main([
-            str(csv_file),
-            "--checkpoint-dir", str(tmp_path / "ckpt"),
-            "--auto-promote",
-            "--paper-threshold", "9999.0",  # impossible to reach on 400 bars
-            "--workers", "1",
-        ])
+        to.main(
+            [
+                str(csv_file),
+                "--checkpoint-dir",
+                str(tmp_path / "ckpt"),
+                "--auto-promote",
+                "--paper-threshold",
+                "9999.0",  # impossible to reach on 400 bars
+                "--workers",
+                "1",
+            ]
+        )
 
         if uni.exists():
             data = _read_universe(uni)
@@ -262,12 +275,16 @@ class TestAutoPromoteCLI:
         csv_file = tmp_path / "BTCUSD_H4.csv"
         _synthetic_csv(csv_file, n=400, seed=3)
 
-        to.main([
-            str(csv_file),
-            "--checkpoint-dir", str(tmp_path / "ckpt"),
-            # NOTE: intentionally no --auto-promote
-            "--workers", "1",
-        ])
+        to.main(
+            [
+                str(csv_file),
+                "--checkpoint-dir",
+                str(tmp_path / "ckpt"),
+                # NOTE: intentionally no --auto-promote
+                "--workers",
+                "1",
+            ]
+        )
 
         assert not uni.exists(), "universe.json should not be created without --auto-promote"
 
@@ -285,13 +302,19 @@ class TestAutoPromoteCLI:
         _synthetic_csv(csv_xau, n=400, seed=10)
         _synthetic_csv(csv_btc, n=400, seed=20)
 
-        ret = to.main([
-            str(csv_xau), str(csv_btc),
-            "--checkpoint-dir", str(tmp_path / "ckpt"),
-            "--auto-promote",
-            "--paper-threshold", "0.0",
-            "--workers", "2",
-        ])
+        ret = to.main(
+            [
+                str(csv_xau),
+                str(csv_btc),
+                "--checkpoint-dir",
+                str(tmp_path / "ckpt"),
+                "--auto-promote",
+                "--paper-threshold",
+                "0.0",
+                "--workers",
+                "2",
+            ]
+        )
 
         assert ret == 0
         data = _read_universe(uni)
@@ -311,12 +334,17 @@ class TestAutoPromoteCLI:
         csv_file = tmp_path / "XAUUSD_H4.csv"
         _synthetic_csv(csv_file, n=400, seed=5)
 
-        to.main([
-            str(csv_file),
-            "--checkpoint-dir", str(tmp_path / "ckpt"),
-            "--auto-promote",
-            "--paper-threshold", "0.0",
-            "--workers", "1",
-        ])
+        to.main(
+            [
+                str(csv_file),
+                "--checkpoint-dir",
+                str(tmp_path / "ckpt"),
+                "--auto-promote",
+                "--paper-threshold",
+                "0.0",
+                "--workers",
+                "1",
+            ]
+        )
 
         assert _entry(_read_universe(uni)["instruments"], "XAUUSD", 240)["stage"] == "LIVE"

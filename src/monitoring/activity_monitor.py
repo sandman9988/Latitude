@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-"""
-Activity Monitor - Prevent Learned Helplessness
-Implements no-trade detection and exploration boost from Master Handbook
+"""Activity Monitor - Prevent Learned Helplessness
+Implements no-trade detection and exploration boost from Master Handbook.
 """
 
 import logging
@@ -37,8 +36,7 @@ logger = logging.getLogger(__name__)
 
 
 class ActivityMonitor:
-    """
-    Monitor trading activity to prevent learned helplessness
+    """Monitor trading activity to prevent learned helplessness.
 
     Handbook: "Penalize extended inactivity to prevent agent from learning
     that doing nothing is optimal. Add exploration bonus when stagnant."
@@ -57,13 +55,13 @@ class ActivityMonitor:
         exploration_boost: float | None = None,
         activity_decay: float = ACTIVITY_DECAY_DEFAULT,
         phase_maturity: float = 0.0,  # 0.0=early exploration, 1.0=late exploitation
-    ):
-        """
-        Args:
-            max_bars_inactive: Trigger exploration after this many bars without trade
-            min_trades_per_day: Minimum expected trading frequency
-            exploration_boost: Reward bonus for taking action when stagnant
-            activity_decay: Exponential decay for activity score
+    ) -> None:
+        """Args:
+        max_bars_inactive: Trigger exploration after this many bars without trade
+        min_trades_per_day: Minimum expected trading frequency
+        exploration_boost: Reward bonus for taking action when stagnant
+        activity_decay: Exponential decay for activity score.
+
         """
         import os  # noqa: PLC0415
 
@@ -119,12 +117,14 @@ class ActivityMonitor:
         self._exploration_active = False
 
         logger.info(
-            f"ActivityMonitor initialized: max_inactive={max_bars_inactive}, "
-            f"min_trades/day={min_trades_per_day:.1f}, exploration_boost={exploration_boost}"
+            "ActivityMonitor initialized: max_inactive=%s, min_trades/day=%.1f, exploration_boost=%s",
+            max_bars_inactive,
+            min_trades_per_day,
+            exploration_boost,
         )
 
     def on_bar_close(self) -> None:
-        """Update activity metrics on each bar close"""
+        """Update activity metrics on each bar close."""
         self.bars_since_trade += 1
         self.total_bars += 1
 
@@ -137,7 +137,9 @@ class ActivityMonitor:
 
         if self._is_stagnant and not was_stagnant:
             logger.warning(
-                f"[ACTIVITY] STAGNANT: {self.bars_since_trade} bars without trade " f"(max: {self.max_bars_inactive})"
+                "[ACTIVITY] STAGNANT: %s bars without trade (max: %s)",
+                self.bars_since_trade,
+                self.max_bars_inactive,
             )
             self._exploration_active = True
 
@@ -146,7 +148,7 @@ class ActivityMonitor:
             self._log_metrics()
 
     def on_trade_executed(self, timestamp: datetime | None = None) -> None:
-        """Record a trade execution"""
+        """Record a trade execution."""
         if timestamp is None:
             timestamp = datetime.now(UTC)
 
@@ -160,16 +162,16 @@ class ActivityMonitor:
 
         # Reset stagnation flags
         if self._is_stagnant:
-            logger.info(f"[ACTIVITY] Stagnation resolved after {self.bars_since_trade} bars")
+            logger.info("[ACTIVITY] Stagnation resolved after %s bars", self.bars_since_trade)
         self._is_stagnant = False
         self._exploration_active = False
 
     def get_exploration_bonus(self) -> float:
-        """
-        Calculate exploration bonus for taking action
+        """Calculate exploration bonus for taking action.
 
         Returns:
             Reward bonus (0 if not stagnant, positive if stagnant)
+
         """
         if not self._exploration_active:
             return 0.0
@@ -180,16 +182,16 @@ class ActivityMonitor:
 
         bonus = self.exploration_boost * inactive_ratio
 
-        logger.debug(f"[ACTIVITY] Exploration bonus: {bonus:.4f} " f"(inactive: {self.bars_since_trade} bars)")
+        logger.debug("[ACTIVITY] Exploration bonus: %.4f (inactive: %s bars)", bonus, self.bars_since_trade)
 
         return bonus
 
     def get_inactivity_penalty(self) -> float:
-        """
-        Calculate penalty for prolonged inactivity
+        """Calculate penalty for prolonged inactivity.
 
         Returns:
             Negative reward for being stagnant (0 if active)
+
         """
         if not self._is_stagnant:
             return 0.0
@@ -203,14 +205,14 @@ class ActivityMonitor:
         return SafeMath.clamp(penalty, PENALTY_CLAMP_MIN, 0.0)
 
     def get_trade_frequency(self, window_hours: float = FREQUENCY_WINDOW_DEFAULT_HOURS) -> float:
-        """
-        Calculate recent trade frequency
+        """Calculate recent trade frequency.
 
         Args:
             window_hours: Time window in hours
 
         Returns:
             Trades per hour in the window
+
         """
         if not self.trade_timestamps:
             return 0.0
@@ -222,41 +224,44 @@ class ActivityMonitor:
         # Count trades in window
         recent_trades = sum(1 for ts in self.trade_timestamps if ts >= cutoff)
 
-        frequency = SafeMath.safe_div(recent_trades, window_hours, default=0.0)
+        return SafeMath.safe_div(recent_trades, window_hours, default=0.0)
 
-        return frequency
 
     def is_below_target_frequency(self) -> bool:
-        """Check if trading frequency is below target"""
+        """Check if trading frequency is below target."""
         current_freq = self.get_trade_frequency(window_hours=24.0)
         target_freq = SafeMath.safe_div(self.min_trades_per_day, FREQUENCY_WINDOW_DEFAULT_HOURS, default=0.0)
 
         return current_freq < target_freq
 
     def _log_metrics(self) -> None:
-        """Log activity metrics"""
+        """Log activity metrics."""
         freq_24h = self.get_trade_frequency(24.0)
         freq_1h = self.get_trade_frequency(1.0)
 
         logger.info(
-            f"[ACTIVITY] bars={self.total_bars} trades={self.total_trades} "
-            f"since_last={self.bars_since_trade} score={self.activity_score:.3f} "
-            f"freq_24h={freq_24h:.2f}/h freq_1h={freq_1h:.2f}/h "
-            f"stagnant={self._is_stagnant}"
+            "[ACTIVITY] bars=%s trades=%s since_last=%s score=%.3f freq_24h=%.2f/h freq_1h=%.2f/h stagnant=%s",
+            self.total_bars,
+            self.total_trades,
+            self.bars_since_trade,
+            self.activity_score,
+            freq_24h,
+            freq_1h,
+            self._is_stagnant,
         )
 
     @property
     def is_stagnant(self) -> bool:
-        """Check if trading activity is stagnant"""
+        """Check if trading activity is stagnant."""
         return self._is_stagnant
 
     @property
     def should_explore(self) -> bool:
-        """Check if exploration should be triggered"""
+        """Check if exploration should be triggered."""
         return self._exploration_active
 
     def get_metrics(self) -> dict:
-        """Get current activity metrics"""
+        """Get current activity metrics."""
         return {
             "bars_since_trade": self.bars_since_trade,
             "total_bars": self.total_bars,
@@ -272,25 +277,23 @@ class ActivityMonitor:
 
 
 class CounterfactualAnalyzer:
-    """
-    Analyze counterfactual outcomes (what-if scenarios)
+    """Analyze counterfactual outcomes (what-if scenarios).
 
     Handbook: "Compare actual exit to optimal exit at MFE bar.
     Penalize early exits from winners to encourage letting profits run."
     """
 
-    def __init__(self, lookback_bars: int = COUNTERFACT_LOOKBACK_DEFAULT):
-        """
-        Args:
-            lookback_bars: How many bars to look back for MFE comparison
+    def __init__(self, lookback_bars: int = COUNTERFACT_LOOKBACK_DEFAULT) -> None:
+        """Args:
+        lookback_bars: How many bars to look back for MFE comparison.
+
         """
         self.lookback_bars = lookback_bars
 
     def analyze_exit(
         self, entry_price: float, exit_price: float, mfe: float, mfe_bar_offset: int, direction: int
     ) -> tuple[float, dict]:
-        """
-        Analyze actual exit vs optimal exit at MFE
+        """Analyze actual exit vs optimal exit at MFE.
 
         Args:
             entry_price: Entry price
@@ -301,6 +304,7 @@ class CounterfactualAnalyzer:
 
         Returns:
             (counterfactual_reward, metrics_dict)
+
         """
         # Calculate actual profit
         actual_pnl = direction * (exit_price - entry_price)
@@ -342,9 +346,12 @@ class CounterfactualAnalyzer:
         }
 
         logger.debug(
-            f"[COUNTERFACTUAL] actual={actual_pnl:.6f} optimal={optimal_pnl:.6f} "
-            f"efficiency={efficiency:.2%} penalty={early_exit_penalty:.4f} "
-            f"bonus={timing_bonus:.4f}"
+            "[COUNTERFACTUAL] actual=%.6f optimal=%.6f efficiency=%.2%% penalty=%.4f bonus=%.4f",
+            actual_pnl,
+            optimal_pnl,
+            efficiency,
+            early_exit_penalty,
+            timing_bonus,
         )
 
         return counterfactual_reward, metrics

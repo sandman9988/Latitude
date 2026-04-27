@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Phase 3.4: Regime Detection via DSP-Based Damping Ratio
+"""Phase 3.4: Regime Detection via DSP-Based Damping Ratio.
 =========================================================
 
 Implements Section 6.2 of the handbook: Regime classification using
@@ -62,8 +61,7 @@ RegimeType = Literal["TRENDING", "MEAN_REVERTING", "TRANSITIONAL", "UNKNOWN"]
 
 
 class RegimeDetector:
-    """
-    Detect market regime using DSP-based damping ratio analysis.
+    """Detect market regime using DSP-based damping ratio analysis.
 
     Optimized for real-time trading:
     - Rolling window (50 bars)
@@ -77,11 +75,11 @@ class RegimeDetector:
         window_size: int = DEFAULT_WINDOW_SIZE,
         update_interval: int = DEFAULT_UPDATE_INTERVAL,
         instrument_volatility: float = 1.0,  # Relative vol multiplier for threshold adjustment
-    ):
-        """
-        Args:
-            window_size: Number of bars for regime calculation (default 50)
-            update_interval: Recalculate regime every N bars (default 5)
+    ) -> None:
+        """Args:
+        window_size: Number of bars for regime calculation (default 50)
+        update_interval: Recalculate regime every N bars (default 5).
+
         """
         self.window_size = window_size
         self.update_interval = update_interval
@@ -118,8 +116,7 @@ class RegimeDetector:
         )
 
     def add_price(self, price: float) -> tuple[RegimeType, float]:
-        """
-        Add new price and update regime detection.
+        """Add new price and update regime detection.
 
         Thread-safe for fleet operation where multiple timeframes may
         access the detector concurrently.
@@ -129,6 +126,7 @@ class RegimeDetector:
 
         Returns:
             (regime, damping_ratio) tuple
+
         """
         # Defensive: Validate price
         if price is None or price <= 0:
@@ -146,7 +144,7 @@ class RegimeDetector:
 
         return self.current_regime, self.current_zeta
 
-    def _update_regime(self):
+    def _update_regime(self) -> None:
         """Calculate damping ratio and classify regime using variance ratio test."""
         try:
             returns = self._compute_validated_returns()
@@ -233,7 +231,7 @@ class RegimeDetector:
 
         return float(max(VR_CLAMP_MIN, min(VR_CLAMP_MAX, vr)))
 
-    def _classify_regime(self, vr: float, var_1: float):
+    def _classify_regime(self, vr: float, var_1: float) -> None:
         """Map variance ratio to damping ratio and classify regime."""
         self.current_zeta = NEUTRAL_ZETA + ZETA_MAP_MULTIPLIER * (1.0 - vr)
         self.current_zeta = max(ZETA_CLAMP_MIN, min(ZETA_CLAMP_MAX, self.current_zeta))
@@ -256,8 +254,7 @@ class RegimeDetector:
         )
 
     def _autocorrelation(self, x: np.ndarray, lag: int) -> float:
-        """
-        Calculate autocorrelation at given lag using proper normalization.
+        """Calculate autocorrelation at given lag using proper normalization.
 
         Optimized: Uses numpy for vectorized operations.
         """
@@ -287,25 +284,23 @@ class RegimeDetector:
         return float(max(-1.0, min(1.0, autocorr)))
 
     def get_regime_multiplier(self) -> float:
-        """
-        Get runway multiplier based on current regime.
+        """Get runway multiplier based on current regime.
 
         Returns:
             float: Multiplier for predicted_runway
             - TRENDING: 1.3x (expect larger moves)
             - MEAN_REVERTING: 0.7x (expect smaller moves)
             - TRANSITIONAL/UNKNOWN: 1.0x (neutral)
+
         """
         if self.current_regime == "TRENDING":
             return RUNWAY_MULT_TRENDING
-        elif self.current_regime == "MEAN_REVERTING":
+        if self.current_regime == "MEAN_REVERTING":
             return RUNWAY_MULT_MEAN_REVERTING
-        else:
-            return RUNWAY_MULT_NEUTRAL
+        return RUNWAY_MULT_NEUTRAL
 
     def get_trigger_threshold_adjustment(self) -> float:
-        """
-        Get trigger threshold adjustment based on regime.
+        """Get trigger threshold adjustment based on regime.
 
         Returns a FRACTIONAL scale factor. The caller should apply it as:
             adjusted_threshold = base_threshold * (1 + regime_adj)
@@ -318,17 +313,16 @@ class RegimeDetector:
             - TRENDING:       -0.15 (15% easier to trigger — ride momentum)
             - MEAN_REVERTING: +0.15 (15% harder to trigger — avoid whipsaws)
             - TRANSITIONAL/UNKNOWN: 0.0 (neutral)
+
         """
         if self.current_regime == "TRENDING":
             return REGIME_ADJ_TRENDING
-        elif self.current_regime == "MEAN_REVERTING":
+        if self.current_regime == "MEAN_REVERTING":
             return REGIME_ADJ_MEAN_REVERTING
-        else:
-            return REGIME_ADJ_NEUTRAL
+        return REGIME_ADJ_NEUTRAL
 
-    def update_adj_scale(self, scale: float):
-        """
-        Allow an external learner (e.g. the trigger agent) to widen or narrow
+    def update_adj_scale(self, scale: float) -> None:
+        """Allow an external learner (e.g. the trigger agent) to widen or narrow
         the regime adjustment magnitude based on observed benefit. The scale
         is clamped to [0.0, 0.50] to prevent degenerate gating.
 
@@ -358,7 +352,7 @@ class RegimeDetector:
 # ----------------------------
 # Self-test
 # ----------------------------
-def _test_regime_detector():  # noqa: PLR0915
+def _test_regime_detector() -> None:
     """Test regime detector with synthetic data."""
     print("\n╔═══════════════════════════════════════════════════════════╗")
     print("║     Phase 3.4: Regime Detector Self-Test                 ║")

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Audit Logger - Transaction & Decision Logging
+"""Audit Logger - Transaction & Decision Logging.
 ==============================================
 GAP 10.1 FIX: Comprehensive audit trail for debugging and compliance.
 
@@ -23,8 +22,7 @@ LOG = logging.getLogger(__name__)
 
 
 class TransactionLogger:
-    """
-    GAP 10.1 FIX: Append-only transaction log for audit trail.
+    """GAP 10.1 FIX: Append-only transaction log for audit trail.
 
     Records all significant events in chronological order:
     - Session events (logon/logout)
@@ -35,13 +33,13 @@ class TransactionLogger:
     - Component health changes
     """
 
-    def __init__(self, log_dir: str = "logs/audit", filename: str = "transactions.jsonl"):
-        """
-        Initialize transaction logger.
+    def __init__(self, log_dir: str = "logs/audit", filename: str = "transactions.jsonl") -> None:
+        """Initialize transaction logger.
 
         Args:
             log_dir: Directory for log files
             filename: Log filename (JSON Lines format)
+
         """
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -52,14 +50,14 @@ class TransactionLogger:
         # Log session start
         self.log_event("SESSION_START", {"session_id": self.session_id})
 
-    def log_event(self, event_type: str, data: dict[str, Any], severity: str = "INFO"):
-        """
-        Log a transaction event.
+    def log_event(self, event_type: str, data: dict[str, Any], severity: str = "INFO") -> None:
+        """Log a transaction event.
 
         Args:
             event_type: Event type (SESSION_START, ORDER_SUBMIT, ORDER_FILL, etc.)
             data: Event-specific data
             severity: Event severity (INFO, WARNING, ERROR, CRITICAL)
+
         """
         entry = {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -75,7 +73,7 @@ class TransactionLogger:
         except Exception as e:
             LOG.error("[AUDIT] Failed to write transaction log: %s", e)
 
-    def log_order_submit(self, order_id: str, side: str, quantity: float, price: float | None = None):
+    def log_order_submit(self, order_id: str, side: str, quantity: float, price: float | None = None) -> None:
         """Log order submission."""
         self.log_event(
             "ORDER_SUBMIT",
@@ -87,7 +85,7 @@ class TransactionLogger:
             },
         )
 
-    def log_order_fill(self, order_id: str, fill_price: float, fill_qty: float, position_id: str | None = None):
+    def log_order_fill(self, order_id: str, fill_price: float, fill_qty: float, position_id: str | None = None) -> None:
         """Log order fill."""
         self.log_event(
             "ORDER_FILL",
@@ -99,7 +97,7 @@ class TransactionLogger:
             },
         )
 
-    def log_order_reject(self, order_id: str, reason: str):
+    def log_order_reject(self, order_id: str, reason: str) -> None:
         """Log order rejection."""
         self.log_event(
             "ORDER_REJECT",
@@ -110,7 +108,7 @@ class TransactionLogger:
             severity="WARNING",
         )
 
-    def log_position_update(self, position_id: str, net_qty: float, avg_price: float):
+    def log_position_update(self, position_id: str, net_qty: float, avg_price: float) -> None:
         """Log position update."""
         self.log_event(
             "POSITION_UPDATE",
@@ -121,7 +119,7 @@ class TransactionLogger:
             },
         )
 
-    def log_position_close(self, position_id: str, pnl: float, mfe: float, mae: float):
+    def log_position_close(self, position_id: str, pnl: float, mfe: float, mae: float) -> None:
         """Log position close."""
         self.log_event(
             "POSITION_CLOSE",
@@ -133,7 +131,7 @@ class TransactionLogger:
             },
         )
 
-    def log_circuit_breaker(self, breaker_name: str, tripped: bool, current_value: float, threshold: float):
+    def log_circuit_breaker(self, breaker_name: str, tripped: bool, current_value: float, threshold: float) -> None:
         """Log circuit breaker state change."""
         self.log_event(
             "CIRCUIT_BREAKER",
@@ -146,7 +144,7 @@ class TransactionLogger:
             severity="WARNING" if tripped else "INFO",
         )
 
-    def log_session_event(self, session_type: str, event: str, details: dict[str, Any] | None = None):
+    def log_session_event(self, session_type: str, event: str, details: dict[str, Any] | None = None) -> None:
         """Log FIX session event (logon/logout/disconnect)."""
         self.log_event(
             "SESSION_EVENT",
@@ -157,7 +155,7 @@ class TransactionLogger:
             },
         )
 
-    def log_component_health(self, component: str, healthy: bool, error_count: int = 0):
+    def log_component_health(self, component: str, healthy: bool, error_count: int = 0) -> None:
         """Log component health change."""
         self.log_event(
             "COMPONENT_HEALTH",
@@ -171,8 +169,7 @@ class TransactionLogger:
 
 
 class DecisionLogger:
-    """
-    Decision logging for all agents.
+    """Decision logging for all agents.
 
     Records:
     - Trigger agent decisions (entry/no-entry with confidence)
@@ -181,7 +178,7 @@ class DecisionLogger:
     - Reasoning/features that influenced decision
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         log_dir: str = "logs/audit",
         filename: str = "decisions.jsonl",
@@ -189,15 +186,15 @@ class DecisionLogger:
         symbol: str | None = None,
         timeframe: str | None = None,
         timeframe_minutes: int | None = None,
-    ):
-        """
-        Initialize decision logger.
+    ) -> None:
+        """Initialize decision logger.
 
         Args:
             log_dir: Directory for log files
             filename: Log filename (JSON Lines format)
             trading_mode: "paper" or "live" — stamped on every entry
             symbol/timeframe: optional bot scope stamped on every entry
+
         """
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -209,7 +206,7 @@ class DecisionLogger:
         self.timeframe = timeframe
         self.timeframe_minutes = timeframe_minutes
 
-    def log_decision(  # noqa: PLR0913
+    def log_decision(
         self,
         agent: str,
         decision: str,
@@ -218,9 +215,8 @@ class DecisionLogger:
         reasoning: dict[str, Any] | None = None,
         trade_id: str | None = None,
         position_id: list[str] | None = None,
-    ):
-        """
-        Log an agent decision.
+    ) -> None:
+        """Log an agent decision.
 
         Args:
             agent: Agent name (TriggerAgent, HarvesterAgent)
@@ -229,6 +225,7 @@ class DecisionLogger:
             context: Market context (price, volatility, imbalance, etc.)
             reasoning: Features/factors that influenced decision
             trade_id: Correlation ID linking entry → hold(s) → close for one trade
+
         """
         # Build entry while holding lock to ensure atomic write from perspective of other threads
         with self.lock:
@@ -264,7 +261,7 @@ class DecisionLogger:
             except Exception as e:
                 LOG.error("[DECISION] Failed to write decision log: %s", e)
 
-    def log_trigger_decision(  # noqa: PLR0913
+    def log_trigger_decision(
         self,
         decision: str,
         confidence: float,
@@ -279,7 +276,7 @@ class DecisionLogger:
         trade_id: str | None = None,
         position_id: list[str] | None = None,
         q_spread: float = 0.0,
-    ):
+    ) -> None:
         """Log TriggerAgent decision with full context."""
         self.log_decision(
             agent="TriggerAgent",
@@ -302,7 +299,7 @@ class DecisionLogger:
             position_id=position_id,
         )
 
-    def log_harvester_decision(  # noqa: PLR0913
+    def log_harvester_decision(
         self,
         decision: str,
         confidence: float,
@@ -317,13 +314,26 @@ class DecisionLogger:
         in_position: bool = True,
         position_id: list[str] | None = None,
         q_spread: float = 0.0,
-    ):
+        regime: str = "UNKNOWN",
+        realized_vol: float = 0.0,
+        depth_ratio: float = 0.0,
+        exit_floor: float = 0.0,
+        trailing_stop_active: bool = False,
+        trailing_stop_activation_pct: float = 0.0,
+        trailing_stop_distance_pct: float = 0.0,
+        breakeven_active: bool = False,
+        breakeven_trigger_pct: float = 0.0,
+        capture_decay_armed: bool = False,
+        capture_decay_threshold: float = 0.0,
+        close_reason: str = "",
+    ) -> None:
         """Log HarvesterAgent decision with position context.
 
         Args:
             in_position: Must be True — HOLD/CLOSE are only valid when a position
                 is open.  If False an error is logged and the entry is suppressed
                 so the audit trail is never polluted with ghost HOLD entries.
+
         """
         if not in_position:
             LOG.error(
@@ -332,6 +342,26 @@ class DecisionLogger:
                 trade_id,
             )
             return
+        reasoning: dict[str, Any] = {
+            "mfe": mfe,
+            "mae": mae,
+            "ticks_held": ticks_held,
+            "capture_ratio": capture_ratio,
+            "q_spread": q_spread,
+            "regime": regime,
+            "realized_vol": realized_vol,
+            "depth_ratio": depth_ratio,
+            "exit_floor": exit_floor,
+            "trailing_stop_active": trailing_stop_active,
+            "trailing_stop_activation_pct": trailing_stop_activation_pct,
+            "trailing_stop_distance_pct": trailing_stop_distance_pct,
+            "breakeven_active": breakeven_active,
+            "breakeven_trigger_pct": breakeven_trigger_pct,
+            "capture_decay_armed": capture_decay_armed,
+            "capture_decay_threshold": capture_decay_threshold,
+        }
+        if close_reason:
+            reasoning["close_reason"] = close_reason
         self.log_decision(
             agent="HarvesterAgent",
             decision=decision,
@@ -341,13 +371,7 @@ class DecisionLogger:
                 "entry_price": entry_price,
                 "unrealized_pnl": unrealized_pnl,
             },
-            reasoning={
-                "mfe": mfe,
-                "mae": mae,
-                "ticks_held": ticks_held,
-                "capture_ratio": capture_ratio,
-                "q_spread": q_spread,
-            },
+            reasoning=reasoning,
             trade_id=trade_id,
             position_id=position_id,
         )

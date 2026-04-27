@@ -57,13 +57,8 @@ def test_compute_metrics_sets_unknown_timeframe_counter(tmp_path):
     data_dir.mkdir()
     trade_log = data_dir / "trade_log.jsonl"
     trade_log.write_text(
-        "\n".join(
-            [
-                '{"symbol":"XAUUSD","entry_time":"2026-01-01T00:00:00+00:00","exit_time":"2026-01-01T01:00:00+00:00","pnl":10.0,"timeframe_minutes":15,"trading_mode":"paper"}',
-                '{"symbol":"EURUSD","entry_time":"2026-01-02T00:00:00+00:00","exit_time":"2026-01-02T01:00:00+00:00","pnl":-5.0,"trading_mode":"live"}',
-            ]
-        )
-        + "\n",
+        '{"symbol":"XAUUSD","entry_time":"2026-01-01T00:00:00+00:00","exit_time":"2026-01-01T01:00:00+00:00","pnl":10.0,"timeframe_minutes":15,"trading_mode":"paper"}\n{"symbol":"EURUSD","entry_time":"2026-01-02T00:00:00+00:00","exit_time":"2026-01-02T01:00:00+00:00","pnl":-5.0,"trading_mode":"live"}'
+         "\n",
         encoding="utf-8",
     )
 
@@ -209,17 +204,23 @@ def test_decision_log_keeps_all_scoped_bot_entries(tmp_path):
     for tf, decision in [(5, "LONG"), (30, "SHORT")]:
         audit_dir = tmp_path / f"paper_XAUUSD_M{tf}" / "logs" / "audit"
         audit_dir.mkdir(parents=True)
-        (audit_dir / "decisions.jsonl").write_text(json.dumps({
-            "timestamp": f"2026-04-24T08:{tf:02d}:00+00:00",
-            "symbol": "XAUUSD",
-            "timeframe_minutes": tf,
-            "trading_mode": "paper",
-            "agent": "trigger",
-            "decision": decision,
-            "confidence": 0.8,
-            "context": {},
-            "reasoning": {},
-        }) + "\n", encoding="utf-8")
+        (audit_dir / "decisions.jsonl").write_text(
+            json.dumps(
+                {
+                    "timestamp": f"2026-04-24T08:{tf:02d}:00+00:00",
+                    "symbol": "XAUUSD",
+                    "timeframe_minutes": tf,
+                    "trading_mode": "paper",
+                    "agent": "trigger",
+                    "decision": decision,
+                    "confidence": 0.8,
+                    "context": {},
+                    "reasoning": {},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
 
     hud = TabbedHUD()
     hud.data_dir = tmp_path

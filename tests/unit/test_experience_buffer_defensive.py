@@ -41,6 +41,7 @@ def _add_n_experiences(buf: ExperienceBuffer, n: int, dim: int = 7):
 # 1000-add logging path (line 249)
 # ===========================================================================
 
+
 class TestExperienceBuffer1000Logging:
     """Test that logging fires every 1000 adds."""
 
@@ -70,6 +71,7 @@ class TestExperienceBuffer1000Logging:
 # ===========================================================================
 # None experience during sampling (lines 297-298)
 # ===========================================================================
+
 
 class TestExperienceBufferNoneSampling:
     """Test handling of None experiences during sampling."""
@@ -108,6 +110,7 @@ class TestExperienceBufferNoneSampling:
 # Insufficient samples (lines 323-324)
 # ===========================================================================
 
+
 class TestExperienceBufferInsufficientSamples:
     """When too few valid experiences are gathered, sample returns None."""
 
@@ -142,6 +145,7 @@ class TestExperienceBufferInsufficientSamples:
 # ===========================================================================
 # Input validation edge cases
 # ===========================================================================
+
 
 class TestExperienceBufferInputValidation:
     """Test additional defensive input validation."""
@@ -243,6 +247,7 @@ class TestExperienceBufferInputValidation:
 # ===========================================================================
 # Staleness and regime weighting
 # ===========================================================================
+
 
 class TestExperienceBufferStalenessRegime:
     """Test staleness decay and regime-aware weighting."""

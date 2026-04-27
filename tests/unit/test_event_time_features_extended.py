@@ -86,14 +86,14 @@ class TestGetNextMajorEvent:
 
     def test_defaults_to_now(self):
         engine = EventTimeFeatureEngine()
-        name, mins = engine.get_next_major_event()
+        name, _mins = engine.get_next_major_event()
         assert isinstance(name, str)
 
     def test_nearest_event_is_closest(self):
         engine = EventTimeFeatureEngine()
         # At 06:50 UTC, London opens at 07:00 (10 mins away)
         dt = datetime(2026, 1, 5, 6, 50, tzinfo=UTC)
-        name, mins = engine.get_next_major_event(dt)
+        _name, mins = engine.get_next_major_event(dt)
         assert mins <= 15  # Should be very close to London open
 
 

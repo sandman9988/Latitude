@@ -52,9 +52,7 @@ class TestJournaledPersistenceRemainingGaps:
         # Write entries with blank lines interspersed
         entry1 = json.dumps({"seq": 1, "ts": "2025-01-01T00:00:00", "op": "op_1", "data": {"i": 1}})
         entry2 = json.dumps({"seq": 2, "ts": "2025-01-01T00:00:01", "op": "op_2", "data": {"i": 2}})
-        journal_path.write_text(
-            f"\n{entry1}\n\n\n{entry2}\n\n", encoding="utf-8"
-        )
+        journal_path.write_text(f"\n{entry1}\n\n\n{entry2}\n\n", encoding="utf-8")
 
         j = Journal(str(journal_path), checkpoint_interval=1000)
         replayed = j.replay_from_checkpoint()
@@ -143,16 +141,19 @@ class TestVPINCalculatorGetStatsEdges:
         from src.core.order_book import VPINCalculator
 
         calc = VPINCalculator(bucket_volume=10.0, window=5)
+
         # Patch the completed deque with an object that raises during iteration
         class ExplodingDeque(deque):
             """Deque that returns valid data for len/bool/get_vpin but raises in sum."""
+
             _call_count = 0
 
             def __iter__(self):
                 self._call_count += 1
                 if self._call_count > 1:
                     # Second iteration (inside sum()) raises OverflowError
-                    raise OverflowError("deliberate overflow")
+                    msg = "deliberate overflow"
+                    raise OverflowError(msg)
                 return super().__iter__()
 
         bad_deque = ExplodingDeque([0.5, 0.6, 0.7], maxlen=5)

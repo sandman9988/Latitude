@@ -7,6 +7,7 @@ Verify that decision log captures all harvester metrics correctly.
 This test directly simulates position tracking + harvester exit decisions
 without relying on trigger entry signals.
 """
+
 import json
 import sys
 from pathlib import Path

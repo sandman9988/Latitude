@@ -11,6 +11,7 @@ from src.risk.path_geometry import PathGeometry
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _bars(*closes: float) -> deque:
     """Build a deque of (t, o, h, l, c) tuples from close prices."""
     return deque([(i, c, c + 1, c - 1, c) for i, c in enumerate(closes)])
@@ -19,6 +20,7 @@ def _bars(*closes: float) -> deque:
 # ---------------------------------------------------------------------------
 # Init
 # ---------------------------------------------------------------------------
+
 
 class TestPathGeometryInit:
     def test_defaults(self):
@@ -30,6 +32,7 @@ class TestPathGeometryInit:
 # ---------------------------------------------------------------------------
 # update()
 # ---------------------------------------------------------------------------
+
 
 class TestUpdate:
     def test_returns_last_when_insufficient_bars(self):
@@ -103,6 +106,7 @@ class TestUpdate:
 # get_feature_vector()
 # ---------------------------------------------------------------------------
 
+
 class TestGetFeatureVector:
     def test_shape(self):
         pg = PathGeometry()
@@ -123,6 +127,7 @@ class TestGetFeatureVector:
 # _clamp01
 # ---------------------------------------------------------------------------
 
+
 class TestClamp01:
     def test_within_range(self):
         assert PathGeometry._clamp01(0.5) == pytest.approx(0.5)
@@ -137,6 +142,7 @@ class TestClamp01:
 # ---------------------------------------------------------------------------
 # Multi-horizon vol ratio (Enhancement B)
 # ---------------------------------------------------------------------------
+
 
 class TestVolRatio:
     def test_no_sigma_long_falls_back(self):

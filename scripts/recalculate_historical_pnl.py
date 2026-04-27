@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Recalculate P&L for all historical trades.
+"""Recalculate P&L for all historical trades.
 
 This script fixes trades affected by the P&L calculation bug where pnl was
 overwritten to 0.0 during reward processing.
@@ -17,13 +16,12 @@ Options:
 import argparse
 import json
 import shutil
-from datetime import datetime
+import datetime
 from pathlib import Path
 
 
 def calculate_pnl(entry_price: float, exit_price: float, direction: str, qty: float, contract_size: float) -> float:
-    """
-    Calculate P&L using correct formula.
+    """Calculate P&L using correct formula.
 
     Formula: (exit - entry) * direction_sign * quantity * contract_size
 
@@ -36,23 +34,20 @@ def calculate_pnl(entry_price: float, exit_price: float, direction: str, qty: fl
 
     Returns:
         P&L in USD
+
     """
     direction_sign = 1 if direction == "LONG" else -1
-    pnl = (exit_price - entry_price) * direction_sign * qty * contract_size
-    return pnl
+    return (exit_price - entry_price) * direction_sign * qty * contract_size
 
 
-def analyze_trades(trade_log_path: Path):
+def analyze_trades(trade_log_path: Path) -> None:
     """Analyze trades to identify P&L issues."""
     if not trade_log_path.exists():
         print(f"❌ Trade log not found: {trade_log_path}")
         return
 
-    trades = []
     with open(trade_log_path) as f:
-        for line in f:
-            if line.strip():
-                trades.append(json.loads(line))
+        trades = [json.loads(line) for line in f if line.strip()]
 
     print(f"📊 Analysis of {len(trades)} trades")
     print("=" * 80)
@@ -68,7 +63,7 @@ def analyze_trades(trade_log_path: Path):
             if abs(exit_p - entry) > 0.01:  # Significant price difference
                 zero_pnl_with_price_diff += 1
 
-    print(f"Trades with pnl=0.0: {zero_pnl_count} ({zero_pnl_count/len(trades)*100:.1f}%)")
+    print(f"Trades with pnl=0.0: {zero_pnl_count} ({zero_pnl_count / len(trades) * 100:.1f}%)")
     print(f"Trades with pnl=0.0 but price moved: {zero_pnl_with_price_diff}")
     print(f"Likely affected by bug: {zero_pnl_with_price_diff}")
     print()
@@ -81,8 +76,7 @@ def recalculate_trades(
     default_qty: float = 0.1,
     default_contract_size: float = 100.0,
 ):
-    """
-    Recalculate P&L for all trades.
+    """Recalculate P&L for all trades.
 
     Args:
         input_path: Path to original trade_log.jsonl
@@ -90,16 +84,14 @@ def recalculate_trades(
         dry_run: If True, show changes without saving
         default_qty: Default quantity (0.1 for most XAUUSD trades)
         default_contract_size: Default contract size (100.0 for XAUUSD)
+
     """
     if not input_path.exists():
         print(f"❌ Input file not found: {input_path}")
-        return
+        return None
 
-    trades = []
     with open(input_path) as f:
-        for line in f:
-            if line.strip():
-                trades.append(json.loads(line))
+        trades = [json.loads(line) for line in f if line.strip()]
 
     print(f"🔄 Processing {len(trades)} trades...")
     print()
@@ -114,7 +106,7 @@ def recalculate_trades(
         old_pnl = trade.get("pnl", 0.0)
 
         if entry_price == 0.0 or exit_price == 0.0:
-            print(f"⚠️  Trade {i+1}: Skipped (missing prices)")
+            print(f"⚠️  Trade {i + 1}: Skipped (missing prices)")
             unchanged_count += 1
             continue
 
@@ -130,7 +122,7 @@ def recalculate_trades(
             corrected_count += 1
 
             if dry_run:
-                print(f"Trade {i+1}: {direction} {entry_price:.2f}→{exit_price:.2f}")
+                print(f"Trade {i + 1}: {direction} {entry_price:.2f}→{exit_price:.2f}")
                 print(f"  Old P&L: {old_pnl:.4f}")
                 print(f"  New P&L: {new_pnl:.4f}")
                 print(f"  Change:  {new_pnl - old_pnl:+.4f}")
@@ -158,7 +150,7 @@ def recalculate_trades(
     return corrected_count, unchanged_count
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Recalculate P&L for historical trades affected by bug")
     parser.add_argument(
         "--dry-run",
@@ -219,7 +211,7 @@ def main():
 
     # Create backup if requested
     if args.backup and not args.dry_run:
-        backup_path = input_path.with_suffix(f".backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl")
+        backup_path = input_path.with_suffix(f".backup_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.jsonl")
         shutil.copy2(input_path, backup_path)
         print(f"💾 Backup created: {backup_path}")
         print()

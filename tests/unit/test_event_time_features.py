@@ -10,6 +10,7 @@ from src.features.event_time_features import EventTimeFeatureEngine, SessionTime
 # SessionTimes dataclass
 # ---------------------------------------------------------------------------
 
+
 class TestSessionTimes:
     def test_get_open_minutes(self):
         s = SessionTimes("Test", 7, 30, 16, 0)
@@ -24,7 +25,8 @@ class TestSessionTimes:
 # Fixture
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
+
+@pytest.fixture
 def engine():
     return EventTimeFeatureEngine()
 
@@ -33,8 +35,8 @@ def engine():
 # calculate_features()
 # ---------------------------------------------------------------------------
 
-class TestCalculateFeatures:
 
+class TestCalculateFeatures:
     def test_returns_dict(self, engine):
         f = engine.calculate_features(datetime(2026, 1, 14, 12, 0, tzinfo=UTC))
         assert isinstance(f, dict)
@@ -90,8 +92,8 @@ class TestCalculateFeatures:
 # Session activity
 # ---------------------------------------------------------------------------
 
-class TestSessionActivity:
 
+class TestSessionActivity:
     def test_london_active_at_10_utc(self, engine):
         f = engine.calculate_features(datetime(2026, 1, 14, 10, 0, tzinfo=UTC))
         assert f["london_is_active"] == pytest.approx(1.0)
@@ -114,6 +116,7 @@ class TestSessionActivity:
 # Session overlaps (overnight sessions)
 # ---------------------------------------------------------------------------
 
+
 class TestOvernightSessions:
     def test_sydney_active_at_23_utc(self, engine):
         """Sydney 21:00-06:00 → active at 23:00."""
@@ -132,6 +135,7 @@ class TestOvernightSessions:
 # ---------------------------------------------------------------------------
 # Week / month progress
 # ---------------------------------------------------------------------------
+
 
 class TestProgressFeatures:
     def test_week_progress_range(self, engine):
@@ -158,8 +162,8 @@ class TestProgressFeatures:
 # get_active_sessions / get_next_major_event / is_high_liquidity_period
 # ---------------------------------------------------------------------------
 
-class TestHelperMethods:
 
+class TestHelperMethods:
     def test_get_active_sessions_during_london(self, engine):
         active = engine.get_active_sessions(datetime(2026, 1, 14, 10, 0, tzinfo=UTC))
         assert "LONDON" in active
@@ -187,8 +191,8 @@ class TestHelperMethods:
 # Rollover features
 # ---------------------------------------------------------------------------
 
-class TestRollover:
 
+class TestRollover:
     def test_rollover_proximity_keys(self, engine):
         f = engine.calculate_features(datetime(2026, 1, 14, 21, 0, tzinfo=UTC))
         assert "mins_to_rollover" in f

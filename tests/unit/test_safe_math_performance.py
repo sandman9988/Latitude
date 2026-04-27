@@ -13,14 +13,12 @@ Author: AI Trading System
 Version: 1.0.0
 """
 
-import math
 import os
 
 # Add project root to path
 import sys
 import threading
 import time
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -217,41 +215,41 @@ class TestSafeMathArraySafety:
 
     def test_is_valid_scalar(self):
         """Test is_valid with scalar values."""
-        assert SafeMath.is_valid(1.0) == True
-        assert SafeMath.is_valid(-1.0) == True
-        assert SafeMath.is_valid(0.0) == True
-        assert SafeMath.is_valid(float("inf")) == False
-        assert SafeMath.is_valid(float("-inf")) == False
-        assert SafeMath.is_valid(float("nan")) == False
+        assert SafeMath.is_valid(1.0)
+        assert SafeMath.is_valid(-1.0)
+        assert SafeMath.is_valid(0.0)
+        assert not SafeMath.is_valid(float("inf"))
+        assert not SafeMath.is_valid(float("-inf"))
+        assert not SafeMath.is_valid(float("nan"))
 
     def test_is_valid_array(self):
         """Test is_valid with numpy arrays."""
         x = np.array([1.0, 2.0, 3.0])
-        assert SafeMath.is_valid(x) == True
+        assert SafeMath.is_valid(x)
 
         x_with_nan = np.array([1.0, np.nan, 3.0])
-        assert SafeMath.is_valid(x_with_nan) == False
+        assert not SafeMath.is_valid(x_with_nan)
 
         x_with_inf = np.array([1.0, np.inf, 3.0])
-        assert SafeMath.is_valid(x_with_inf) == False
+        assert not SafeMath.is_valid(x_with_inf)
 
     def test_is_valid_empty_array(self):
         """Test is_valid with empty array."""
         x = np.array([])
-        assert SafeMath.is_valid(x) == True
+        assert SafeMath.is_valid(x)
 
     def test_is_valid_large_array(self):
         """Test is_valid performance with large array."""
         x = np.random.randn(10000)
         result = SafeMath.is_valid(x)
-        assert result == True
+        assert result
 
     def test_is_valid_large_array_with_nan(self):
         """Test is_valid finds NaN in large array."""
         x = np.random.randn(10000)
         x[5000] = np.nan
         result = SafeMath.is_valid(x)
-        assert result == False
+        assert not result
 
 
 class TestRegimeDetectorThreadSafety:
@@ -289,7 +287,7 @@ class TestRegimeDetectorThreadSafety:
         assert len(exceptions) == 0, f"Thread safety violation: {exceptions}"
 
         # Regime should be valid
-        regime, zeta = detector.get_regime_info()["regime"], detector.current_zeta
+        regime, _zeta = detector.get_regime_info()["regime"], detector.current_zeta
         assert regime in ("TRENDING", "MEAN_REVERTING", "TRANSITIONAL")
 
 
@@ -346,7 +344,7 @@ class TestHMMRegimeNanSafety:
 
         # Add NaN (simulated via invalid price)
         # Should not crash
-        regime, zeta = detector.add_price(-1.0)  # Invalid price
+        regime, _zeta = detector.add_price(-1.0)  # Invalid price
 
         # Should return valid regime
         assert regime in ("TRENDING", "MEAN_REVERTING", "TRANSITIONAL")
@@ -358,7 +356,7 @@ class TestHMMRegimeNanSafety:
         detector = HMMRegimeDetector(window_size=50)
 
         # Add constant prices (zero variance in returns)
-        for i in range(50):
+        for _i in range(50):
             detector.add_price(100.0)  # Same price
 
         # Should not crash, should fall back gracefully

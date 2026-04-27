@@ -78,8 +78,12 @@ _STAGE_ORDER = ["UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"]
 
 
 def _tf_label(minutes: int) -> str:
-    """Human-readable timeframe label: 60→H1, 240→H4, 1440→D1, else M{n}."""
-    _MAP = {15: "M15", 30: "M30", 60: "H1", 120: "H2", 240: "H4", 480: "H8", 720: "H12", 1440: "D1", 10080: "W1"}
+    """Human-readable timeframe label: 60→H1, 1440→D1, else M{n}.
+
+    Convention: always use M{minutes} format (M240, not H4) per project
+    guidelines — never introduce H4/H8/H12 runtime paths.
+    """
+    _MAP = {15: "M15", 30: "M30", 60: "H1", 120: "H2", 1440: "D1", 10080: "W1"}
     return _MAP.get(int(minutes), f"M{minutes}")
 
 
@@ -892,7 +896,17 @@ def _run_job(
                 )
         else:
             bars = load_csv(bars_file, max_bars=max_bars, timeframe_minutes=timeframe_minutes)
-            focused_replay_windows = []
+            focused_replay_windows = (
+                _load_focused_cap_replay_windows(
+                    sources,
+                    symbol,
+                    timeframe_minutes,
+                    focused_cap_lookback_days,
+                    focused_cap_per_side,
+                )
+                if focused_cap_replay
+                else []
+            )
     except Exception as exc:
         logger.error("[WORKER] %s: failed to load bars: %s", label, exc)
         return {
@@ -1251,7 +1265,34 @@ def _job_source_files(job: Job) -> tuple[Path, ...]:
 
 
 def _combine_duplicate_jobs(candidates: list[Job]) -> Job:
+    """Merge duplicate jobs for the same (symbol, TF) into one.
+
+    - JSONL-only duplicates: combine into a single JSONL job with all sources.
+    - CSV + JSONL mix: prefer CSV (full history) but include JSONL as extra
+      source so the worker can also read the live paper cache.
+    """
     jsonl_jobs = [j for j in candidates if j.file_format == "jsonl"]
+    csv_jobs = [j for j in candidates if j.file_format == "csv"]
+
+    if jsonl_jobs and csv_jobs:
+        # Prefer CSV (full history), include JSONLs as extra source files
+        all_sources = {j.bars_file for j in jsonl_jobs}
+        all_sources.add(csv_jobs[0].bars_file)
+        source_files = tuple(
+            sorted(all_sources, key=_file_source_score, reverse=True)
+        )
+        primary = csv_jobs[0]
+        for candidate in csv_jobs[1:]:
+            if _prefer_discovered_job(candidate, primary):
+                primary = candidate
+        return Job(
+            primary.symbol,
+            primary.timeframe_minutes,
+            primary.bars_file,
+            primary.file_format,  # csv
+            source_files,
+        )
+
     if len(jsonl_jobs) > 1:
         source_files = tuple(
             sorted(
@@ -1752,10 +1793,15 @@ def _execute_pool(
                 for j in jobs
             }
 
-        # Mark submitted jobs as running
-        submitted_keys = {(j.symbol, j.timeframe_minutes) for j in jobs}
+        # Mark only the first n_workers as running; the rest stay queued.
+        # As each job finishes we promote the next queued entry below.
+        submitted_list = list(jobs)
+        running_keys = set()
+        for j in submitted_list[:n_workers]:
+            running_keys.add((j.symbol, j.timeframe_minutes))
         for entry in ot_status["results"]:
-            if (entry["symbol"], entry["timeframe_minutes"]) in submitted_keys:
+            key = (entry["symbol"], entry["timeframe_minutes"])
+            if key in running_keys:
                 entry["status"] = "running"
                 entry["candidate_id"] = candidate_id
         _write_status(ot_status)
@@ -1797,6 +1843,12 @@ def _execute_pool(
                 for entry in ot_status["results"]:
                     if entry["symbol"] == res["symbol"] and entry["timeframe_minutes"] == res["timeframe_minutes"]:
                         entry["status"] = "error" if res.get("error") else "done"
+                # Promote the first queued job to running now that a slot freed up
+                for entry in ot_status["results"]:
+                    if entry.get("status") == "queued":
+                        entry["status"] = "running"
+                        entry["candidate_id"] = candidate_id
+                        break
                         entry["candidate_id"] = res.get("candidate_id", candidate_id)
                         entry["candidate_seed"] = res.get("candidate_seed")
                         entry["z_omega"] = res.get("z_omega", 0.0)

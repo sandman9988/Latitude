@@ -20,12 +20,12 @@ class TestSaveJsonErrors:
     def test_save_returns_false_on_write_error(self, tmp_path):
         ap = AtomicPersistence(str(tmp_path))
         # Make base_dir read-only so tempfile creation fails
-        os.chmod(tmp_path, 0o444)
+        tmp_path.chmod(0o444)
         try:
             result = ap.save_json({"key": "val"}, "test.json")
             assert result is False
         finally:
-            os.chmod(tmp_path, 0o755)
+            tmp_path.chmod(0o755)
 
     def test_save_backup_failure_proceeds(self, tmp_path):
         """If _create_backup fails, save still proceeds."""

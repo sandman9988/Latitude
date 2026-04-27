@@ -41,8 +41,8 @@ print(f"   • Diversity score: {stats['diversity']}")
 
 print("\n💰 Risk Management:")
 print(f"   • Budget: ${app.risk_budget_usd:.2f}")
-print(f"   • Vol cap: {app.vol_cap*100:.1f}%")
-print(f"   • Vol reference: {app.vol_ref*100:.2f}%")
+print(f"   • Vol cap: {app.vol_cap * 100:.1f}%")
+print(f"   • Vol reference: {app.vol_ref * 100:.2f}%")
 
 print("\n" + "=" * 70)
 print("🎯 SUCCESS - BOT IS FULLY OPERATIONAL")

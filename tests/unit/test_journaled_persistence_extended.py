@@ -70,7 +70,8 @@ class TestCheckpointErrors:
 
         def patched_open(path, *args, **kwargs):
             if ".tmp" in str(path):
-                raise OSError("disk full")
+                msg = "disk full"
+                raise OSError(msg)
             return original_open(path, *args, **kwargs)
 
         with patch("builtins.open", side_effect=patched_open):

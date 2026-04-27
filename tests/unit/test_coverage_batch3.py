@@ -22,16 +22,16 @@ class TestPerformanceTrackerGaps:
     _now = dt.datetime(2025, 1, 1, 12, 0, 0)
 
     def _trade_kwargs(self, **overrides):
-        defaults = dict(
-            pnl=-10.0,
-            entry_time=self._now,
-            exit_time=self._now,
-            direction="BUY",
-            entry_price=100.0,
-            exit_price=99.0,
-            mfe=1.0,
-            mae=0.5,
-        )
+        defaults = {
+            "pnl": -10.0,
+            "entry_time": self._now,
+            "exit_time": self._now,
+            "direction": "BUY",
+            "entry_price": 100.0,
+            "exit_price": 99.0,
+            "mfe": 1.0,
+            "mae": 0.5,
+        }
         defaults.update(overrides)
         return defaults
 
@@ -65,11 +65,13 @@ class TestSafeMathExceptionPaths:
     class _Unconvertible:
         """Object that raises when numpy tries to convert to array."""
 
-        def __float__(self):
-            raise TypeError("nope")
+        def __float__(self) -> float:
+            msg = "nope"
+            raise TypeError(msg)
 
         def __iter__(self):
-            raise TypeError("nope")
+            msg = "nope"
+            raise TypeError(msg)
 
     def test_safe_mean_exception(self):
         """Lines 199-200: catch Exception → default."""
@@ -93,9 +95,7 @@ class TestSafeMathExceptionPaths:
 
     def test_running_variance_small_count(self):
         """Lines 274-276: count < MIN_SAMPLE_COUNT → return 0.0."""
-        result = SafeMath.running_variance_update(
-            old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=1
-        )
+        result = SafeMath.running_variance_update(old_variance=1.0, old_mean=5.0, new_mean=6.0, new_value=7.0, count=1)
         assert result == pytest.approx(0.0)
 
     def test_safe_array_operation_exception(self):
@@ -144,9 +144,7 @@ class TestJournaledPersistenceGaps:
         """Line 165: _should_rotate=True triggers _rotate_journal."""
         journal_path = tmp_path / "journal.log"
         j = Journal(journal_path=str(journal_path), checkpoint_interval=9999)
-        with patch.object(j, "_should_rotate", return_value=True), patch.object(
-            j, "_rotate_journal"
-        ) as mock_rotate:
+        with patch.object(j, "_should_rotate", return_value=True), patch.object(j, "_rotate_journal") as mock_rotate:
             j.log_operation("test_op", {"key": "val"})
         mock_rotate.assert_called_once()
         j.journal_file.close()

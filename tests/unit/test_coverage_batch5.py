@@ -77,7 +77,7 @@ from src.risk.risk_manager import RiskManager
 from src.risk.var_estimator import VaREstimator
 
 
-@pytest.fixture()
+@pytest.fixture
 def _rm():
     """Build a RiskManager with warm VaR estimator."""
     est = VaREstimator(window=100, confidence=0.95)
@@ -107,9 +107,7 @@ class TestRiskManagerGaps:
     def test_validate_exit_zero_volume(self, _rm):
         """Lines 477-480: volume ≤ 0 after calculation → rejected."""
         # FULL exit with current_position=0.0 but min_position_size=0.0 bypasses earlier guard
-        result = _rm.validate_exit(
-            action=1, exit_type="FULL", current_position=0.0, min_position_size=0.0
-        )
+        result = _rm.validate_exit(action=1, exit_type="FULL", current_position=0.0, min_position_size=0.0)
         assert not result.approved
         assert "zero" in result.reason.lower() or "Calculated" in result.reason
 

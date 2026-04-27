@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Paper Trading Mode Configuration
+"""Paper Trading Mode Configuration.
 ================================
 Training mode with NO GATING - pure exploration for learning.
 
@@ -28,8 +27,7 @@ LOG = logging.getLogger(__name__)
 
 
 def setup_paper_mode():
-    """
-    Configure training mode with NO GATING for pure exploration.
+    """Configure training mode with NO GATING for pure exploration.
 
     Philosophy: Let the agents explore freely. Reward shaping will
     teach what works. No hard gates - learning provides the filter.
@@ -78,8 +76,7 @@ def setup_paper_mode():
 
 
 def setup_live_mode():
-    """
-    Configure live trading mode with LEARNED GATING.
+    """Configure live trading mode with LEARNED GATING.
 
     Gates are based on what the agent learned works,
     not hard-coded thresholds. Confidence floor at 55%.

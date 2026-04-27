@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.persistence.learned_parameters import LearnedParametersManager  # noqa: E402
+from src.persistence.learned_parameters import LearnedParametersManager
 
 INSTRUMENT_KEY_PARTS = 3
 
@@ -24,7 +24,8 @@ INSTRUMENT_KEY_PARTS = 3
 def _split_instrument_key(key: str) -> tuple[str, str, str]:
     parts = str(key or "").rsplit("_", 2)
     if len(parts) != INSTRUMENT_KEY_PARTS or not all(parts):
-        raise ValueError("instrument must look like SYMBOL_M5_default")
+        msg = "instrument must look like SYMBOL_M5_default"
+        raise ValueError(msg)
     return parts[0], parts[1], parts[2]
 
 

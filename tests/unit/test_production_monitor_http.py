@@ -26,7 +26,7 @@ class TestCheckAlertsNoMetrics:
 class TestHTTPServerEndpoints:
     """Cover HTTP handler do_GET for /metrics, /health, and 404 paths."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def monitor_with_server(self):
         """Start a monitor with HTTP server on a free port."""
         # Use port 0 to let OS assign a free port
@@ -41,7 +41,7 @@ class TestHTTPServerEndpoints:
 
     def test_metrics_endpoint(self, monitor_with_server):
         """GET /metrics returns JSON with trading metrics."""
-        mon, port = monitor_with_server
+        _mon, port = monitor_with_server
         url = f"http://localhost:{port}/metrics"
         response = urllib.request.urlopen(url, timeout=2)
         assert response.status == 200
@@ -51,7 +51,7 @@ class TestHTTPServerEndpoints:
 
     def test_health_endpoint(self, monitor_with_server):
         """GET /health returns status ok with uptime."""
-        mon, port = monitor_with_server
+        _mon, port = monitor_with_server
         url = f"http://localhost:{port}/health"
         response = urllib.request.urlopen(url, timeout=2)
         assert response.status == 200
@@ -61,7 +61,7 @@ class TestHTTPServerEndpoints:
 
     def test_unknown_path_returns_404(self, monitor_with_server):
         """GET /unknown returns 404."""
-        mon, port = monitor_with_server
+        _mon, port = monitor_with_server
         url = f"http://localhost:{port}/unknown"
         with pytest.raises(urllib.error.HTTPError) as exc_info:
             urllib.request.urlopen(url, timeout=2)

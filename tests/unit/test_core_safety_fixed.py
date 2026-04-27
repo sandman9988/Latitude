@@ -315,9 +315,8 @@ def run_all_tests():
     if failed == 0:
         LOG.info("\n✅ ALL CORE SAFETY TESTS PASSED")
         return 0
-    else:
-        LOG.error(f"\n❌ {failed} TESTS FAILED")
-        return 1
+    LOG.error(f"\n❌ {failed} TESTS FAILED")
+    return 1
 
 
 if __name__ == "__main__":

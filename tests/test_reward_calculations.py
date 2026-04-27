@@ -61,9 +61,8 @@ class MockBot:
         total_reward = accuracy_reward + magnitude_bonus + false_positive_penalty
 
         # Clip to reasonable range
-        total_reward = np.clip(total_reward, -1.5, 1.5)
+        return np.clip(total_reward, -1.5, 1.5)
 
-        return total_reward
 
     def _calculate_harvester_hold_reward(
         self,
@@ -115,9 +114,8 @@ class MockBot:
         total_reward = capture_component + mfe_growth + mae_penalty + time_decay + opportunity_cost
 
         # Clip to reasonable range
-        total_reward = np.clip(total_reward, -1.0, 1.0)
+        return np.clip(total_reward, -1.0, 1.0)
 
-        return total_reward
 
 
 @pytest.fixture

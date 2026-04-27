@@ -1,5 +1,4 @@
-"""
-AMD ROCm-Specific Constants for Trading Bot Optimization
+"""AMD ROCm-Specific Constants for Trading Bot Optimization.
 ========================================================
 
 Optimized parameters for AMD Radeon RX 7600/7600 XT (gfx1102, Navi 33)
@@ -182,6 +181,7 @@ def get_optimal_batch_size(state_dim: int, window_size: int = 1) -> int:
 
     Returns:
         Optimal batch size for Navi 33 with 8GB VRAM
+
     """
     # Estimate memory per sample (conservative)
     # state + next_state + actions + rewards + dones + weights
@@ -215,6 +215,7 @@ def get_buffer_capacity_for_vram(vram_gb: float = NAVI33_VRAM_GB) -> int:
 
     Returns:
         Recommended buffer capacity
+
     """
     # Base capacity for 8GB: 50K experiences
     # Scale linearly with VRAM
@@ -229,9 +230,10 @@ def is_amd_gpu() -> bool:
 
     Returns:
         True if AMD GPU is available via ROCm
+
     """
     try:
-        import torch
+        import torch  # noqa: PLC0415
 
         if not torch.cuda.is_available():
             return False
@@ -246,6 +248,7 @@ def get_gpu_info() -> dict[str, Any]:
 
     Returns:
         Dictionary with GPU details
+
     """
     info: dict[str, Any] = {
         "available": False,
@@ -258,7 +261,7 @@ def get_gpu_info() -> dict[str, Any]:
     }
 
     try:
-        import torch
+        import torch  # noqa: PLC0415
 
         info["available"] = torch.cuda.is_available()
 
@@ -310,6 +313,7 @@ def get_amd_config() -> dict[str, Any]:
 
     Returns:
         Dictionary with all AMD-specific settings
+
     """
     return {
         "buffer_capacity": {

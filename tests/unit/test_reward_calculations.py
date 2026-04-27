@@ -59,9 +59,8 @@ def calculate_trigger_reward_prediction_accuracy(
 
     # Convert error to reward
     # error=0 → reward=1, error=0.5 → reward=0, error≥1 → reward=-1
-    reward = 1.0 - 2.0 * min(error, 1.0)
+    return 1.0 - 2.0 * min(error, 1.0)
 
-    return reward
 
 
 def calculate_trigger_reward_with_wtl_penalty(
@@ -139,9 +138,8 @@ def calculate_harvester_hold_reward_capture_based(
     # Time penalty: encourage exits (small)
     time_penalty = -0.1 * (time_held / max_hold_time)
 
-    total_reward = capture_reward + time_penalty
+    return capture_reward + time_penalty
 
-    return total_reward
 
 
 def calculate_harvester_close_reward(

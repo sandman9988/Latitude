@@ -59,10 +59,18 @@ class TestGetPaperSettings:
 
     def test_defaults_when_no_env(self):
         # Clear relevant env vars
-        for key in ["PAPER_MODE", "DISABLE_GATES", "FEAS_THRESHOLD",
-                     "EPSILON_START", "EPSILON_END", "EPSILON_DECAY",
-                     "EXPLORATION_BOOST", "MAX_BARS_INACTIVE",
-                     "MIN_TRADES_PER_DAY", "FORCE_EXPLORATION"]:
+        for key in [
+            "PAPER_MODE",
+            "DISABLE_GATES",
+            "FEAS_THRESHOLD",
+            "EPSILON_START",
+            "EPSILON_END",
+            "EPSILON_DECAY",
+            "EXPLORATION_BOOST",
+            "MAX_BARS_INACTIVE",
+            "MIN_TRADES_PER_DAY",
+            "FORCE_EXPLORATION",
+        ]:
             os.environ.pop(key, None)
 
         settings = get_paper_settings()

@@ -30,6 +30,7 @@ LOG = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_bars(n: int = 100, base_price: float = 100_000.0, step: float = 10.0) -> deque:
     """Create synthetic bars as deque of (t, o, h, l, c) tuples."""
     bars = deque(maxlen=200)
@@ -45,8 +46,8 @@ def _make_bars(n: int = 100, base_price: float = 100_000.0, step: float = 10.0) 
 # Initialization
 # ---------------------------------------------------------------------------
 
-class TestDualPolicyInit:
 
+class TestDualPolicyInit:
     def test_default_init(self):
         dp = DualPolicy(window=64)
         assert dp.current_position == 0
@@ -96,8 +97,8 @@ class TestDualPolicyInit:
 # Position lifecycle
 # ---------------------------------------------------------------------------
 
-class TestPositionLifecycle:
 
+class TestPositionLifecycle:
     def test_on_entry_long(self):
         dp = DualPolicy(window=64)
         dp.on_entry(direction=1, entry_price=50000.0, entry_time=dt.datetime.now())
@@ -154,8 +155,8 @@ class TestPositionLifecycle:
 # MFE / MAE tracking
 # ---------------------------------------------------------------------------
 
-class TestMfeMae:
 
+class TestMfeMae:
     def test_update_mfe_mae_long_profit(self):
         dp = DualPolicy(window=64)
         dp.on_entry(direction=1, entry_price=100.0, entry_time=dt.datetime.now())
@@ -196,9 +197,9 @@ class TestMfeMae:
     def test_mfe_mae_tracks_maximum(self):
         dp = DualPolicy(window=64)
         dp.on_entry(direction=1, entry_price=100.0, entry_time=dt.datetime.now())
-        dp._update_mfe_mae(110.0)  # MFE=10
-        dp._update_mfe_mae(105.0)  # MFE stays 10
-        dp._update_mfe_mae(95.0)   # MAE now 5
+        dp._update_mfe_mae(110.0)
+        dp._update_mfe_mae(105.0)
+        dp._update_mfe_mae(95.0)
         assert dp.mfe == pytest.approx(10.0)
         assert dp.mae == pytest.approx(5.0)
 
@@ -207,26 +208,24 @@ class TestMfeMae:
 # State building
 # ---------------------------------------------------------------------------
 
-class TestBuildState:
 
+class TestBuildState:
     def test_insufficient_bars_returns_zeros(self):
         dp = DualPolicy(window=64, enable_event_features=False)
-        bars = _make_bars(n=30)  # Less than MIN_BARS_FOR_FEATURES
+        bars = _make_bars(n=30)  # Keep synthetic — deliberately tests under-warmed state
         state = dp._build_state(bars, imbalance=0.0, vpin_z=0.0, depth_ratio=1.0)
         assert state.shape == (64, 7)
         assert np.allclose(state, 0.0)
 
-    def test_sufficient_bars_returns_features(self):
+    def test_sufficient_bars_returns_features(self, xauusd_m5_bars_deque):
         dp = DualPolicy(window=64, enable_event_features=False)
-        bars = _make_bars(n=100)
-        state = dp._build_state(bars, imbalance=0.1, vpin_z=0.5, depth_ratio=1.2)
+        state = dp._build_state(xauusd_m5_bars_deque, imbalance=0.1, vpin_z=0.5, depth_ratio=1.2)
         assert state.shape == (64, 7)
         # Normalized data should have roughly zero mean
         assert not np.allclose(state, 0.0)
 
-    def test_build_state_with_event_features(self):
+    def test_build_state_with_event_features(self, xauusd_m5_bars_deque):
         dp = DualPolicy(window=64, enable_event_features=True)
-        bars = _make_bars(n=100)
         event_feats = {
             "london_active": 1.0,
             "ny_active": 0.0,
@@ -235,17 +234,16 @@ class TestBuildState:
             "rollover_proximity_norm": 0.2,
             "week_progress": 0.3,
         }
-        state = dp._build_state(bars, 0.0, 0.0, 1.0, event_features=event_feats)
+        state = dp._build_state(xauusd_m5_bars_deque, 0.0, 0.0, 1.0, event_features=event_feats)
         assert state.shape == (64, 13)  # 7 base + 6 event
 
-    def test_build_state_with_event_features_none(self):
+    def test_build_state_with_event_features_none(self, xauusd_m5_bars_deque):
         """Event features enabled but no event data should use defaults."""
         dp = DualPolicy(window=64, enable_event_features=True)
-        bars = _make_bars(n=100)
-        state = dp._build_state(bars, 0.0, 0.0, 1.0, event_features=None)
+        state = dp._build_state(xauusd_m5_bars_deque, 0.0, 0.0, 1.0, event_features=None)
         assert state.shape == (64, 13)
 
-    def test_build_state_with_geometry(self):
+    def test_build_state_with_geometry(self, xauusd_m5_bars_deque):
         mock_geom = MagicMock()
         mock_geom.update.return_value = {
             "efficiency": 0.8,
@@ -255,8 +253,7 @@ class TestBuildState:
             "feasibility": 0.7,
         }
         dp = DualPolicy(window=64, path_geometry=mock_geom, enable_event_features=False)
-        bars = _make_bars(n=100)
-        state = dp._build_state(bars, 0.0, 0.0, 1.0)
+        state = dp._build_state(xauusd_m5_bars_deque, 0.0, 0.0, 1.0)
         assert state.shape == (64, 12)  # 7 base + 5 geometry
 
 
@@ -264,12 +261,11 @@ class TestBuildState:
 # Entry decision
 # ---------------------------------------------------------------------------
 
-class TestDecideEntry:
 
-    def test_decide_entry_returns_tuple_of_three(self):
+class TestDecideEntry:
+    def test_decide_entry_returns_tuple_of_three(self, xauusd_m5_bars_deque):
         dp = DualPolicy(window=64, enable_event_features=False)
-        bars = _make_bars(n=100)
-        result = dp.decide_entry(bars, imbalance=0.0)
+        result = dp.decide_entry(xauusd_m5_bars_deque, imbalance=0.0)
         assert len(result) == 3
         action, conf, runway = result
         assert action in [0, 1, 2]
@@ -278,9 +274,8 @@ class TestDecideEntry:
 
     def test_decide_entry_with_few_bars(self):
         dp = DualPolicy(window=64, enable_event_features=False)
-        bars = _make_bars(n=10)
-        action, conf, runway = dp.decide_entry(bars, imbalance=0.0)
-        # Should still return valid results (zeros state → likely NO_ENTRY)
+        bars = _make_bars(n=10)  # Keep synthetic — deliberately tests under-warmed state
+        action, _conf, _runway = dp.decide_entry(bars, imbalance=0.0)
         assert action in [0, 1, 2]
 
 
@@ -288,32 +283,29 @@ class TestDecideEntry:
 # Exit decision
 # ---------------------------------------------------------------------------
 
-class TestDecideExit:
 
-    def test_decide_exit_returns_tuple_of_two(self):
+class TestDecideExit:
+    def test_decide_exit_returns_tuple_of_two(self, xauusd_m5_bars_deque):
         dp = DualPolicy(window=64, enable_event_features=False)
         dp.on_entry(direction=1, entry_price=100000.0, entry_time=dt.datetime.now())
-        bars = _make_bars(n=100)
-        result = dp.decide_exit(bars, current_price=100050.0, imbalance=0.0)
+        result = dp.decide_exit(xauusd_m5_bars_deque, current_price=100050.0, imbalance=0.0)
         assert len(result) == 2
         action, conf = result
         assert action in [0, 1]
         assert 0.0 <= conf <= 1.0
 
-    def test_decide_exit_increments_ticks_held(self):
+    def test_decide_exit_increments_ticks_held(self, xauusd_m5_bars_deque):
         dp = DualPolicy(window=64, enable_event_features=False)
         dp.on_entry(direction=1, entry_price=100000.0, entry_time=dt.datetime.now())
-        bars = _make_bars(n=100)
-        dp.decide_exit(bars, current_price=100050.0, imbalance=0.0)
+        dp.decide_exit(xauusd_m5_bars_deque, current_price=100050.0, imbalance=0.0)
         assert dp.ticks_held == 1
-        dp.decide_exit(bars, current_price=100060.0, imbalance=0.0)
+        dp.decide_exit(xauusd_m5_bars_deque, current_price=100060.0, imbalance=0.0)
         assert dp.ticks_held == 2
 
-    def test_decide_exit_updates_mfe(self):
+    def test_decide_exit_updates_mfe(self, xauusd_m5_bars_deque):
         dp = DualPolicy(window=64, enable_event_features=False)
         dp.on_entry(direction=1, entry_price=100000.0, entry_time=dt.datetime.now())
-        bars = _make_bars(n=100)
-        dp.decide_exit(bars, current_price=100200.0, imbalance=0.0)
+        dp.decide_exit(xauusd_m5_bars_deque, current_price=100200.0, imbalance=0.0)
         assert dp.mfe == pytest.approx(200.0)
 
 
@@ -321,8 +313,8 @@ class TestDecideExit:
 # Regime detection
 # ---------------------------------------------------------------------------
 
-class TestRegimeDetection:
 
+class TestRegimeDetection:
     def test_ingest_price_no_regime_detector(self):
         dp = DualPolicy(window=64, enable_regime_detection=False)
         # Should not crash
@@ -346,8 +338,8 @@ class TestRegimeDetection:
 # Online learning
 # ---------------------------------------------------------------------------
 
-class TestOnlineLearning:
 
+class TestOnlineLearning:
     def test_add_trigger_experience_training_disabled(self):
         dp = DualPolicy(window=64, enable_training=False)
         state = np.zeros((64, 7), dtype=np.float32)

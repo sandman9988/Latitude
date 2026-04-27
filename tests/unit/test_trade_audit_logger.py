@@ -12,6 +12,7 @@ from src.monitoring.trade_audit_logger import TradeAuditLogger
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _read_entries(log_file: Path):
     with open(log_file) as f:
         return [json.loads(line) for line in f]
@@ -21,8 +22,9 @@ def _read_entries(log_file: Path):
 # TradeAuditLogger
 # ---------------------------------------------------------------------------
 
+
 class TestTradeAuditLogger:
-    @pytest.fixture()
+    @pytest.fixture
     def audit(self, tmp_path):
         return TradeAuditLogger(log_dir=str(tmp_path), filename="audit.jsonl")
 

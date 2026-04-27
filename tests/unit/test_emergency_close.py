@@ -9,6 +9,7 @@ from src.risk.emergency_close import EmergencyPositionCloser, create_emergency_c
 # helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_trade_integration(
     *,
     position_tickets=None,
@@ -46,6 +47,7 @@ def _make_trade_integration(
 # init
 # ---------------------------------------------------------------------------
 
+
 class TestEmergencyPositionCloserInit:
     def test_init_stores_attrs(self):
         ti = _make_trade_integration()
@@ -57,6 +59,7 @@ class TestEmergencyPositionCloserInit:
 # ---------------------------------------------------------------------------
 # close_all_positions – hedging mode (position_tickets)
 # ---------------------------------------------------------------------------
+
 
 class TestCloseByTickets:
     def test_close_via_tickets_all_succeed(self):
@@ -90,6 +93,7 @@ class TestCloseByTickets:
 # close_all_positions – mfe_mae_trackers fallback
 # ---------------------------------------------------------------------------
 
+
 class TestCloseByTrackers:
     def test_close_via_trackers(self):
         ti = _make_trade_integration(mfe_mae_trackers={"POS_1": MagicMock()})
@@ -104,6 +108,7 @@ class TestCloseByTrackers:
 # ---------------------------------------------------------------------------
 # close_all_positions – netting mode fallback
 # ---------------------------------------------------------------------------
+
 
 class TestCloseNetPosition:
     def test_close_net_position_nonzero(self):
@@ -140,6 +145,7 @@ class TestCloseNetPosition:
 # verify_all_closed
 # ---------------------------------------------------------------------------
 
+
 class TestVerifyAllClosed:
     def test_all_clear(self):
         ti = _make_trade_integration()
@@ -175,6 +181,7 @@ class TestVerifyAllClosed:
 # ---------------------------------------------------------------------------
 # factory
 # ---------------------------------------------------------------------------
+
 
 class TestFactory:
     def test_create_emergency_closer(self):

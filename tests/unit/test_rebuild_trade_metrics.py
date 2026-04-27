@@ -39,7 +39,12 @@ def test_build_performance_snapshot_can_rebuild_one_bot_scope():
     now = datetime(2026, 4, 23, 12, 0, tzinfo=UTC)
     trades = [
         {**_trade(now - timedelta(hours=1), 10.0), "symbol": "XAUUSD", "timeframe_minutes": 5, "trading_mode": "paper"},
-        {**_trade(now - timedelta(hours=1), 99.0), "symbol": "XAUUSD", "timeframe_minutes": 15, "trading_mode": "paper"},
+        {
+            **_trade(now - timedelta(hours=1), 99.0),
+            "symbol": "XAUUSD",
+            "timeframe_minutes": 15,
+            "trading_mode": "paper",
+        },
         {**_trade(now - timedelta(hours=1), 88.0), "symbol": "EURUSD", "timeframe_minutes": 5, "trading_mode": "paper"},
         {**_trade(now - timedelta(hours=1), 77.0), "symbol": "XAUUSD", "timeframe_minutes": 5, "trading_mode": "live"},
     ]

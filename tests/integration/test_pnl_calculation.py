@@ -25,9 +25,7 @@ class TestPnLCalculation(unittest.TestCase):
 
         # Use SimpleNamespace so Python's descriptor protocol binds correctly
         self.bot = SimpleNamespace(qty=0.1, contract_size=100.0)
-        self.bot._calculate_position_pnl = (
-            CTraderFixApp._calculate_position_pnl.__get__(self.bot)
-        )
+        self.bot._calculate_position_pnl = CTraderFixApp._calculate_position_pnl.__get__(self.bot)
 
     def test_long_profit(self):
         """LONG position with profit calculates correct P&L."""
@@ -37,7 +35,7 @@ class TestPnLCalculation(unittest.TestCase):
             direction="LONG",
         )
         # (4879.75 - 4878.96) * 1 * 0.1 * 100.0 = 7.9
-        self.assertAlmostEqual(pnl, 7.9, places=2)
+        assert abs(pnl - 7.9) < 0.005
 
     def test_long_loss(self):
         """LONG position with loss calculates correct P&L."""
@@ -47,7 +45,7 @@ class TestPnLCalculation(unittest.TestCase):
             direction="LONG",
         )
         # (4881.04 - 4881.18) * 1 * 0.1 * 100.0 = -1.4
-        self.assertAlmostEqual(pnl, -1.4, places=2)
+        assert abs(pnl - (-1.4)) < 0.005
 
     def test_short_profit(self):
         """SHORT position with profit calculates correct P&L."""
@@ -57,7 +55,7 @@ class TestPnLCalculation(unittest.TestCase):
             direction="SHORT",
         )
         # (4879.75 - 4880.50) * -1 * 0.1 * 100.0 = 7.5
-        self.assertAlmostEqual(pnl, 7.5, places=2)
+        assert abs(pnl - 7.5) < 0.005
 
     def test_short_loss(self):
         """SHORT position with loss calculates correct P&L."""
@@ -67,7 +65,7 @@ class TestPnLCalculation(unittest.TestCase):
             direction="SHORT",
         )
         # (4880.50 - 4879.75) * -1 * 0.1 * 100.0 = -7.5
-        self.assertAlmostEqual(pnl, -7.5, places=2)
+        assert abs(pnl - (-7.5)) < 0.005
 
     def test_custom_quantity(self):
         """Test with custom quantity."""
@@ -78,7 +76,7 @@ class TestPnLCalculation(unittest.TestCase):
             quantity=0.5,  # Override default 0.1
         )
         # (4879.00 - 4878.00) * 1 * 0.5 * 100.0 = 50.0
-        self.assertAlmostEqual(pnl, 50.0, places=2)
+        assert abs(pnl - 50.0) < 0.005
 
     def test_custom_contract_size(self):
         """Test with custom contract size."""
@@ -89,7 +87,7 @@ class TestPnLCalculation(unittest.TestCase):
             contract_size=1000.0,  # Override default 100.0
         )
         # (4879.00 - 4878.00) * 1 * 0.1 * 1000.0 = 100.0
-        self.assertAlmostEqual(pnl, 100.0, places=2)
+        assert abs(pnl - 100.0) < 0.005
 
     def test_zero_pnl_no_price_movement(self):
         """No price movement results in zero P&L."""
@@ -98,7 +96,7 @@ class TestPnLCalculation(unittest.TestCase):
             exit_price=4878.96,
             direction="LONG",
         )
-        self.assertAlmostEqual(pnl, 0.0, places=2)
+        assert abs(pnl - 0.0) < 0.005
 
 
 class TestTradeCompletionProcess(unittest.TestCase):
@@ -115,7 +113,7 @@ class TestTradeCompletionProcess(unittest.TestCase):
         """Clean up temp directory."""
         import shutil
 
-        if os.path.exists(self.temp_dir):
+        if Path(self.temp_dir).exists():
             shutil.rmtree(self.temp_dir)
 
     @patch("src.core.ctrader_ddqn_paper.Path")

@@ -1,5 +1,4 @@
-"""
-Reward Integrity Monitor - Anti-Gaming Detection
+"""Reward Integrity Monitor - Anti-Gaming Detection.
 
 GAP 4 FIX: Monitors correlation between rewards and actual P&L to detect reward hacking.
 
@@ -41,9 +40,9 @@ LOG = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Module-level constants (replaces magic literals in comparisons)
 # ---------------------------------------------------------------------------
-_MIN_TRADES_FOR_INTEGRITY: int = 10          # minimum history before outlier detection
-_REWARD_FLOOR: float = 1e-6                  # zero-guard for PnL / std / component totals
-_COMPONENT_DOMINANCE_PCT: float = 80.0       # % threshold for "dominated" component warning
+_MIN_TRADES_FOR_INTEGRITY: int = 10  # minimum history before outlier detection
+_REWARD_FLOOR: float = 1e-6  # zero-guard for PnL / std / component totals
+_COMPONENT_DOMINANCE_PCT: float = 80.0  # % threshold for "dominated" component warning
 
 
 @dataclass
@@ -58,8 +57,7 @@ class RewardPnLPair:
 
 
 class RewardIntegrityMonitor:
-    """
-    Monitors correlation between rewards and actual P&L.
+    """Monitors correlation between rewards and actual P&L.
 
     Detects:
     - Reward-P&L decorrelation (agent gaming rewards)
@@ -74,15 +72,15 @@ class RewardIntegrityMonitor:
         min_samples: int = 50,
         max_history: int = 1000,
         outlier_std_threshold: float = 3.0,
-    ):
-        """
-        Initialize reward integrity monitor.
+    ) -> None:
+        """Initialize reward integrity monitor.
 
         Args:
             correlation_threshold: Minimum acceptable correlation (0-1)
             min_samples: Minimum trades before checking correlation
             max_history: Maximum trades to keep in history
             outlier_std_threshold: Standard deviations for outlier detection
+
         """
         self.correlation_threshold = correlation_threshold
         self.min_samples = min_samples
@@ -116,15 +114,15 @@ class RewardIntegrityMonitor:
         pnl: float,
         reward_components: dict | None = None,
         trade_id: int | None = None,
-    ):
-        """
-        Record reward and actual P&L for correlation analysis.
+    ) -> None:
+        """Record reward and actual P&L for correlation analysis.
 
         Args:
             reward: Total reward given to agent
             pnl: Actual P&L from trade
             reward_components: Breakdown of reward (e.g., capture, WTL, etc.)
             trade_id: Optional trade identifier
+
         """
         # Validate inputs
         if not np.isfinite(reward):
@@ -160,8 +158,7 @@ class RewardIntegrityMonitor:
         self._check_sign_mismatch(reward, pnl, trade_id)
 
     def check_integrity(self) -> dict:
-        """
-        Check reward integrity.
+        """Check reward integrity.
 
         Returns:
             Dictionary with:
@@ -171,6 +168,7 @@ class RewardIntegrityMonitor:
             - outliers: List of trade IDs with abnormal reward/P&L ratios
             - component_balance: Analysis of reward component contributions
             - sign_mismatches: Count of reward-P&L sign mismatches
+
         """
         if len(self.rewards) < self.min_samples:
             return {
@@ -205,7 +203,9 @@ class RewardIntegrityMonitor:
         component_balance = self._analyze_component_balance()
 
         # Count sign mismatches
-        sign_mismatches = sum(1 for r, p in zip(self.rewards, self.pnls, strict=False) if (r > 0 and p < 0) or (r < 0 and p > 0))
+        sign_mismatches = sum(
+            1 for r, p in zip(self.rewards, self.pnls, strict=False) if (r > 0 and p < 0) or (r < 0 and p > 0)
+        )
 
         # Determine status
         is_gaming = correlation < self.correlation_threshold
@@ -250,7 +250,7 @@ class RewardIntegrityMonitor:
         self.last_check_result = result
         return result
 
-    def _check_sign_mismatch(self, reward: float, pnl: float, trade_id: int | None):
+    def _check_sign_mismatch(self, reward: float, pnl: float, trade_id: int | None) -> None:
         """Check for reward-P&L sign mismatch (immediate red flag)."""
         if (reward > 0 and pnl < 0) or (reward < 0 and pnl > 0):
             LOG.warning(
@@ -261,11 +261,11 @@ class RewardIntegrityMonitor:
             )
 
     def _detect_outliers(self) -> list[int]:
-        """
-        Detect trades with abnormal reward/P&L ratios.
+        """Detect trades with abnormal reward/P&L ratios.
 
         Returns:
             List of trade IDs that are outliers
+
         """
         if len(self.history) < _MIN_TRADES_FOR_INTEGRITY:
             return []
@@ -298,11 +298,11 @@ class RewardIntegrityMonitor:
         return outliers
 
     def _analyze_component_balance(self) -> dict:
-        """
-        Analyze reward component contributions.
+        """Analyze reward component contributions.
 
         Returns:
             Dictionary with component analysis
+
         """
         if not self.component_sums:
             return {"status": "no_components"}
@@ -350,7 +350,7 @@ class RewardIntegrityMonitor:
             "gaming_alerts": len(self.gaming_alerts),
         }
 
-    def reset(self):
+    def reset(self) -> None:
         """Reset monitor (e.g., after major parameter changes)."""
         self.history.clear()
         self.rewards.clear()

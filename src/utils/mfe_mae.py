@@ -1,5 +1,4 @@
-"""
-Unified MFE / MAE calculator — single source of truth.
+"""Unified MFE / MAE calculator — single source of truth.
 
 Used by:
 - MFEMAETracker (live tick-level tracking in ctrader_ddqn_paper.py)
@@ -26,16 +25,17 @@ class MFEMAECalculator:
         best_profit: Same as mfe (kept for backward-compat)
         worst_loss: Signed worst loss (≤ 0, absolute price units)
         winner_to_loser: True when trade was profitable but current PnL < 0
+
     """
 
     __slots__ = (
-        "entry_price",
-        "direction",
-        "mfe",
-        "mae",
         "best_profit",
-        "worst_loss",
+        "direction",
+        "entry_price",
+        "mae",
+        "mfe",
         "winner_to_loser",
+        "worst_loss",
     )
 
     def __init__(self) -> None:
@@ -49,19 +49,17 @@ class MFEMAECalculator:
         Args:
             entry_price: Trade entry price.
             direction: 1 for LONG, -1 for SHORT.
+
         """
         try:
             if entry_price is None or entry_price <= 0:
-                LOG.error("[MFE_MAE] Invalid entry_price=%.5f — cannot track",
-                          entry_price or 0)
+                LOG.error("[MFE_MAE] Invalid entry_price=%.5f — cannot track", entry_price or 0)
                 return
         except TypeError:
-            LOG.error("[MFE_MAE] Non-numeric entry_price=%r — cannot track",
-                      entry_price)
+            LOG.error("[MFE_MAE] Non-numeric entry_price=%r — cannot track", entry_price)
             return
         if direction not in (1, -1):
-            LOG.warning("[MFE_MAE] Invalid direction=%d — defaulting to LONG",
-                        direction)
+            LOG.warning("[MFE_MAE] Invalid direction=%d — defaulting to LONG", direction)
             direction = 1
 
         self.entry_price = float(entry_price)
@@ -89,6 +87,7 @@ class MFEMAECalculator:
 
         Args:
             current_price: Current market price.
+
         """
         if self.entry_price is None or self.entry_price <= 0:
             return

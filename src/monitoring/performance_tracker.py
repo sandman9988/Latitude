@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Performance Tracker - Real-time trading performance metrics
+"""Performance Tracker - Real-time trading performance metrics
 Tracks Sharpe ratio, win rate, drawdown, and other key statistics.
 """
 
@@ -20,9 +19,7 @@ class AgentAttribution:
     - Bar-offset ints clamped to >= -1
     """
 
-    _VALID_TRIGGER: ClassVar[frozenset] = frozenset(
-        {"EXCELLENT", "GOOD", "OVERPREDICTED", "UNDERPREDICTED", "N/A"}
-    )
+    _VALID_TRIGGER: ClassVar[frozenset] = frozenset({"EXCELLENT", "GOOD", "OVERPREDICTED", "UNDERPREDICTED", "N/A"})
     _VALID_HARVESTER: ClassVar[frozenset] = frozenset(
         {"EXCELLENT", "GOOD", "FAIR", "POOR", "POOR_WTL", "STOPPED_OUT", "N/A"}
     )
@@ -73,7 +70,7 @@ class PerformanceTracker:
     # Minimum trades required for statistical metrics
     MIN_TRADES_FOR_METRICS: int = 2
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.trades: list[dict] = []
         self.equity_curve: list[tuple] = []  # (timestamp, equity)
         self.initial_equity = 10000.0  # Starting capital
@@ -86,7 +83,7 @@ class PerformanceTracker:
         self.total_pnl = 0.0
         self.total_winner_pnl = 0.0
         self.total_loser_pnl = 0.0
-        self.best_trade: float = 0.0   # most profitable single trade
+        self.best_trade: float = 0.0  # most profitable single trade
         self.worst_trade: float = 0.0  # least profitable single trade
 
         # Drawdown tracking
@@ -100,7 +97,7 @@ class PerformanceTracker:
         self.max_consecutive_wins = 0
         self.max_consecutive_losses = 0
 
-    def add_trade(  # noqa: PLR0913
+    def add_trade(
         self,
         pnl: float,
         entry_time: dt.datetime,
@@ -112,7 +109,7 @@ class PerformanceTracker:
         mae: float = 0.0,
         winner_to_loser: bool = False,
         attribution: AgentAttribution | None = None,
-    ):
+    ) -> None:
         """Record a completed trade.
 
         Phase 3.3: Pass an ``AgentAttribution`` instance for dual-agent metrics.
@@ -208,7 +205,6 @@ class PerformanceTracker:
 
     def get_metrics(self) -> dict:
         """Calculate and return current performance metrics."""
-
         if self.total_trades == 0:
             return self._empty_metrics()
 
@@ -288,8 +284,7 @@ class PerformanceTracker:
         std_dev = math.sqrt(variance) if variance > 0 else 0.0
 
         # Sharpe ratio (annualized factor not applied - depends on timeframe)
-        sharpe = (mean_return - risk_free_rate) / std_dev if std_dev > 0 else 0.0
-        return sharpe
+        return (mean_return - risk_free_rate) / std_dev if std_dev > 0 else 0.0
 
     def _calculate_sortino(self, risk_free_rate: float = 0.0, target_return: float = 0.0) -> float:
         """Calculate Sortino ratio (downside deviation only)."""
@@ -313,8 +308,7 @@ class PerformanceTracker:
         downside_std = math.sqrt(downside_variance) if downside_variance > 0 else 0.0
 
         # Sortino ratio
-        sortino = (mean_return - risk_free_rate) / downside_std if downside_std > 0 else 0.0
-        return sortino
+        return (mean_return - risk_free_rate) / downside_std if downside_std > 0 else 0.0
 
     def _calculate_omega(self, threshold: float = 0.0) -> float:
         """Calculate Omega ratio (probability weighted ratio of gains vs losses)."""
@@ -336,8 +330,7 @@ class PerformanceTracker:
         losses = sum(max(0, threshold - r) for r in returns)
 
         # Omega ratio
-        omega = gains / losses if losses > 0 else float("inf")
-        return omega
+        return gains / losses if losses > 0 else float("inf")
 
     def _empty_metrics(self) -> dict:
         """Return empty metrics structure."""
@@ -370,40 +363,39 @@ class PerformanceTracker:
         """Generate formatted dashboard string."""
         metrics = self.get_metrics()
 
-        dashboard = f"""
+        return f"""
 ╔══════════════════════════════════════════════════════════════════╗
 ║                    PERFORMANCE DASHBOARD                         ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 📊 TRADING STATISTICS
-   Total Trades:        {metrics['total_trades']:>6}
-   Winners:             {metrics['winning_trades']:>6} ({metrics['win_rate']*100:>5.1f}%)
-   Losers:              {metrics['losing_trades']:>6}
+   Total Trades:        {metrics["total_trades"]:>6}
+   Winners:             {metrics["winning_trades"]:>6} ({metrics["win_rate"] * 100:>5.1f}%)
+   Losers:              {metrics["losing_trades"]:>6}
 
 💰 P&L METRICS
-   Total PnL:           ${metrics['total_pnl']:>10.2f}
-   Avg Winner:          ${metrics['avg_winner']:>10.2f}
-   Avg Loser:           ${metrics['avg_loser']:>10.2f}
-   Profit Factor:       {metrics['profit_factor']:>10.2f}
-   Expectancy:          ${metrics['expectancy']:>10.2f}
+   Total PnL:           ${metrics["total_pnl"]:>10.2f}
+   Avg Winner:          ${metrics["avg_winner"]:>10.2f}
+   Avg Loser:           ${metrics["avg_loser"]:>10.2f}
+   Profit Factor:       {metrics["profit_factor"]:>10.2f}
+   Expectancy:          ${metrics["expectancy"]:>10.2f}
 
 📈 EQUITY
-   Initial:             ${metrics['initial_equity']:>10.2f}
-   Current:             ${metrics['current_equity']:>10.2f}
-   Return:              {metrics['total_return']*100:>9.2f}%
+   Initial:             ${metrics["initial_equity"]:>10.2f}
+   Current:             ${metrics["current_equity"]:>10.2f}
+   Return:              {metrics["total_return"] * 100:>9.2f}%
 
 📉 RISK METRICS
-   Max Drawdown:        {metrics['max_drawdown']*100:>9.2f}%
-   Current Drawdown:    {metrics['current_drawdown']*100:>9.2f}%
-   Sharpe Ratio:        {metrics['sharpe_ratio']:>10.3f}
+   Max Drawdown:        {metrics["max_drawdown"] * 100:>9.2f}%
+   Current Drawdown:    {metrics["current_drawdown"] * 100:>9.2f}%
+   Sharpe Ratio:        {metrics["sharpe_ratio"]:>10.3f}
 
 🔥 STREAKS
-   Max Consecutive Wins:   {metrics['max_consecutive_wins']:>3}
-   Max Consecutive Losses: {metrics['max_consecutive_losses']:>3}
-   Winner-to-Loser Count:  {metrics['winner_to_loser_count']:>3}
+   Max Consecutive Wins:   {metrics["max_consecutive_wins"]:>3}
+   Max Consecutive Losses: {metrics["max_consecutive_losses"]:>3}
+   Winner-to-Loser Count:  {metrics["winner_to_loser_count"]:>3}
 
 """
-        return dashboard
 
     def get_trade_history(self) -> list[dict]:
         """Return complete trade history."""

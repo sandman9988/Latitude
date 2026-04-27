@@ -1,6 +1,5 @@
-"""
-Circuit Breakers - Safety Shutdown System
-Handbook Section 12.2 - Circuit Breakers
+"""Circuit Breakers - Safety Shutdown System
+Handbook Section 12.2 - Circuit Breakers.
 
 Implements multiple circuit breakers to halt trading when risk escalates:
 - Sortino ratio degradation
@@ -66,7 +65,7 @@ MANAGER_DEFAULT_MAX_LOSSES: int = CONSEC_LOSSES_DEFAULT_MAX
 
 @dataclass
 class BreakerState:
-    """State of a circuit breaker"""
+    """State of a circuit breaker."""
 
     name: str
     is_tripped: bool = False
@@ -76,8 +75,8 @@ class BreakerState:
     threshold: float = 0.0
     cooldown_minutes: int = DEFAULT_BREAKER_COOLDOWN_MINUTES
 
-    def trip(self, reason: str, value: float, threshold: float):
-        """Trip the breaker"""
+    def trip(self, reason: str, value: float, threshold: float) -> None:
+        """Trip the breaker."""
         self.is_tripped = True
         self.trip_time = datetime.now(UTC)
         self.trip_reason = reason
@@ -87,8 +86,8 @@ class BreakerState:
         LOG.warning("[CIRCUIT_BREAKER]    Reason: %s", reason)
         LOG.warning("[CIRCUIT_BREAKER]    Value: %.4f | Threshold: %.4f", value, threshold)
 
-    def reset(self):
-        """Reset the breaker"""
+    def reset(self) -> None:
+        """Reset the breaker."""
         if self.is_tripped:
             LOG.info("[CIRCUIT_BREAKER] ✓ Reset: %s", self.name)
         self.is_tripped = False
@@ -97,7 +96,7 @@ class BreakerState:
         self.trip_value = 0.0
 
     def can_reset(self) -> bool:
-        """Check if breaker can be reset (cooldown elapsed)"""
+        """Check if breaker can be reset (cooldown elapsed)."""
         if not self.is_tripped or self.trip_time is None:
             return True
 
@@ -116,35 +115,34 @@ class ManagedBreaker(Protocol):
 
 
 class SortinoBreaker:
-    """
-    Sortino Ratio Circuit Breaker
+    """Sortino Ratio Circuit Breaker.
 
     Handbook: "If risk-adjusted returns drop too low, stop trading"
     Sortino focuses on downside deviation (better than Sharpe for asymmetric returns)
     """
 
-    def __init__(self, threshold: float = SORTINO_THRESHOLD_DEFAULT, min_trades: int = SORTINO_MIN_TRADES):
-        """
-        Args:
-            threshold: Minimum acceptable Sortino ratio
-            min_trades: Minimum trades before breaker activates
+    def __init__(self, threshold: float = SORTINO_THRESHOLD_DEFAULT, min_trades: int = SORTINO_MIN_TRADES) -> None:
+        """Args:
+        threshold: Minimum acceptable Sortino ratio
+        min_trades: Minimum trades before breaker activates.
+
         """
         self.threshold = threshold
         self.min_trades = min_trades
         self.returns: deque[float] = deque(maxlen=SORTINO_HISTORY_LIMIT)
         self.state = BreakerState(name="Sortino", threshold=threshold, cooldown_minutes=120)  # 2 hour cooldown
 
-    def update(self, trade_return: float):
-        """Add a trade return"""
+    def update(self, trade_return: float) -> None:
+        """Add a trade return."""
         self.returns.append(trade_return)
         # deque(maxlen=...) handles eviction automatically
 
     def check(self) -> bool:
-        """
-        Check if breaker should trip
+        """Check if breaker should trip.
 
         Returns:
             True if tripped
+
         """
         if len(self.returns) < self.min_trades:
             return False
@@ -192,13 +190,12 @@ class SortinoBreaker:
         return min(sortino, 100.0)
 
     def get_current_sortino(self) -> float:
-        """Get current Sortino ratio"""
+        """Get current Sortino ratio."""
         return self._calculate_sortino()
 
 
 class KurtosisBreaker:
-    """
-    Kurtosis Circuit Breaker
+    """Kurtosis Circuit Breaker.
 
     Handbook: "If return distribution becomes too fat-tailed, reduce exposure"
     High kurtosis = extreme moves more likely = danger
@@ -213,22 +210,22 @@ class KurtosisBreaker:
         adapt_min_readings: int = KURTOSIS_ADAPT_MIN_READINGS,
         adapt_bounds: tuple[float, float] = (KURTOSIS_ADAPT_MIN_BOUND, KURTOSIS_ADAPT_MAX_BOUND),
         adapt_ema_alpha: float = KURTOSIS_ADAPT_EMA_ALPHA,
-    ):
-        """
-        Args:
-            threshold: Maximum acceptable kurtosis (normal distribution = 3)
-            min_samples: Minimum trade-return samples before breaker activates
-            adaptive: When True, the active trip threshold is learned from the
-                `adapt_quantile` (default 0.90) of this breaker's own kurtosis
-                readings. The seed ``threshold`` is used as a cold-start fallback
-                and EMA-smoothed toward the learned quantile.
-            adapt_quantile: Quantile of the kurtosis-reading distribution that
-                defines the trip threshold (0.90 = top-decile tail).
-            adapt_min_readings: Number of kurtosis readings required before the
-                learned threshold replaces the cold-start default.
-            adapt_bounds: (min, max) soft clamp for the learned threshold.
-            adapt_ema_alpha: Smoothing factor applied when updating the active
-                threshold toward the quantile target. Small alpha → less twitchy.
+    ) -> None:
+        """Args:
+        threshold: Maximum acceptable kurtosis (normal distribution = 3)
+        min_samples: Minimum trade-return samples before breaker activates
+        adaptive: When True, the active trip threshold is learned from the
+            `adapt_quantile` (default 0.90) of this breaker's own kurtosis
+            readings. The seed ``threshold`` is used as a cold-start fallback
+            and EMA-smoothed toward the learned quantile.
+        adapt_quantile: Quantile of the kurtosis-reading distribution that
+            defines the trip threshold (0.90 = top-decile tail).
+        adapt_min_readings: Number of kurtosis readings required before the
+            learned threshold replaces the cold-start default.
+        adapt_bounds: (min, max) soft clamp for the learned threshold.
+        adapt_ema_alpha: Smoothing factor applied when updating the active
+            threshold toward the quantile target. Small alpha → less twitchy.
+
         """
         self.threshold = threshold
         self._seed_threshold = threshold
@@ -246,8 +243,8 @@ class KurtosisBreaker:
         self._adapt_ema_alpha: float = float(adapt_ema_alpha)
         self._kurtosis_readings: deque[float] = deque(maxlen=KURTOSIS_ADAPT_READING_LIMIT)
 
-    def update(self, trade_return: float):
-        """Add a trade return"""
+    def update(self, trade_return: float) -> None:
+        """Add a trade return."""
         self.returns.append(trade_return)
         # deque(maxlen=...) handles eviction automatically
 
@@ -272,7 +269,7 @@ class KurtosisBreaker:
         self.threshold = (1.0 - self._adapt_ema_alpha) * self.threshold + self._adapt_ema_alpha * target
 
     def check(self) -> bool:
-        """Check if breaker should trip"""
+        """Check if breaker should trip."""
         if len(self.returns) < self.min_samples:
             return False
 
@@ -335,22 +332,21 @@ class KurtosisBreaker:
         return float(excess_kurtosis + 3.0)  # Return total kurtosis (normal = 3)
 
     def get_current_kurtosis(self) -> float:
-        """Get current kurtosis"""
+        """Get current kurtosis."""
         return self._calculate_kurtosis()
 
 
 class DrawdownBreaker:
-    """
-    Drawdown Circuit Breaker
+    """Drawdown Circuit Breaker.
 
     Handbook: "Progressive size reduction as drawdown increases"
     """
 
-    def __init__(self, thresholds: dict[float, float] | None = None):
-        """
-        Args:
-            thresholds: {drawdown_pct: size_multiplier}
-                       e.g., {0.05: 0.9, 0.10: 0.75, 0.15: 0.5, 0.20: 0.0}
+    def __init__(self, thresholds: dict[float, float] | None = None) -> None:
+        """Args:
+        thresholds: {drawdown_pct: size_multiplier}
+                   e.g., {0.05: 0.9, 0.10: 0.75, 0.15: 0.5, 0.20: 0.0}.
+
         """
         if thresholds is None:
             thresholds = DRAWDOWN_DEFAULT_THRESHOLDS
@@ -371,6 +367,7 @@ class DrawdownBreaker:
 
         Returns:
             True if update successful, False if validation failed
+
         """
         # Validate input value (type is already enforced by signature)
         if not math.isfinite(float(equity)):
@@ -392,8 +389,7 @@ class DrawdownBreaker:
             return True
 
         # Track peak
-        if equity_f > self.peak_equity:
-            self.peak_equity = equity_f
+        self.peak_equity = max(self.peak_equity, equity_f)
 
         # Calculate drawdown
         drawdown_numerator = self.peak_equity - equity_f
@@ -407,7 +403,7 @@ class DrawdownBreaker:
         return True
 
     def check(self) -> bool:
-        """Check if breaker should trip"""
+        """Check if breaker should trip."""
         # Update size multiplier based on drawdown
         self.size_multiplier = 1.0
 
@@ -427,25 +423,24 @@ class DrawdownBreaker:
         return False
 
     def get_size_multiplier(self) -> float:
-        """Get current position size multiplier"""
+        """Get current position size multiplier."""
         return self.size_multiplier
 
     def get_drawdown(self) -> float:
-        """Get current drawdown percentage"""
+        """Get current drawdown percentage."""
         return self.current_drawdown
 
 
 class ConsecutiveLossesBreaker:
-    """
-    Consecutive Losses Circuit Breaker
+    """Consecutive Losses Circuit Breaker.
 
     Breaks the "revenge trading" cycle
     """
 
-    def __init__(self, max_losses: int = CONSEC_LOSSES_DEFAULT_MAX):
-        """
-        Args:
-            max_losses: Maximum consecutive losses before halt
+    def __init__(self, max_losses: int = CONSEC_LOSSES_DEFAULT_MAX) -> None:
+        """Args:
+        max_losses: Maximum consecutive losses before halt.
+
         """
         self.max_losses = max_losses
         self.consecutive_losses = 0
@@ -456,15 +451,15 @@ class ConsecutiveLossesBreaker:
             cooldown_minutes=CONSEC_LOSSES_COOLDOWN_MINUTES,  # 3 hour cooldown
         )
 
-    def update(self, is_win: bool):
-        """Update with trade result"""
+    def update(self, is_win: bool) -> None:
+        """Update with trade result."""
         if is_win:
             self.consecutive_losses = 0
         else:
             self.consecutive_losses += 1
 
     def check(self) -> bool:
-        """Check if breaker should trip"""
+        """Check if breaker should trip."""
         if self.consecutive_losses >= self.max_losses:
             self.state.trip(
                 reason="Too many consecutive losses",
@@ -476,13 +471,12 @@ class ConsecutiveLossesBreaker:
         return False
 
     def get_consecutive_losses(self) -> int:
-        """Get current consecutive loss count"""
+        """Get current consecutive loss count."""
         return self.consecutive_losses
 
 
 class CircuitBreakerManager:
-    """
-    Manages all circuit breakers
+    """Manages all circuit breakers.
 
     Coordinates multiple breakers and provides unified status.
     Thresholds default to LearnedParametersManager when available to
@@ -493,7 +487,7 @@ class CircuitBreakerManager:
     - Set emergency_closer via set_emergency_closer() method
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         sortino_threshold: float | None = None,
         kurtosis_threshold: float | None = None,
@@ -506,9 +500,8 @@ class CircuitBreakerManager:
         auto_close_on_trip: bool = False,
         kurtosis_adaptive: bool = True,
         kurtosis_persist_every: int = 10,
-    ):
-        """
-        Initialize all circuit breakers.
+    ) -> None:
+        """Initialize all circuit breakers.
 
         Args:
             sortino_threshold: Override for Sortino breaker threshold
@@ -523,6 +516,7 @@ class CircuitBreakerManager:
             kurtosis_persist_every: Number of trades between writes of the
                 learned kurtosis threshold back to LearnedParameters (reduces
                 disk churn; set <=0 to disable persistence).
+
         """
         self.symbol = symbol
         self.timeframe = timeframe
@@ -541,7 +535,7 @@ class CircuitBreakerManager:
         self.max_consecutive_losses, loss_source = self._resolve_param(
             "max_consecutive_losses", max_consecutive_losses, MANAGER_DEFAULT_MAX_LOSSES
         )
-        self.max_consecutive_losses = int(round(self.max_consecutive_losses))
+        self.max_consecutive_losses = round(self.max_consecutive_losses)
 
         self.sortino_breaker = SortinoBreaker(threshold=self.sortino_threshold)
         self.kurtosis_breaker = KurtosisBreaker(
@@ -584,7 +578,8 @@ class CircuitBreakerManager:
             try:
                 val = float(explicit_value)
                 if not math.isfinite(val):
-                    raise ValueError(f"Non-finite value: {val}")
+                    msg = f"Non-finite value: {val}"
+                    raise ValueError(msg)
                 return val, "explicit"
             except (TypeError, ValueError) as e:
                 LOG.error(
@@ -603,7 +598,8 @@ class CircuitBreakerManager:
                 )
                 val = float(value)
                 if not math.isfinite(val):
-                    raise ValueError(f"Non-finite learned value: {val}")
+                    msg = f"Non-finite learned value: {val}"
+                    raise ValueError(msg)
                 LOG.info(
                     "[CIRCUIT-BREAKERS] Using learned %s=%.3f for %s/%s",
                     name,
@@ -624,13 +620,13 @@ class CircuitBreakerManager:
 
         return float(default), "default"
 
-    def update_trade(self, pnl: float, equity: float):
-        """
-        Update all breakers with trade result
+    def update_trade(self, pnl: float, equity: float) -> None:
+        """Update all breakers with trade result.
 
         Args:
             pnl: Trade P&L (normalized or absolute)
             equity: Current account equity
+
         """
         # Update return-based breakers
         self.sortino_breaker.update(pnl)
@@ -680,11 +676,11 @@ class CircuitBreakerManager:
             LOG.debug("[CIRCUIT-BREAKERS] Failed to persist learned kurtosis threshold: %s", exc)
 
     def check_all(self) -> bool:
-        """
-        Check all circuit breakers
+        """Check all circuit breakers.
 
         Returns:
             True if ANY breaker is tripped
+
         """
         if self.is_manual_reset_cooldown_active():
             return False
@@ -701,17 +697,17 @@ class CircuitBreakerManager:
 
         return any_tripped
 
-    def set_emergency_closer(self, emergency_closer):
-        """
-        Set emergency position closer for auto-close on trip.
+    def set_emergency_closer(self, emergency_closer) -> None:
+        """Set emergency position closer for auto-close on trip.
 
         Args:
             emergency_closer: EmergencyPositionCloser instance
+
         """
         self.emergency_closer = emergency_closer
         LOG.info("[CIRCUIT-BREAKERS] Emergency closer configured (auto_close=%s)", self.auto_close_on_trip)
 
-    def _execute_emergency_close(self):
+    def _execute_emergency_close(self) -> None:
         """Execute emergency position close when breaker trips."""
         if not self.emergency_closer:
             LOG.warning("[CIRCUIT-BREAKERS] 🚨 Breaker tripped but no emergency_closer configured!")
@@ -735,16 +731,17 @@ class CircuitBreakerManager:
             LOG.error("[CIRCUIT-BREAKERS] Emergency close error: %s", e, exc_info=True)
 
     def is_any_tripped(self) -> bool:
-        """Check if any breaker is currently tripped"""
+        """Check if any breaker is currently tripped."""
         return any(breaker.state.is_tripped for breaker in self.breakers)
 
     def get_tripped_breakers(self) -> list[BreakerState]:
-        """Get list of tripped breakers"""
+        """Get list of tripped breakers."""
         return [breaker.state for breaker in self.breakers if breaker.state.is_tripped]
 
-    def reset_all(self, manual_cooldown_seconds: int = 0):
+    def reset_all(self, manual_cooldown_seconds: int = 0) -> None:
         """Reset all breakers and clear underlying data so they don't
-        immediately re-trip on the next ``check()`` call."""
+        immediately re-trip on the next ``check()`` call.
+        """
         for breaker in self.breakers:
             breaker.state.reset()
         # Clear the data windows that caused the trips, otherwise the
@@ -764,8 +761,8 @@ class CircuitBreakerManager:
             self.manual_reset_cooldown_until = None
         LOG.info("[CIRCUIT_BREAKER] All breakers reset (data windows cleared)")
 
-    def reset_if_cooldown_elapsed(self):
-        """Auto-reset breakers after cooldown"""
+    def reset_if_cooldown_elapsed(self) -> None:
+        """Auto-reset breakers after cooldown."""
         for breaker in self.breakers:
             if breaker.state.is_tripped and breaker.state.can_reset():
                 breaker.state.reset()
@@ -775,12 +772,12 @@ class CircuitBreakerManager:
         return bool(self.manual_reset_cooldown_until and datetime.now(UTC) < self.manual_reset_cooldown_until)
 
     def get_position_size_multiplier(self) -> float:
-        """
-        Get combined position size multiplier
+        """Get combined position size multiplier.
 
         Returns:
             0.0 to 1.0 multiplier for position sizing
             0.0 = full stop, 1.0 = normal size
+
         """
         if self.is_any_tripped():
             return 0.0  # Full stop if any breaker tripped
@@ -789,7 +786,7 @@ class CircuitBreakerManager:
         return self.drawdown_breaker.get_size_multiplier()
 
     def get_status(self) -> dict[str, Any]:
-        """Get comprehensive status"""
+        """Get comprehensive status."""
         return {
             "any_tripped": self.is_any_tripped(),
             "position_multiplier": self.get_position_size_multiplier(),
@@ -816,12 +813,12 @@ class CircuitBreakerManager:
             },
         }
 
-    def save_state(self, filepath: str = "data/circuit_breakers.json"):
-        """
-        GAP 10.2 FIX: Save circuit breaker state to disk for persistence across restarts.
+    def save_state(self, filepath: str = "data/circuit_breakers.json") -> None:
+        """GAP 10.2 FIX: Save circuit breaker state to disk for persistence across restarts.
 
         Args:
             filepath: Path to save state file
+
         """
 
         def _breaker_dict(breaker_state: BreakerState, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -873,17 +870,16 @@ class CircuitBreakerManager:
 
         save_json_atomic(filepath, state)
 
-    def restore_state(self, filepath: str = "data/circuit_breakers.json"):
-        """
-        GAP 10.2 FIX: Restore circuit breaker state from disk.
+    def restore_state(self, filepath: str = "data/circuit_breakers.json") -> bool | None:
+        """GAP 10.2 FIX: Restore circuit breaker state from disk.
 
         Args:
             filepath: Path to state file
 
         Returns:
             True if state restored, False if file not found
-        """
 
+        """
         if not Path(filepath).exists():
             return False
 

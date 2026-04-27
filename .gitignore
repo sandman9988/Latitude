@@ -63,3 +63,7 @@ scripts/.env.example
 .env.openapi
 .abacusai/
 .codex
+
+# Credentials / OAuth tokens — never commit these
+config/cTraderAppTokens
+ctrader_token.json

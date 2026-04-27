@@ -14,7 +14,8 @@ PORT = 8787
 def must_env(name: str) -> str:
     v = os.environ.get(name, "").strip()
     if not v:
-        raise SystemExit(f"Missing required env var: {name}")
+        msg = f"Missing required env var: {name}"
+        raise SystemExit(msg)
     return v
 
 
@@ -23,7 +24,7 @@ class CodeHandler(BaseHTTPRequestHandler):
     code = None
     error = None
 
-    def do_GET(self):
+    def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
         qs = urllib.parse.parse_qs(parsed.query)
         CodeHandler.code = qs.get("code", [None])[0]
@@ -39,19 +40,19 @@ class CodeHandler(BaseHTTPRequestHandler):
             msg = f"<h2>Failed</h2><p>No code received. error={CodeHandler.error}</p>"
             self.wfile.write(msg.encode("utf-8"))
 
-    def log_message(self, fmt, *args):
+    def log_message(self, _fmt, *_args) -> None:
         # quiet
         return
 
 
-def run_server():
+def run_server() -> None:
     httpd = HTTPServer((HOST, PORT), CodeHandler)
     httpd.timeout = 1
     while CodeHandler.code is None and CodeHandler.error is None:
         httpd.handle_request()
 
 
-def main():
+def main() -> None:
     client_id = must_env("CTRADER_CLIENT_ID")
     client_secret = must_env("CTRADER_CLIENT_SECRET")
 
@@ -74,16 +75,19 @@ def main():
     t.join()
 
     if CodeHandler.error:
-        raise SystemExit(f"OAuth failed: error={CodeHandler.error}")
+        msg = f"OAuth failed: error={CodeHandler.error}"
+        raise SystemExit(msg)
     if not CodeHandler.code:
-        raise SystemExit("OAuth failed: no authorization code received")
+        msg = "OAuth failed: no authorization code received"
+        raise SystemExit(msg)
 
     code = CodeHandler.code
     print(f"Received code: {code[:8]}... (redacted)\n")
 
     token = auth.getToken(code)
     if token.get("errorCode"):
-        raise SystemExit(f"Token error: {token.get('errorCode')} {token.get('description')}")
+        msg = f"Token error: {token.get('errorCode')} {token.get('description')}"
+        raise SystemExit(msg)
 
     # Save token safely
     out_path = os.environ.get("CTRADER_TOKEN_FILE", "ctrader_token.json")

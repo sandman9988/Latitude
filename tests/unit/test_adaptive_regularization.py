@@ -42,16 +42,17 @@ class TestInit:
 # ---------------------------------------------------------------------------
 class TestIncrease:
     def test_basic_increase(self):
-        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.1,
-                                     adjustment_rate=2.0)
+        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.1, adjustment_rate=2.0)
         ar.increase_regularization()
         assert ar.l2_weight == pytest.approx(0.002)
         assert ar.dropout_rate == pytest.approx(0.2)
 
     def test_capped_at_max(self):
         ar = AdaptiveRegularization(
-            initial_l2=0.009, l2_range=(1e-5, 0.01),
-            initial_dropout=0.45, dropout_range=(0.0, 0.5),
+            initial_l2=0.009,
+            l2_range=(1e-5, 0.01),
+            initial_dropout=0.45,
+            dropout_range=(0.0, 0.5),
             adjustment_rate=2.0,
         )
         ar.increase_regularization()
@@ -76,16 +77,17 @@ class TestIncrease:
 # ---------------------------------------------------------------------------
 class TestDecrease:
     def test_basic_decrease(self):
-        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.2,
-                                     adjustment_rate=2.0)
+        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.2, adjustment_rate=2.0)
         ar.decrease_regularization()
         assert ar.l2_weight == pytest.approx(0.0005)
         assert ar.dropout_rate == pytest.approx(0.1)
 
     def test_capped_at_min(self):
         ar = AdaptiveRegularization(
-            initial_l2=2e-5, l2_range=(1e-5, 0.01),
-            initial_dropout=0.05, dropout_range=(0.02, 0.5),
+            initial_l2=2e-5,
+            l2_range=(1e-5, 0.01),
+            initial_dropout=0.05,
+            dropout_range=(0.02, 0.5),
             adjustment_rate=10.0,
         )
         ar.decrease_regularization()
@@ -140,8 +142,7 @@ class TestGetCurrent:
         assert result == {"l2_weight": 0.001, "dropout_rate": 0.2}
 
     def test_reflects_changes(self):
-        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.1,
-                                     adjustment_rate=2.0)
+        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.1, adjustment_rate=2.0)
         ar.increase_regularization()
         result = ar.get_current()
         assert result["l2_weight"] == pytest.approx(0.002)
@@ -199,8 +200,10 @@ class TestEdgeCases:
     def test_increase_from_max(self):
         """Already at max — stays at max."""
         ar = AdaptiveRegularization(
-            initial_l2=0.01, l2_range=(1e-5, 0.01),
-            initial_dropout=0.5, dropout_range=(0.0, 0.5),
+            initial_l2=0.01,
+            l2_range=(1e-5, 0.01),
+            initial_dropout=0.5,
+            dropout_range=(0.0, 0.5),
         )
         ar.increase_regularization()
         assert ar.l2_weight == pytest.approx(0.01)
@@ -209,8 +212,10 @@ class TestEdgeCases:
     def test_decrease_from_min(self):
         """Already at min — stays at min."""
         ar = AdaptiveRegularization(
-            initial_l2=1e-5, l2_range=(1e-5, 0.01),
-            initial_dropout=0.0, dropout_range=(0.0, 0.5),
+            initial_l2=1e-5,
+            l2_range=(1e-5, 0.01),
+            initial_dropout=0.0,
+            dropout_range=(0.0, 0.5),
         )
         ar.decrease_regularization()
         assert ar.l2_weight == 1e-5
@@ -231,8 +236,7 @@ class TestEdgeCases:
         assert ar.dropout_rate >= 0.0
 
     def test_alternating_increase_decrease(self):
-        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.2,
-                                     adjustment_rate=1.2)
+        ar = AdaptiveRegularization(initial_l2=0.001, initial_dropout=0.2, adjustment_rate=1.2)
         initial = ar.get_current()
         ar.increase_regularization()
         ar.decrease_regularization()

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Trade Exporter - Export trading history to CSV format
+"""Trade Exporter - Export trading history to CSV format
 Exports performance tracker data for offline analysis in Excel, pandas, etc.
 """
 
@@ -17,13 +16,12 @@ LOG = logging.getLogger(__name__)
 class TradeExporter:
     """Export trade history to CSV format."""
 
-    def __init__(self, output_dir: str = "trades"):
+    def __init__(self, output_dir: str = "trades") -> None:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(exist_ok=True, parents=True)
 
     def export_trades(self, trades: list[dict], filename: str | None = None) -> str:
-        """
-        Export list of trades to CSV file.
+        """Export list of trades to CSV file.
 
         Args:
             trades: List of trade dictionaries from PerformanceTracker
@@ -31,9 +29,11 @@ class TradeExporter:
 
         Returns:
             Path to created CSV file
+
         """
         if not trades:
-            raise ValueError("No trades to export")
+            msg = "No trades to export"
+            raise ValueError(msg)
 
         # Generate filename if not provided
         if filename is None:
@@ -79,7 +79,6 @@ class TradeExporter:
             writer.writeheader()
 
             for trade in trades:
-
                 # Defensive: Validate required fields
                 if "entry_time" not in trade or "exit_time" not in trade:
                     LOG.warning("Trade %d missing timestamps. Skipping.", trade.get("trade_num", -1))
@@ -161,8 +160,7 @@ class TradeExporter:
         return str(filepath)
 
     def export_summary(self, metrics: dict, filename: str | None = None) -> str:
-        """
-        Export performance summary to CSV file.
+        """Export performance summary to CSV file.
 
         Args:
             metrics: Performance metrics dictionary from PerformanceTracker
@@ -170,6 +168,7 @@ class TradeExporter:
 
         Returns:
             Path to created CSV file
+
         """
         # Generate filename if not provided
         if filename is None:
@@ -188,7 +187,7 @@ class TradeExporter:
                 ["Total Trades", metrics["total_trades"]],
                 ["Winning Trades", metrics["winning_trades"]],
                 ["Losing Trades", metrics["losing_trades"]],
-                ["Win Rate", f"{metrics['win_rate']*100:.2f}%"],
+                ["Win Rate", f"{metrics['win_rate'] * 100:.2f}%"],
                 ["Total PnL", f"${metrics['total_pnl']:.2f}"],
                 ["Average Winner", f"${metrics['avg_winner']:.2f}"],
                 ["Average Loser", f"${metrics['avg_loser']:.2f}"],
@@ -197,9 +196,9 @@ class TradeExporter:
                 ["Sharpe Ratio", f"{metrics['sharpe_ratio']:.3f}"],
                 ["Initial Equity", f"${metrics['initial_equity']:.2f}"],
                 ["Current Equity", f"${metrics['current_equity']:.2f}"],
-                ["Total Return", f"{metrics['total_return']*100:.2f}%"],
-                ["Max Drawdown", f"{metrics['max_drawdown']*100:.2f}%"],
-                ["Current Drawdown", f"{metrics['current_drawdown']*100:.2f}%"],
+                ["Total Return", f"{metrics['total_return'] * 100:.2f}%"],
+                ["Max Drawdown", f"{metrics['max_drawdown'] * 100:.2f}%"],
+                ["Current Drawdown", f"{metrics['current_drawdown'] * 100:.2f}%"],
                 ["Max Consecutive Wins", metrics["max_consecutive_wins"]],
                 ["Max Consecutive Losses", metrics["max_consecutive_losses"]],
                 ["Winner-to-Loser Count", metrics["winner_to_loser_count"]],
@@ -210,8 +209,7 @@ class TradeExporter:
         return str(filepath)
 
     def export_all(self, performance_tracker, prefix: str | None = None) -> dict[str, str]:
-        """
-        Export both trades and summary from a PerformanceTracker instance.
+        """Export both trades and summary from a PerformanceTracker instance.
 
         Args:
             performance_tracker: PerformanceTracker instance
@@ -219,6 +217,7 @@ class TradeExporter:
 
         Returns:
             Dictionary with paths to created files
+
         """
         timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
 

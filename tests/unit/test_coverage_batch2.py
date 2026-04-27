@@ -1,5 +1,4 @@
-"""Gap tests for order_book.py, activity_monitor.py, and atomic_persistence.py.
-"""
+"""Gap tests for order_book.py, activity_monitor.py, and atomic_persistence.py."""
 
 import tempfile
 import time

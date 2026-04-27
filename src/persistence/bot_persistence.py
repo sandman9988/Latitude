@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""
-Bot Persistence Manager
+"""Bot Persistence Manager
 Atomic, crash-safe persistence for models, stats, and state
-Organized by instrument, timeframe, and session
+Organized by instrument, timeframe, and session.
 """
 
+import contextlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,8 +21,7 @@ LOG = logging.getLogger(__name__)
 
 
 class BotPersistenceManager:
-    """
-    Manages persistent state for trading bot with atomic writes
+    """Manages persistent state for trading bot with atomic writes.
 
     Directory structure:
         store/
@@ -44,7 +43,7 @@ class BotPersistenceManager:
                 all_sessions.json
     """
 
-    def __init__(self, base_dir: str = "store"):
+    def __init__(self, base_dir: str = "store") -> None:
         self.base_dir = Path(base_dir)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
@@ -52,14 +51,14 @@ class BotPersistenceManager:
         self.persistence = AtomicPersistence(base_dir=str(self.base_dir))
 
     def get_instrument_dir(self, symbol: str, timeframe: str) -> Path:
-        """Get directory for specific instrument/timeframe"""
+        """Get directory for specific instrument/timeframe."""
         inst_dir = self.base_dir / symbol / timeframe
         inst_dir.mkdir(parents=True, exist_ok=True)
         return inst_dir
 
     # ========== MODEL PERSISTENCE ==========
 
-    def save_agent_model(  # noqa: PLR0913
+    def save_agent_model(
         self,
         agent_type: str,  # 'trigger' or 'harvester'
         agent_idx: int,
@@ -68,8 +67,7 @@ class BotPersistenceManager:
         timeframe: str,
         metadata: dict[str, Any] | None = None,
     ) -> bool:
-        """
-        Save agent neural network model with atomic write
+        """Save agent neural network model with atomic write.
 
         Args:
             agent_type: 'trigger' or 'harvester'
@@ -78,6 +76,7 @@ class BotPersistenceManager:
             symbol: Trading symbol (e.g., 'XAUUSD')
             timeframe: Bar period (e.g., '1m', '5m')
             metadata: Optional metadata (training steps, loss, etc.)
+
         """
         inst_dir = self.get_instrument_dir(symbol, timeframe)
         models_dir = inst_dir / "models"
@@ -103,8 +102,6 @@ class BotPersistenceManager:
             except OSError as replace_err:
                 LOG.error("[PERSISTENCE] Failed to replace %s with %s: %s", model_file, temp_file, replace_err)
                 # Clean up orphaned temp file
-                import contextlib
-
                 with contextlib.suppress(OSError):
                     temp_file.unlink()
                 return False
@@ -124,34 +121,32 @@ class BotPersistenceManager:
 
             self.persistence.save_json(metadata, str(meta_file.relative_to(self.base_dir)))
 
-            LOG.info(f"[PERSISTENCE] Saved {agent_type} agent {agent_idx} model: {symbol}/{timeframe}")
+            LOG.info("[PERSISTENCE] Saved %s agent %s model: %s/%s", agent_type, agent_idx, symbol, timeframe)
             return True
 
         except Exception as e:
-            LOG.error(f"[PERSISTENCE] Failed to save model: {e}")
+            LOG.error("[PERSISTENCE] Failed to save model: %s", e)
             # Clean up temp file on any error
-            import contextlib
-
             with contextlib.suppress(OSError):
                 temp_file.unlink()
             return False
 
     def load_agent_model(self, agent_type: str, agent_idx: int, symbol: str, timeframe: str) -> dict[str, Any] | None:
-        """Load agent model state_dict"""
+        """Load agent model state_dict."""
         inst_dir = self.get_instrument_dir(symbol, timeframe)
         models_dir = inst_dir / "models"
         model_file = models_dir / f"{agent_type}_agent_{agent_idx}.pt"
 
         if not model_file.exists():
-            LOG.warning(f"[PERSISTENCE] Model not found: {agent_type} {agent_idx} for {symbol}/{timeframe}")
+            LOG.warning("[PERSISTENCE] Model not found: %s %s for %s/%s", agent_type, agent_idx, symbol, timeframe)
             return None
 
         try:
             state_dict = torch.load(model_file, map_location="cpu", weights_only=True)
-            LOG.info(f"[PERSISTENCE] Loaded {agent_type} agent {agent_idx}: {symbol}/{timeframe}")
+            LOG.info("[PERSISTENCE] Loaded %s agent %s: %s/%s", agent_type, agent_idx, symbol, timeframe)
             return state_dict
         except Exception as e:
-            LOG.error(f"[PERSISTENCE] Failed to load model: {e}")
+            LOG.error("[PERSISTENCE] Failed to load model: %s", e)
             return None
 
     # ========== SESSION STATS ==========
@@ -159,14 +154,14 @@ class BotPersistenceManager:
     def save_session_stats(
         self, stats: dict[str, Any], symbol: str, timeframe: str, session_id: str | None = None
     ) -> bool:
-        """
-        Save statistics for current trading session
+        """Save statistics for current trading session.
 
         Args:
             stats: Performance metrics, trade history, etc.
             symbol: Trading symbol
             timeframe: Bar period
             session_id: Unique session identifier (default: timestamp)
+
         """
         if session_id is None:
             session_id = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -188,15 +183,14 @@ class BotPersistenceManager:
         success = self.persistence.save_json(stats, str((stats_dir / session_file).relative_to(self.base_dir)))
 
         if success:
-            LOG.info(f"[PERSISTENCE] Saved session stats: {symbol}/{timeframe}/{session_id}")
+            LOG.info("[PERSISTENCE] Saved session stats: %s/%s/%s", symbol, timeframe, session_id)
 
         return success
 
     # ========== CUMULATIVE STATS ==========
 
     def save_cumulative_stats(self, stats: dict[str, Any], symbol: str, timeframe: str) -> bool:
-        """
-        Save cumulative statistics across all sessions
+        """Save cumulative statistics across all sessions.
 
         This updates running totals, averages, etc. for the instrument/timeframe
         """
@@ -243,12 +237,12 @@ class BotPersistenceManager:
         success = self.persistence.save_json(existing, str(cumulative_file.relative_to(self.base_dir)))
 
         if success:
-            LOG.info(f"[PERSISTENCE] Updated cumulative stats: {symbol}/{timeframe}")
+            LOG.info("[PERSISTENCE] Updated cumulative stats: %s/%s", symbol, timeframe)
 
         return success
 
     def load_cumulative_stats(self, symbol: str, timeframe: str) -> dict[str, Any] | None:
-        """Load cumulative statistics for instrument/timeframe"""
+        """Load cumulative statistics for instrument/timeframe."""
         inst_dir = self.get_instrument_dir(symbol, timeframe)
         stats_dir = inst_dir / "stats"
         cumulative_file = stats_dir / "cumulative_stats.json"
@@ -258,11 +252,11 @@ class BotPersistenceManager:
     # ========== CROSS-INSTRUMENT AGGREGATION ==========
 
     def save_global_stats(self, all_instruments: list[dict[str, Any]]) -> bool:
-        """
-        Save aggregated stats across all instruments, timeframes, sessions
+        """Save aggregated stats across all instruments, timeframes, sessions.
 
         Args:
             all_instruments: List of instrument stats (symbol, timeframe, metrics)
+
         """
         cumulative_dir = self.base_dir / "cumulative"
         cumulative_dir.mkdir(exist_ok=True)
@@ -285,7 +279,7 @@ class BotPersistenceManager:
             # By instrument
             if symbol not in by_instrument:
                 by_instrument[symbol] = cast(
-                    dict[str, Any],
+                    "dict[str, Any]",
                     {
                         "symbol": symbol,
                         "timeframes": [],
@@ -294,7 +288,7 @@ class BotPersistenceManager:
                     },
                 )
 
-            inst_data = cast(dict[str, Any], by_instrument[symbol])
+            inst_data = cast("dict[str, Any]", by_instrument[symbol])
             inst_data["timeframes"].append(timeframe)
             inst_data["total_trades"] += inst.get("total_trades", 0)
             inst_data["total_pnl"] += inst.get("total_pnl", 0.0)
@@ -302,7 +296,7 @@ class BotPersistenceManager:
             # By timeframe
             if timeframe not in by_timeframe:
                 by_timeframe[timeframe] = cast(
-                    dict[str, Any],
+                    "dict[str, Any]",
                     {
                         "timeframe": timeframe,
                         "instruments": [],
@@ -311,7 +305,7 @@ class BotPersistenceManager:
                     },
                 )
 
-            tf_data = cast(dict[str, Any], by_timeframe[timeframe])
+            tf_data = cast("dict[str, Any]", by_timeframe[timeframe])
             tf_data["instruments"].append(symbol)
             tf_data["total_trades"] += inst.get("total_trades", 0)
             tf_data["total_pnl"] += inst.get("total_pnl", 0.0)
@@ -331,11 +325,11 @@ class BotPersistenceManager:
         self.persistence.save_json(total_stats, "cumulative/all_sessions.json")
 
         LOG.info(
-            f"[PERSISTENCE] Saved global stats: "
-            f"{total_stats['total_instruments']} instruments, "
-            f"{total_stats['total_timeframes']} timeframes, "
-            f"{total_stats['total_trades']} trades, "
-            f"${total_stats['total_pnl']:.2f} PnL"
+            "[PERSISTENCE] Saved global stats: %s instruments, %s timeframes, %s trades, $%.2f PnL",
+            total_stats["total_instruments"],
+            total_stats["total_timeframes"],
+            total_stats["total_trades"],
+            total_stats["total_pnl"],
         )
 
         return True
@@ -345,14 +339,14 @@ class BotPersistenceManager:
     def save_checkpoint(
         self, state: dict[str, Any], symbol: str, timeframe: str, checkpoint_name: str = "latest"
     ) -> bool:
-        """
-        Save bot state checkpoint (positions, buffers, bars, etc.)
+        """Save bot state checkpoint (positions, buffers, bars, etc.).
 
         Args:
             state: Complete bot state
             symbol: Trading symbol
             timeframe: Bar period
             checkpoint_name: Checkpoint identifier ('latest', 'backup', etc.)
+
         """
         inst_dir = self.get_instrument_dir(symbol, timeframe)
         checkpoint_dir = inst_dir / "checkpoints"
@@ -370,18 +364,18 @@ class BotPersistenceManager:
         success = self.persistence.save_json(state, str(checkpoint_file.relative_to(self.base_dir)))
 
         if success:
-            LOG.info(f"[PERSISTENCE] Saved checkpoint '{checkpoint_name}': {symbol}/{timeframe}")
+            LOG.info("[PERSISTENCE] Saved checkpoint '%s': %s/%s", checkpoint_name, symbol, timeframe)
 
         return success
 
     def load_checkpoint(self, symbol: str, timeframe: str, checkpoint_name: str = "latest") -> dict[str, Any] | None:
-        """Load bot state checkpoint"""
+        """Load bot state checkpoint."""
         inst_dir = self.get_instrument_dir(symbol, timeframe)
         checkpoint_dir = inst_dir / "checkpoints"
         checkpoint_file = checkpoint_dir / f"checkpoint_{checkpoint_name}.json"
 
         if not checkpoint_file.exists():
-            LOG.warning(f"[PERSISTENCE] Checkpoint not found: {checkpoint_name} for {symbol}/{timeframe}")
+            LOG.warning("[PERSISTENCE] Checkpoint not found: %s for %s/%s", checkpoint_name, symbol, timeframe)
             return None
 
         return self.persistence.load_json(str(checkpoint_file.relative_to(self.base_dir)))
@@ -389,7 +383,7 @@ class BotPersistenceManager:
     # ========== UTILITY ==========
 
     def list_saved_models(self, symbol: str, timeframe: str) -> dict[str, list[int]]:
-        """List available agent models for instrument/timeframe"""
+        """List available agent models for instrument/timeframe."""
         inst_dir = self.get_instrument_dir(symbol, timeframe)
         models_dir = inst_dir / "models"
 
@@ -416,7 +410,7 @@ class BotPersistenceManager:
         return {"trigger": sorted(trigger_models), "harvester": sorted(harvester_models)}
 
     def get_storage_summary(self) -> dict[str, Any]:
-        """Get summary of stored data"""
+        """Get summary of stored data."""
         summary: dict[str, Any] = {
             "base_dir": str(self.base_dir),
             "instruments": {},

@@ -10,6 +10,7 @@ Verify complete integration:
 
 This simulates the actual bot flow: FLAT → ENTRY → IN_POSITION → EXIT
 """
+
 import json
 import sys
 from collections import deque
@@ -182,10 +183,9 @@ def simulate_trading_session():
         print("✓ ALL TESTS PASSED - Harvester integration complete!")
         print("=" * 70)
         return 0
-    else:
-        print("✗ SOME TESTS FAILED - Review decision log")
-        print("=" * 70)
-        return 1
+    print("✗ SOME TESTS FAILED - Review decision log")
+    print("=" * 70)
+    return 1
 
 
 if __name__ == "__main__":
