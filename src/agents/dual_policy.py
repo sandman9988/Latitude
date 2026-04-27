@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Dual Policy - Orchestrates Trigger and Harvester Agents (Phase 3)
+"""Dual Policy - Orchestrates Trigger and Harvester Agents (Phase 3).
 =================================================================
 Coordinates entry and exit specialists for dual-agent trading.
 
@@ -11,6 +10,7 @@ Architecture:
 From MASTER_HANDBOOK.md Section 2.2: Dual-Agent Architecture
 """
 
+import json
 import logging
 import os
 from collections import deque
@@ -89,8 +89,7 @@ def _build_event_feature_columns(event_features: dict[str, float] | None, n_c: i
 
 
 class DualPolicy:
-    """
-    Orchestrates TriggerAgent and HarvesterAgent for specialized trading.
+    """Orchestrates TriggerAgent and HarvesterAgent for specialized trading.
 
     Workflow:
     1. On bar close (flat): trigger.decide_entry() → LONG/SHORT/NONE
@@ -107,19 +106,21 @@ class DualPolicy:
         *args: int,
         config: DualPolicyConfig | None = None,
         **kwargs: Any,
-    ):
-        """
-        Initialize DualPolicy with trigger and harvester agents.
+    ) -> None:
+        """Initialize DualPolicy with trigger and harvester agents.
 
         Args:
             config: Optional DualPolicyConfig instance
             **kwargs: Field overrides for DualPolicyConfig
+
         """
         if args:
             if len(args) > 1:
-                raise TypeError("DualPolicy accepts at most one positional argument (window)")
+                msg = "DualPolicy accepts at most one positional argument (window)"
+                raise TypeError(msg)
             if "window" in kwargs:
-                raise TypeError("DualPolicy received both positional window and keyword window")
+                msg = "DualPolicy received both positional window and keyword window"
+                raise TypeError(msg)
             assert len(args) >= 1  # Guaranteed by the if args: check
             kwargs["window"] = args[0]
 
@@ -130,7 +131,8 @@ class DualPolicy:
             if hasattr(config, key):
                 setattr(config, key, value)
             else:
-                raise TypeError(f"Unexpected argument: {key}")
+                msg = f"Unexpected argument: {key}"
+                raise TypeError(msg)
 
         window = config.window
         enable_regime_detection = config.enable_regime_detection
@@ -244,7 +246,7 @@ class DualPolicy:
     def mae(self, value: float) -> None:
         self._mfe_calc.mae = value
 
-    def decide_entry(  # noqa: PLR0913
+    def decide_entry(
         self,
         bars: deque[Any],
         imbalance: float = 0.0,
@@ -253,8 +255,7 @@ class DualPolicy:
         realized_vol: float = DEFAULT_VOLATILITY,  # For economics calculations
         event_features: dict[str, float] | None = None,  # Phase 3: Event-relative time features
     ) -> tuple[int, float, float]:
-        """
-        Decide entry action using TriggerAgent.
+        """Decide entry action using TriggerAgent.
 
         Args:
             bars: Deque of (t, o, h, l, c) tuples (closed bars)
@@ -269,6 +270,7 @@ class DualPolicy:
             - action: 0=NO_ENTRY, 1=LONG, 2=SHORT
             - confidence: [0, 1] Platt-calibrated probability
             - predicted_runway: Expected MFE
+
         """
         # Defensive sync: decide_entry is ONLY called when the bot confirms FLAT.
         # If DualPolicy.current_position disagrees, force-reset to prevent the
@@ -395,7 +397,7 @@ class DualPolicy:
                 self.predicted_runway_gross,
             )
 
-    def decide_exit(  # noqa: PLR0913
+    def decide_exit(
         self,
         bars: deque[Any],
         current_price: float,
@@ -404,8 +406,7 @@ class DualPolicy:
         depth_ratio: float = 1.0,
         event_features: dict[str, float] | None = None,
     ) -> tuple[int, float]:
-        """
-        Decide exit action using HarvesterAgent.
+        """Decide exit action using HarvesterAgent.
 
         Args:
             bars: Deque of (t, o, h, l, c) tuples (closed bars)
@@ -419,6 +420,7 @@ class DualPolicy:
             (action, confidence)
             - action: 0=HOLD, 1=CLOSE
             - confidence: [0, 1]
+
         """
         if len(bars) > 0:
             self._ingest_price_for_regime(bars[-1][4])
@@ -465,13 +467,13 @@ class DualPolicy:
         }
 
     def on_entry(self, direction: int, entry_price: float, entry_time: Any) -> None:
-        """
-        Called when position is entered.
+        """Called when position is entered.
 
         Args:
             direction: +1 for LONG, -1 for SHORT
             entry_price: Entry price
             entry_time: Entry bar timestamp
+
         """
         # Defensive: Validate inputs
         if entry_price is None or entry_price <= 0:
@@ -505,7 +507,7 @@ class DualPolicy:
             entry_price,
         )
 
-    def on_recovery(  # noqa: PLR0913
+    def on_recovery(
         self,
         direction: int,
         entry_price: float,
@@ -514,8 +516,7 @@ class DualPolicy:
         mae: float = 0.0,
         ticks_held: int = 0,
     ) -> None:
-        """
-        Called when position is recovered from persistence.
+        """Called when position is recovered from persistence.
         Unlike on_entry(), this preserves MFE/MAE from the persisted state.
 
         Args:
@@ -525,6 +526,7 @@ class DualPolicy:
             mfe: Maximum favorable excursion (preserved from persistence)
             mae: Maximum adverse excursion (preserved from persistence)
             ticks_held: Number of ticks held (preserved from persistence)
+
         """
         self.current_position = direction
         self.entry_price = float(entry_price)
@@ -553,8 +555,7 @@ class DualPolicy:
         entry_confidence: float = 0.5,
         raw_confidence: float | None = None,
     ) -> None:
-        """
-        Called when position is closed.
+        """Called when position is closed.
 
         Args:
             exit_price: Exit price
@@ -562,10 +563,11 @@ class DualPolicy:
             was_wtl: Was this a winner-to-loser trade?
             entry_confidence: Calibrated trigger confidence recorded at entry (for Platt update)
             raw_confidence: Pre-Platt probability (for correct Platt gradient)
+
         """
         # Store MFE percentage for harvester's SL learning
         if self.entry_price > 0:
-            setattr(self.harvester, "_last_mfe_pct", (self.mfe / self.entry_price) * 100.0)
+            self.harvester._last_mfe_pct = self.mfe / self.entry_price * 100.0
 
         # Update agents  with trade outcome
         self.trigger.update_from_trade(
@@ -594,7 +596,7 @@ class DualPolicy:
         self.predicted_runway = 0.0
         self.predicted_runway_gross = 0.0
 
-    def _update_mfe_mae(self, current_price: float):
+    def _update_mfe_mae(self, current_price: float) -> None:
         """Update MFE and MAE based on current price.
 
         Delegates to the shared MFEMAECalculator.
@@ -604,7 +606,7 @@ class DualPolicy:
             self._mfe_calc.start(self.entry_price, self.current_position)
         self._mfe_calc.update(current_price)
 
-    def _build_state(  # noqa: PLR0913, PLR0915
+    def _build_state(
         self,
         bars: deque[Any],
         imbalance: float,
@@ -613,8 +615,7 @@ class DualPolicy:
         realized_vol: float = DEFAULT_VOLATILITY,  # Provide RS volatility for geometry calculation
         event_features: dict[str, float] | None = None,  # Phase 3: Event-relative time features
     ) -> np.ndarray:
-        """
-        Build normalized state features.
+        """Build normalized state features.
 
         Features (expandable based on enabled modules):
         Base (7):
@@ -643,6 +644,7 @@ class DualPolicy:
 
         Returns:
             State array (window, n_features) with features normalized
+
         """
         # Calculate expected feature dimension (MUST match __init__ dimensions)
         n_features = 7  # Base
@@ -745,7 +747,7 @@ class DualPolicy:
 
         return feats
 
-    def _ingest_price_for_regime(self, close_price: float):
+    def _ingest_price_for_regime(self, close_price: float) -> None:
         """Update regime detector with latest close and sync replay buffers."""
         if not self.regime_detector or close_price is None:
             return
@@ -782,7 +784,7 @@ class DualPolicy:
             self.current_zeta,
         )
 
-    def _sync_replay_buffer_regime(self):
+    def _sync_replay_buffer_regime(self) -> None:
         """Align replay buffer sampling with current regime classification."""
         regime_map = {
             "TRENDING": RegimeSampling.TRENDING,
@@ -810,9 +812,8 @@ class DualPolicy:
         reward: float,
         next_state: np.ndarray,
         done: bool = True,
-    ):
-        """
-        Add experience to TriggerAgent buffer for online learning.
+    ) -> None:
+        """Add experience to TriggerAgent buffer for online learning.
 
         Args:
             state: State at entry decision time (12-dim)
@@ -820,6 +821,7 @@ class DualPolicy:
             reward: Shaped reward from RewardShaper
             next_state: State after trade closed
             done: Episode terminal (True for completed trade)
+
         """
         LOG.debug(
             "[TRIGGER-EXPERIENCE-DIAG] add_trigger_experience called: enable=%s, buffer=%s, action=%d, reward=%.4f",
@@ -861,9 +863,8 @@ class DualPolicy:
         reward: float,
         next_state: np.ndarray,
         done: bool = True,
-    ):
-        """
-        Add experience to HarvesterAgent buffer for online learning.
+    ) -> None:
+        """Add experience to HarvesterAgent buffer for online learning.
 
         Args:
             state: State at exit decision time (10-dim)
@@ -871,6 +872,7 @@ class DualPolicy:
             reward: Shaped reward from RewardShaper
             next_state: State after action
             done: Episode terminal (True for position closed)
+
         """
         if not self.enable_training:
             LOG.info("[DIAG] add_harvester_experience: SKIPPED — enable_training=%s", self.enable_training)
@@ -922,8 +924,7 @@ class DualPolicy:
         return last_metrics
 
     def train_step(self, adaptive_reg: Any = None) -> dict[str, Any]:
-        """
-        Execute multi-step training on both agents.
+        """Execute multi-step training on both agents.
 
         Runs up to _MAX_STEPS_PER_TRAIN gradient steps per agent per call,
         accelerating Q-value convergence and improving confidence scores.
@@ -933,6 +934,7 @@ class DualPolicy:
 
         Returns:
             Dictionary with training metrics from both agents
+
         """
         if not self.enable_training:
             return {"trigger": None, "harvester": None}
@@ -1004,6 +1006,7 @@ class DualPolicy:
 
         Returns:
             True if all saves succeeded
+
         """
         checkpoint_path = Path(checkpoint_dir) if checkpoint_dir is not None else self._default_checkpoint_dir()
         checkpoint_path.mkdir(parents=True, exist_ok=True)
@@ -1105,8 +1108,6 @@ class DualPolicy:
 
     def _ckpt_load_metadata(self, cp: Path) -> bool:
         """Load training metadata (steps, epsilon, Platt params). Returns True if loaded."""
-        import json  # type: ignore[import]
-
         meta_path = cp / "training_metadata.json"
         if not meta_path.exists():
             return False
@@ -1115,6 +1116,11 @@ class DualPolicy:
                 metadata = json.load(f)
             self.trigger.training_steps = metadata.get("trigger_training_steps", 0)
             self.trigger.epsilon = metadata.get("trigger_epsilon", self.trigger.epsilon)
+            # Clamp epsilon to the floor configured in .env so stale checkpoints
+            # cannot lock the bot below the minimum exploration rate. Default floor
+            # is 0.1 (paper mode) matching trigger_agent.py EPSILON_END default.
+            _env_floor = float(os.environ.get("EPSILON_END", "0.1"))
+            self.trigger.epsilon = max(_env_floor, self.trigger.epsilon)
             if "trigger_epsilon_decay" in metadata:
                 self.trigger.epsilon_decay = metadata["trigger_epsilon_decay"]
             self.harvester.training_steps = metadata.get("harvester_training_steps", 0)
@@ -1137,8 +1143,6 @@ class DualPolicy:
 
     def _ckpt_restore_regime(self, cp: Path) -> bool:
         """Restore regime detector state from checkpoint. Returns True if loaded."""
-        import json  # type: ignore[import]
-
         regime_path = cp / "regime_state.json"
         if not (regime_path.exists() and self.regime_detector):
             return False
@@ -1173,6 +1177,7 @@ class DualPolicy:
 
         Returns:
             True if checkpoint was found and loaded (at least partially)
+
         """
         cp = Path(checkpoint_dir) if checkpoint_dir is not None else self._default_checkpoint_dir()
         if not cp.exists():
@@ -1224,7 +1229,7 @@ if __name__ == "__main__":
     print("\n[TEST 2] Entry decision (flat position)")
     bars = deque(maxlen=100)
     for i in range(100):
-        t = dt.datetime.now()
+        t = dt.datetime.now(tz=dt.UTC)
         o = h = lo = c = 100000.0 + i * 10
         bars.append((t, o, h, lo, c))
 
@@ -1236,7 +1241,7 @@ if __name__ == "__main__":
 
     # Test 3: Enter position
     print("\n[TEST 3] Enter LONG position")
-    policy.on_entry(direction=1, entry_price=TEST_ENTRY_PRICE, entry_time=dt.datetime.now())
+    policy.on_entry(direction=1, entry_price=TEST_ENTRY_PRICE, entry_time=dt.datetime.now(tz=dt.UTC))
     assert policy.current_position == 1
     assert policy.entry_price == TEST_ENTRY_PRICE
     print(f"✓ Position entered: LONG @ {TEST_ENTRY_PRICE}")
