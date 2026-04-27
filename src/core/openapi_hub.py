@@ -2568,6 +2568,27 @@ class TFAgent:
         avg_mfe = float(np.mean(list(self._rolling_mfe))) if self._rolling_mfe else 0.0
         avg_mae = float(np.mean(list(self._rolling_mae))) if self._rolling_mae else 0.0
 
+        # Derive cross-period self-healing metrics from trade_log (single source of truth)
+        try:
+            from src.utils.metrics_calculator import decision_quality, period_comparison, self_healing_metrics  # noqa: PLC0415
+            from src.persistence.trade_log_reader import read_all_trades  # noqa: PLC0415
+            from datetime import timedelta  # noqa: PLC0415
+
+            _all = read_all_trades()
+            _bot_trades = [t for t in _all if t.get("symbol") == self.symbol
+                           and t.get("timeframe_minutes") == self.timeframe_minutes]
+            _cut_24h = (now - timedelta(hours=24)).isoformat()
+            _cut_7d = (now - timedelta(days=7)).isoformat()
+            _24h = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_24h]
+            _7d = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_7d]
+            _self_heal = self_healing_metrics(_bot_trades, self.starting_equity)
+            _comparison = period_comparison(_24h, _7d, self.starting_equity) if _24h and _7d else {}
+            _dec_qual = decision_quality(_bot_trades)
+        except Exception:
+            _self_heal = {}
+            _comparison = {}
+            _dec_qual = {}
+
         stats = {
             "symbol": self.symbol,
             "timeframe": self.tf_label,
@@ -2598,6 +2619,10 @@ class TFAgent:
             "next_bar_close_utc": self.bar_builder.next_bar_close_utc(),
             "reward_shaping": self._build_reward_shaping_block(),
             "mfe_mae": {"avg_mfe": avg_mfe, "avg_mae": avg_mae, "samples": len(self._rolling_mfe)},
+            # Self-healing metrics derived from audit log (trade_log.jsonl)
+            "self_healing": _self_heal,
+            "period_comparison": _comparison,
+            "decision_quality": _dec_qual,
             "updated_at": now.isoformat(),
         }
         shared = Path("data")
