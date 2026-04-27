@@ -1942,7 +1942,18 @@ def main(argv: list[str] | None = None) -> int:
         print("\n[DRY RUN] — no training executed.")
         return 0
 
-    n_workers = args.workers or min(len(jobs), multiprocessing.cpu_count())
+    # On GPU systems, limit to 1 worker to avoid CUDA OOM from multiple
+    # processes allocating tensors on the same device simultaneously.
+    try:
+        import torch  # noqa: PLC0415
+        _gpu_available = torch.cuda.is_available()
+    except Exception:
+        _gpu_available = False
+    if _gpu_available and (args.workers is None or args.workers > 1):
+        LOG.info("[SPAWN] GPU detected — forcing 1 worker to prevent CUDA contention")
+        n_workers = 1
+    else:
+        n_workers = args.workers or min(len(jobs), multiprocessing.cpu_count())
     LOG.info("Launching %d worker(s) for %d job(s)", n_workers, len(jobs))
 
     results: list[dict] = []

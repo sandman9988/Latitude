@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-OfflineTrainer
+"""OfflineTrainer.
 ==============
 Walk-forward DDQN training on historical bars for one (symbol, timeframe) job.
 
@@ -54,27 +53,28 @@ LOG = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-TRAIN_SPLIT: float = 0.80          # Fraction of bars used for training
-TRAIN_EVERY: int = 4               # call train_step() every N bar-closes
-MIN_BARS_FOR_ENTRY: int = 80       # Minimum deque depth before entry allowed
-MAX_POSITION_BARS: int = 200       # Hard cap on simulated position hold
-DEQUE_MAXLEN: int = 500            # Rolling bars deque max length
-REWARD_CLIP: float = 2.0           # Hardcoded to match live bot
+TRAIN_SPLIT: float = 0.80  # Fraction of bars used for training
+TRAIN_EVERY: int = 4  # call train_step() every N bar-closes
+MIN_BARS_FOR_ENTRY: int = 80  # Minimum deque depth before entry allowed
+MAX_POSITION_BARS: int = 200  # Hard cap on simulated position hold
+DEQUE_MAXLEN: int = 500  # Rolling bars deque max length
+REWARD_CLIP: float = 2.0  # Hardcoded to match live bot
 TRIGGER_REWARD_CLIP: float = 0.5
-MIN_VALIDATION_TRADES: int = 5     # Below this ZOmega is not meaningful
-_STD_FLOOR: float = 1e-10          # Minimum σ before treating as flat returns
-_MFE_FLOOR: float = 1e-8           # Minimum MFE to compute capture ratio
-_BAR_SPREAD_COL_IDX: int = 5       # Index of spread column in bar tuple
+MIN_VALIDATION_TRADES: int = 5  # Below this ZOmega is not meaningful
+_STD_FLOOR: float = 1e-10  # Minimum σ before treating as flat returns
+_MFE_FLOOR: float = 1e-8  # Minimum MFE to compute capture ratio
+_BAR_SPREAD_COL_IDX: int = 5  # Index of spread column in bar tuple
 
 # ── Types ──────────────────────────────────────────────────────────────────────
+
 
 class TradeRecord(NamedTuple):
     entry_bar_idx: int
     exit_bar_idx: int
-    direction: int      # 1 LONG, -1 SHORT
+    direction: int  # 1 LONG, -1 SHORT
     entry_price: float
     exit_price: float
-    pnl_pts: float      # raw price-point P&L (instrument-agnostic)
+    pnl_pts: float  # raw price-point P&L (instrument-agnostic)
     mfe: float
     mae: float
     trigger_action: int
@@ -86,20 +86,20 @@ class TradeRecord(NamedTuple):
 class TrainResult:
     symbol: str
     timeframe_minutes: int
-    z_omega: float                   # Validation ZOmega (primary selection key)
+    z_omega: float  # Validation ZOmega (primary selection key)
     train_trades: int
     val_trades: int
     total_train_steps: int
     elapsed_s: float
-    weights_path: str = ""           # Written by OfflineTrainer.run()
-    error: str = ""                  # Non-empty if the job crashed
+    weights_path: str = ""  # Written by OfflineTrainer.run()
+    error: str = ""  # Non-empty if the job crashed
 
 
 # ── ZOmega ────────────────────────────────────────────────────────────────────
 
+
 def z_omega(returns: list[float], threshold: float = 0.0) -> float:
-    """
-    Compute Omega ratio on σ-normalised returns (scale-agnostic Omega).
+    """Compute Omega ratio on σ-normalised returns (scale-agnostic Omega).
 
     Normalises each return by the sample standard deviation of the window
     (WITHOUT subtracting the mean) so the metric is instrument- and
@@ -116,6 +116,7 @@ def z_omega(returns: list[float], threshold: float = 0.0) -> float:
     Returns:
         ZOmega ∈ (0, ∞).  +inf when there are no losses.
         Returns 0.0 when fewer than MIN_VALIDATION_TRADES trades.
+
     """
     if len(returns) < MIN_VALIDATION_TRADES:
         return 0.0
@@ -126,8 +127,8 @@ def z_omega(returns: list[float], threshold: float = 0.0) -> float:
         # All returns identical — edge case, treat as neutral
         return 1.0
 
-    z = arr / sig              # σ-normalise only; threshold in sigma units
-    gains  = np.maximum(z - threshold, 0.0).sum()
+    z = arr / sig  # σ-normalise only; threshold in sigma units
+    gains = np.maximum(z - threshold, 0.0).sum()
     losses = np.maximum(threshold - z, 0.0).sum()
 
     if losses < _STD_FLOOR:
@@ -137,22 +138,27 @@ def z_omega(returns: list[float], threshold: float = 0.0) -> float:
 
 # ── Simulation ────────────────────────────────────────────────────────────────
 
+
 class _Simulator:
-    """
-    Stateful bar-by-bar walker.
+    """Stateful bar-by-bar walker.
 
     Calls DualPolicy entry/exit methods and accumulates experiences.
     Does NOT call train_step — the caller decides when to update.
     """
 
-    def __init__(self, policy, update_policy: bool = True, symbol_digits: int = 2,
-                 event_engine: EventTimeFeatureEngine | None = None,
-                 reward_clip_harvester: float = REWARD_CLIP,
-                 reward_clip_trigger: float = TRIGGER_REWARD_CLIP,
-                 capture_baseline: float = 0.5,
-                 symbol: str = "XAUUSD",
-                 timeframe: str = "M5",
-                 penalty_scale: float = 1.0) -> None:
+    def __init__(
+        self,
+        policy,
+        update_policy: bool = True,
+        symbol_digits: int = 2,
+        event_engine: EventTimeFeatureEngine | None = None,
+        reward_clip_harvester: float = REWARD_CLIP,
+        reward_clip_trigger: float = TRIGGER_REWARD_CLIP,
+        capture_baseline: float = 0.5,
+        symbol: str = "XAUUSD",
+        timeframe: str = "M5",
+        penalty_scale: float = 1.0,
+    ) -> None:
         self.policy = policy
         self.update_policy = update_policy  # False during validation pass
         self.bars: deque = deque(maxlen=DEQUE_MAXLEN)
@@ -169,14 +175,14 @@ class _Simulator:
         self._penalty_scale = penalty_scale  # soften WTL/timing penalties for curriculum training
 
         # Position state
-        self.cur_pos: int = 0           # 0 flat, 1 long, -1 short
+        self.cur_pos: int = 0  # 0 flat, 1 long, -1 short
         self.entry_price: float = 0.0
         self.entry_bar_idx: int = 0
         self.entry_action: int = 0
         self._mfe_calc = MFEMAECalculator()  # single source of truth
         self.bars_held: int = 0
         self.entry_spread_pts: float = 0.0  # spread at entry bar (broker points)
-        self._cur_spread_pts: float = 0.0   # spread at current bar (broker points)
+        self._cur_spread_pts: float = 0.0  # spread at current bar (broker points)
         self._predicted_runway: float = 0.0  # stored at entry for trigger reward
 
         # State snapshots for experience labelling
@@ -213,7 +219,10 @@ class _Simulator:
     def _try_entry(self, bar_idx: int, current_price: float) -> None:
         try:
             action, _, _ = self.policy.decide_entry(
-                self.bars, imbalance=0.0, vpin_z=0.0, depth_ratio=1.0,
+                self.bars,
+                imbalance=0.0,
+                vpin_z=0.0,
+                depth_ratio=1.0,
                 event_features=self._get_event_features(),
             )
         except Exception as exc:
@@ -361,8 +370,8 @@ class _Simulator:
             exit_pnl=pnl_pts,
             mfe=self.mfe,
             was_wtl=not capture,
-            bars_held=self.bars_held,
-            bars_from_mfe_to_exit=0,
+            _bars_held=self.bars_held,
+            _bars_from_mfe_to_exit=0,
             mae=self.mae,
             exit_time=exit_time,
         )
@@ -374,8 +383,7 @@ class _Simulator:
         r_timing = harvester_result.get("timing_penalty", 0.0) * self._penalty_scale
         session_mult = harvester_result.get("session_quality", 1.0)
         softened_reward = (r_capture_eff + r_wtl + r_timing) * session_mult
-        capture_reward = float(np.clip(softened_reward,
-                                       -self._reward_clip_harvester, self._reward_clip_harvester))
+        capture_reward = float(np.clip(softened_reward, -self._reward_clip_harvester, self._reward_clip_harvester))
 
         # ── Trigger reward: prediction accuracy (matches live bot) ────────
         trigger_reward = self._compute_trigger_reward(pnl_pts)
@@ -383,19 +391,21 @@ class _Simulator:
         if self.update_policy and self.entry_state is not None:
             self._add_experiences(trigger_reward=trigger_reward, capture_reward=capture_reward)
 
-        self.trades.append(TradeRecord(
-            entry_bar_idx=self.entry_bar_idx,
-            exit_bar_idx=bar_idx,
-            direction=self.cur_pos,
-            entry_price=self.entry_price,
-            exit_price=exit_price,
-            pnl_pts=float(pnl_pts),
-            mfe=float(self.mfe),
-            mae=float(self.mae),
-            trigger_action=self.entry_action,
-            trigger_reward=float(trigger_reward),
-            capture_reward=float(capture_reward),
-        ))
+        self.trades.append(
+            TradeRecord(
+                entry_bar_idx=self.entry_bar_idx,
+                exit_bar_idx=bar_idx,
+                direction=self.cur_pos,
+                entry_price=self.entry_price,
+                exit_price=exit_price,
+                pnl_pts=float(pnl_pts),
+                mfe=float(self.mfe),
+                mae=float(self.mae),
+                trigger_action=self.entry_action,
+                trigger_reward=float(trigger_reward),
+                capture_reward=float(capture_reward),
+            )
+        )
 
         with contextlib.suppress(Exception):
             self.policy.on_exit(
@@ -431,11 +441,7 @@ class _Simulator:
 
         try:
             harv = self.policy.harvester
-            prev_state = (
-                harv.last_state.copy()
-                if hasattr(harv, "last_state") and harv.last_state is not None
-                else None
-            )
+            prev_state = harv.last_state.copy() if hasattr(harv, "last_state") and harv.last_state is not None else None
             if prev_state is not None:
                 next_state = prev_state  # terminal step
                 self.policy.add_harvester_experience(
@@ -451,9 +457,9 @@ class _Simulator:
 
 # ── OfflineTrainer ─────────────────────────────────────────────────────────────
 
+
 class OfflineTrainer:
-    """
-    Train one DualPolicy on historical bars and report ZOmega on hold-out.
+    """Train one DualPolicy on historical bars and report ZOmega on hold-out.
 
     Args:
         symbol:             Instrument name (e.g. "XAUUSD").
@@ -473,9 +479,10 @@ class OfflineTrainer:
                             (overrides EPSILON_START env var, default 0.4).
         epsilon_end:        Epsilon floor across all epochs
                             (overrides EPSILON_END env var, default 0.05).
+
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         symbol: str,
         timeframe_minutes: int,
@@ -541,6 +548,7 @@ class OfflineTrainer:
     def _restore_env_vars(orig_start: str | None, orig_end: str | None, orig_gates: str | None) -> None:
         """Restore EPSILON_START, EPSILON_END, DISABLE_GATES env vars to their original values."""
         import os  # noqa: PLC0415
+
         for key, original in [("EPSILON_START", orig_start), ("EPSILON_END", orig_end), ("DISABLE_GATES", orig_gates)]:
             if original is None:
                 os.environ.pop(key, None)
@@ -566,7 +574,15 @@ class OfflineTrainer:
 
         n_train = int(len(self.bars) * self.train_split)
         train_bars = self.bars[:n_train]
-        offline_buffer_capacity = min(max(len(train_bars) // 2, 2_000), 20_000)
+        # AMD GPU: larger buffer (50K) with float16 storage uses ~100MB.
+        # CPU: cap at 20K to stay memory-safe on limited hosts.
+        try:
+            from src.core.ddqn_network import AMD_OPTS  # noqa: PLC0415
+            _is_amd = AMD_OPTS.get("is_amd", False)
+        except Exception:
+            _is_amd = False
+        _cap = 50_000 if _is_amd else 20_000
+        offline_buffer_capacity = min(max(len(train_bars) // 2, 2_000), _cap)
         policy_kwargs = {
             "trigger_buffer_capacity": offline_buffer_capacity,
             "harvester_buffer_capacity": offline_buffer_capacity,
@@ -634,11 +650,15 @@ class OfflineTrainer:
         n_total = len(self.bars)
         n_train = int(n_total * self.train_split)
         train_bars = self.bars[:n_train]
-        val_bars   = self.bars[n_train:]
+        val_bars = self.bars[n_train:]
 
         LOG.info(
             "[OFFLINE] %s: %d train bars / %d val bars  (epochs=%d, warm_start=%s)",
-            label, len(train_bars), len(val_bars), self.n_epochs, self.warm_start,
+            label,
+            len(train_bars),
+            len(val_bars),
+            self.n_epochs,
+            self.warm_start,
         )
 
         # Override epsilon schedule AND disable live gating for offline training.
@@ -661,7 +681,7 @@ class OfflineTrainer:
         _progress_path = Path(f"data/offline_progress_{self.symbol}_M{self.timeframe_minutes}.json")
         _progress_path.parent.mkdir(parents=True, exist_ok=True)
         _total_bars_all_epochs = len(train_bars) * self.n_epochs
-        _progress_every = max(50, len(train_bars) // 100)   # ~100 HUD updates per epoch
+        _progress_every = max(50, len(train_bars) // 100)  # ~100 HUD updates per epoch
 
         total_train_steps, total_train_trades = self._run_training_epochs(
             policy,
@@ -676,11 +696,13 @@ class OfflineTrainer:
         total_train_steps += focused_steps
         total_train_trades += focused_trades
 
-        _progress_path.unlink(missing_ok=True)   # clean up when done
+        _progress_path.unlink(missing_ok=True)  # clean up when done
 
         LOG.info(
             "[OFFLINE] %s all epochs done: %d total trades, %d gradient steps",
-            label, total_train_trades, total_train_steps,
+            label,
+            total_train_trades,
+            total_train_steps,
         )
 
         # ── Validation pass ───────────────────────────────────────────────────
@@ -730,7 +752,7 @@ class OfflineTrainer:
         total_train_steps = 0
         total_train_trades = 0
         for epoch in range(self.n_epochs):
-            epoch_eps_start = self.epsilon_start * (0.7 ** epoch)
+            epoch_eps_start = self.epsilon_start * (0.7**epoch)
             epoch_eps_start = max(epoch_eps_start, self.epsilon_end * 2)
             policy.trigger.epsilon = epoch_eps_start
             if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
@@ -738,18 +760,25 @@ class OfflineTrainer:
 
             LOG.info(
                 "[OFFLINE] %s epoch %d/%d  ε_start=%.3f",
-                label, epoch + 1, self.n_epochs, epoch_eps_start,
+                label,
+                epoch + 1,
+                self.n_epochs,
+                epoch_eps_start,
             )
 
             policy.current_position = 0
-            sim = _Simulator(policy, update_policy=True, symbol_digits=self.symbol_digits,
-                             event_engine=self._event_engine,
-                             reward_clip_harvester=self._reward_clip_harvester,
-                             reward_clip_trigger=self._reward_clip_trigger,
-                             capture_baseline=self._capture_baseline,
-                             symbol=self.symbol,
-                             timeframe=f"M{self.timeframe_minutes}",
-                             penalty_scale=self._penalty_scale)
+            sim = _Simulator(
+                policy,
+                update_policy=True,
+                symbol_digits=self.symbol_digits,
+                event_engine=self._event_engine,
+                reward_clip_harvester=self._reward_clip_harvester,
+                reward_clip_trigger=self._reward_clip_trigger,
+                capture_baseline=self._capture_baseline,
+                symbol=self.symbol,
+                timeframe=f"M{self.timeframe_minutes}",
+                penalty_scale=self._penalty_scale,
+            )
             epoch_bar_offset = epoch * len(train_bars)
 
             for i, bar in enumerate(train_bars):
@@ -769,9 +798,19 @@ class OfflineTrainer:
                 )
 
             total_train_trades += len(sim.trades)
+            try:
+                import torch  # noqa: PLC0415
+                _gpu_mb = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
+            except Exception:
+                _gpu_mb = 0
             LOG.info(
-                "[OFFLINE] %s epoch %d/%d done: %d trades, %d gradient steps",
-                label, epoch + 1, self.n_epochs, len(sim.trades), total_train_steps,
+                "[OFFLINE] %s epoch %d/%d done: %d trades, %d gradient steps, GPU=%.0f MB",
+                label,
+                epoch + 1,
+                self.n_epochs,
+                len(sim.trades),
+                total_train_steps,
+                _gpu_mb,
             )
         return total_train_steps, total_train_trades
 
@@ -849,21 +888,25 @@ class OfflineTrainer:
         _global_bar = epoch_bar_offset + bar_idx
         try:
             tmp_path = progress_path.with_suffix(".tmp")
-            tmp_path.write_text(json.dumps({
-                "symbol": self.symbol,
-                "timeframe_minutes": self.timeframe_minutes,
-                "bar": _global_bar,
-                "total_bars": total_bars_all_epochs,
-                "pct": round(_global_bar / total_bars_all_epochs * 100, 1),
-                "epoch": epoch + 1,
-                "n_epochs": self.n_epochs,
-                "train_steps": total_train_steps,
-                "trades": total_train_trades + len(sim.trades),
-                "epsilon": round(float(_trig.epsilon), 4),
-                "beta": round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
-                "trigger_buf": int(_trig.buffer.size) if _trig.buffer else 0,
-                "harvester_buf": int(_harv.buffer.size) if _harv.buffer else 0,
-            }))
+            tmp_path.write_text(
+                json.dumps(
+                    {
+                        "symbol": self.symbol,
+                        "timeframe_minutes": self.timeframe_minutes,
+                        "bar": _global_bar,
+                        "total_bars": total_bars_all_epochs,
+                        "pct": round(_global_bar / total_bars_all_epochs * 100, 1),
+                        "epoch": epoch + 1,
+                        "n_epochs": self.n_epochs,
+                        "train_steps": total_train_steps,
+                        "trades": total_train_trades + len(sim.trades),
+                        "epsilon": round(float(_trig.epsilon), 4),
+                        "beta": round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
+                        "trigger_buf": int(_trig.buffer.size) if _trig.buffer else 0,
+                        "harvester_buf": int(_harv.buffer.size) if _harv.buffer else 0,
+                    }
+                )
+            )
             tmp_path.replace(progress_path)
         except Exception:
             LOG.debug("[OFFLINE] Failed to write progress file: %s", progress_path, exc_info=True)
@@ -878,21 +921,27 @@ class OfflineTrainer:
     def _run_validation(self, policy, val_bars: list, label: str) -> tuple[float, int]:
         """Run validation pass and return (score, trade_count)."""
         self._prepare_validation_policy(policy)
-        val_sim = _Simulator(policy, update_policy=False, symbol_digits=self.symbol_digits,
-                             event_engine=self._event_engine,
-                             reward_clip_harvester=self._reward_clip_harvester,
-                             reward_clip_trigger=self._reward_clip_trigger,
-                             capture_baseline=self._capture_baseline,
-                             symbol=self.symbol,
-                             timeframe=f"M{self.timeframe_minutes}",
-                             penalty_scale=self._penalty_scale)
+        val_sim = _Simulator(
+            policy,
+            update_policy=False,
+            symbol_digits=self.symbol_digits,
+            event_engine=self._event_engine,
+            reward_clip_harvester=self._reward_clip_harvester,
+            reward_clip_trigger=self._reward_clip_trigger,
+            capture_baseline=self._capture_baseline,
+            symbol=self.symbol,
+            timeframe=f"M{self.timeframe_minutes}",
+            penalty_scale=self._penalty_scale,
+        )
         for i, bar in enumerate(val_bars):
             val_sim.step(bar, i)
         val_pnl = [t.pnl_pts for t in val_sim.trades]
         score = z_omega(val_pnl)
         LOG.info(
             "[OFFLINE] %s val: %d trades, ZOmega=%.4f",
-            label, len(val_sim.trades), score,
+            label,
+            len(val_sim.trades),
+            score,
         )
         return score, len(val_sim.trades)
 
