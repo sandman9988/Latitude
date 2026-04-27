@@ -181,11 +181,11 @@ def _regime_breakdown(trades: list) -> dict[str, dict]:
             result[regime]["wtl"] += 1
         result[regime]["mfe"] += float(t.get("mfe_points", 0) or 0)
         result[regime]["mae"] += float(t.get("mae_points", 0) or 0)
-    for reg in result:
-        n = result[reg]["trades"]
+    for stats in result.values():
+        n = stats["trades"]
         if n > 0:
-            result[reg]["mfe"] /= n
-            result[reg]["mae"] /= n
+            stats["mfe"] /= n
+            stats["mae"] /= n
     return result
 
 
@@ -243,6 +243,7 @@ def period_metrics(pts: list, starting_equity: float = 10_000.0) -> dict:
     Returns:
         Dict of performance metrics.  Returns a zero-filled dict when
         *pts* is empty so callers never need to guard against missing keys.
+
     """
     if not pts:
         return dict(_EMPTY)
@@ -321,11 +322,11 @@ def period_comparison(short_pts: list, long_pts: list, starting_equity: float = 
 
     """
     s = period_metrics(short_pts, starting_equity)
-    l = period_metrics(long_pts, starting_equity)
+    L = period_metrics(long_pts, starting_equity)
 
     def _delta(key: str) -> float | None:
         sv = s.get(key)
-        lv = l.get(key)
+        lv = L.get(key)
         if sv is None or lv is None or (isinstance(lv, (int, float)) and lv == 0):
             return None
         if isinstance(sv, (int, float)) and isinstance(lv, (int, float)):
@@ -334,14 +335,14 @@ def period_comparison(short_pts: list, long_pts: list, starting_equity: float = 
 
     def _pct(key: str) -> float | None:
         d = _delta(key)
-        lv = l.get(key)
+        lv = L.get(key)
         if d is not None and isinstance(lv, (int, float)) and lv != 0:
             return d / abs(float(lv)) * 100.0
         return None
 
     return {
         "short": s,
-        "long": l,
+        "long": L,
         "delta_pnl": _delta("total_pnl"),
         "delta_wr": _delta("win_rate"),
         "delta_sharpe": _delta("sharpe_ratio"),
@@ -353,7 +354,7 @@ def period_comparison(short_pts: list, long_pts: list, starting_equity: float = 
         "delta_capture": _delta("avg_capture_ratio"),
         "delta_avg_win": _delta("avg_win"),
         "delta_avg_loss": _delta("avg_loss"),
-        "pnl_trend": "improving" if _delta("total_pnl") is not None and _delta("total_pnl") > 0 else "degrading",
+        "pnl_trend": ("improving" if (_delta("total_pnl") or 0) > 0 else "degrading"),
     }
 
 
@@ -386,6 +387,13 @@ def decision_quality(trades: list) -> dict:
         "exit_reasons": reasons,
         "capture_quality": qual,
     }
+
+
+def _trend_label(delta: float, threshold: float, up_label: str, down_label: str) -> str:
+    """Classify a delta as stable/up/down relative to a threshold."""
+    if abs(delta) < threshold:
+        return "stable"
+    return up_label if delta > 0 else down_label
 
 
 def cap_trend(trades: list, window: int = 50) -> dict:
@@ -424,14 +432,14 @@ def cap_trend(trades: list, window: int = 50) -> dict:
     cap_delta = s.get("avg_cap", 0) - f.get("avg_cap", 0)
     return {
         "samples": window,
-        "status": "stable" if abs(cap_delta) < 0.1 else ("improving" if cap_delta > 0 else "degrading"),
+        "cap_delta": cap_delta,
         "first_half": f,
         "second_half": s,
-        "cap_delta": cap_delta,
-        "mfe_trend": "stable" if abs(s.get("avg_mfe", 0) - f.get("avg_mfe", 0)) < 1.0
-                     else ("rising" if s.get("avg_mfe", 0) > f.get("avg_mfe", 0) else "falling"),
-        "mae_trend": "stable" if abs(s.get("avg_mae", 0) - f.get("avg_mae", 0)) < 0.5
-                     else ("rising" if s.get("avg_mae", 0) > f.get("avg_mae", 0) else "falling"),
+        "status": _trend_label(cap_delta, 0.1, "improving", "degrading"),
+        "mfe_trend": _trend_label(
+            s.get("avg_mfe", 0) - f.get("avg_mfe", 0), 1.0, "rising", "falling"),
+        "mae_trend": _trend_label(
+            s.get("avg_mae", 0) - f.get("avg_mae", 0), 0.5, "rising", "falling"),
     }
 
 
@@ -450,7 +458,6 @@ def self_healing_metrics(trades: list, starting_equity: float = 10_000.0) -> dic
     pm = period_metrics(trades, starting_equity)
     ct = cap_trend(trades)
     reasons = _close_reason_breakdown(trades)
-    qual = _capture_quality(trades)
 
     # Use non-ghost count for all ratio calculations
     non_ghost = [t for t in trades if not (isinstance(t, dict) and t.get("close_reason") == "GHOST_RECONCILE")]
@@ -463,10 +470,8 @@ def self_healing_metrics(trades: list, starting_equity: float = 10_000.0) -> dic
 
     flags: list[str] = []
     recs: list[str] = []
-    pnl = pm.get("total_pnl", 0)
     wr = pm.get("win_rate", 0)
     wtl_count = pm.get("winner_to_loser_count", 0)
-    wtl_pnl = pm.get("winner_to_loser_pnl", 0)
 
     # WTL rate check
     if total > 10 and wtl_count / total > 0.15:

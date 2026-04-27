@@ -106,16 +106,19 @@ Tests using these fixtures are automatically skipped if the live cache has insuf
 data (≥200 bars, ≥10 trades required).
 
 Key fixtures:
+
 - `xauusd_m5_bars` — session-scoped list of ~8,000+ real XAUUSD M5 bars
 - `xauusd_m5_trades` — session-scoped list of raw trade records
 - `xauusd_m5_bars_100/500` — function-scoped deque subsets
 
 After modifying `openapi_hub.py` P&L or trade log paths, run:
+
 ```bash
 python3 -m pytest tests/unit/test_openapi_hub_pnl.py -v --tb=short
 ```
 
 After modifying reward shaper or metrics_calculator:
+
 ```bash
 python3 -m pytest tests/unit/test_metrics_calculator.py tests/unit/test_reward_calculations.py -v
 ```

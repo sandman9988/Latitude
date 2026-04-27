@@ -3,6 +3,7 @@
 ## Project Overview
 
 Dual-DDQN paper trading fleet (TriggerAgent + HarvesterAgent) using cTrader Open API.
+
 - Topology: `openapi-hub` — `src/core/openapi_hub.py`, launched via `run_universe.py --watch`
 - Symbols: XAUUSD, BTCUSD × 6 TFs (M1, M5, M15, M30, M60, M240)
 - GPU: AMD RX 7600 / ROCm — always set `HSA_OVERRIDE_GFX_VERSION=11.0.0`
@@ -37,11 +38,13 @@ which load real paper-trading data (`data/training_cache_XAUUSD_M5.jsonl`,
 `data/training_cache_XAUUSD_M1.jsonl`, `data/training_cache_BTCUSD_M1.jsonl`).
 
 After modifying `openapi_hub.py` P&L or trade log paths, run:
+
 ```bash
 python3 -m pytest tests/unit/test_openapi_hub_pnl.py -v --tb=short
 ```
 
 After modifying reward shaper or metrics_calculator:
+
 ```bash
 python3 -m pytest tests/unit/test_metrics_calculator.py tests/unit/test_reward_calculations.py -v
 ```
@@ -70,14 +73,15 @@ python -m pytest -k "risk_manager" -v
 ```
 
 When diagnosing failures across the whole suite, run one directory at a time:
+
 1. `python -m pytest tests/unit/ -n 2 --dist loadfile --tb=line -q`
-2. `python -m pytest tests/integration/ --tb=short`
-3. `python -m pytest tests/test_*.py --tb=short`
+1. `python -m pytest tests/integration/ --tb=short`
+1. `python -m pytest tests/test_*.py --tb=short`
 
 ## Key Files
 
 | File | Purpose |
-|------|---------|
+| ------ | --------- |
 | `src/core/openapi_hub.py` | Main hub — all SpotEvents, TrendBars, order flow |
 | `run_universe.py` | Supervisor launching per-symbol hubs |
 | `run.sh` | Shell launcher (sources env + ROCm config) |
@@ -109,8 +113,9 @@ MICRO_WINNER_GIVEBACK_PCT      = 0.40   # Exit if giveback > this fraction of MF
 ```
 
 Emergency reset (`_apply_capture_emergency_reset` in openapi_hub.py) applies timeframe scale:
+
 - `trailing_stop_activation_pct = TRAILING_STOP_ACTIVATION_PCT * tf_scale * 0.50`
-- `capture_decay_min_mfe_pct    = CAPTURE_DECAY_MIN_MFE_PCT * tf_scale`  ← no extra 0.50×
+- `capture_decay_min_mfe_pct    = CAPTURE_DECAY_MIN_MFE_PCT * tf_scale` ← no extra 0.50×
 - `capture_decay_threshold      = 0.50`
 
 ## Downloading History Data
@@ -217,7 +222,7 @@ python -m pytest tests/unit/ --ignore=tests/unit/test_production_monitor_http.py
 ## Current Universe State (as of 2026-04-26)
 
 | Symbol | TF | ZΩ | Status |
-|--------|----|----|--------|
+| -------- | ---- | ---- | -------- |
 | XAUUSD | M1 | 3.159 | Promoted, active |
 | XAUUSD | M5 | 1.663 | Promoted, active |
 | XAUUSD | M240 | 1.601 | Promoted, active |

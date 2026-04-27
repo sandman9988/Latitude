@@ -233,7 +233,7 @@ class TestSelfHealingEdgeCases:
     def test_all_losing_trades_detected(self):
         """100% losing trades must raise negative_expectancy flag."""
         trades = []
-        for i in range(25):
+        for _ in range(25):
             trades.append({"pnl": -5.0, "winner_to_loser": False, "close_reason": "ddqn_model",
                            "capture_ratio": 0.2, "mfe_points": 1.0, "entry_confidence": 0.6,
                            "mfe": 1.0, "mae": 2.0, "entry_price": 100.0, "exit_price": 99.5,
@@ -246,8 +246,8 @@ class TestSelfHealingEdgeCases:
     def test_high_wtl_raises_flag(self):
         """More than 15% WTL trades must raise high_wtl_rate flag."""
         trades = []
-        for i in range(20):
-            is_wtl = i < 5  # 5/20 = 25% WTL
+        for _ in range(20):
+            is_wtl = _ < 5  # mark 5/20 as WTL
             trades.append({
                 "pnl": -3.0 if is_wtl else 2.0,
                 "winner_to_loser": is_wtl,
@@ -265,7 +265,7 @@ class TestSelfHealingEdgeCases:
         trades = [{"pnl": 100.0, "close_reason": "GHOST_RECONCILE"} for _ in range(10)]
         result = self_healing_metrics(trades)
         assert result.get("health") == "UNKNOWN"
-        assert result.get("wtl_rate") == 0.0
+        assert result.get("wtl_rate", -1) == pytest.approx(0.0)
 
     def test_cap_trend_edge_no_data(self):
         """cap_trend with empty or tiny data must return 'insufficient'."""
@@ -275,7 +275,7 @@ class TestSelfHealingEdgeCases:
     def test_decision_quality_empty(self):
         """decision_quality with empty data must return zeros, not crash."""
         dq = decision_quality([])
-        assert dq.get("avg_conf_win") == 0.0
+        assert dq.get("avg_conf_win", -1) == pytest.approx(0.0)
         assert dq.get("exit_reasons") == {}
         assert dq.get("capture_quality") == {}
 

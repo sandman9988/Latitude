@@ -654,7 +654,7 @@ class TFAgent:
         self._maybe_train()
         self._maybe_checkpoint_and_telemetry()
 
-    def _on_bar_close_no_exit(self, bar: tuple, half_spread: float) -> None:
+    def _on_bar_close_no_exit(self, bar: tuple, _half_spread: float) -> None:
         """Bar close processing when position was already closed this tick.
 
         Runs the same bar-state updates and training as _on_bar_close but skips
@@ -1170,7 +1170,6 @@ class TFAgent:
             stop_price = entry_price - direction * stop_dist
             target_price = entry_price + direction * target_dist
 
-            window_entry = deque(bars_list[:entry_idx + 1], maxlen=2000)
             vol_entry = self._compute_preseed_vol(bars_list, entry_idx)
 
             prev_harv_state = None
@@ -1178,7 +1177,6 @@ class TFAgent:
             prev_mae: float = 0.0
             pnl_pts = 0.0
             exit_idx = entry_idx
-
             for hold_step in range(1, self._PRESEED_MAX_HOLD + 1):
                 bar_idx = entry_idx + hold_step
                 if bar_idx >= n:
@@ -1243,11 +1241,9 @@ class TFAgent:
 
                 if hit_target:
                     pnl_pts = target_dist
-                    exit_idx = bar_idx
                     break
                 if hit_stop or hold_step == self._PRESEED_MAX_HOLD:
                     pnl_pts = -stop_dist if hit_stop else (bar_close - entry_price) * direction
-                    exit_idx = bar_idx
                     break
 
             # CLOSE experience
@@ -1703,7 +1699,6 @@ class TFAgent:
         pnl_pts: float,
         entry_price: float,
         predicted_runway_net: float,
-        predicted_runway_gross: float,
         realized_vol: float,
     ) -> float:
         """Four-component trigger reward: accuracy + magnitude - false_positive - toxic_flow.
@@ -2209,7 +2204,6 @@ class TFAgent:
             pnl_pts=pnl_pts,
             entry_price=entry_price,
             predicted_runway_net=_runway_net,
-            predicted_runway_gross=_runway_gross,
             realized_vol=self._realized_vol(),
         )
 

@@ -3,7 +3,7 @@
 > Last updated: 2026-04-27
 > Read AGENTS.md, MASTER_HANDBOOK.md, CLAUDE.md, and docs/CURRENT_STATE.md before making structural changes.
 
----
+______________________________________________________________________
 
 ## Project Identity
 
@@ -14,87 +14,87 @@ Active paper trading XAUUSD on a **multi-timeframe fleet** (M1, M5, M15, M30, M6
 
 **GPU Support:** AMD ROCm 7.2+ (gfx1100/gfx1102/Navi 31/33) with native BF16 training, NVIDIA CUDA, and CPU fallback. AMD optimizations auto-detected at startup. Always set `HSA_OVERRIDE_GFX_VERSION=11.0.0`.
 
----
+______________________________________________________________________
 
 ## Architecture in one paragraph
 
 A **Trigger agent** (entry specialist) and **Harvester agent** (exit specialist) are both Conv1d DDQN networks trained with Prioritized Experience Replay. Market state is built from log-return features + DSP-based regime detector (damping ratio ζ). `DualPolicy` orchestrates them: Trigger scores high-quality entries; Harvester decides when to close. Risk gate (`RiskManager` + `CircuitBreakers` + `VaR`) sizes positions and blocks trading when circuit breakers trip. All decisions are logged to `logs/audit/decisions.jsonl` (rich JSONL) and mirrored to `data/decision_log.json` (bar-close summary). The HUD (`src/monitoring/hud_tabbed.py`) is a 7-tab terminal UI with low-latency input polling/drain, arrow-key tab switching, and a dedicated Trades tab.
 
----
+______________________________________________________________________
 
 ## Key source files
 
-| File                                  | Purpose                                                                 |
+| File | Purpose |
 | ------------------------------------- | ----------------------------------------------------------------------- |
-| `src/core/openapi_hub.py`             | **Main hub** — `TFAgent`, all SpotEvents, TrendBars, order flow         |
-| `src/core/ctrader_ddqn_paper.py`      | Legacy FIX-based bot orchestrator (reference only)                      |
-| `src/agents/trigger_agent.py`         | Entry DDQN + fallback strategy                                          |
-| `src/agents/harvester_agent.py`       | Exit DDQN + min-hold guard                                              |
-| `src/agents/dual_policy.py`           | Orchestrates both agents; feasibility × ζ gate                          |
-| `src/core/ddqn_network.py`            | Conv1dQNet → temporal_pool_size param, AMD BF16 training support        |
-| `src/core/reward_shaper.py`           | 6-dim asymmetric rewards; result-based timing                           |
-| `src/constants_amd.py`                | AMD ROCm GPU optimizations (BF16, float16, batch sizes)                 |
-| `config/rocm_env.sh`                  | ROCm 7.2+ environment configuration for gfx1102/Navi 33                 |
-| `src/utils/experience_buffer.py`      | PER + IS weights (raw-priority IS, post-loop update)                    |
-| `src/utils/metrics_calculator.py`     | Single-source period metrics (Sharpe, Sortino, PF, MaxDD)               |
-| `src/features/regime_detector.py`     | DSP pipeline → damping ratio ζ                                          |
-| `src/features/hmm_regime.py`          | HMM-based regime detector                                               |
-| `src/risk/risk_manager.py`            | VaR-based sizing; payoff-ratio budget adaptation                        |
-| `src/risk/circuit_breakers.py`        | Sortino, Kurtosis, VPIN breakers                                        |
-| `src/core/broker_execution_model.py`  | Asymmetric slippage model                                               |
-| `src/persistence/bot_persistence.py`  | Atomic + journaled state persistence                                    |
-| `src/persistence/trade_log_reader.py` | Centralized trade_log.jsonl reader                                      |
-| `src/monitoring/hud_tabbed.py`        | 7-tab terminal HUD                                                      |
-| `src/monitoring/audit_logger.py`      | `DecisionLogger` → `logs/audit/decisions.jsonl`                         |
-| `src/training/offline_trainer.py`     | Walk-forward DDQN training on historical bars                           |
-| `src/risk/path_geometry.py`           | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
-| `src/features/event_time_features.py` | Session/rollover/week event features (6 broadcast dims)                 |
-| `run_universe.py`                     | Supervisor launching per-symbol hubs, weight sync                       |
-| `train_offline.py`                    | Offline tournament trainer (6 variants, auto-promote)                   |
-| `run.sh`                              | Shell launcher (sources env + ROCm config)                              |
+| `src/core/openapi_hub.py` | **Main hub** — `TFAgent`, all SpotEvents, TrendBars, order flow |
+| `src/core/ctrader_ddqn_paper.py` | Legacy FIX-based bot orchestrator (reference only) |
+| `src/agents/trigger_agent.py` | Entry DDQN + fallback strategy |
+| `src/agents/harvester_agent.py` | Exit DDQN + min-hold guard |
+| `src/agents/dual_policy.py` | Orchestrates both agents; feasibility × ζ gate |
+| `src/core/ddqn_network.py` | Conv1dQNet → temporal_pool_size param, AMD BF16 training support |
+| `src/core/reward_shaper.py` | 6-dim asymmetric rewards; result-based timing |
+| `src/constants_amd.py` | AMD ROCm GPU optimizations (BF16, float16, batch sizes) |
+| `config/rocm_env.sh` | ROCm 7.2+ environment configuration for gfx1102/Navi 33 |
+| `src/utils/experience_buffer.py` | PER + IS weights (raw-priority IS, post-loop update) |
+| `src/utils/metrics_calculator.py` | Single-source period metrics (Sharpe, Sortino, PF, MaxDD) |
+| `src/features/regime_detector.py` | DSP pipeline → damping ratio ζ |
+| `src/features/hmm_regime.py` | HMM-based regime detector |
+| `src/risk/risk_manager.py` | VaR-based sizing; payoff-ratio budget adaptation |
+| `src/risk/circuit_breakers.py` | Sortino, Kurtosis, VPIN breakers |
+| `src/core/broker_execution_model.py` | Asymmetric slippage model |
+| `src/persistence/bot_persistence.py` | Atomic + journaled state persistence |
+| `src/persistence/trade_log_reader.py` | Centralized trade_log.jsonl reader |
+| `src/monitoring/hud_tabbed.py` | 7-tab terminal HUD |
+| `src/monitoring/audit_logger.py` | `DecisionLogger` → `logs/audit/decisions.jsonl` |
+| `src/training/offline_trainer.py` | Walk-forward DDQN training on historical bars |
+| `src/risk/path_geometry.py` | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
+| `src/features/event_time_features.py` | Session/rollover/week event features (6 broadcast dims) |
+| `run_universe.py` | Supervisor launching per-symbol hubs, weight sync |
+| `train_offline.py` | Offline tournament trainer (6 variants, auto-promote) |
+| `run.sh` | Shell launcher (sources env + ROCm config) |
 
----
+______________________________________________________________________
 
 ## Wire Scale Invariant (CRITICAL)
 
 cTrader SpotEvent bid/ask are ALWAYS at 10^5 precision. `_scale = 100000` is fixed.
 `digits` from `SymbolByIdRes` is display precision only — never use it to set `_scale`.
 
----
+______________________________________________________________________
 
 ## Feature pipeline (offline, paper, live — all aligned)
 
 All three modes now use identical feature dimensions:
 
-| Group               | Count  | Features                                                           |
+| Group | Count | Features |
 | ------------------- | ------ | ------------------------------------------------------------------ |
-| Base                | 7      | ret1, ret5, ma_diff, vol, imbalance, vpin_z, depth_ratio           |
-| Geometry            | 5      | efficiency, gamma, jerk, runway, feasibility (PathGeometry)        |
-| Event               | 6      | london/ny/tokyo_active, overlap, rollover_proximity, week_progress |
-| **Trigger total**   | **18** | base + geometry + event                                            |
-| **Harvester total** | **21** | trigger features + MFE + MAE + bars_held                           |
+| Base | 7 | ret1, ret5, ma_diff, vol, imbalance, vpin_z, depth_ratio |
+| Geometry | 5 | efficiency, gamma, jerk, runway, feasibility (PathGeometry) |
+| Event | 6 | london/ny/tokyo_active, overlap, rollover_proximity, week_progress |
+| **Trigger total** | **18** | base + geometry + event |
+| **Harvester total** | **21** | trigger features + MFE + MAE + bars_held |
 
 Offline trainer extracts event features from bar timestamps; geometry from bar closes + realized vol.
 
 ## Weight format
 
-All weights saved as `.pt` files via `ddqn_network.save_weights()`:  
-`{"online": state_dict, "target": state_dict, "optimizer": state_dict, "training_steps": int}`  
+All weights saved as `.pt` files via `ddqn_network.save_weights()`:\
+`{"online": state_dict, "target": state_dict, "optimizer": state_dict, "training_steps": int}`\
 Load via `ddqn_network.load_weights()` which handles both `.pt` and legacy `.npz`.
 
----
+______________________________________________________________________
 
 ## AMD ROCm GPU Optimizations
 
 The system auto-detects AMD GPUs (gfx1100/gfx1102/Navi 31/33) at startup and applies:
 
-| Optimization              | Impact                                              | File                             |
+| Optimization | Impact | File |
 | ------------------------- | --------------------------------------------------- | -------------------------------- |
-| **BF16 training**         | 15-25% faster inference, better numerical stability | `src/core/ddqn_network.py`       |
-| **Float16 state storage** | 50% memory reduction in experience buffer           | `src/utils/experience_buffer.py` |
-| **Optimal batch sizes**   | Better GPU utilization for 8GB VRAM                 | `src/constants_amd.py`           |
-| **MIOpen tuning**         | 10-20% faster convolutions                          | `config/rocm_env.sh`             |
-| **Gradient accumulation** | Larger effective batch without memory increase      | `src/constants.py`               |
+| **BF16 training** | 15-25% faster inference, better numerical stability | `src/core/ddqn_network.py` |
+| **Float16 state storage** | 50% memory reduction in experience buffer | `src/utils/experience_buffer.py` |
+| **Optimal batch sizes** | Better GPU utilization for 8GB VRAM | `src/constants_amd.py` |
+| **MIOpen tuning** | 10-20% faster convolutions | `config/rocm_env.sh` |
+| **Gradient accumulation** | Larger effective batch without memory increase | `src/constants.py` |
 
 **Key files:**
 
@@ -105,9 +105,9 @@ The system auto-detects AMD GPUs (gfx1100/gfx1102/Navi 31/33) at startup and app
 **Detection flow:**
 
 1. `run.sh` calls `load_rocm_env()` after venv activation
-2. `src/core/ddqn_network.py` → `_get_amd_optimizations()` detects GPU
-3. BF16 enabled automatically for RDNA 3 (native BF16 support)
-4. Experience buffer uses float16 storage on AMD GPUs
+1. `src/core/ddqn_network.py` → `_get_amd_optimizations()` detects GPU
+1. BF16 enabled automatically for RDNA 3 (native BF16 support)
+1. Experience buffer uses float16 storage on AMD GPUs
 
 **Manual override:**
 
@@ -119,7 +119,7 @@ net = DDQNNetwork(state_dim=64, n_actions=3, use_bf16=True)
 buf = ExperienceBuffer(capacity=50000, use_float16=True)
 ```
 
----
+______________________________________________________________________
 
 ## Profitability safeguards
 
@@ -141,14 +141,14 @@ buf = ExperienceBuffer(capacity=50000, use_float16=True)
   - baselines default `7d` and `30d`
 - Quality-guard recommendations may adjust participation/selectivity and reward weights when 24h metrics materially degrade versus baselines.
 
----
+______________________________________________________________________
 
 ## Decision log architecture (TWO logs)
 
-| Log                           | Path                         | Format                    | Writer                    | Use                                                                                      |
+| Log | Path | Format | Writer | Use |
 | ----------------------------- | ---------------------------- | ------------------------- | ------------------------- | ---------------------------------------------------------------------------------------- |
-| **Audit log** (primary)       | `logs/audit/decisions.jsonl` | Append-only JSONL         | `DecisionLogger`          | Rich: session_id, agent, decision, confidence, context, reasoning, trade_id, position_id |
-| **Bar-close log** (secondary) | `data/decision_log.json`     | JSON list, full overwrite | `_obc_write_decision_log` | OHLC state + bars_held at every bar close; session field added                           |
+| **Audit log** (primary) | `logs/audit/decisions.jsonl` | Append-only JSONL | `DecisionLogger` | Rich: session_id, agent, decision, confidence, context, reasoning, trade_id, position_id |
+| **Bar-close log** (secondary) | `data/decision_log.json` | JSON list, full overwrite | `_obc_write_decision_log` | OHLC state + bars_held at every bar close; session field added |
 
 **Correlation keys:**
 
@@ -164,19 +164,19 @@ buf = ExperienceBuffer(capacity=50000, use_float16=True)
 - `runway_delta_points` = adjusted predicted runway minus realized `mfe_points`
 - `mfe_points`, `mae_points` = realized excursion metrics in points for close attribution
 
----
+______________________________________________________________________
 
 ## HUD tab map
 
-| Key | Tab           | Key data                                                             |
+| Key | Tab | Key data |
 | --- | ------------- | -------------------------------------------------------------------- |
-| 1   | Overview      | fleet status, position, account balance, risk status, market         |
-| 2   | Performance   | period metrics (24h/7d/Mo/All), edge quality, prediction convergence |
-| 3   | Training      | offline jobs, per-agent steps/loss/reward with trend arrows          |
-| 4   | Risk          | VaR, circuit breakers, regime ζ, reward weights, path geometry       |
-| 5   | Market        | spread, L2 ladder, VPIN-z, imbalance, signal synthesis               |
-| 6   | Decision Log  | `MM-DD HH:MM` timestamps, TrdID column, session-break separators     |
-| 7   | Trade History | paginated list with mode badge (P/L), drill-down detail              |
+| 1 | Overview | fleet status, position, account balance, risk status, market |
+| 2 | Performance | period metrics (24h/7d/Mo/All), edge quality, prediction convergence |
+| 3 | Training | offline jobs, per-agent steps/loss/reward with trend arrows |
+| 4 | Risk | VaR, circuit breakers, regime ζ, reward weights, path geometry |
+| 5 | Market | spread, L2 ladder, VPIN-z, imbalance, signal synthesis |
+| 6 | Decision Log | `MM-DD HH:MM` timestamps, TrdID column, session-break separators |
+| 7 | Trade History | paginated list with mode badge (P/L), drill-down detail |
 
 ## Runway-delta adaptation (point-unit contract)
 
@@ -192,39 +192,39 @@ buf = ExperienceBuffer(capacity=50000, use_float16=True)
 When reading trade records for convergence, HUD should resolve runway points in this order:
 
 1. `predicted_runway_net_points` (adjusted)
-2. `predicted_runway_net_points_raw` (raw)
-3. legacy fallback: `predicted_runway * entry_price`
+1. `predicted_runway_net_points_raw` (raw)
+1. legacy fallback: `predicted_runway * entry_price`
 
 ## HUD keyboard shortcuts
 
-| Key     | Action                                                  |
+| Key | Action |
 | ------- | ------------------------------------------------------- |
-| `1`-`7` | Switch to tab                                           |
-| `Tab`   | Cycle forward; `Shift+Tab` backward                     |
-| `←`/`→` | Cycle tabs left/right                                   |
-| `s`     | Select symbol/timeframe preset                          |
-| `r`     | Review & reset tripped circuit breakers                 |
-| `e`     | Set/clear stats epoch (exclude old trades from metrics) |
-| `h`     | Help screen                                             |
-| `Alt+K` | Emergency kill switch (close all + halt)                |
-| `q`     | Quit HUD (bot keeps running)                            |
+| `1`-`7` | Switch to tab |
+| `Tab` | Cycle forward; `Shift+Tab` backward |
+| `←`/`→` | Cycle tabs left/right |
+| `s` | Select symbol/timeframe preset |
+| `r` | Review & reset tripped circuit breakers |
+| `e` | Set/clear stats epoch (exclude old trades from metrics) |
+| `h` | Help screen |
+| `Alt+K` | Emergency kill switch (close all + halt) |
+| `q` | Quit HUD (bot keeps running) |
 
 ### Stats epoch (`[e]` key)
 
 Configurable cutoff date stored in `data/stats_epoch.json`. Trades before the epoch are excluded from all Performance tab metrics (period rows, mode breakdown, trade quality, edge quality) but the raw `trade_log.jsonl` is never modified. Useful for excluding old losing periods that drag down current performance assessment.
 
----
+______________________________________________________________________
 
 ## Operating the paper-bot fleet
 
 The paper-trading workload is a **fleet of per-timeframe bots** supervised by a single watcher. Each entry in `data/universe.json` (a list under `instruments`) becomes a dedicated `src.core.openapi_hub.TFAgent` process with an isolated session directory and log file (`logs/paper_<SYMBOL>_M<TF>.log`).
 
-| Action                         | Command                                                        |
+| Action | Command |
 | ------------------------------ | -------------------------------------------------------------- |
-| Start / restart whole fleet    | `./run.sh universe`                                            |
-| Show running bots + watcher    | `./run.sh status`                                              |
-| Kill everything                | `pkill -f run_universe ; pkill -f openapi_hub`                 |
-| Attach HUD to running fleet    | `./run.sh --hud-only` (interactive terminal required)          |
+| Start / restart whole fleet | `./run.sh universe` |
+| Show running bots + watcher | `./run.sh status` |
+| Kill everything | `pkill -f run_universe ; pkill -f openapi_hub` |
+| Attach HUD to running fleet | `./run.sh --hud-only` (interactive terminal required) |
 | Manually promote an instrument | `python3 run_universe.py --promote <SYMBOL> --timeframe <MIN>` |
 
 Watcher semantics:
@@ -243,7 +243,7 @@ Agent caveats:
 - Before stopping bots for a hotfix, prefer targeted `pkill -f "paper_<SYMBOL>_M<TF>"` when only one timeframe needs recycling; the watcher will relaunch it on the next poll.
 - Treat `/tmp/ctrader_hud.pid` as possibly stale when restarting the HUD.
 
----
+______________________________________________________________________
 
 ## TFAgent — MFE/MAE Tracking v2 Features (openapi_hub.py)
 
@@ -296,7 +296,7 @@ Last 500 bars persisted to `bars_cache.json` every 10 bars; warm-start preseed o
 
 In `_maybe_train()`: if `avg_td > 0.5` → `increase_regularization()`; if `< 0.1` → `decrease_regularization()`.
 
----
+______________________________________________________________________
 
 ## Audit Log & Trade Log (Apr 2026 expansion)
 
@@ -335,7 +335,7 @@ After modifying reward shaper or metrics_calculator:
 python3 -m pytest tests/unit/test_metrics_calculator.py tests/unit/test_reward_calculations.py -v
 ```
 
----
+______________________________________________________________________
 
 ## Harvester Exit Thresholds (src/constants.py)
 
@@ -358,7 +358,7 @@ Emergency reset (`_apply_capture_emergency_reset` in openapi_hub.py) applies tim
 - `capture_decay_min_mfe_pct    = CAPTURE_DECAY_MIN_MFE_PCT * tf_scale` ← no extra 0.50×
 - `capture_decay_threshold      = 0.50`
 
----
+______________________________________________________________________
 
 ## Coding conventions
 
@@ -451,13 +451,13 @@ IS weights are computed from **raw priorities before normalisation**, updated **
 ### Protective stops priority (harvester decide())
 
 1. Emergency SL (even during min-hold)
-2. **Protective stops** (trailing, breakeven, capture_decay, micro-winner) — runs BEFORE min-hold gate
-3. Min-hold check
-4. Hard time stop
-5. Soft time stop
-6. DDQN / torch / fallback
+1. **Protective stops** (trailing, breakeven, capture_decay, micro-winner) — runs BEFORE min-hold gate
+1. Min-hold check
+1. Hard time stop
+1. Soft time stop
+1. DDQN / torch / fallback
 
----
+______________________________________________________________________
 
 ## Testing requirements
 
@@ -509,7 +509,7 @@ ruff check run_universe.py train_offline.py tests/unit/test_run_universe.py test
 python3 -m py_compile run_universe.py train_offline.py
 ```
 
----
+______________________________________________________________________
 
 ## Offline Training
 
@@ -526,13 +526,13 @@ XAUUSD M15/M30/M60 offline training skipped when live cache < 50 rows — needs 
 Offline champion acceptance order (Apr 2026 fix):
 
 1. `data/checkpoints/offline_champions.json`
-2. `data/universe.json` for the default checkpoint root
+1. `data/universe.json` for the default checkpoint root
 
 **Historical logs are NEVER acceptance guards.** Never scrape `logs/train_offline.log` to decide acceptance.
 
 Run `run_universe.py` syncs promoted weights from `data/universe.json` into isolated runtime checkpoint directories and restarts stale bots.
 
----
+______________________________________________________________________
 
 ## Downloading History Data
 
@@ -552,22 +552,22 @@ For BTCUSD: batch ≤2 TFs per invocation — demo server drops TCP after ~5 min
 
 `ProtoOATrendbar` field names: `b.low` (absolute base, raw ticks), `b.deltaOpen`, `b.deltaHigh`, `b.deltaClose` (deltas from low). Divide all by `_WIRE_SCALE = 100_000` for scaled price.
 
----
+______________________________________________________________________
 
 ## Current Universe State (as of 2026-04-26)
 
-| Symbol | TF          | ZΩ    | Status                                        |
+| Symbol | TF | ZΩ | Status |
 | ------ | ----------- | ----- | --------------------------------------------- |
-| XAUUSD | M1          | 3.159 | Promoted, active                              |
-| XAUUSD | M5          | 1.663 | Promoted, active                              |
-| XAUUSD | M240        | 1.601 | Promoted, active                              |
-| XAUUSD | M15/M30/M60 | 0.0   | No weights — needs more live cache (>50 rows) |
-| BTCUSD | All TFs     | 0.0   | Training in progress — no promotion yet       |
+| XAUUSD | M1 | 3.159 | Promoted, active |
+| XAUUSD | M5 | 1.663 | Promoted, active |
+| XAUUSD | M240 | 1.601 | Promoted, active |
+| XAUUSD | M15/M30/M60 | 0.0 | No weights — needs more live cache (>50 rows) |
+| BTCUSD | All TFs | 0.0 | Training in progress — no promotion yet |
 
 History data: BTCUSD M1=1.18M, M5=237K, M15=79K, M30=39K, M60=19K, M240=5K bars.
 XAUUSD M1=816K, M5=163K, M15=54K, M30=27K, M60=13K, M240=3.5K bars (all Jan 2024–Apr 2026).
 
----
+______________________________________________________________________
 
 ## FIX Gateway Topology Migration
 
@@ -580,24 +580,24 @@ Modes: `isolated`, `shared-symbol`, `shared-account`
 Migration plan:
 
 1. Keep `isolated` as compatibility default
-2. Use `shared-symbol` or `shared-account` during controlled restarts
-3. Extract market-data fanout and order intent submission into a shared gateway
-4. Move position ownership into a portfolio arbiter
-5. Switch universe default after strategy workers no longer need direct FIX sessions
+1. Use `shared-symbol` or `shared-account` during controlled restarts
+1. Extract market-data fanout and order intent submission into a shared gateway
+1. Move position ownership into a portfolio arbiter
+1. Switch universe default after strategy workers no longer need direct FIX sessions
 
----
+______________________________________________________________________
 
 ## Current open items (as of 2026-04-27)
 
-| Item                                | Priority | Notes                                                                |
+| Item | Priority | Notes |
 | ----------------------------------- | -------- | -------------------------------------------------------------------- |
-| Offline training ZΩ < 1.0           | HIGH     | Best ZΩ=0.867 with penalty_scale=0.5; may need more epochs or ps=0.3 |
-| L2/imbalance feed                   | MEDIUM   | `imbalance` always 0.0; check MarketDataRequest MDEntryType=0/1      |
-| Mode breakdown missing trades       | MEDIUM   | ~999 trades have missing/empty `trading_mode` field; not shown       |
-| Harvester Q-value convergence       | LOW      | Monitor `ticks_held` trending up in HUD Training tab                 |
-| `data/decision_log.json` non-atomic | LOW      | Secondary log only; does not affect correctness                      |
+| Offline training ZΩ < 1.0 | HIGH | Best ZΩ=0.867 with penalty_scale=0.5; may need more epochs or ps=0.3 |
+| L2/imbalance feed | MEDIUM | `imbalance` always 0.0; check MarketDataRequest MDEntryType=0/1 |
+| Mode breakdown missing trades | MEDIUM | ~999 trades have missing/empty `trading_mode` field; not shown |
+| Harvester Q-value convergence | LOW | Monitor `ticks_held` trending up in HUD Training tab |
+| `data/decision_log.json` non-atomic | LOW | Secondary log only; does not affect correctness |
 
----
+______________________________________________________________________
 
 ## Deleted modules (do NOT recreate)
 
@@ -608,7 +608,7 @@ These were removed as dead code and fully deleted from the active repository. Do
 
 See `docs/archive/REMOVED_LEGACY_CODE.md` for the removal manifest.
 
----
+______________________________________________________________________
 
 ## Paper → Live roadmap
 
@@ -622,7 +622,7 @@ When paper is profitable, the plan is to run paper (challenger) + live (champion
 
 See `docs/CURRENT_STATE.md` § "Paper → Live Roadmap" for full readiness matrix and implementation plan.
 
----
+______________________________________________________________________
 
 ## SonarQube MCP Usage
 
@@ -631,7 +631,7 @@ See `docs/CURRENT_STATE.md` § "Paper → Live Roadmap" for full readiness matri
 - Use USER tokens, not project tokens
 - Disable automatic analysis at task start, re-enable when done
 
----
+______________________________________________________________________
 
 ## What NOT to do
 

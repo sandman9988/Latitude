@@ -281,7 +281,7 @@ def _ts_key(dt: datetime | None) -> float:
     return dt.timestamp()
 
 
-def _price_close(prices: list[float], target: float, tolerance: float = 5.0) -> float:
+def _price_close(prices: list[float], target: float, _tolerance: float = 5.0) -> float:
     """Return min absolute price diff or big number if no close match."""
     return min((abs(p - target) for p in prices), default=float("inf"))
 
