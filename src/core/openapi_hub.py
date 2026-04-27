@@ -1398,6 +1398,22 @@ class TFAgent:
             self.bar_count = max(self.bar_count, loaded)
             LOG.info("[%s %s] Bars cache loaded: %d bars → warm-start preseeding",
                      self.symbol, self.tf_label, loaded)
+            # Log a decision for each cached bar so the audit trail shows the
+            # full bar history, not just live ticks.  This matches legacy FIX
+            # behaviour where every bar processed generated a trigger decision.
+            if loaded >= _MIN_BARS_BEFORE_TRADE:
+                try:
+                    for b in list(self.bars)[_MIN_BARS_BEFORE_TRADE:]:
+                        _bt, _bo, _bh, _bl, _bc = b
+                        self.decision_log.log_decision(
+                            agent="TriggerAgent",
+                            decision="CACHED",
+                            confidence=0.5,
+                            context={"price": float(_bc), "bars": self.bar_count, "source": "cache_load"},
+                            trade_id=None,
+                        )
+                except Exception:
+                    pass
             # Immediately preseed both buffers from the loaded bars
             if loaded >= _MIN_BARS_BEFORE_TRADE:
                 self._last_var_95, self._last_kurtosis = self._get_var_kurtosis()
