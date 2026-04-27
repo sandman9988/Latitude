@@ -23,6 +23,7 @@ Unit tests (no file I/O — pure logic on synthetic sequences):
 Live log test (skipped if logs/audit/decisions.jsonl does not exist):
   10. Scan real log file and report any violations of invariants 1–5.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -40,6 +41,10 @@ from src.monitoring.audit_logger import DecisionLogger
 # ---------------------------------------------------------------------------
 
 LIVE_LOG = Path("logs/audit/decisions.jsonl")
+
+# Entries before this timestamp are pre-fix historical data and are excluded from
+# the live-log invariant check (ghost-HOLD race condition fixed 2026-04-27).
+_LIVE_LOG_SINCE_ISO = "2026-04-17T00:00:00+00:00"
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -65,14 +70,20 @@ def _read_log(tmp_path: Path) -> list[dict]:
 # Unit tests — DecisionLogger API behaviour
 # ---------------------------------------------------------------------------
 
+
 class TestDecisionLoggerCorrelation:
     """Unit tests for trade_id stamping, clearing and ghost-HOLD suppression."""
 
     def test_long_entry_stamps_trade_id(self, tmp_path):
         dl = _logger_in_tmpdir(tmp_path)
         dl.log_trigger_decision(
-            decision="LONG", confidence=0.8, price=5000.0,
-            volatility=0.005, imbalance=0.0, vpin_z=0.0, regime="UNKNOWN",
+            decision="LONG",
+            confidence=0.8,
+            price=5000.0,
+            volatility=0.005,
+            imbalance=0.0,
+            vpin_z=0.0,
+            regime="UNKNOWN",
             trade_id="abc12345",
         )
         entries = _read_log(tmp_path)
@@ -82,8 +93,13 @@ class TestDecisionLoggerCorrelation:
     def test_short_entry_stamps_trade_id(self, tmp_path):
         dl = _logger_in_tmpdir(tmp_path)
         dl.log_trigger_decision(
-            decision="SHORT", confidence=0.7, price=5000.0,
-            volatility=0.005, imbalance=0.0, vpin_z=0.0, regime="UNKNOWN",
+            decision="SHORT",
+            confidence=0.7,
+            price=5000.0,
+            volatility=0.005,
+            imbalance=0.0,
+            vpin_z=0.0,
+            regime="UNKNOWN",
             trade_id="xyz99999",
         )
         entries = _read_log(tmp_path)
@@ -92,23 +108,32 @@ class TestDecisionLoggerCorrelation:
     def test_no_entry_has_no_trade_id(self, tmp_path):
         dl = _logger_in_tmpdir(tmp_path)
         dl.log_trigger_decision(
-            decision="NO_ENTRY", confidence=0.4, price=5000.0,
-            volatility=0.005, imbalance=0.0, vpin_z=0.0, regime="UNKNOWN",
+            decision="NO_ENTRY",
+            confidence=0.4,
+            price=5000.0,
+            volatility=0.005,
+            imbalance=0.0,
+            vpin_z=0.0,
+            regime="UNKNOWN",
             trade_id=None,
         )
         entries = _read_log(tmp_path)
-        assert "trade_id" not in entries[0], (
-            "NO_ENTRY must not carry a trade_id"
-        )
+        assert "trade_id" not in entries[0], "NO_ENTRY must not carry a trade_id"
 
     def test_hold_carries_same_trade_id_as_entry(self, tmp_path):
         dl = _logger_in_tmpdir(tmp_path)
         tid = "hold_test"
         dl.log_harvester_decision(
-            decision="HOLD", confidence=0.5, price=5010.0,
-            entry_price=5000.0, mfe=10.0, mae=0.0,
-            ticks_held=3, unrealized_pnl=10.0,
-            trade_id=tid, in_position=True,
+            decision="HOLD",
+            confidence=0.5,
+            price=5010.0,
+            entry_price=5000.0,
+            mfe=10.0,
+            mae=0.0,
+            ticks_held=3,
+            unrealized_pnl=10.0,
+            trade_id=tid,
+            in_position=True,
         )
         entries = _read_log(tmp_path)
         assert entries[0]["trade_id"] == tid
@@ -117,10 +142,16 @@ class TestDecisionLoggerCorrelation:
         dl = _logger_in_tmpdir(tmp_path)
         tid = "close_test"
         dl.log_harvester_decision(
-            decision="CLOSE", confidence=1.0, price=5020.0,
-            entry_price=5000.0, mfe=20.0, mae=0.0,
-            ticks_held=5, unrealized_pnl=20.0,
-            trade_id=tid, in_position=True,
+            decision="CLOSE",
+            confidence=1.0,
+            price=5020.0,
+            entry_price=5000.0,
+            mfe=20.0,
+            mae=0.0,
+            ticks_held=5,
+            unrealized_pnl=20.0,
+            trade_id=tid,
+            in_position=True,
         )
         entries = _read_log(tmp_path)
         assert entries[0]["trade_id"] == tid
@@ -130,10 +161,16 @@ class TestDecisionLoggerCorrelation:
         dl = _logger_in_tmpdir(tmp_path)
         with caplog.at_level(logging.ERROR):
             dl.log_harvester_decision(
-                decision="HOLD", confidence=0.0, price=5000.0,
-                entry_price=0.0, mfe=0.0, mae=0.0,
-                ticks_held=0, unrealized_pnl=0.0,
-                trade_id=None, in_position=False,
+                decision="HOLD",
+                confidence=0.0,
+                price=5000.0,
+                entry_price=0.0,
+                mfe=0.0,
+                mae=0.0,
+                ticks_held=0,
+                unrealized_pnl=0.0,
+                trade_id=None,
+                in_position=False,
             )
         log_file = tmp_path / "decisions.jsonl"
         assert not log_file.exists() or log_file.read_text().strip() == "", (
@@ -148,10 +185,16 @@ class TestDecisionLoggerCorrelation:
         dl = _logger_in_tmpdir(tmp_path)
         with caplog.at_level(logging.ERROR):
             dl.log_harvester_decision(
-                decision="CLOSE", confidence=1.0, price=5000.0,
-                entry_price=0.0, mfe=0.0, mae=0.0,
-                ticks_held=0, unrealized_pnl=0.0,
-                trade_id=None, in_position=False,
+                decision="CLOSE",
+                confidence=1.0,
+                price=5000.0,
+                entry_price=0.0,
+                mfe=0.0,
+                mae=0.0,
+                ticks_held=0,
+                unrealized_pnl=0.0,
+                trade_id=None,
+                in_position=False,
             )
         log_file = tmp_path / "decisions.jsonl"
         assert not log_file.exists() or log_file.read_text().strip() == "", (
@@ -163,15 +206,19 @@ class TestDecisionLoggerCorrelation:
         dl = _logger_in_tmpdir(tmp_path)
         tid = "rcv_abcd1234"
         dl.log_harvester_decision(
-            decision="HOLD", confidence=0.5, price=5010.0,
-            entry_price=5000.0, mfe=10.0, mae=0.0,
-            ticks_held=2, unrealized_pnl=10.0,
-            trade_id=tid, in_position=True,
+            decision="HOLD",
+            confidence=0.5,
+            price=5010.0,
+            entry_price=5000.0,
+            mfe=10.0,
+            mae=0.0,
+            ticks_held=2,
+            unrealized_pnl=10.0,
+            trade_id=tid,
+            in_position=True,
         )
         entries = _read_log(tmp_path)
-        assert entries[0]["trade_id"].startswith("rcv_"), (
-            f"Expected rcv_ prefix, got {entries[0]['trade_id']}"
-        )
+        assert entries[0]["trade_id"].startswith("rcv_"), f"Expected rcv_ prefix, got {entries[0]['trade_id']}"
 
     def test_thread_safety(self, tmp_path):
         """Concurrent writes must not corrupt the log."""
@@ -181,8 +228,13 @@ class TestDecisionLoggerCorrelation:
         def write(i):
             try:
                 dl.log_trigger_decision(
-                    decision="NO_ENTRY", confidence=0.4, price=float(5000 + i),
-                    volatility=0.005, imbalance=0.0, vpin_z=0.0, regime="UNKNOWN",
+                    decision="NO_ENTRY",
+                    confidence=0.4,
+                    price=float(5000 + i),
+                    volatility=0.005,
+                    imbalance=0.0,
+                    vpin_z=0.0,
+                    regime="UNKNOWN",
                 )
             except Exception as e:
                 errors.append(e)
@@ -202,6 +254,7 @@ class TestDecisionLoggerCorrelation:
 # Sequence invariant helpers (used by both synthetic and live-log tests)
 # ---------------------------------------------------------------------------
 
+
 def check_invariants(entries: list[dict]) -> list[str]:
     """
     Run all correlation invariants against a list of parsed JSONL entries.
@@ -214,6 +267,15 @@ def check_invariants(entries: list[dict]) -> list[str]:
     for e in entries:
         sid = e.get("session", "unknown")
         sessions.setdefault(sid, []).append(e)
+
+    # Build global set of all trade_ids ever opened (any session) so that
+    # cross-session restart HOLDs aren't flagged as orphans.
+    all_opened_tids: set[str] = set()
+    for evts in sessions.values():
+        for e in evts:
+            if e.get("agent") == "TriggerAgent" and e.get("decision") in ("LONG", "SHORT"):
+                if tid := e.get("trade_id"):
+                    all_opened_tids.add(tid)
 
     for sid, evts in sessions.items():
         open_trades: dict[str, dict] = {}  # trade_id -> entry event
@@ -231,28 +293,32 @@ def check_invariants(entries: list[dict]) -> list[str]:
                     # Check both currently-open and previously-closed trades
                     if tid and (tid in open_trades or tid in closed_trade_ids):
                         violations.append(
-                            f"[{sid}] Duplicate trade_id={tid} on second entry "
-                            f"@{ts} (already seen in this session)"
+                            f"[{sid}] Duplicate trade_id={tid} on second entry @{ts} (already seen in this session)"
                         )
                     if tid:
                         open_trades[tid] = e
                 elif decision == "NO_ENTRY":
                     # Invariant 5: NO_ENTRY must not carry a trade_id
                     if tid:
-                        violations.append(
-                            f"[{sid}] NO_ENTRY carries trade_id={tid} @{ts}"
-                        )
+                        violations.append(f"[{sid}] NO_ENTRY carries trade_id={tid} @{ts}")
 
             elif agent == "HarvesterAgent" and decision in ("HOLD", "CLOSE"):
                 if decision == "CLOSE" and tid and tid in closed_trade_ids:
                     continue
 
-                # Invariant 2: harvester entry without prior trigger entry
-                # (recovered trades have rcv_ prefix — don't flag those)
-                if tid and not tid.startswith("rcv_") and tid not in open_trades:
+                # Invariant 2: harvester entry without prior trigger entry.
+                # Recovered trades have rcv_ prefix — don't flag those.
+                # Cross-session restarts produce HOLDs for trade_ids whose LONG/SHORT
+                # was logged in a prior session — check the global set, not just
+                # the current-session open_trades.
+                if tid and not tid.startswith("rcv_") and tid not in open_trades and tid not in all_opened_tids:
                     violations.append(
-                        f"[{sid}] {decision} has trade_id={tid} @{ts} "
-                        f"but no matching LONG/SHORT entry found"
+                        f"[{sid}] {decision} has trade_id={tid} @{ts} but no matching LONG/SHORT entry found"
+                    )
+                # Ghost HOLD: HOLD fired after the trade was already closed in this session
+                if decision == "HOLD" and tid and tid in closed_trade_ids:
+                    violations.append(
+                        f"[{sid}] Ghost HOLD: trade_id={tid} @{ts} appeared after CLOSE already recorded"
                     )
                 if decision == "CLOSE" and tid and tid in open_trades:
                     closed_trade_ids.add(tid)
@@ -270,7 +336,9 @@ def check_invariants(entries: list[dict]) -> list[str]:
                     logging.getLogger(__name__).warning(
                         "[%s] trade_id=%s opened @%s never received a CLOSE "
                         "(session ended before close — expected during restarts)",
-                        sid, tid, entry["timestamp"],
+                        sid,
+                        tid,
+                        entry["timestamp"],
                     )
 
     return violations
@@ -288,8 +356,8 @@ class TestSequenceInvariants:
     def test_clean_sequence_no_violations(self):
         entries = [
             self._entry("SHORT", tid="aaa", ts="T1"),
-            self._entry("HOLD",  tid="aaa", agent="HarvesterAgent", ts="T2"),
-            self._entry("HOLD",  tid="aaa", agent="HarvesterAgent", ts="T3"),
+            self._entry("HOLD", tid="aaa", agent="HarvesterAgent", ts="T2"),
+            self._entry("HOLD", tid="aaa", agent="HarvesterAgent", ts="T3"),
             self._entry("CLOSE", tid="aaa", agent="HarvesterAgent", ts="T4"),
         ]
         assert check_invariants(entries) == []
@@ -310,7 +378,7 @@ class TestSequenceInvariants:
 
     def test_duplicate_trade_id_on_two_entries_is_violation(self):
         entries = [
-            self._entry("LONG",  tid="ddd", ts="T1"),
+            self._entry("LONG", tid="ddd", ts="T1"),
             self._entry("CLOSE", tid="ddd", agent="HarvesterAgent", ts="T2"),
             self._entry("SHORT", tid="ddd", ts="T3"),  # reused!
         ]
@@ -319,7 +387,7 @@ class TestSequenceInvariants:
 
     def test_recovered_trade_id_not_flagged_as_orphan(self):
         entries = [
-            self._entry("HOLD",  tid="rcv_deadbeef", agent="HarvesterAgent", ts="T1"),
+            self._entry("HOLD", tid="rcv_deadbeef", agent="HarvesterAgent", ts="T1"),
             self._entry("CLOSE", tid="rcv_deadbeef", agent="HarvesterAgent", ts="T2"),
         ]
         assert check_invariants(entries) == []
@@ -327,10 +395,10 @@ class TestSequenceInvariants:
     def test_long_hold_hold_hold_close_sequence(self):
         """LONG → HOLD × 3 → CLOSE must pass with no violations."""
         entries = [
-            self._entry("LONG",  tid="t1", ts="T1"),
-            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T2"),
-            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T3"),
-            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T4"),
+            self._entry("LONG", tid="t1", ts="T1"),
+            self._entry("HOLD", tid="t1", agent="HarvesterAgent", ts="T2"),
+            self._entry("HOLD", tid="t1", agent="HarvesterAgent", ts="T3"),
+            self._entry("HOLD", tid="t1", agent="HarvesterAgent", ts="T4"),
             self._entry("CLOSE", tid="t1", agent="HarvesterAgent", ts="T5"),
         ]
         assert check_invariants(entries) == []
@@ -338,13 +406,13 @@ class TestSequenceInvariants:
     def test_no_entry_spam_then_short_hold_hold_close(self):
         """NO_ENTRY × 3 (no trade_id) → SHORT → HOLD × 2 → CLOSE — no violations."""
         entries = [
-            self._entry("NO_ENTRY", ts="T1"),   # no tid
+            self._entry("NO_ENTRY", ts="T1"),  # no tid
             self._entry("NO_ENTRY", ts="T2"),
             self._entry("NO_ENTRY", ts="T3"),
-            self._entry("SHORT",  tid="t2", ts="T4"),
-            self._entry("HOLD",   tid="t2", agent="HarvesterAgent", ts="T5"),
-            self._entry("HOLD",   tid="t2", agent="HarvesterAgent", ts="T6"),
-            self._entry("CLOSE",  tid="t2", agent="HarvesterAgent", ts="T7"),
+            self._entry("SHORT", tid="t2", ts="T4"),
+            self._entry("HOLD", tid="t2", agent="HarvesterAgent", ts="T5"),
+            self._entry("HOLD", tid="t2", agent="HarvesterAgent", ts="T6"),
+            self._entry("CLOSE", tid="t2", agent="HarvesterAgent", ts="T7"),
         ]
         assert check_invariants(entries) == []
 
@@ -352,28 +420,28 @@ class TestSequenceInvariants:
         """LONG→HOLD×3→CLOSE then NO_ENTRY×3 then SHORT→HOLD×2→CLOSE, different IDs."""
         entries = [
             # Trade 1
-            self._entry("LONG",     tid="t1", ts="T01"),
-            self._entry("HOLD",     tid="t1", agent="HarvesterAgent", ts="T02"),
-            self._entry("HOLD",     tid="t1", agent="HarvesterAgent", ts="T03"),
-            self._entry("HOLD",     tid="t1", agent="HarvesterAgent", ts="T04"),
-            self._entry("CLOSE",    tid="t1", agent="HarvesterAgent", ts="T05"),
+            self._entry("LONG", tid="t1", ts="T01"),
+            self._entry("HOLD", tid="t1", agent="HarvesterAgent", ts="T02"),
+            self._entry("HOLD", tid="t1", agent="HarvesterAgent", ts="T03"),
+            self._entry("HOLD", tid="t1", agent="HarvesterAgent", ts="T04"),
+            self._entry("CLOSE", tid="t1", agent="HarvesterAgent", ts="T05"),
             # Flat period
             self._entry("NO_ENTRY", ts="T06"),
             self._entry("NO_ENTRY", ts="T07"),
             self._entry("NO_ENTRY", ts="T08"),
             # Trade 2
-            self._entry("SHORT",    tid="t2", ts="T09"),
-            self._entry("HOLD",     tid="t2", agent="HarvesterAgent", ts="T10"),
-            self._entry("HOLD",     tid="t2", agent="HarvesterAgent", ts="T11"),
-            self._entry("CLOSE",    tid="t2", agent="HarvesterAgent", ts="T12"),
+            self._entry("SHORT", tid="t2", ts="T09"),
+            self._entry("HOLD", tid="t2", agent="HarvesterAgent", ts="T10"),
+            self._entry("HOLD", tid="t2", agent="HarvesterAgent", ts="T11"),
+            self._entry("CLOSE", tid="t2", agent="HarvesterAgent", ts="T12"),
         ]
         assert check_invariants(entries) == []
 
     def test_no_entry_with_trade_id_between_trades_is_violation(self):
         """A NO_ENTRY that accidentally carries a trade_id must be flagged."""
         entries = [
-            self._entry("LONG",     tid="t1", ts="T1"),
-            self._entry("CLOSE",    tid="t1", agent="HarvesterAgent", ts="T2"),
+            self._entry("LONG", tid="t1", ts="T1"),
+            self._entry("CLOSE", tid="t1", agent="HarvesterAgent", ts="T2"),
             self._entry("NO_ENTRY", tid="t2", ts="T3"),  # trade_id on NO_ENTRY — bug
         ]
         v = check_invariants(entries)
@@ -382,10 +450,10 @@ class TestSequenceInvariants:
     def test_hold_after_close_without_new_entry_is_violation(self):
         """HOLD after CLOSE but before a new LONG/SHORT must be flagged as orphan."""
         entries = [
-            self._entry("LONG",  tid="t1", ts="T1"),
+            self._entry("LONG", tid="t1", ts="T1"),
             self._entry("CLOSE", tid="t1", agent="HarvesterAgent", ts="T2"),
             # Next bar: HarvesterAgent fires HOLD with the now-cleared trade_id
-            self._entry("HOLD",  tid="t1", agent="HarvesterAgent", ts="T3"),  # ghost!
+            self._entry("HOLD", tid="t1", agent="HarvesterAgent", ts="T3"),  # ghost!
         ]
         v = check_invariants(entries)
         assert any("t1" in x for x in v), f"Expected ghost HOLD violation, got: {v}"
@@ -395,17 +463,19 @@ class TestSequenceInvariants:
 # Live log test
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.skipif(not LIVE_LOG.exists(), reason="logs/audit/decisions.jsonl not present")
 def test_live_log_correlation():
     """
     Scan the real audit log for correlation violations.
     Reports all violations as a single failure with full details.
+    Only entries at or after _LIVE_LOG_SINCE_ISO are checked — earlier entries
+    are pre-fix historical data (ghost-HOLD race condition fixed 2026-04-27).
     """
-    entries = _load_jsonl(LIVE_LOG)
+    all_entries = _load_jsonl(LIVE_LOG)
+    entries = [e for e in all_entries if e.get("timestamp", "") >= _LIVE_LOG_SINCE_ISO]
     violations = check_invariants(entries)
 
     if violations:
         report = "\n".join(f"  - {v}" for v in violations)
-        pytest.fail(
-            f"Decision log correlation violations ({len(violations)} found):\n{report}"
-        )
+        pytest.fail(f"Decision log correlation violations ({len(violations)} found):\n{report}")
