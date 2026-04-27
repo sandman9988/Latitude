@@ -76,6 +76,9 @@ parse_args() {
             weekend-train-setup|--weekend-train-setup)
                 COMMAND="weekend-train-setup"
                 ;;
+            select|--select)
+                COMMAND="select"
+                ;;
             help|--help|-h)
                 COMMAND="help"
                 ;;
@@ -376,6 +379,18 @@ PY
 }
 
 start_universe_watcher() {
+    # Source Open API credentials so hubs can authenticate
+    if [[ -f "${SCRIPT_DIR}/.env.openapi" ]]; then
+        set -a
+        # shellcheck disable=SC1091
+        source "${SCRIPT_DIR}/.env.openapi"
+        set +a
+    fi
+    # Load ROCm env so hub subprocesses see GPU
+    if [[ -f "${SCRIPT_DIR}/config/rocm_env.sh" ]]; then
+        # shellcheck disable=SC1091
+        source "${SCRIPT_DIR}/config/rocm_env.sh" 2>/dev/null || true
+    fi
     if command -v setsid >/dev/null 2>&1; then
         setsid python3 run_universe.py --watch >> logs/run_universe.log 2>&1 &
     else
@@ -487,6 +502,151 @@ PY
     fi
 }
 
+apply_session_config() {
+    local session_file="data/session.json"
+    if [[ ! -f "$session_file" ]]; then
+        return 0  # no session.json — fall through to existing .env values
+    fi
+
+    local py_result
+    if ! py_result=$(python3 - <<'PY' 2>&1
+import json, sys
+from pathlib import Path
+
+session = json.loads(Path("data/session.json").read_text())
+live  = session.get("live",  [])
+paper = session.get("paper", [])
+
+# Use live[0] as the primary bot target; fall back to paper[0]
+primary = live[0] if live else (paper[0] if paper else None)
+if not primary:
+    sys.exit(0)
+
+tfs = sorted(primary.get("timeframes", [5]))
+print("|".join([
+    primary["symbol"],
+    str(primary["symbol_id"]),
+    str(tfs[0]),          # primary (lowest) timeframe for single-bot .env compat
+    str(primary.get("qty", 0.1)),
+]))
+PY
+    ); then
+        log "${YELLOW}⚠ Could not read session.json: ${py_result}${NC}"
+        return 0
+    fi
+
+    [[ -z "$py_result" ]] && return 0
+
+    local new_symbol new_symbol_id new_tf new_qty
+    IFS='|' read -r new_symbol new_symbol_id new_tf new_qty <<<"$py_result"
+
+    # Patch .env with the session values
+    python3 - "$new_symbol" "$new_symbol_id" "$new_tf" "$new_qty" <<'PY' 2>/dev/null || true
+import sys
+from pathlib import Path
+
+symbol, symbol_id, tf, qty = sys.argv[1:]
+env_path = Path(".env")
+if not env_path.exists():
+    sys.exit(0)
+
+updates = {
+    "SYMBOL":            symbol,
+    "SYMBOL_ID":         symbol_id,
+    "TIMEFRAME_MINUTES": tf,
+    "QTY":               qty,
+}
+lines = env_path.read_text(encoding="utf-8").splitlines()
+seen, new_lines = set(), []
+for line in lines:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in line:
+        new_lines.append(line)
+        continue
+    key = line.partition("=")[0].strip()
+    if key in updates:
+        new_lines.append(f"{key}={updates[key]}")
+        seen.add(key)
+    else:
+        new_lines.append(line)
+for key, val in updates.items():
+    if key not in seen:
+        new_lines.append(f"{key}={val}")
+env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+PY
+
+    # Re-source so the rest of this run picks up the new values
+    if [[ -f .env ]]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    log "${GREEN}✓ Session config applied → ${new_symbol} (ID: ${new_symbol_id}) M${new_tf} qty ${new_qty}${NC}"
+}
+
+sync_session_to_universe() {
+    # Merge session.json paper entries into data/universe.json so the
+    # universe watcher picks them up on next start.
+    local session_file="data/session.json"
+    [[ -f "$session_file" ]] || return 0
+
+    python3 - <<'PY' 2>/dev/null || true
+import json, sys
+from pathlib import Path
+
+session_path = Path("data/session.json")
+universe_path = Path("data/universe.json")
+
+session = json.loads(session_path.read_text())
+paper_entries = session.get("paper", [])
+if not paper_entries:
+    sys.exit(0)
+
+# Load or init universe
+if universe_path.exists():
+    try:
+        universe = json.loads(universe_path.read_text())
+    except Exception:
+        universe = {"version": 1, "instruments": []}
+else:
+    universe = {"version": 1, "instruments": []}
+
+instruments = universe.get("instruments", [])
+if isinstance(instruments, dict):
+    # Normalise legacy dict format to list
+    instruments = list(instruments.values())
+
+# Build a set of (symbol, tf) pairs already in universe
+existing = {
+    (e.get("symbol", "").upper(), int(e.get("timeframe_minutes", 0)))
+    for e in instruments
+}
+
+added = 0
+for entry in paper_entries:
+    sym = str(entry["symbol"]).upper()
+    for tf in sorted(entry.get("timeframes", [])):
+        if (sym, tf) not in existing:
+            instruments.append({
+                "symbol":           sym,
+                "timeframe_minutes": tf,
+                "stage":            "PAPER",
+                "z_omega":          0.0,
+                "weights_path":     "",
+                "promoted_at":      None,
+                "updated_at":       None,
+            })
+            existing.add((sym, tf))
+            added += 1
+
+universe["instruments"] = instruments
+universe_path.write_text(json.dumps(universe, indent=2) + "\n", encoding="utf-8")
+if added:
+    print(f"  Added {added} new paper instrument(s) to universe.json")
+PY
+}
+
 start_bot_daemon() {
     mkdir -p logs
     local launcher_log="logs/bot_console.log"
@@ -571,15 +731,19 @@ help_flow() {
     echo -e ""
     echo -e "${YELLOW}Usage:${NC}  ./run.sh [command] [options]"
     echo -e ""
+    echo -e "${BLUE}Session commands:${NC}"
+    echo -e "  select            interactive instrument / timeframe / mode selector"
+    echo -e "                    (reads config/instruments.json, writes data/session.json)"
+    echo -e ""
     echo -e "${BLUE}Bot commands:${NC}"
-    echo -e "  (none)            launch live bot with HUD (auto-detects terminal)"
+    echo -e "  (none)            launch bot; runs selector first if no session.json exists"
     echo -e "  production        production mode: minimal epsilon, all gates active"
     echo -e "  live-train        live training mode: full exploration, gates off"
     echo -e "  --hud-only        reattach HUD to already-running bot"
     echo -e "  --no-hud          run bot without HUD"
     echo -e ""
     echo -e "${BLUE}Pipeline commands:${NC}"
-    echo -e "  train             offline training only (XAUUSD + BTCUSD, all TFs)"
+    echo -e "  train             offline training (uses session.json if present, else SYMBOLS/TIMEFRAMES)"
     echo -e "  pipeline          offline train → auto-promote → universe watcher"
     echo -e "  universe          (re)start paper trading supervisor in background"
     echo -e "  paper             alias for 'universe'"
@@ -592,7 +756,7 @@ help_flow() {
     echo -e "  weekend-train-setup install/update Saturday weekend training cron entry"
     echo -e ""
     echo -e "${BLUE}Override env vars for train/pipeline:${NC}"
-    echo -e "  SYMBOLS=\"XAUUSD\"          single symbol"
+    echo -e "  SYMBOLS=\"XAUUSD\"          single symbol (overrides session.json)"
     echo -e "  TIMEFRAMES=\"M60 M240\"     specific timeframes (canonical M* labels)"
     echo -e "  THRESHOLD=1.5             stricter Z-Omega gate"
     echo -e "  EPOCHS=5                  training passes per dataset"
@@ -601,13 +765,13 @@ help_flow() {
     echo -e "  WEEKEND_TRAIN_FORCE=1     bypass weekend market-close guard manually"
     echo -e ""
     echo -e "${BLUE}Examples:${NC}"
-    echo -e "  ./run.sh"
+    echo -e "  ./run.sh select           pick instruments, timeframes and modes"
+    echo -e "  ./run.sh                  launch with current session config"
     echo -e "  ./run.sh production"
     echo -e "  ./run.sh live-train"
     echo -e "  ./run.sh pipeline"
     echo -e "  ./run.sh weekend-train"
     echo -e "  ./run.sh weekend-train-setup"
-    echo -e "  SYMBOLS=\"XAUUSD\" TIMEFRAMES=\"M240\" ./run.sh train"
     echo -e "  ./run.sh status"
     echo -e ""
 }
@@ -633,17 +797,55 @@ status_flow() {
 import json, sys
 try:
     u = json.load(open('data/universe.json'))
-    inst = u.get('instruments', u)  # handle both formats
-    for sym, v in inst.items():
-        print(f'  {sym}: stage={v.get(\"stage\",\"?\")}, z_omega={v.get(\"z_omega\",0):.4f}, tf=M{v.get(\"timeframe_minutes\",\"?\")}')
+    inst = u.get('instruments', u) if isinstance(u, dict) else u
+    if isinstance(inst, list):
+        for v in inst:
+            zo = v.get('z_omega', 0) or 0
+            print(f'  {v.get(\"symbol\",\"?\"):8s} M{v.get(\"timeframe_minutes\",\"?\"): <4} stage={v.get(\"stage\",\"?\"):6s} ZΩ={zo:.4f}')
+    elif isinstance(inst, dict):
+        for sym, v in inst.items():
+            zo = v.get('z_omega', 0) or 0
+            print(f'  {sym:8s} M{v.get(\"timeframe_minutes\",\"?\"): <4} stage={v.get(\"stage\",\"?\"):6s} ZΩ={zo:.4f}')
 except Exception as e:
     print(f'  (could not read: {e})')
 " 2>/dev/null || log "  (no universe.json)"
     log ""
 }
 
+select_flow() {
+    # Run the interactive session selector TUI.
+    # On success, data/session.json is written and .env is patched.
+    # Optionally launch immediately afterwards.
+    activate_venv
+    log ""
+    log "${BLUE}=== Session Selector ===${NC}"
+    log ""
+    python3 -m src.monitoring.session_selector
+    local selector_exit=$?
+    if [[ $selector_exit -ne 0 ]]; then
+        log "${YELLOW}⚠ No session saved — no changes made.${NC}"
+        return 0
+    fi
+    # Re-source the updated .env so subsequent commands see the new values
+    if [[ -f .env ]]; then
+        set -a
+        # shellcheck disable=SC1091
+        source .env
+        set +a
+    fi
+    log ""
+    if [[ -t 1 ]]; then
+        read -r -p "Launch now with this session? (y/N): " _reply
+        if [[ "$_reply" =~ ^[Yy]$ ]]; then
+            orchestrate_with_hud
+        fi
+    fi
+}
+
 universe_flow() {
     activate_venv
+    # Merge any session.json paper instruments into universe.json before starting
+    sync_session_to_universe
     log ""
     log "${YELLOW}Stopping any existing universe watcher...${NC}"
     pkill -f "run_universe.py --watch" 2>/dev/null || true
@@ -675,7 +877,7 @@ universe_flow() {
         log "${BLUE}Waiting for paper bots to come online...${NC}"
         local _i
         for ((_i=1; _i<=30; _i++)); do
-            if pgrep -f "src\.core\.ctrader_ddqn_paper" >/dev/null 2>&1; then
+            if pgrep -f "src\.core\.\(ctrader_ddqn_paper\|openapi_hub\)" >/dev/null 2>&1; then
                 break
             fi
             sleep 1
@@ -689,27 +891,70 @@ universe_flow() {
 
 train_flow() {
     activate_venv
-    local hist_dir="${HISTORY_DIR:-/home/renierdejager/Projects/Kinetra/data/master_standardized}"
-    local symbols="${SYMBOLS:-XAUUSD BTCUSD}"
-    local timeframes="${TIMEFRAMES:-M1 M5 M15 M30 M60 M240}"
+    load_rocm_env
+
+    # Derive symbols / timeframes from session.json train block when not overridden
+    local symbols timeframes
+    if [[ -z "${SYMBOLS:-}" ]] && [[ -f "data/session.json" ]]; then
+        symbols=$(python3 -c "
+import json
+s = json.load(open('data/session.json'))
+t = s.get('train', {})
+syms = t.get('symbols', [])
+print(' '.join(syms) if syms else '')
+" 2>/dev/null)
+    fi
+    symbols="${symbols:-${SYMBOLS:-XAUUSD BTCUSD}}"
+
+    if [[ -z "${TIMEFRAMES:-}" ]] && [[ -f "data/session.json" ]]; then
+        timeframes=$(python3 -c "
+import json
+s = json.load(open('data/session.json'))
+t = s.get('train', {})
+tfs = [f'M{tf}' for tf in t.get('timeframes', [])]
+print(' '.join(tfs) if tfs else '')
+" 2>/dev/null)
+    fi
+    timeframes="${timeframes:-${TIMEFRAMES:-M1 M5 M15 M30 M60 M240}}"
+
+    # Build input list: downloaded CSVs + Kinetra master history + live JSONL caches
+    local -a inputs=()
+    if [[ -d "data/history" ]] && compgen -G "data/history/*.csv" >/dev/null 2>&1; then
+        mapfile -t _csvs < <(find data/history -name '*.csv' | sort)
+        inputs+=("${_csvs[@]}")
+    fi
+    local kinetra_dir="${HISTORY_DIR:-/home/renierdejager/Projects/Kinetra/data/master_standardized}"
+    if [[ -d "$kinetra_dir" ]]; then
+        inputs+=("$kinetra_dir")
+    fi
+    mapfile -t _caches < <(find data -maxdepth 2 -name 'training_cache_*_M*.jsonl' 2>/dev/null | sort)
+    inputs+=("${_caches[@]}")
+
+    if [[ ${#inputs[@]} -eq 0 ]]; then
+        log "${RED}✗ No training data found. Run scripts/bootstrap_offline_training.sh first.${NC}"
+        exit 1
+    fi
+
     log ""
     log "${BLUE}=== Offline Training ===${NC}"
-    log "  History : $hist_dir"
+    log "  Inputs  : ${#inputs[@]} source(s)"
     log "  Symbols : $symbols"
     log "  TFs     : $timeframes"
+    log "  GPU     : ${HSA_OVERRIDE_GFX_VERSION:-unset} workers=${WORKERS:-1}"
     log ""
     # shellcheck disable=SC2206
     SYM_ARR=($symbols)
     TF_ARR=($timeframes)
-    python3 train_offline.py "$hist_dir" \
+    python3 train_offline.py "${inputs[@]}" \
         --symbols "${SYM_ARR[@]}" \
         --timeframes "${TF_ARR[@]}" \
-        --workers "${WORKERS:-$(nproc)}" \
-        --n-epochs "${EPOCHS:-3}" \
+        --workers "${WORKERS:-1}" \
+        --n-epochs "${EPOCHS:-5}" \
         --warm-start \
         --auto-promote \
         --paper-threshold "${THRESHOLD:-1.0}" \
         --retrain-rounds "${RETRAIN_ROUNDS:-3}" \
+        --tournament-variants "${TOURNAMENT_VARIANTS:-6}" \
         "${FORWARDED_ARGS[@]}"
 }
 
@@ -800,6 +1045,7 @@ hud_only_flow() {
         exit 1
     fi
     apply_pending_profile
+    apply_session_config
     apply_defaults
     activate_venv
     setup_logging
@@ -807,11 +1053,34 @@ hud_only_flow() {
     launch_hud_foreground
 }
 
+prompt_select_if_needed() {
+    # If no session.json exists yet and we are in an interactive terminal,
+    # offer the user a chance to run the selector before launching.
+    [[ -f "data/session.json" ]] && return 0
+    [[ -t 1 ]] || return 0
+    log ""
+    log "${YELLOW}ℹ No session.json found.${NC}"
+    log "${BLUE}  Run the session selector to choose instruments, timeframes and modes.${NC}"
+    read -r -p "  Open selector now? (Y/n): " _reply
+    if [[ ! "$_reply" =~ ^[Nn]$ ]]; then
+        activate_venv
+        python3 -m src.monitoring.session_selector || true
+        # Re-source .env after selector may have patched it
+        if [[ -f .env ]]; then
+            set -a
+            # shellcheck disable=SC1091
+            source .env
+            set +a
+        fi
+    fi
+}
+
 orchestrate_with_hud() {
     if ! load_dotenv; then
         exit 1
     fi
     apply_pending_profile
+    apply_session_config
     apply_defaults
 
     # Guard: if universe paper bots (managed by run_universe.py) are already
@@ -859,6 +1128,7 @@ main() {
         exit 1
     fi
     apply_pending_profile
+    apply_session_config
     apply_defaults
 
     # Validate environment
@@ -898,7 +1168,7 @@ main() {
     log ""
 
     # Run the bot
-    exec python3 -m src.core.ctrader_ddqn_paper "$@"
+    exec python3 -m src.core.openapi_hub "$@"
 }
 
 # Run main / orchestrator
@@ -918,6 +1188,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             monitor-setup)  monitor_setup_flow ;;
             weekend-train)  weekend_train_flow ;;
             weekend-train-setup) weekend_train_setup_flow ;;
+            select)         select_flow        ;;
             help)           help_flow          ;;
         esac
     elif [[ $HUD_ONLY -eq 1 ]]; then
@@ -925,6 +1196,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     elif [[ $INTERNAL_BOT_DAEMON -eq 1 ]]; then
         main "${FORWARDED_ARGS[@]}"
     elif should_enable_hud; then
+        prompt_select_if_needed
         orchestrate_with_hud
     else
         main "${FORWARDED_ARGS[@]}"
