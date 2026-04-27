@@ -452,9 +452,17 @@ def self_healing_metrics(trades: list, starting_equity: float = 10_000.0) -> dic
     reasons = _close_reason_breakdown(trades)
     qual = _capture_quality(trades)
 
+    # Use non-ghost count for all ratio calculations
+    non_ghost = [t for t in trades if not (isinstance(t, dict) and t.get("close_reason") == "GHOST_RECONCILE")]
+    total = len(non_ghost)
+    if total == 0:
+        return {"health": "UNKNOWN", "flags": [], "recommendations": [],
+                "wtl_rate": 0.0, "cap_trend": "unknown", "mfe_trend": "unknown",
+                "mae_trend": "unknown", "recent_wr": 0.0, "avg_trade_pnl": 0.0,
+                "profit_factor": 0.0, "keeper": "cross-period comparison"}
+
     flags: list[str] = []
     recs: list[str] = []
-    total = len(trades)
     pnl = pm.get("total_pnl", 0)
     wr = pm.get("win_rate", 0)
     wtl_count = pm.get("winner_to_loser_count", 0)
