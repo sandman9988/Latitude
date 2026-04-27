@@ -798,6 +798,77 @@ EOF
 ### Restart Bot
 ```bash
 pkill -9 -f ctrader_ddqn_paper && sleep 2
+```
+
+---
+
+## 🔧 Comprehensive Audit Log Expansion (Apr 27, 2026)
+
+### Changes Applied
+
+#### 1. Safe Math Hardening (`openapi_hub.py`, `metrics_calculator.py`)
+All bare magic-number comparisons (`1e-6`, `1e-8`, `1e-9`) replaced with `SAFE_EPSILON`, `SAFE_DIV_MIN`, and `SAFE_SMALL` from `safe_math.py`. NaN/Inf guards added to P&L computation in `_close_position()` and `_handle_exit_on_tick()`.
+
+#### 2. Trade Log Expansion (56 → 65 top-level fields + 3 nested dicts)
+The per-trade record in `data/trade_log.jsonl` now captures every decision datapoint:
+
+| Group | New Fields |
+|-------|-----------|
+| **Reward breakdown** | `reward_capture_efficiency`, `reward_wtl_penalty`, `reward_opportunity_cost`, `reward_session_quality`, `reward_harvester_total`, `reward_trigger_breakdown{}`, `reward_harvester_breakdown{}` |
+| **Trigger entry snapshot** | `trigger_data{}` (32 sub-fields: geometry, HMM, kurtosis, volatility, gap, returns, alignment, OHLCV, epsilon, training steps, CB size mult, drawdown) |
+| **Risk at close** | `close_drawdown_pct`, `close_cb_size_mult` |
+
+#### 3. Lifecycle Event Logging
+- Regime transitions → `System/REGIME_CHANGE` decision log entries
+- Circuit breaker state changes → `System/CIRCUIT_BREAKER` / `System/CB_CLEARED` entries
+- Both logged to per-bot `data/paper_*/logs/audit/decisions.jsonl`
+
+#### 4. Entry trade_id Sequencing Fix
+Moved `_current_trade_id` assignment **before** `_log_entry_decision()` so that LONG/SHORT trigger entries have the trade_id populated in the decision log. Previously trade_id was set inside `_open_position()` — after the log call.
+
+#### 5. Multi-Source Trade Reconstruction
+New script `scripts/reconstruct_trade_lifecycle.py` stitches 5 data sources into one unified trade record:
+- `trade_log.jsonl` (P&L, MFE/MAE)
+- `logs/audit/decisions.jsonl` (trigger/harvester decisions)
+- `data/training_cache_*.jsonl` (bar-level snapshots)
+- `logs/audit/transactions.jsonl` (POSITION_CLOSE events)
+- `data/history/*.csv` (Bollinger context)
+
+**Link rates achieved:** decisions=88.3%, cache=99.9%, transactions=88.5%, CSV=99.6%.
+
+#### 6. Real-Data Test Suite
+`tests/unit/test_openapi_hub_pnl.py` — 27 tests using real paper-trading data from `training_cache_XAUUSD_M5.jsonl` (2,711 real trades, 8,483 unique bars). Validates P&L formula, BarBuilder bucket alignment, max-loss math, and SafeMath integration. Zero mocks.
+
+#### 7. Coverage Infrastructure
+- `coverage` + `pytest-cov` installed
+- `[tool.coverage.*]` section added to `pyproject.toml`
+
+### XAUUSD P&L Trajectory (Hub-only trades)
+
+| Week | Trades | Win Rate | Total PnL | Avg MFE | Notes |
+|------|--------|----------|-----------|---------|-------|
+| W16 | 73 | 71.2% | $+24,315 | 48.2 pts | One GHOST_RECONCILE trade accounts for $23,899 (98.9% of total) |
+| W17 | 527 | 82.0% | $+12,385 | 3.7 pts | Steady profitable trading, 0% WTL rate |
+| W18 | 48 | 50.0% | $-22.63 | 14.5 pts | Quantity changed 0.10→0.01 lots; BTCUSD dilution |
+
+**Root cause of W18 decline:** Position quantity dropped from 0.10 to 0.01 lots (10× smaller), and the bot started trading BTCUSD with no trained weights (fallback only at 48.8% WR).
+
+### File Inventory
+
+| File | Status | Purpose |
+|------|--------|---------|
+| `src/core/openapi_hub.py` | ✅ Modified | SafeMath guards, trade_log expansion, lifecycle events, entry trigger snapshot |
+| `src/utils/metrics_calculator.py` | ✅ Modified | SafeMath constants, NaN/Inf validation |
+| `src/utils/safe_math.py` | ✅ Unchanged | Source of `SAFE_EPSILON`, `SAFE_DIV_MIN`, `SAFE_SMALL` |
+| `tests/unit/test_openapi_hub_pnl.py` | 🆕 Created | 27 real-data tests for P&L, BarBuilder, max-loss |
+| `scripts/reconstruct_trade_lifecycle.py` | 🆕 Created | Multi-source trade lifecycle stitcher |
+| `pyproject.toml` | ✅ Modified | Added `[tool.coverage.*]` section |
+| `.github/copilot-instructions.md` | ✅ Modified | Updated topology, TFAgent features, ghost HOLD fix |
+| `data/analysis_lifecycle.jsonl` | 🆕 Data | 1,672 stitched XAUUSD M5 April trades enriched with decision + cache + CSV data |
+
+### Test Status
+- **301 passed** across SafeMath (115), metrics_calculator (8), PnL calc (11), dual_policy (95), trigger/harvester agents (77)
+- **3 pre-existing failures** in `test_hud_rendering` and `test_universe_registry` (unchanged by this session)
 bash run.sh &
 ```
 

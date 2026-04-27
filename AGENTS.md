@@ -79,3 +79,43 @@ python3 -m py_compile run_universe.py train_offline.py
 - When restarting live paper processes, verify flat/current position state first
   unless the user has explicitly accepted weekend/market-closed restart risk.
 - Treat `/tmp/ctrader_hud.pid` as possibly stale when restarting the HUD.
+
+## Audit Log & Trade Log
+
+The TFAgent writes **65 top-level fields** per trade to `data/trade_log.jsonl` plus
+two nested breakdown dicts (`trigger_data` with 32 sub-fields, `reward_*_breakdown`).
+
+The complete field map is defined in `src/core/openapi_hub.py:_write_trade_log()`.
+Key groups: identity (7), timing (3), P&L (4), excursions (4), entry conditions (13),
+runway prediction (9), reward (7), calibration (7), exit conditions (3), diagnostics (4),
+risk state (2), trigger reason snapshot (1 nested dict), reward breakdown (2 nested dicts).
+
+**Every trade is now linked to its trigger entry context.** The `trigger_data` field
+captures regime, geometry, HMM probabilities, kurtosis, volatility ratio, gap, returns,
+alignment score, bar OHLCV, training state, CB state, and drawdown at the moment of entry.
+
+For retrospective analysis, use `scripts/reconstruct_trade_lifecycle.py` to stitch
+trade_log + decisions + cache + transactions + CSV history into a single enriched dataset.
+
+## Real-Data Test Requirements
+
+All price-based tests should use the session-scoped fixtures from `tests/conftest.py`
+which load real paper-trading data (`data/training_cache_XAUUSD_M5.jsonl`,
+`data/training_cache_XAUUSD_M1.jsonl`, `data/training_cache_BTCUSD_M1.jsonl`).
+Tests using these fixtures are automatically skipped if the live cache has insufficient
+data (≥200 bars, ≥10 trades required).
+
+Key fixtures:
+- `xauusd_m5_bars` — session-scoped list of ~8,000+ real XAUUSD M5 bars
+- `xauusd_m5_trades` — session-scoped list of raw trade records
+- `xauusd_m5_bars_100/500` — function-scoped deque subsets
+
+After modifying `openapi_hub.py` P&L or trade log paths, run:
+```bash
+python3 -m pytest tests/unit/test_openapi_hub_pnl.py -v --tb=short
+```
+
+After modifying reward shaper or metrics_calculator:
+```bash
+python3 -m pytest tests/unit/test_metrics_calculator.py tests/unit/test_reward_calculations.py -v
+```

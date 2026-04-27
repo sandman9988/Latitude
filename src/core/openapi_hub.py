@@ -55,6 +55,8 @@ from typing import Any
 
 import numpy as np
 
+from src.utils.safe_math import SAFE_DIV_MIN, SAFE_EPSILON, SAFE_SMALL, SafeMath  # noqa: E402
+
 LOG = logging.getLogger("openapi_hub")
 
 # ---------------------------------------------------------------------------
@@ -496,6 +498,23 @@ class TFAgent:
         self._entry_var: float = 0.0
         self._entry_vpin_z: float = 0.0
 
+        # Entry-time lifecycle snapshots — persisted at open so trade_log has entry-vs-close diff.
+        self._entry_dynamic_floor_applied: float = 0.0
+        self._entry_conf_margin: float = 0.0
+        self._entry_win_rate_ema: float = 0.5
+        self._entry_total_trades: int = 0
+        self._entry_equity: float = 0.0
+        self._entry_conf_calib_err: float = 0.0
+        self._entry_runway_accuracy: float = 0.0
+
+        # Previous state tracking for transition events
+        self._prev_cb_tripped: list[str] = []
+        self._prev_regime: str = "UNKNOWN"
+
+        # Entry trigger reasoning snapshot — populated at entry, consumed at close
+        # by _write_trade_log so all trigger decision context is logged per trade.
+        self._entry_trigger_data: dict = {}
+
         # Dense harvester experience tracking — per-bar HOLD experiences while in position.
         # Mirrors the legacy ctrader_ddqn_paper.py pattern that kept the buffer full.
         # prev_harvester_state: harvester.last_state from the previous bar close.
@@ -765,6 +784,9 @@ class TFAgent:
             return 0.0
         rs2_vals: list[float] = []
         for _, o, h, l, c in window:
+            if not (SafeMath.is_valid(o) and SafeMath.is_valid(h)
+                    and SafeMath.is_valid(l) and SafeMath.is_valid(c)):
+                continue
             if o <= 0 or h <= 0 or l <= 0 or c <= 0:
                 continue
             try:
@@ -972,6 +994,11 @@ class TFAgent:
                         "open": float(_o_b), "high": float(_h_b),
                         "low": float(_l_b), "close": float(_c_b),
                     },
+                    "entry_dynamic_floor": self._entry_dynamic_floor_applied,
+                    "entry_conf_margin": self._entry_conf_margin,
+                    "win_rate_ema": self._win_rate_ema,
+                    "equity": self.equity,
+                    "total_trades": self.total_trades,
                 },
                 trade_id=self._current_trade_id,
             )
@@ -988,7 +1015,7 @@ class TFAgent:
         All in [-1, 1].
         """
         ref_price = max(abs(entry_price), 1.0)
-        vol = max(self._realized_vol(), 1e-6)
+        vol = max(self._realized_vol(), SAFE_SMALL)
         pos = self.position
         direction = pos["direction"] if pos else 1
         unrealized = (self.last_mid - entry_price) * direction
@@ -1057,7 +1084,14 @@ class TFAgent:
         # Log HOLD decision to audit trail so position history is traceable
         try:
             unrealized = (self.last_mid - entry_price) * (self.position["direction"] if self.position else 1)
-            capture_r = unrealized / cur_mfe if cur_mfe > 1e-8 else 0.0
+            capture_r = unrealized / cur_mfe if cur_mfe > SAFE_EPSILON else 0.0
+            _harv = getattr(self.policy, "harvester", None)
+            _mfe_pct = (cur_mfe / max(abs(entry_price), 1.0)) * 100.0
+            _trail_act = getattr(_harv, "trailing_stop_activation_pct", 0.25)
+            _trail_dist = getattr(_harv, "trailing_stop_distance_pct", 0.12)
+            _be_trig = getattr(_harv, "breakeven_trigger_pct", 0.30)
+            _cd_min = getattr(_harv, "capture_decay_min_mfe_pct", 0.10)
+            _cd_thr = float(getattr(_harv, "capture_decay_threshold", 0.35))
             self.decision_log.log_harvester_decision(
                 decision="HOLD",
                 confidence=self._last_harvester_conf,
@@ -1070,6 +1104,17 @@ class TFAgent:
                 capture_ratio=float(capture_r),
                 trade_id=self._current_trade_id,
                 in_position=True,
+                regime=str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN"),
+                realized_vol=self._realized_vol(),
+                depth_ratio=self._depth_ratio(),
+                exit_floor=self._exit_conf_dynamic_floor,
+                trailing_stop_active=_mfe_pct >= _trail_act,
+                trailing_stop_activation_pct=_trail_act,
+                trailing_stop_distance_pct=_trail_dist,
+                breakeven_active=_mfe_pct >= _be_trig,
+                breakeven_trigger_pct=_be_trig,
+                capture_decay_armed=_mfe_pct >= _cd_min,
+                capture_decay_threshold=_cd_thr,
             )
         except Exception as e:
             LOG.debug("[%s %s] hold_decision_log error: %s", self.symbol, self.tf_label, e)
@@ -1117,7 +1162,7 @@ class TFAgent:
             d_idx += 1
             entry_bar = bars_list[entry_idx]
             entry_price = float(entry_bar[4])  # close
-            if entry_price <= 0:
+            if not math.isfinite(entry_price) or entry_price <= 0:
                 continue
 
             stop_dist = entry_price * self._PRESEED_STOP_PCT
@@ -1142,7 +1187,7 @@ class TFAgent:
                 bar_high = float(b[2])
                 bar_low = float(b[3])
                 bar_close = float(b[4])
-                if bar_close <= 0:
+                if not math.isfinite(bar_close) or bar_close <= 0:
                     break
 
                 # Update MFE/MAE for this step
@@ -1167,13 +1212,13 @@ class TFAgent:
                     # Incremental HOLD reward for this bar
                     capture_ratio = (
                         ((bar_close - entry_price) * direction) / cur_mfe
-                        if cur_mfe > 1e-8 else 0.0
+                        if cur_mfe > SAFE_EPSILON else 0.0
                     )
                     capture_c = float(np.clip(capture_ratio * 0.4, 0.0, 0.4))
                     mfe_delta = (cur_mfe - prev_mfe) / max(abs(entry_price), 1.0)
-                    mfe_g = float(np.clip(mfe_delta / max(vol_entry, 1e-6) * 0.3, -0.3, 0.3))
+                    mfe_g = float(np.clip(mfe_delta / max(vol_entry, SAFE_SMALL) * 0.3, -0.3, 0.3))
                     mae_delta = (cur_mae - prev_mae) / max(abs(entry_price), 1.0)
-                    mae_p = float(-np.clip(mae_delta / max(vol_entry, 1e-6) * 0.4, 0.0, 0.4))
+                    mae_p = float(-np.clip(mae_delta / max(vol_entry, SAFE_SMALL) * 0.4, 0.0, 0.4))
                     bars_per_day = max(10, 1440 // max(1, self.timeframe_minutes))
                     t_decay = -0.02 * min(hold_step / max(1, bars_per_day // 10), 10.0)
                     hold_reward = float(np.clip(capture_c + mfe_g + mae_p + t_decay, -1.0, 1.0))
@@ -1207,7 +1252,7 @@ class TFAgent:
 
             # CLOSE experience
             if prev_harv_state is not None:
-                capture_at_close = min(1.0, pnl_pts / prev_mfe) if prev_mfe > 1e-8 else 0.0
+                capture_at_close = min(1.0, pnl_pts / prev_mfe) if prev_mfe > SAFE_EPSILON else 0.0
                 close_reward = float(np.clip(capture_at_close, -1.0, 1.0))
                 try:
                     self.policy.add_harvester_experience(
@@ -1432,6 +1477,7 @@ class TFAgent:
 
         # Dynamic entry floor: raises minimum confidence when calibration or runway accuracy is poor.
         # Paper mode: block entry (don't train on structurally bad setups), but add NO_ENTRY exp.
+        _dyn_floor = 0.0
         if action != 0:
             _base_floor = float(self._param_manager.get(
                 self.symbol, "entry_confidence_threshold",
@@ -1444,6 +1490,72 @@ class TFAgent:
                     _floor_dbg["uplift"], _floor_dbg["runway_penalty"],
                 )
                 action = 0
+
+        # Snapshot entry-time trade_id and lifecycle metrics BEFORE logging the decision
+        # so _log_entry_decision captures them with the correct trade_id for LONG/SHORT.
+        if action != 0:
+            self._current_trade_id = f"{self.symbol}_{self.tf_label}_{uuid.uuid4().hex[:8]}"
+            self._entry_dynamic_floor_applied = _dyn_floor
+            self._entry_conf_margin = conf - _dyn_floor
+            self._entry_win_rate_ema = self._win_rate_ema
+            self._entry_total_trades = self.total_trades
+            self._entry_equity = self.equity
+            self._entry_conf_calib_err = self._conf_calib_err_ema
+            self._entry_runway_accuracy = self._runway_accuracy_ema
+
+            # Snapshot trigger reasoning data for trade_log correlation.
+            # Mirrors _log_entry_decision reasoning fields.
+            _geom = self.path_geometry.last
+            _cb_ok = self.circuit_breakers is None or not self.circuit_breakers.is_any_tripped()
+            _rs_vol_s = self._compute_rs_vol(10)
+            _rs_vol_l = self._compute_rs_vol(50)
+            _er10 = self._compute_er(10)
+            _ret1, _ret5, _ret20 = self._compute_returns()
+            _bars_list = list(self.bars)
+            _prev_c = _bars_list[-2][4] if len(_bars_list) >= 2 else _c
+            _gap_pts = float(_o_b - _prev_c)
+            _gap_rs = (_gap_pts / _prev_c / _rs_vol_s) if _rs_vol_s > 0 and _prev_c > 0 else 0.0
+            _trig_stats = (self.policy.get_training_stats() or {}).get("trigger") or {} if hasattr(self.policy, "get_training_stats") else {}
+            _alignment = self._alignment_score(action, _ret1, _ret5, _ret20)
+            _energy_bars = self._bars_since_energy_bar(_rs_vol_s)
+            _hmm = self._get_hmm_probs()
+            _cb_mult = self.circuit_breakers.get_position_size_multiplier() if self.circuit_breakers is not None else 1.0
+            _drawdown_pct = max(0.0, (self.starting_equity - self.equity) / max(abs(self.starting_equity), 1.0))
+
+            self._entry_trigger_data = {
+                "entry_regime": regime,
+                "entry_feasibility": feasibility,
+                "entry_zeta": float(getattr(self.policy, "current_zeta", 1.0) or 1.0),
+                "entry_geom_efficiency": _geom.get("efficiency", 0.0),
+                "entry_geom_runway": _geom.get("runway", 0.5),
+                "entry_geom_gamma": _geom.get("gamma", 0.0),
+                "entry_geom_jerk": _geom.get("jerk", 0.0),
+                "entry_cb_ok": _cb_ok,
+                "entry_gated_conditions": _gated,
+                "entry_depth_ratio": depth_ratio,
+                "entry_kurtosis": self._last_kurtosis,
+                "entry_kurtosis_threshold": self._active_kurtosis_threshold(),
+                "entry_rs_vol_short": _rs_vol_s,
+                "entry_rs_vol_long": _rs_vol_l,
+                "entry_rs_vol_ratio": _rs_vol_ratio,
+                "entry_gap_rs": _gap_rs,
+                "entry_half_spread": half_spread,
+                "entry_training_steps": int(_trig_stats.get("training_steps", 0)),
+                "entry_epsilon": float(_trig_stats.get("epsilon", 1.0)),
+                "entry_er10": _er10,
+                "entry_ret1": _ret1,
+                "entry_ret5": _ret5,
+                "entry_ret20": _ret20,
+                "entry_alignment_score": _alignment,
+                "entry_bars_since_energy_bar": _energy_bars,
+                "entry_hmm_probs": _hmm,
+                "entry_bar_open": float(_o_b),
+                "entry_bar_high": float(_h_b),
+                "entry_bar_low": float(_l_b),
+                "entry_bar_close": float(_c_b),
+                "entry_cb_size_mult": _cb_mult,
+                "entry_drawdown_pct": _drawdown_pct,
+            }
 
         self._log_entry_decision(action, conf, runway, _c, vol, depth_ratio, half_spread, bar, _gated)
 
@@ -1468,6 +1580,11 @@ class TFAgent:
         from src.constants import MAX_LOSS_PER_TRADE_USD, MIN_HOLD_TICKS_DEFAULT  # noqa: PLC0415
         _pos = self.position
         _unrealized = (mid - _pos["entry_price"]) * _pos["direction"] * _pos["qty"] * self.contract_size
+        if not math.isfinite(_unrealized):
+            LOG.error("[%s %s] Non-finite unrealized P&L: %.4f — force close",
+                      self.symbol, self.tf_label, _unrealized)
+            self._close_position(ts, mid - _pos["direction"] * half_spread)
+            return
 
         # ── Hard max-loss cap ─────────────────────────────────────────────────
         if _unrealized < -MAX_LOSS_PER_TRADE_USD:
@@ -1487,6 +1604,8 @@ class TFAgent:
         if _ticks_held > MIN_HOLD_TICKS_DEFAULT:
             _mfe_pts = getattr(self.policy, "mfe", 0.0)
             _mfe_usd = float(_mfe_pts) * _pos["qty"] * self.contract_size
+            if not math.isfinite(_mfe_usd):
+                _mfe_usd = 0.0
             if _mfe_usd >= MAX_LOSS_PER_TRADE_USD:
                 _pnl_floor = _mfe_usd - MAX_LOSS_PER_TRADE_USD  # never give back more than 1R
                 if _unrealized < _pnl_floor:
@@ -1536,7 +1655,15 @@ class TFAgent:
             _ticks = int(pos_metrics.get("ticks_held", 0))
             _entry_p = float(pos_metrics.get("entry_price", _pos["entry_price"]))
             _unrealized = (mid - _entry_p) * _pos["direction"]
-            _cap_r = _unrealized / _mfe if _mfe > 1e-8 else 0.0
+            _cap_r = _unrealized / _mfe if _mfe > SAFE_EPSILON else 0.0
+            _harv = getattr(self.policy, "harvester", None)
+            _mfe_pct_c = (_mfe / max(abs(_entry_p), 1.0)) * 100.0
+            _trail_act_c = getattr(_harv, "trailing_stop_activation_pct", 0.25)
+            _trail_dist_c = getattr(_harv, "trailing_stop_distance_pct", 0.12)
+            _be_trig_c = getattr(_harv, "breakeven_trigger_pct", 0.30)
+            _cd_min_c = getattr(_harv, "capture_decay_min_mfe_pct", 0.10)
+            _cd_thr_c = float(getattr(_harv, "capture_decay_threshold", 0.35))
+            _close_reason_c = str(getattr(_harv, "last_close_reason", "") or "")
             try:
                 self.decision_log.log_harvester_decision(
                     decision="CLOSE",
@@ -1550,6 +1677,18 @@ class TFAgent:
                     capture_ratio=float(_cap_r),
                     trade_id=self._current_trade_id,
                     in_position=True,
+                    regime=str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN"),
+                    realized_vol=self._realized_vol(),
+                    depth_ratio=self._depth_ratio(),
+                    exit_floor=self._exit_conf_dynamic_floor,
+                    trailing_stop_active=_mfe_pct_c >= _trail_act_c,
+                    trailing_stop_activation_pct=_trail_act_c,
+                    trailing_stop_distance_pct=_trail_dist_c,
+                    breakeven_active=_mfe_pct_c >= _be_trig_c,
+                    breakeven_trigger_pct=_be_trig_c,
+                    capture_decay_armed=_mfe_pct_c >= _cd_min_c,
+                    capture_decay_threshold=_cd_thr_c,
+                    close_reason=_close_reason_c,
                 )
             except Exception as e:
                 LOG.debug("[%s %s] decision_log error: %s", self.symbol, self.tf_label, e)
@@ -1576,7 +1715,7 @@ class TFAgent:
             realized_vol = 0.005
         entry_price_val = max(abs(entry_price), 1.0)
         lot_value = max(self.qty * self.contract_size, 1.0)
-        vol_pts = max(realized_vol * entry_price_val, 1e-6)
+        vol_pts = max(realized_vol * entry_price_val, SAFE_SMALL)
         predicted_net_pts = max(0.0, float(predicted_runway_net or 0.0)) * entry_price_val
         norm_mfe = mfe / vol_pts
         norm_predicted = predicted_net_pts / vol_pts
@@ -1659,9 +1798,7 @@ class TFAgent:
         self._entry_var = self._last_var_95
         self._entry_vpin_z = self._vpin_z
 
-        # Trade ID for audit log correlation — links entry → hold(s) → close
-        self._current_trade_id = f"{self.symbol}_{self.tf_label}_{uuid.uuid4().hex[:8]}"
-
+        # Trade ID was set in _handle_flat before _log_entry_decision.
         # Reset dense experience state for this new position
         self._prev_harvester_state = None
         self._prev_mfe = 0.0
@@ -1996,7 +2133,15 @@ class TFAgent:
         self._current_trade_id = None
 
         pnl_pts = (fill_price - entry_price) * direction
+        if not math.isfinite(pnl_pts):
+            LOG.error("[%s %s] Non-finite pnl_pts: fill=%.2f entry=%.2f dir=%d — using 0",
+                      self.symbol, self.tf_label, fill_price, entry_price, direction)
+            pnl_pts = 0.0
         pnl_usd = pnl_pts * qty * self.contract_size
+        if not math.isfinite(pnl_usd):
+            LOG.error("[%s %s] Non-finite pnl_usd: pts=%.4f qty=%.4f cs=%.2f — using 0",
+                      self.symbol, self.tf_label, pnl_pts, qty, self.contract_size)
+            pnl_usd = 0.0
         self.equity += pnl_usd
         self.total_trades += 1
         self.trades_pnl.append(pnl_usd)
@@ -2018,7 +2163,7 @@ class TFAgent:
         self._rolling_mae.append(mae)
 
         # Capture ratio: fraction of MFE captured
-        capture_ratio = min(1.0, pnl_pts / mfe) if mfe > 1e-8 else 0.0
+        capture_ratio = min(1.0, pnl_pts / mfe) if mfe > SAFE_EPSILON else 0.0
         was_wtl = (pnl_pts < 0) and (mfe > abs(mae) * 0.5)
 
         # Capture health monitoring — immediate on large deltas, rolling EMA otherwise
@@ -2077,9 +2222,9 @@ class TFAgent:
             self.symbol, "vpin_z_threshold", timeframe=self.tf_label, broker="default", default=2.5) or 2.5)
         _regime_adj = 0.0
         if self._entry_var > _vol_cap_close:
-            _regime_adj -= 0.3 * min(self._entry_var / max(_vol_cap_close, 1e-9), 2.0)
+            _regime_adj -= 0.3 * min(self._entry_var / max(_vol_cap_close, SAFE_DIV_MIN), 2.0)
         if abs(self._entry_vpin_z) > _vpin_thr_close:
-            _regime_adj -= 0.2 * min(abs(self._entry_vpin_z) / max(_vpin_thr_close, 1e-9), 2.0)
+            _regime_adj -= 0.2 * min(abs(self._entry_vpin_z) / max(_vpin_thr_close, SAFE_DIV_MIN), 2.0)
         capture_reward = float(np.clip(_raw_capture + _regime_adj, -2.0, 2.0))
 
         # Snapshot before on_exit() resets the counter to 0
@@ -2111,8 +2256,13 @@ class TFAgent:
             )
             trigger_reward = float(shaped.get("trigger_reward", trigger_reward))
             capture_reward = float(shaped.get("harvester_reward", capture_reward))
+            # Capture full reward component breakdown for trade_log
+            _reward_breakdown = shaped.get("trigger_breakdown", {})
+            _harv_breakdown = shaped.get("harvester_breakdown", {})
         except Exception as e:
             LOG.debug("[%s %s] reward_shaper error: %s", self.symbol, self.tf_label, e)
+            _reward_breakdown = {}
+            _harv_breakdown = {}
 
         regime = str(getattr(self.policy, "current_regime", "UNKNOWN"))
         self._add_replay_experiences(trigger_reward, capture_reward)
@@ -2150,11 +2300,15 @@ class TFAgent:
                                if isinstance(v, dict) and v.get("tripped")]
             except Exception:
                 pass
+        # Snapshot risk state at close for trade_log
+        _close_drawdown = max(0.0, (self.starting_equity - self.equity) / max(abs(self.starting_equity), 1.0))
+        _close_cb_mult = self.circuit_breakers.get_position_size_multiplier() if self.circuit_breakers is not None else 1.0
+
         self._write_trade_log(
             direction=direction,
             entry_price=entry_price,
             exit_price=fill_price,
-            entry_time=pos["entry_time"],
+            entry_time=pos["entry_time"].isoformat() if pos["entry_time"] else None,
             exit_time=_ts,
             pnl_usd=pnl_usd,
             pnl_pts=pnl_pts,
@@ -2173,6 +2327,29 @@ class TFAgent:
             diag_cb_tripped=_cb_tripped,
             trade_id=_closed_trade_id,
             ticks_held=_ticks_held_at_close,
+            exit_regime=regime,
+            exit_vol=self._realized_vol(),
+            exit_depth_ratio=self._depth_ratio(),
+            entry_dynamic_floor=self._entry_dynamic_floor_applied,
+            entry_conf_margin=self._entry_conf_margin,
+            win_rate_ema_at_entry=self._entry_win_rate_ema,
+            total_trades_at_entry=self._entry_total_trades,
+            equity_at_entry=self._entry_equity,
+            conf_calib_err_at_entry=self._entry_conf_calib_err,
+            runway_accuracy_at_entry=self._entry_runway_accuracy,
+            # Reward component breakdown
+            reward_capture_efficiency=_reward_breakdown.get("runway_reward", _reward_breakdown.get("accuracy", 0.0)),
+            reward_wtl_penalty=_harv_breakdown.get("wtl_penalty", 0.0),
+            reward_opportunity_cost=_harv_breakdown.get("undeveloped_mfe_penalty", 0.0),
+            reward_session_quality=_harv_breakdown.get("session_quality", 1.0),
+            reward_harvester_total=_harv_breakdown.get("harvester_reward", capture_reward),
+            reward_trigger_breakdown=_reward_breakdown,
+            reward_harvester_breakdown=_harv_breakdown,
+            # Trigger entry reasoning snapshot
+            trigger_data=self._entry_trigger_data,
+            # Risk state at close
+            close_drawdown_pct=_close_drawdown,
+            close_cb_size_mult=_close_cb_mult,
         )
 
     # ---- trade log -------------------------------------------------------
@@ -2201,6 +2378,29 @@ class TFAgent:
         diag_cb_tripped: list | None = None,
         trade_id: str | None = None,
         ticks_held: int = 0,
+        exit_regime: str = "UNKNOWN",
+        exit_vol: float = 0.0,
+        exit_depth_ratio: float = 0.0,
+        entry_dynamic_floor: float = 0.0,
+        entry_conf_margin: float = 0.0,
+        win_rate_ema_at_entry: float = 0.5,
+        total_trades_at_entry: int = 0,
+        equity_at_entry: float = 0.0,
+        conf_calib_err_at_entry: float = 0.0,
+        runway_accuracy_at_entry: float = 0.0,
+        # New reward component breakdown fields
+        reward_capture_efficiency: float = 0.0,
+        reward_wtl_penalty: float = 0.0,
+        reward_opportunity_cost: float = 0.0,
+        reward_session_quality: float = 1.0,
+        reward_harvester_total: float = 0.0,
+        reward_trigger_breakdown: dict | None = None,
+        reward_harvester_breakdown: dict | None = None,
+        # Trigger entry reasoning snapshot
+        trigger_data: dict | None = None,
+        # Risk state at close
+        close_drawdown_pct: float = 0.0,
+        close_cb_size_mult: float = 1.0,
     ) -> None:
         self._trade_sequence += 1
         ticket = f"PAPER_{self._epoch_ts}_{self._trade_sequence}"
@@ -2208,7 +2408,7 @@ class TFAgent:
         bars_held = int(round(hold_secs / max(self.timeframe_minutes * 60, 1)))
         _price_ref = max(abs(entry_price), 1.0)
         runway_utilization = (pnl_pts / (predicted_runway_net * _price_ref)
-                              if predicted_runway_net > 0 and abs(pnl_pts) > 1e-8 else 0.0)
+                              if predicted_runway_net > 0 and abs(pnl_pts) > SAFE_EPSILON else 0.0)
         spread_cost_pts = self.last_half_spread * 2.0
         pnl_net = pnl_pts - spread_cost_pts
         record = {
@@ -2256,12 +2456,37 @@ class TFAgent:
             "entry_vpin_z": entry_vpin_z,
             "entry_var_95": entry_var_95,
             "entry_imbalance": self._entry_imbalance,
+            # Entry-time calibration & floor snapshots (for regression detection)
+            "entry_dynamic_floor": entry_dynamic_floor,
+            "entry_conf_margin": entry_conf_margin,
+            "win_rate_ema_at_entry": win_rate_ema_at_entry,
+            "total_trades_at_entry": total_trades_at_entry,
+            "equity_at_entry": equity_at_entry,
+            "conf_calib_err_at_entry": conf_calib_err_at_entry,
+            "runway_accuracy_at_entry": runway_accuracy_at_entry,
+            # Exit-time conditions (for entry vs exit regime comparison)
+            "exit_regime": exit_regime,
+            "exit_vol": exit_vol,
+            "exit_depth_ratio": exit_depth_ratio,
             # Diagnostics
             "diag_circuit_breaker_active": diag_cb_active,
             "diag_circuit_breakers_tripped": diag_cb_tripped or [],
             "spread_cost_points": spread_cost_pts,
             "balance_after": self.equity,
             "decision_trade_id": trade_id,
+            # Reward component breakdown
+            "reward_capture_efficiency": reward_capture_efficiency,
+            "reward_wtl_penalty": reward_wtl_penalty,
+            "reward_opportunity_cost": reward_opportunity_cost,
+            "reward_session_quality": reward_session_quality,
+            "reward_harvester_total": reward_harvester_total,
+            "reward_trigger_breakdown": reward_trigger_breakdown or {},
+            "reward_harvester_breakdown": reward_harvester_breakdown or {},
+            # Trigger entry reasoning snapshot — all context from _log_entry_decision
+            "trigger_data": trigger_data or {},
+            # Risk state at close
+            "close_drawdown_pct": close_drawdown_pct,
+            "close_cb_size_mult": close_cb_size_mult,
         }
         try:
             log_path = Path("data") / "trade_log.jsonl"
@@ -2499,7 +2724,53 @@ class TFAgent:
         except Exception:
             return 0.0, 0.0
 
+    def _log_lifecycle_events(self) -> None:
+        """Detect and log circuit breaker and regime transitions to the decision log."""
+        current_regime = str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN")
+        cb_tripped: list[str] = []
+        if self.circuit_breakers is not None and self.circuit_breakers.is_any_tripped():
+            cb_tripped = [b.name for b in self.circuit_breakers.get_tripped_breakers()]
+
+        # Regime transition
+        if current_regime != self._prev_regime:
+            LOG.info("[%s %s] Regime change: %s → %s", self.symbol, self.tf_label,
+                     self._prev_regime, current_regime)
+            try:
+                self.decision_log.log_decision(
+                    agent="System",
+                    decision="REGIME_CHANGE",
+                    confidence=1.0,
+                    context={"prev_regime": self._prev_regime, "new_regime": current_regime},
+                    reasoning={},
+                )
+            except Exception:
+                pass
+            self._prev_regime = current_regime
+
+        # Circuit breaker state change
+        if set(cb_tripped) != set(self._prev_cb_tripped):
+            newly_tripped = [b for b in cb_tripped if b not in self._prev_cb_tripped]
+            cleared = [b for b in self._prev_cb_tripped if b not in cb_tripped]
+            LOG.info("[%s %s] CB state change: tripped=%s cleared=%s",
+                     self.symbol, self.tf_label, newly_tripped, cleared)
+            try:
+                self.decision_log.log_decision(
+                    agent="System",
+                    decision="CIRCUIT_BREAKER" if newly_tripped else "CB_CLEARED",
+                    confidence=1.0,
+                    context={
+                        "newly_tripped": newly_tripped,
+                        "cleared": cleared,
+                        "active_breakers": cb_tripped,
+                    },
+                    reasoning={},
+                )
+            except Exception:
+                pass
+            self._prev_cb_tripped = cb_tripped
+
     def _write_risk_metrics(self) -> None:
+        self._log_lifecycle_events()
         regime = str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN")
         zeta = float(getattr(self.policy, "current_zeta", 1.0) or 1.0)
         realized_vol = self._realized_vol()
@@ -2558,7 +2829,8 @@ class TFAgent:
             "vpin": self._vpin_z,
             "vpin_zscore": self._vpin_z,
             "vpin_threshold": float(self._param_manager.get(
-                self.symbol, "vpin_z_threshold", timeframe=self.tf_label, broker="default", default=2.5) or 2.5),
+                self.symbol, "vpin_z_threshold",
+                timeframe=self.tf_label, broker="default", default=2.5) or 2.5),
             "vol_cap": float(self._param_manager.get(
                 self.symbol, "vol_cap", timeframe=self.tf_label, broker="default", default=0.05) or 0.05),
             "runway_delta_ema": self._runway_delta_ema,
@@ -2585,7 +2857,7 @@ class TFAgent:
             (time.time() - self._last_trade_close_ts) / 60.0
             if self._last_trade_close_ts is not None else 0.0
         )
-        regime = str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN")
+        regime = str(getattr(self.policy, "current_regime", "UNKNOWN"))
         try:
             self.prod_monitor.update_metrics(
                 symbol=self.symbol,
@@ -3279,7 +3551,7 @@ class OpenAPIHub:
             self._vpin_last_mid = mid
             return
         delta = mid - self._vpin_last_mid
-        if abs(delta) < 1e-9:
+        if SafeMath.is_zero(delta):
             return
         side = "BUY" if delta > 0 else "SELL"
         self._vpin_calc.update(volume=1.0, side=side)
