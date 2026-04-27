@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Trigger Agent - Entry Specialist (Phase 3)
+"""Trigger Agent - Entry Specialist (Phase 3).
 ==========================================
 Dual-agent architecture component for trade entry decisions.
 
@@ -83,8 +82,7 @@ class _EconomicsGateParams(NamedTuple):
 
 
 class TriggerAgent(AgentTrainingMixin):
-    """
-    Entry specialist agent - decides WHEN and WHICH DIRECTION to enter.
+    """Entry specialist agent - decides WHEN and WHICH DIRECTION to enter.
 
     Philosophy: "Find trades with runway to harvest"
 
@@ -110,7 +108,7 @@ class TriggerAgent(AgentTrainingMixin):
 
     _AGENT_TAG = "TRIGGER"
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         window: int = STATE_WINDOW_SIZE,
         n_features: int = 7,
@@ -121,14 +119,14 @@ class TriggerAgent(AgentTrainingMixin):
         param_manager: LearnedParametersManager | None = None,
         timeframe_minutes: int = 5,
         buffer_capacity: int = TRIGGER_BUFFER_CAPACITY,
-    ):
-        """
-        Initialize Trigger Agent.
+    ) -> None:
+        """Initialize Trigger Agent.
 
         Args:
             window: Lookback window for state
             n_features: Number of input features
             enable_training: Enable online learning (Phase 3.5)
+
         """
         self._init_agent_state(
             window=window,
@@ -260,13 +258,12 @@ class TriggerAgent(AgentTrainingMixin):
     def _get_param(self, name: str, default: float) -> float:
         return super()._get_param(name, default)
 
-    def _load_model(self, model_path: str):
+    def _load_model(self, model_path: str) -> None:
         """Load PyTorch DDQN model for trigger agent."""
         self._load_torch_model(model_path, n_actions=3, tag="TRIGGER")
 
     def _try_training_decision(self) -> tuple[int, float, float] | None:
-        """
-        Attempt an epsilon-greedy or forced-exploration decision (training / paper mode).
+        """Attempt an epsilon-greedy or forced-exploration decision (training / paper mode).
 
         Returns the action tuple when a training decision is made, or None when
         the caller should continue to the live-mode logic.
@@ -347,7 +344,7 @@ class TriggerAgent(AgentTrainingMixin):
         self._decay_epsilon()
         return action, confidence, predicted_runway
 
-    def decide(  # noqa: PLR0911, PLR0913
+    def decide(
         self,
         state: np.ndarray,
         current_position: int = 0,
@@ -358,8 +355,7 @@ class TriggerAgent(AgentTrainingMixin):
         friction_cost: float = 0.0002,  # Phase 2: Friction costs (K) - spread + slippage
         zeta: float = 0.5,  # Regime damping ratio for adaptive epsilon
     ) -> tuple[int, float, float]:
-        """
-        Decide entry action based on current market state.
+        """Decide entry action based on current market state.
 
         Args:
             state: Normalized state features (window, n_features)
@@ -376,6 +372,7 @@ class TriggerAgent(AgentTrainingMixin):
             - action: 0=NO_ENTRY, 1=LONG, 2=SHORT
             - confidence: [0, 1] Platt-calibrated probability
             - predicted_runway: Expected MFE as percentage (e.g., 0.002 = 0.2% of entry price)
+
         """
         self.bars_since_trade += 1
         self._current_zeta = zeta  # Store for regime-aware epsilon decay
@@ -536,7 +533,19 @@ class TriggerAgent(AgentTrainingMixin):
         return False
 
     def _calc_breakeven_prob(self, expected_gain: float, expected_loss: float, friction_cost: float) -> float:
-        return SafeMath.safe_div(expected_loss + friction_cost, expected_gain + expected_loss, 0.0)
+        """Calculate probability required for breakeven: P(win) >= this for EV > 0.
+
+        Formula: P_be = (L + K) / (G + L)
+        where G = expected gain, L = expected loss, K = friction.
+
+        Returns neutral 0.5 when the economics model is degenerate (sum ~0).
+        """
+        denom = expected_gain + expected_loss
+        if abs(denom) < 1e-9:
+            LOG.debug("[TRIGGER] Degenerate economics: G=%.6f L=%.6f sum=%.6f — returning neutral 0.5",
+                      expected_gain, expected_loss, denom)
+            return 0.5
+        return SafeMath.safe_div(expected_loss + friction_cost, denom, 0.5)
 
     def _runway_length_gate_blocked(self, predicted_runway: float) -> bool:
         """Return True when predicted runway is too short for live entry."""
@@ -547,10 +556,11 @@ class TriggerAgent(AgentTrainingMixin):
         min_runway_frac = self._get_param("runway_gate_min_fraction", 0.40)
         min_runway_frac = max(0.0, min(1.0, float(min_runway_frac)))
         min_runway = Q_RUNWAY_MIN * min_runway_frac
-        if predicted_runway >= min_runway:
+        # Strict blocking: predicted_runway must STRICTLY exceed min_runway
+        if predicted_runway > min_runway:
             return False
         LOG.debug(
-            "[TRIGGER] BLOCKED by runway-length gate: runway=%.6f < min=%.6f (fraction=%.2f)",
+            "[TRIGGER] BLOCKED by runway-length gate: runway=%.6f <= min=%.6f (fraction=%.2f)",
             predicted_runway,
             min_runway,
             min_runway_frac,
@@ -576,7 +586,7 @@ class TriggerAgent(AgentTrainingMixin):
         )
         return True
 
-    def _decay_epsilon(self):
+    def _decay_epsilon(self) -> None:
         """Decay epsilon with regime-aware scheduling.
 
         In trending regimes (ζ < 0.7) the learned policy is most reliable,
@@ -607,6 +617,7 @@ class TriggerAgent(AgentTrainingMixin):
 
         Returns:
             (action, confidence, predicted_runway)
+
         """
         state = self._normalize_fallback_state(state)
         if self._fallback_state_invalid(state):
@@ -707,8 +718,7 @@ class TriggerAgent(AgentTrainingMixin):
         return action
 
     def _platt_calibrate(self, raw_prob: float) -> float:
-        """
-        Apply Platt scaling to calibrate probability estimates.
+        """Apply Platt scaling to calibrate probability estimates.
 
         Phase 2: Converts raw model output to calibrated probability.
         Formula: p = 1 / (1 + exp(A*score + B))
@@ -718,6 +728,7 @@ class TriggerAgent(AgentTrainingMixin):
 
         Returns:
             Calibrated probability [0, 1]
+
         """
         # Convert probability to logit score
         if raw_prob <= 0:
@@ -733,9 +744,8 @@ class TriggerAgent(AgentTrainingMixin):
 
         return float(calibrated_prob)
 
-    def update_platt_params(self, predicted_prob: float, actual_outcome: float, raw_prob: float | None = None):
-        """
-        Online update of Platt calibration parameters.
+    def update_platt_params(self, predicted_prob: float, actual_outcome: float, raw_prob: float | None = None) -> None:
+        """Online update of Platt calibration parameters.
 
         Phase 2: Gradient descent on log-loss to improve calibration.
         Uses proper gradients: dL/da = (p-y)*logit(raw), dL/db = (p-y).
@@ -744,6 +754,7 @@ class TriggerAgent(AgentTrainingMixin):
             predicted_prob: Predicted probability (calibrated)
             actual_outcome: Actual outcome (1.0 for success, 0.0 for failure)
             raw_prob: Pre-Platt probability (needed for correct a-gradient)
+
         """
         if not self.enable_training:
             return
@@ -774,8 +785,7 @@ class TriggerAgent(AgentTrainingMixin):
         )
 
     def _q_to_runway(self, q_value: float) -> float:
-        """
-        Convert Q-value to predicted GROSS runway (expected MFE before friction).
+        """Convert Q-value to predicted GROSS runway (expected MFE before friction).
 
         NOTE: This returns GROSS runway. Caller must subtract friction_cost to get NET runway.
 
@@ -934,9 +944,8 @@ class TriggerAgent(AgentTrainingMixin):
         entry_price: float = 0.0,
         raw_confidence: float | None = None,
         predicted_runway_gross: float = 0.0,
-    ):
-        """
-        Update trigger agent based on trade outcome.
+    ) -> None:
+        """Update trigger agent based on trade outcome.
 
         Phase 3.5: Online learning updates:
         1. Log prediction error
@@ -952,6 +961,7 @@ class TriggerAgent(AgentTrainingMixin):
             entry_price: Entry price for MFE→fractional conversion
             raw_confidence: Pre-Platt probability (for correct gradient)
             predicted_runway_gross: Gross predicted runway before friction subtraction
+
         """
         if predicted_runway <= 0 and predicted_runway_gross <= 0:
             return

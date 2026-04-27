@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Prioritized Experience Replay Buffer
+"""Prioritized Experience Replay Buffer.
 =====================================
 Implements SumTree-based prioritized sampling for DDQN online learning.
 
@@ -50,6 +49,7 @@ import os
 import time
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -58,13 +58,12 @@ from numpy.random import Generator, default_rng
 from src.utils.sum_tree import SumTree
 
 # Try to import AMD opts for float16 auto-detection (AMD GPU optimization)
-# Use lowercase variable to avoid "constant redefinition" linter error
 try:
-    from src.core.ddqn_network import AMD_OPTS as _amd_opts
+    from src.core.ddqn_network import AMD_OPTS
 
     _amd_opts_available = True
 except ImportError:
-    _amd_opts = {}
+    AMD_OPTS: dict = {}
     _amd_opts_available = False
 
 LOG = logging.getLogger(__name__)
@@ -113,6 +112,7 @@ def staleness_halflife_for_timeframe(
                           = n_sessions × session_minutes × 60
         timeframe_minutes cancels, making the result timeframe-agnostic in
         wall-clock units while remaining conceptually grounded in session units.
+
     """
     session_bars = session_minutes / max(1, timeframe_minutes)
     return n_sessions * session_bars * timeframe_minutes * 60.0
@@ -143,8 +143,7 @@ class Experience:
 
 
 class ExperienceBuffer:
-    """
-    Prioritized Experience Replay buffer for DDQN online learning.
+    """Prioritized Experience Replay buffer for DDQN online learning.
 
     Features:
     - TD-error based prioritization (high error = more important)
@@ -154,7 +153,7 @@ class ExperienceBuffer:
     - Float16 storage for memory efficiency (50% reduction)
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         capacity: int = 100_000,
         alpha: float = 0.6,
@@ -166,7 +165,7 @@ class ExperienceBuffer:
         seed: int | None = None,
         timeframe_minutes: int = 5,
         use_float16: bool | None = None,  # None = auto-detect from AMD_OPTS
-    ):
+    ) -> None:
         """Initialize experience buffer.
 
         Args:
@@ -184,6 +183,7 @@ class ExperienceBuffer:
             seed: Random seed for reproducibility (default: None for non-deterministic)
             timeframe_minutes: Bar duration in minutes.  Used to auto-compute
                 *staleness_halflife* when that argument is ``None``.
+
         """
         self.capacity = capacity
         self.alpha = alpha
@@ -212,7 +212,7 @@ class ExperienceBuffer:
         # Float16 storage for memory efficiency (50% reduction on AMD GPUs)
         # Auto-detect from AMD opts if not specified
         if use_float16 is None:
-            self._use_float16 = _amd_opts.get("is_amd", False) if _amd_opts_available else False
+            self._use_float16 = AMD_OPTS.get("is_amd", False) if _amd_opts_available else False
         else:
             self._use_float16 = use_float16
 
@@ -233,20 +233,22 @@ class ExperienceBuffer:
             self._use_float16,
         )
 
-    def set_current_regime(self, regime: int):
+    def set_current_regime(self, regime: int) -> None:
         """Update current regime for prioritization weighting.
 
         Args:
             regime: RegimeSampling enum value
+
         """
         self.current_regime = RegimeSampling(regime)
         LOG.debug("Current regime updated: %s", self.current_regime.name)
 
-    def set_current_zeta(self, zeta: float):
+    def set_current_zeta(self, zeta: float) -> None:
         """Update current damping ratio for continuous regime boost.
 
         Args:
             zeta: Damping ratio from RegimeDetector (lower = trending)
+
         """
         self.current_zeta = zeta
 
@@ -258,6 +260,7 @@ class ExperienceBuffer:
 
         Returns:
             Decay weight in [0, 1] (exponential decay)
+
         """
         age = time.time() - timestamp
 
@@ -270,7 +273,7 @@ class ExperienceBuffer:
 
         return float(max(0.0001, decay))  # Ensure non-zero
 
-    def add(  # noqa: PLR0913
+    def add(
         self,
         state: np.ndarray,
         action: int,
@@ -293,6 +296,7 @@ class ExperienceBuffer:
 
         Returns:
             True if experience was added, False if validation failed
+
         """
         # Defensive: Validate inputs
         if not isinstance(state, np.ndarray) or not isinstance(next_state, np.ndarray):
@@ -338,14 +342,14 @@ class ExperienceBuffer:
             state_loss = np.max(np.abs(state - state_roundtrip))
             next_state_loss = np.max(np.abs(next_state - next_state_roundtrip))
 
-            # Threshold: 0.001 is ~0.1% loss, acceptable for most features
-            # Log warning but still proceed - float16 is an optimization, not critical
-            if state_loss > 0.001 or next_state_loss > 0.001:
-                LOG.debug(
-                    "Float16 precision loss detected: state_loss=%.6f, next_state_loss=%.6f",
-                    state_loss,
-                    next_state_loss,
-                )
+            # Relative precision threshold: allow up to 0.1% of feature magnitude.
+            state_mag = max(np.max(np.abs(state)), 1e-6)
+            next_mag = max(np.max(np.abs(next_state)), 1e-6)
+            if state_loss / state_mag > 0.001 or next_state_loss / next_mag > 0.001:
+                LOG.warning(
+                    "Float16 precision loss: state_rel=%.4f%% next_rel=%.4f%% — using float16 anyway",
+                    state_loss / state_mag * 100, next_state_loss / next_mag * 100)
+
 
             state_stored = state_f16
             next_state_stored = next_state_f16
@@ -407,6 +411,7 @@ class ExperienceBuffer:
                 - dones: (batch_size,) array
                 - indices: (batch_size,) array (for priority updates)
                 - weights: (batch_size,) array (importance sampling weights)
+
         """
         if self.tree.n_entries < batch_size:
             LOG.warning("Insufficient experiences: have %d, need %d", self.tree.n_entries, batch_size)
@@ -514,12 +519,13 @@ class ExperienceBuffer:
             "weights": weights,
         }
 
-    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray):
+    def update_priorities(self, indices: np.ndarray, td_errors: np.ndarray) -> None:
         """Update priorities for sampled experiences based on TD-errors.
 
         Args:
             indices: Tree indices from sample()
             td_errors: TD-error magnitudes (|target - prediction|)
+
         """
         # Defensive: Validate inputs
         if len(indices) != len(td_errors):
@@ -548,6 +554,7 @@ class ExperienceBuffer:
 
         Returns:
             Number of experiences in buffer
+
         """
         return self.tree.n_entries
 
@@ -556,6 +563,7 @@ class ExperienceBuffer:
 
         Returns:
             Dictionary with buffer stats
+
         """
         return {
             "size": self.tree.n_entries,
@@ -581,6 +589,7 @@ class ExperienceBuffer:
 
         Returns:
             True if save succeeded
+
         """
         import tempfile  # noqa: PLC0415
         from pathlib import Path  # noqa: PLC0415
@@ -650,7 +659,7 @@ class ExperienceBuffer:
             except Exception:
                 # Clean up temp file on failure
                 with contextlib.suppress(OSError):
-                    os.remove(tmp_path)
+                    Path(tmp_path).unlink()
                 raise
 
             LOG.info("[BUFFER] Saved %d experiences to %s", n, dest)
@@ -669,6 +678,7 @@ class ExperienceBuffer:
 
         Returns:
             True if load succeeded
+
         """
         from pathlib import Path  # noqa: PLC0415
 

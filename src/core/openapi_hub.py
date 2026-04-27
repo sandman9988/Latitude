@@ -198,7 +198,7 @@ def _write_json_atomic(path: Path, payload: dict, indent: int | None = None) -> 
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=indent, default=_json_default)
         os.replace(tmp_path, path)
-    except BaseException:
+    except (IOError, OSError):
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -215,6 +215,8 @@ def _json_default(obj: Any) -> Any:
         return int(obj)
     if isinstance(obj, np.floating):
         return float(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
     return str(obj)
 
 
@@ -443,6 +445,7 @@ class TFAgent:
         self._bars_since_train: int = 0
 
         self._trade_sequence: int = 0  # local trade counter for trade_log ticket IDs
+        self._trade_sequence_lock = threading.Lock()  # guard for concurrent TF bar closes
         self._epoch_ts: int = int(time.time())  # epoch at startup for ticket generation
         self._current_trade_id: str | None = None  # links entry → hold(s) → close in audit log
 
@@ -2395,8 +2398,10 @@ class TFAgent:
         close_drawdown_pct: float = 0.0,
         close_cb_size_mult: float = 1.0,
     ) -> None:
-        self._trade_sequence += 1
-        ticket = f"PAPER_{self._epoch_ts}_{self._trade_sequence}"
+        with self._trade_sequence_lock:
+            self._trade_sequence += 1
+            _seq = self._trade_sequence
+            ticket = f"PAPER_{self._epoch_ts}_{_seq}"
         hold_secs = (exit_time - entry_time).total_seconds() if entry_time else 0.0
         bars_held = int(round(hold_secs / max(self.timeframe_minutes * 60, 1)))
         _price_ref = max(abs(entry_price), 1.0)
@@ -2405,7 +2410,7 @@ class TFAgent:
         spread_cost_pts = self.last_half_spread * 2.0
         pnl_net = pnl_pts - spread_cost_pts
         record = {
-            "trade_id": self._trade_sequence,
+            "trade_id": _seq,
             "ticket": ticket,
             "position_id": f"{self.symbol_id}_ticket_{ticket}",
             "symbol": self.symbol,

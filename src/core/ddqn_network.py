@@ -1,5 +1,4 @@
-"""
-Enhanced DDQN Neural Network with Prioritized Experience Replay
+"""Enhanced DDQN Neural Network with Prioritized Experience Replay.
 
 Backend: PyTorch with AMD ROCm / CUDA GPU acceleration (CPU fallback).
 
@@ -139,7 +138,7 @@ class Conv1dQNet(nn.Module):
     Output shape: (B, n_actions)
     """
 
-    def __init__(self, n_features: int, n_actions: int = 3, temporal_pool_size: int = 4):
+    def __init__(self, n_features: int, n_actions: int = 3, temporal_pool_size: int = 4) -> None:
         super().__init__()
         fc_in = 64 * temporal_pool_size
         self.net = nn.Sequential(
@@ -163,7 +162,7 @@ class Conv1dQNet(nn.Module):
 class _QNet(nn.Module):
     """3-layer MLP: state_dim → hidden1 → hidden2 → n_actions (linear out)."""
 
-    def __init__(self, state_dim: int, hidden1: int, hidden2: int, n_actions: int):
+    def __init__(self, state_dim: int, hidden1: int, hidden2: int, n_actions: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(state_dim, hidden1),
@@ -174,7 +173,7 @@ class _QNet(nn.Module):
         )
         self._he_init()
 
-    def _he_init(self):
+    def _he_init(self) -> None:
         for m in self.net:
             if isinstance(m, nn.Linear):
                 nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
@@ -186,8 +185,7 @@ class _QNet(nn.Module):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 class DDQNNetwork:
-    """
-    Double Deep Q-Network with online and target networks.
+    """Double Deep Q-Network with online and target networks.
 
     Architecture:
         Input (state_dim) → Hidden1 (128) → Hidden2 (64) → Output (n_actions)
@@ -196,7 +194,7 @@ class DDQNNetwork:
     with the existing agent code. GPU transfers are handled internally.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         state_dim: int,
         n_actions: int,
@@ -209,7 +207,7 @@ class DDQNNetwork:
         grad_clip_norm: float = GRAD_CLIP_NORM,
         seed: int | None = None,
         use_bf16: bool | None = None,  # None = auto-detect from AMD_OPTS
-    ):
+    ) -> None:
         self.state_dim = state_dim
         self.n_actions = n_actions
         self.gamma = gamma
@@ -293,7 +291,7 @@ class DDQNNetwork:
 
     # ── training ───────────────────────────────────────────────────────────
 
-    def train_batch(  # noqa: PLR0913
+    def train_batch(
         self,
         states: np.ndarray,
         actions: np.ndarray,
@@ -372,7 +370,7 @@ class DDQNNetwork:
 
     # ── target network ─────────────────────────────────────────────────────
 
-    def _update_loss_tracking(self, loss: float):
+    def _update_loss_tracking(self, loss: float) -> None:
         """Update EMA of loss and loss variance for adaptive tau."""
         alpha = 0.05
         self._loss_ema = (1 - alpha) * self._loss_ema + alpha * loss
@@ -385,14 +383,20 @@ class DDQNNetwork:
         Returns base tau when loss is stable; reduces tau (slower target
         updates) when loss is volatile.
         """
-        # Normalise volatility relative to loss magnitude to get a scale-free ratio
-        cv = self._loss_var_ema / self._loss_ema if self._loss_ema > 1e-8 else 0.0
+        # Normalise volatility relative to loss magnitude to get a scale-free ratio.
+        # Use relative epsilon: require absolute ema > 1e-8 AND relative guard to
+        # prevent extreme cv ( > 1e3 ) from silently degrading tau to the floor.
+        if abs(self._loss_ema) > 1e-8:
+            cv = self._loss_var_ema / self._loss_ema
+            cv = min(cv, 1e3)  # clamp extreme cv so 1.0 - cv does not underflow
+        else:
+            cv = 0.0
         # Scale: cv=0 → factor=1.0 (full tau), cv=1+ → factor clamps at min
-        factor = max(self._adaptive_tau_min, 1.0 - cv)
+        factor = max(self._adaptive_tau_min, 1.0 - min(cv, 1.0))
         return self.tau * factor
 
-    def _soft_update_target(self):
-        """θ_target ← τ·θ_online + (1−τ)·θ_target
+    def _soft_update_target(self) -> None:
+        """θ_target ← τ·θ_online + (1−τ)·θ_target.
 
         Uses adaptive tau that scales inversely with loss volatility.
         """
@@ -402,14 +406,14 @@ class DDQNNetwork:
                 p_tgt.data.mul_(1.0 - adaptive_tau)
                 p_tgt.data.add_(adaptive_tau * p_on.data)
 
-    def hard_update_target(self):
+    def hard_update_target(self) -> None:
         """Copy online → target (τ = 1)."""
         self.target.load_state_dict(self.online.state_dict())
         LOG.info("[DDQN] Hard update: copied online → target")
 
     # ── persistence ────────────────────────────────────────────────────────
 
-    def save_weights(self, filepath: str):
+    def save_weights(self, filepath: str) -> None:
         """Save to *filepath* (torch .pt format, .pt suffix auto-added)."""
         path = Path(filepath)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -425,7 +429,7 @@ class DDQNNetwork:
         )
         LOG.info("[DDQN] Saved weights → %s (step %d)", pt_path, self.training_steps)
 
-    def load_weights(self, filepath: str):
+    def load_weights(self, filepath: str) -> None:
         """Load weights from *filepath*.
 
         Supports:
@@ -456,10 +460,12 @@ class DDQNNetwork:
         else:
             self._load_npz(found)
 
-    def _load_npz(self, path: Path):
+    def _load_npz(self, path: Path) -> None:
         """Migrate a legacy NumPy .npz checkpoint into the torch model.
 
         NumPy layout: w1 (fan_in × fan_out) → torch expects (fan_out × fan_in).
+        Shape validation prevents silent weight corruption when checkpoint architecture
+        does not match the current model.
         """
         data = np.load(path)
         # (torch_key, npz_key, transpose?)
@@ -472,13 +478,26 @@ class DDQNNetwork:
             ("net.4.bias", "b3", False),
         ]
 
-        def _apply(module: _QNet, npz_prefix: str):
+        def _apply(module: _QNet, npz_prefix: str) -> None:
             sd = module.state_dict()
             for torch_key, npz_key, transpose in mapping:
-                arr = data[npz_prefix + npz_key]
-                t = torch.as_tensor(arr.T if transpose else arr, dtype=torch.float32)
-                sd[torch_key] = t
-            module.load_state_dict(sd)
+                full_key = npz_prefix + npz_key
+                if full_key not in data:
+                    LOG.warning("[DDQN] NPZ key %s not found in %s — skipping", full_key, path)
+                    continue
+                arr = data[full_key]
+                migrated = arr.T if transpose else arr
+                expected = sd[torch_key].shape
+                if migrated.shape != expected:
+                    LOG.error(
+                        "[DDQN] Shape mismatch for %s: expected %s, got %s (npz key %s) — skipping",
+                        torch_key, expected, migrated.shape, full_key)
+                    continue
+                sd[torch_key] = torch.as_tensor(migrated, dtype=torch.float32)
+            try:
+                module.load_state_dict(sd)
+            except Exception as exc:
+                LOG.error("[DDQN] load_state_dict failed for %s%s: %s", npz_prefix, type(module).__name__, exc)
 
         _apply(self.online, "")
         _apply(self.target, "target_")
