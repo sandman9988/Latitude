@@ -2082,6 +2082,9 @@ class TFAgent:
             _regime_adj -= 0.2 * min(abs(self._entry_vpin_z) / max(_vpin_thr_close, 1e-9), 2.0)
         capture_reward = float(np.clip(_raw_capture + _regime_adj, -2.0, 2.0))
 
+        # Snapshot before on_exit() resets the counter to 0
+        _ticks_held_at_close = int(getattr(self.policy, "ticks_held", 0))
+
         # Notify DualPolicy
         try:
             self.policy.on_exit(fill_price, capture_ratio, was_wtl,
@@ -2092,7 +2095,7 @@ class TFAgent:
 
         # Shaped rewards via RewardShaper — uses net runway (after spread cost) for
         # more accurate prediction accuracy signal.
-        bars_held = int(getattr(self.policy, "ticks_held", 0))
+        bars_held = _ticks_held_at_close
         exit_time_iso = _ts.isoformat() if hasattr(_ts, "isoformat") else ""
         try:
             shaped = self.reward_shaper.calculate_dual_agent_rewards(
@@ -2168,6 +2171,7 @@ class TFAgent:
             diag_cb_active=len(_cb_tripped) > 0,
             diag_cb_tripped=_cb_tripped,
             trade_id=_closed_trade_id,
+            ticks_held=_ticks_held_at_close,
         )
 
     # ---- trade log -------------------------------------------------------
@@ -2194,6 +2198,7 @@ class TFAgent:
         diag_cb_active: bool = False,
         diag_cb_tripped: list | None = None,
         trade_id: str | None = None,
+        ticks_held: int = 0,
     ) -> None:
         self._trade_sequence += 1
         ticket = f"PAPER_{self._epoch_ts}_{self._trade_sequence}"
@@ -2226,7 +2231,7 @@ class TFAgent:
             "mfe_points": mfe,
             "mae_points": mae,
             "close_reason": getattr(getattr(self.policy, "harvester", None), "last_close_reason", "unknown") or "unknown",
-            "ticks_held": int(getattr(self.policy, "ticks_held", 0)),
+            "ticks_held": ticks_held,
             "bars_held": bars_held,
             "hold_seconds": hold_secs,
             "entry_confidence": self._entry_conf,
