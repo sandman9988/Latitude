@@ -213,7 +213,7 @@ class DualPolicy:
             self.regime_detector = None
 
         # Position tracking for harvester
-        self.current_position = 0  # -1=SHORT, 0=FLAT, +1=LONG
+        self.current_position = 0
         self.entry_price = 0.0
         self.entry_bar_time = None
         self._mfe_calc = MFEMAECalculator()  # single source of truth
@@ -1081,7 +1081,7 @@ class DualPolicy:
             # Try .pt first (current format), fall back to .npz (legacy)
             pt_path = cp / f"{agent_name}_ddqn_weights.pt"
             npz_path = cp / f"{agent_name}_ddqn_weights.npz"
-            weight_path = pt_path if pt_path.exists() else npz_path if npz_path.exists() else None
+            weight_path = pt_path if pt_path.exists() else (npz_path if npz_path.exists() else None)
             if weight_path is None:
                 continue
             try:
@@ -1243,7 +1243,7 @@ if __name__ == "__main__":
     print("\n[TEST 3] Enter LONG position")
     policy.on_entry(direction=1, entry_price=TEST_ENTRY_PRICE, entry_time=dt.datetime.now(tz=dt.UTC))
     assert policy.current_position == 1
-    assert policy.entry_price == TEST_ENTRY_PRICE
+    assert abs(policy.entry_price - TEST_ENTRY_PRICE) < 1e-6
     print(f"✓ Position entered: LONG @ {TEST_ENTRY_PRICE}")
 
     # Test 4: Exit decision (in position)

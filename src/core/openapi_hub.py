@@ -826,7 +826,7 @@ class TFAgent:
         if action not in (1, 2):
             return 0
         sign = 1 if action == 1 else -1
-        return sum(1 for r in (ret1, ret5, ret20) if r != 0.0 and (1 if r > 0 else -1) == sign)
+        return sum(1 for r in (ret1, ret5, ret20) if abs(r) > SAFE_EPSILON and (1 if r > 0 else -1) == sign)
 
     def _bars_since_energy_bar(self, rs_vol: float) -> int:
         """Bars since the last bar whose fractional range exceeded 1.5× RS volatility."""
@@ -1176,7 +1176,6 @@ class TFAgent:
             prev_mfe: float = 0.0
             prev_mae: float = 0.0
             pnl_pts = 0.0
-            exit_idx = entry_idx
             for hold_step in range(1, self._PRESEED_MAX_HOLD + 1):
                 bar_idx = entry_idx + hold_step
                 if bar_idx >= n:
