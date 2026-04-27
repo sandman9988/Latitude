@@ -21,7 +21,7 @@ class AgentAttribution:
 
     _VALID_TRIGGER: ClassVar[frozenset] = frozenset({"EXCELLENT", "GOOD", "OVERPREDICTED", "UNDERPREDICTED", "N/A"})
     _VALID_HARVESTER: ClassVar[frozenset] = frozenset(
-        {"EXCELLENT", "GOOD", "FAIR", "POOR", "POOR_WTL", "STOPPED_OUT", "N/A"}
+        {"EXCELLENT", "GOOD", "FAIR", "POOR", "POOR_WTL", "STOPPED_OUT", "N/A"},
     )
 
     predicted_runway: float = 0.0
@@ -60,7 +60,7 @@ class AgentAttribution:
         self.mfe_bar_offset = max(-1, self.mfe_bar_offset if self.mfe_bar_offset is not None else -1)
         self.mae_bar_offset = max(-1, self.mae_bar_offset if self.mae_bar_offset is not None else -1)
         self.bars_from_mfe_to_exit = max(
-            -1, self.bars_from_mfe_to_exit if self.bars_from_mfe_to_exit is not None else -1
+            -1, self.bars_from_mfe_to_exit if self.bars_from_mfe_to_exit is not None else -1,
         )
 
 
@@ -162,7 +162,7 @@ class PerformanceTracker:
                 "mfe_bar_offset": attr.mfe_bar_offset,
                 "mae_bar_offset": attr.mae_bar_offset,
                 "bars_from_mfe_to_exit": attr.bars_from_mfe_to_exit,
-            }
+            },
         )
         self.equity_curve.append((exit_time, self.current_equity))
 

@@ -569,7 +569,7 @@ class FeatureEngine:
 
 
     def calculate_all(
-        self, highs: np.ndarray, lows: np.ndarray, opens: np.ndarray, closes: np.ndarray
+        self, highs: np.ndarray, lows: np.ndarray, opens: np.ndarray, closes: np.ndarray,
     ) -> dict[str, float | int | bool]:
         """Calculate all features from OHLC data.
 
@@ -654,13 +654,8 @@ class FeatureEngine:
 # ============================================================================
 
 if __name__ == "__main__":
-    print("=" * 80)
-    print("FEATURE ENGINE TEST SUITE")
-    print("=" * 80)
 
     # Test 1: Roger-Satchell Volatility
-    print("\n[Test 1] Roger-Satchell Volatility")
-    print("-" * 80)
 
     rng: Generator = default_rng(42)
     n = 100
@@ -676,13 +671,8 @@ if __name__ == "__main__":
     rs = RogerSatchellVolatility(min_bars=20)
     test_rs_result = rs.calculate(test_highs, test_lows, test_opens, test_closes)
 
-    print(f"RS Volatility: {test_rs_result['rs_volatility']:.6f}")
-    print(f"RS Variance: {test_rs_result['rs_variance']:.6f}")
-    print(f"Valid: {test_rs_result['valid']}")
 
     # Test 2: Omega Ratio
-    print("\n[Test 2] Omega Ratio (Upside/Downside)")
-    print("-" * 80)
 
     # Synthetic returns with positive skew
     test_returns = rng.standard_normal(100) * 0.01
@@ -691,15 +681,8 @@ if __name__ == "__main__":
     omega_calc = OmegaRatio(threshold_bps=0.0)
     test_omega_result = omega_calc.calculate(test_returns)
 
-    print(f"Omega Ratio: {test_omega_result['omega']:.3f}")
-    print(f"Omega %: {test_omega_result['omega_pct']:.1f}%")
-    print(f"Expected Upside: {test_omega_result['upside']:.6f}")
-    print(f"Expected Downside: {test_omega_result['downside']:.6f}")
-    print(f"Valid: {test_omega_result['valid']}")
 
     # Test 3: Physics Features
-    print("\n[Test 3] Physics Features (Momentum, Acceleration, Jerk)")
-    print("-" * 80)
 
     normalizer = LogNormalizer()
     test_log_returns = normalizer.to_log_return(test_prices)
@@ -707,64 +690,31 @@ if __name__ == "__main__":
     physics_calc = PhysicsFeatures()
     test_physics_result = physics_calc.calculate(test_log_returns)
 
-    print(f"Velocity (momentum): {test_physics_result['velocity']:.6f}")
-    print(f"Acceleration: {test_physics_result['acceleration']:.6f}")
-    print(f"Jerk: {test_physics_result['jerk']:.6f}")
-    print(f"Snap (4th derivative): {test_physics_result['snap']:.6f}")
-    print(f"Velocity Std: {test_physics_result['velocity_std']:.6f}")
-    print(f"Valid: {test_physics_result['valid']}")
 
     # Test 4: Log-Return Statistics
-    print("\n[Test 4] Log-Return Statistics")
-    print("-" * 80)
 
     stats_calc = LogReturnStatistics()
     test_stats_result = stats_calc.calculate(test_log_returns)
 
-    print(f"Mean Return: {test_stats_result['mean_return']:.6f}")
-    print(f"Volatility: {test_stats_result['volatility']:.6f}")
-    print(f"Skewness: {test_stats_result['skewness']:.3f}")
-    print(f"Kurtosis: {test_stats_result['kurtosis']:.3f}")
-    print(f"Sharpe Estimate: {test_stats_result['sharpe_est']:.3f}")
-    print(f"Downside Dev: {test_stats_result['downside_dev']:.6f}")
-    print(f"Upside Dev: {test_stats_result['upside_dev']:.6f}")
-    print(f"Asymmetry Ratio: {test_stats_result['asymmetry_ratio']:.3f}")
-    print(f"Valid: {test_stats_result['valid']}")
 
     # Test 5: Range Features
-    print("\n[Test 5] Range Features (BPS-Normalized)")
-    print("-" * 80)
 
     range_calc = RangeFeatures()
     test_range_result = range_calc.calculate(test_highs, test_lows, test_closes)
 
-    print(f"True Range (BPS): {test_range_result['true_range_bps']:.2f}")
-    print(f"H-L Range (BPS): {test_range_result['hl_range_bps']:.2f}")
-    print(f"Close to High %: {test_range_result['close_to_high_pct']:.1f}%")
-    print(f"Close to Low %: {test_range_result['close_to_low_pct']:.1f}%")
-    print(f"Range Expansion: {test_range_result['range_expansion']:.6f}")
-    print(f"Valid: {test_range_result['valid']}")
 
     # Test 6: Full Feature Engine
-    print("\n[Test 6] Full Feature Engine (Integrated)")
-    print("-" * 80)
 
     engine = FeatureEngine(adaptive_window=True, min_window=20, max_window=100)
     all_features = engine.calculate_all(test_highs, test_lows, test_opens, test_closes)
 
-    print(f"Total features calculated: {len(all_features)}")
-    print(f"Overall valid: {all_features['valid']}")
-    print(f"Adaptive window size: {all_features['window_size']}")
-    print("\nSample features:")
-    for _idx, (k, v) in enumerate(list(all_features.items())[:MAX_FEATURE_PRINT]):
+    for _idx, (_k, v) in enumerate(list(all_features.items())[:MAX_FEATURE_PRINT]):
         if isinstance(v, (int, float)):
-            print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
+            pass
         else:
-            print(f"  {k}: {v}")
+            pass
 
     # Test 7: Adaptive Window Behavior
-    print("\n[Test 7] Adaptive Window Behavior")
-    print("-" * 80)
 
     # Low volatility scenario
     stable_prices = 100 + rng.standard_normal(100) * 0.1
@@ -780,35 +730,16 @@ if __name__ == "__main__":
 
     high_vol_features = engine.calculate_all(high_vol_highs, high_vol_lows, volatile_prices, volatile_prices)
 
-    print(f"Low volatility window: {low_vol_features['window_size']} bars")
-    print(f"High volatility window: {high_vol_features['window_size']} bars")
-    print("Window adapts inversely to volatility: ✓")
 
     # Test 8: Feature Names
-    print("\n[Test 8] Feature Names Extraction")
-    print("-" * 80)
 
     feature_names = engine.get_feature_names()
-    print(f"Total feature names: {len(feature_names)}")
-    print("Feature categories:")
 
     categories: dict[str, int] = {}
     for name in feature_names:
         prefix = name.split("_")[0] if "_" in name else "other"
         categories[prefix] = categories.get(prefix, 0) + 1
 
-    for cat, count in sorted(categories.items()):
-        print(f"  {cat}: {count} features")
+    for _cat, _count in sorted(categories.items()):
+        pass
 
-    print("\n" + "=" * 80)
-    print("✅ ALL TESTS COMPLETE")
-    print("=" * 80)
-    print("\nFeature Engine follows handbook principles:")
-    print("  ✓ NO magic numbers (adaptive windows)")
-    print("  ✓ Instrument-agnostic (log-returns, BPS normalization)")
-    print("  ✓ Logarithmic normalization (NOT z-score)")
-    print("  ✓ Physics-based features (momentum, acceleration, jerk)")
-    print("  ✓ Roger-Satchell volatility (handles trending markets)")
-    print("  ✓ Omega ratio (upside/downside potential)")
-    print("  ✓ Defensive programming (NaN/Inf protection, bounds checking)")
-    print("  ✓ Dynamic adaptation (volatility-based windows)")

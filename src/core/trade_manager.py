@@ -403,7 +403,7 @@ class Position:
             return True
 
         except Exception as e:
-            LOG.error("[POSITION] Fill update failed: %s (position unchanged)", e)
+            LOG.exception("[POSITION] Fill update failed: %s (position unchanged)", e)
             return False
 
     def _is_valid_decimal(self, value) -> bool:
@@ -677,7 +677,7 @@ class TradeManager:
 
             return order
         except Exception as e:
-            LOG.error("[TRADEMGR] ✗ Failed to submit order: %s", e)
+            LOG.exception("[TRADEMGR] ✗ Failed to submit order: %s", e)
             return None
 
     def submit_limit_order(
@@ -743,7 +743,7 @@ class TradeManager:
             )
             return order
         except Exception as e:
-            LOG.error("[TRADEMGR] ✗ Failed to submit limit order: %s", e)
+            LOG.exception("[TRADEMGR] ✗ Failed to submit limit order: %s", e)
             return None
 
     def submit_stop_order(
@@ -810,7 +810,7 @@ class TradeManager:
             )
             return order
         except Exception as e:
-            LOG.error("[TRADEMGR] ✗ Failed to submit stop order: %s", e)
+            LOG.exception("[TRADEMGR] ✗ Failed to submit stop order: %s", e)
             return None
 
     def cancel_order(self, clord_id: str) -> bool:
@@ -853,7 +853,7 @@ class TradeManager:
             LOG.info("[TRADEMGR] ✓ Sent cancel request: %s", orig_clord_id)
             return True
         except Exception as e:
-            LOG.error("[TRADEMGR] ✗ Failed to cancel order: %s", e)
+            LOG.exception("[TRADEMGR] ✗ Failed to cancel order: %s", e)
             return False
 
     def modify_order(self, clord_id: str, new_price: float, new_qty: float | None = None) -> bool:
@@ -910,7 +910,7 @@ class TradeManager:
             )
             return True
         except Exception as e:
-            LOG.error("[TRADEMGR] ✗ Failed to modify order: %s", e)
+            LOG.exception("[TRADEMGR] ✗ Failed to modify order: %s", e)
             return False
 
     # ----------------------------
@@ -999,7 +999,7 @@ class TradeManager:
         try:
             bid, ask = self.get_price_callback()
         except Exception as e:
-            LOG.error("[PAPER] Failed to get price for paper fill: %s", e)
+            LOG.exception("[PAPER] Failed to get price for paper fill: %s", e)
             return
 
         # BUY fills at ASK, SELL fills at BID — only validate the price
@@ -1048,7 +1048,7 @@ class TradeManager:
                     "filled_qty": quantity,
                     "avg_price": fill_price,
                     "paper_fill": True,
-                }
+                },
             )
 
             LOG.info(
@@ -1181,7 +1181,7 @@ class TradeManager:
                         "ord_status": ord_status_str,
                         "filled_qty": order.filled_qty,
                         "avg_price": order.avg_price,
-                    }
+                    },
                 )
 
                 # Route based on ExecType
@@ -1379,7 +1379,7 @@ class TradeManager:
             threading.Thread(target=check_timeout, daemon=True, name=f"PosReqTimeout-{req_id[:8]}").start()
 
         except Exception as e:
-            LOG.error("[TRADEMGR] ✗ Failed to request positions: %s", e)
+            LOG.exception("[TRADEMGR] ✗ Failed to request positions: %s", e)
             # Remove from pending
             self.pending_position_requests.pop(req_id, None)
 
@@ -1611,7 +1611,7 @@ class TradeManager:
             try:
                 self.on_reject_callback(order)
             except Exception as e:
-                LOG.error("[TRADEMGR] Error in reject callback: %s", e)
+                LOG.exception("[TRADEMGR] Error in reject callback: %s", e)
 
     def _query_order_status(self, clord_id: str) -> None:
         """Query order status via FIX OrderStatusRequest (35=H).
@@ -1635,7 +1635,7 @@ class TradeManager:
             fix.Session.sendToTarget(msg, self.session_id)
             LOG.info("[TRADEMGR] → Sent OrderStatusRequest: ClOrdID=%s", clord_id)
         except Exception as e:
-            LOG.error("[TRADEMGR] ✗ Failed to send OrderStatusRequest: %s", e)
+            LOG.exception("[TRADEMGR] ✗ Failed to send OrderStatusRequest: %s", e)
 
     def on_logon(self) -> None:
         """P0 FIX: Handle session logon/reconnect.
@@ -1672,17 +1672,4 @@ class TradeManager:
 
 if __name__ == "__main__":
     # Example usage (requires active FIX session)
-    print("TradeManager - FIX Protocol Order Management")
-    print("\nFeatures:")
-    print("  ✓ Order submission (Market/Limit)")
-    print("  ✓ ExecutionReport processing with ExecType routing")
-    print("  ✓ Order state tracking (NEW/FILLED/CANCELED/REJECTED)")
-    print("  ✓ Position reconciliation via PositionReport")
-    print("  ✓ Order modification and cancellation")
-    print("\nOrder Lifecycle:")
-    print("  1. submit_market_order() -> NewOrderSingle (35=D)")
-    print("  2. on_execution_report() <- ExecutionReport (35=8) ExecType=0 (NEW)")
-    print("  3. on_execution_report() <- ExecutionReport (35=8) ExecType=F (FILL)")
-    print("  4. on_fill_callback() triggered")
-    print("  5. request_positions() -> RequestForPositions (35=AN)")
-    print("  6. on_position_report() <- PositionReport (35=AP)")
+    pass

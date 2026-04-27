@@ -6,7 +6,6 @@ the bug where pnl was overwritten to 0.0 during reward processing.
 """
 
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path

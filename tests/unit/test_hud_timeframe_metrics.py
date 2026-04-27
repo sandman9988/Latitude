@@ -216,7 +216,7 @@ def test_decision_log_keeps_all_scoped_bot_entries(tmp_path):
                     "confidence": 0.8,
                     "context": {},
                     "reasoning": {},
-                }
+                },
             )
             + "\n",
             encoding="utf-8",

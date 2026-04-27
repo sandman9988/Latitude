@@ -1,5 +1,4 @@
-"""
-Session Selector — curses TUI wizard for configuring instrument / timeframe / mode.
+"""Session Selector — curses TUI wizard for configuring instrument / timeframe / mode.
 
 3-step wizard:
   1. Select instruments   (multi-select from config/instruments.json)
@@ -27,11 +26,11 @@ import curses
 import json
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-UTC = timezone.utc
+UTC = UTC
 
 INSTRUMENTS_PATH = Path("config/instruments.json")
 SESSION_PATH = Path("data/session.json")
@@ -151,7 +150,7 @@ class SessionSelector:
 
     def _header(self, title: str) -> int:
         """Draw title bar, return next free row."""
-        h, w = self.stdscr.getmaxyx()
+        _h, w = self.stdscr.getmaxyx()
         bar = f"  cTrader Session Selector  ·  {title}  "
         _safe_addstr(self.stdscr, 0, 0, bar.ljust(w), curses.color_pair(_C_CYAN) | curses.A_BOLD)
         return 2
@@ -223,7 +222,7 @@ class SessionSelector:
         n_inst = len(self.selections)
 
         row = self._header(
-            f"Step 2 of 3  ·  Timeframes  ·  {inst.symbol}  ({self.tf_inst_idx + 1}/{n_inst})"
+            f"Step 2 of 3  ·  Timeframes  ·  {inst.symbol}  ({self.tf_inst_idx + 1}/{n_inst})",
         )
         _safe_addstr(self.stdscr, row, 2,
                      f"Select timeframes for {inst.symbol}  —  {inst.label}",
@@ -294,7 +293,7 @@ class SessionSelector:
     # ── Step 3 — mode selection ───────────────────────────────────────────────
 
     def _step_modes(self) -> str:
-        h, w = self.stdscr.getmaxyx()
+        h, _w = self.stdscr.getmaxyx()
         row = self._header("Step 3 of 3  ·  Trading Modes")
         _safe_addstr(self.stdscr, row, 2,
                      "↑/↓ rows  ·  ←/→ or SPACE cycle mode  ·  ENTER confirm  ·  b back",
@@ -374,7 +373,7 @@ class SessionSelector:
     # ── Step 4 — review & save ────────────────────────────────────────────────
 
     def _step_review(self) -> str:
-        h, w = self.stdscr.getmaxyx()
+        h, _w = self.stdscr.getmaxyx()
         row = self._header("Review & Confirm")
 
         mode_attr = {
@@ -541,39 +540,29 @@ def _update_env(entry: dict) -> None:
 # ── Public entry point ────────────────────────────────────────────────────────
 
 def run_selector() -> int:
-    """
-    Launch the curses TUI wizard.
+    """Launch the curses TUI wizard.
     Returns 0 if a session was saved, 1 if cancelled.
     """
     try:
         result: dict | None = curses.wrapper(lambda s: SessionSelector(s).run())
     except KeyboardInterrupt:
-        print("\nCancelled.")
         return 1
-    except Exception as exc:
-        print(f"\nSelector error: {exc}", file=sys.stderr)
+    except Exception:
         return 1
 
     if result is None:
-        print("Session selection cancelled — no changes made.")
         return 1
 
     # Print post-curses summary
-    print(f"\n✓  Session saved → {SESSION_PATH}\n")
-    mode_prefix = {"LIVE": "LIVE ", "PAPER": "PAPER", "TRAIN": "TRAIN"}
     live  = result.get("live",  [])
     paper = result.get("paper", [])
     train = result.get("train", {})
     for entry in live:
-        tfs = "  ".join(TF_LABEL.get(tf, f"M{tf}") for tf in sorted(entry["timeframes"]))
-        print(f"  LIVE   {entry['symbol']:<10}  {tfs}  qty {entry['qty']}")
+        "  ".join(TF_LABEL.get(tf, f"M{tf}") for tf in sorted(entry["timeframes"]))
     for entry in paper:
-        tfs = "  ".join(TF_LABEL.get(tf, f"M{tf}") for tf in sorted(entry["timeframes"]))
-        print(f"  PAPER  {entry['symbol']:<10}  {tfs}  qty {entry['qty']}")
+        "  ".join(TF_LABEL.get(tf, f"M{tf}") for tf in sorted(entry["timeframes"]))
     if train.get("symbols"):
-        tfs = "  ".join(TF_LABEL.get(tf, f"M{tf}") for tf in sorted(train.get("timeframes", [])))
-        print(f"  TRAIN  {', '.join(train['symbols'])}  {tfs}")
-    print()
+        "  ".join(TF_LABEL.get(tf, f"M{tf}") for tf in sorted(train.get("timeframes", [])))
     return 0
 
 

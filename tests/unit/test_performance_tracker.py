@@ -75,7 +75,7 @@ class TestAddTrade:
     def test_negative_mfe_clamped(self):
         pt = PerformanceTracker()
         pt.add_trade(
-            pnl=10, entry_time=_T0, exit_time=_T1, direction="LONG", entry_price=100_000, exit_price=100_010, mfe=-5
+            pnl=10, entry_time=_T0, exit_time=_T1, direction="LONG", entry_price=100_000, exit_price=100_010, mfe=-5,
         )
         assert pt.trades[0]["mfe"] == pytest.approx(0.0)
 

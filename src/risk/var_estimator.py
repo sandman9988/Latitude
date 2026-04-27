@@ -388,7 +388,6 @@ def position_size_from_var(
 
 if __name__ == "__main__":
     # Self-test
-    print("VaR Estimator Tests:")
 
     # Create estimator
     var_est = VaREstimator(window=100, confidence=0.95)
@@ -404,15 +403,11 @@ if __name__ == "__main__":
 
     # Estimate VaR
     var_normal = var_est.estimate_var(regime=RegimeType.OVERDAMPED, vpin_z=0.0, current_vol=0.01)
-    print(f"  VaR (normal regime, low VPIN): {var_normal:.6f}")
 
     var_stressed = var_est.estimate_var(regime=RegimeType.UNDERDAMPED, vpin_z=3.0, current_vol=0.03)
-    print(f"  VaR (stressed regime, high VPIN): {var_stressed:.6f}")
 
     # Check kurtosis
     kurtosis = var_est.kurtosis
-    print(f"  Kurtosis: {kurtosis:.2f}")
-    print(f"  Kurtosis breaker: {var_est.is_kurtosis_breaker_active}")
 
     # Position sizing
     position = position_size_from_var(
@@ -422,6 +417,4 @@ if __name__ == "__main__":
         contract_size=100000.0,
         max_leverage=10.0,
     )
-    print(f"  Position size: {position:.4f} lots")
 
-    print("\nAll tests passed ✓")

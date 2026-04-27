@@ -14,9 +14,9 @@ Options:
 """
 
 import argparse
+import datetime
 import json
 import shutil
-import datetime
 from pathlib import Path
 
 
@@ -43,14 +43,11 @@ def calculate_pnl(entry_price: float, exit_price: float, direction: str, qty: fl
 def analyze_trades(trade_log_path: Path) -> None:
     """Analyze trades to identify P&L issues."""
     if not trade_log_path.exists():
-        print(f"❌ Trade log not found: {trade_log_path}")
         return
 
     with open(trade_log_path) as f:
         trades = [json.loads(line) for line in f if line.strip()]
 
-    print(f"📊 Analysis of {len(trades)} trades")
-    print("=" * 80)
 
     zero_pnl_count = 0
     zero_pnl_with_price_diff = 0
@@ -63,10 +60,6 @@ def analyze_trades(trade_log_path: Path) -> None:
             if abs(exit_p - entry) > 0.01:  # Significant price difference
                 zero_pnl_with_price_diff += 1
 
-    print(f"Trades with pnl=0.0: {zero_pnl_count} ({zero_pnl_count / len(trades) * 100:.1f}%)")
-    print(f"Trades with pnl=0.0 but price moved: {zero_pnl_with_price_diff}")
-    print(f"Likely affected by bug: {zero_pnl_with_price_diff}")
-    print()
 
 
 def recalculate_trades(
@@ -87,26 +80,22 @@ def recalculate_trades(
 
     """
     if not input_path.exists():
-        print(f"❌ Input file not found: {input_path}")
         return None
 
     with open(input_path) as f:
         trades = [json.loads(line) for line in f if line.strip()]
 
-    print(f"🔄 Processing {len(trades)} trades...")
-    print()
 
     corrected_count = 0
     unchanged_count = 0
 
-    for i, trade in enumerate(trades):
+    for _i, trade in enumerate(trades):
         entry_price = trade.get("entry_price", 0.0)
         exit_price = trade.get("exit_price", 0.0)
         direction = trade.get("direction", "UNKNOWN")
         old_pnl = trade.get("pnl", 0.0)
 
         if entry_price == 0.0 or exit_price == 0.0:
-            print(f"⚠️  Trade {i + 1}: Skipped (missing prices)")
             unchanged_count += 1
             continue
 
@@ -122,20 +111,10 @@ def recalculate_trades(
             corrected_count += 1
 
             if dry_run:
-                print(f"Trade {i + 1}: {direction} {entry_price:.2f}→{exit_price:.2f}")
-                print(f"  Old P&L: {old_pnl:.4f}")
-                print(f"  New P&L: {new_pnl:.4f}")
-                print(f"  Change:  {new_pnl - old_pnl:+.4f}")
-                print()
+                pass
         else:
             unchanged_count += 1
 
-    print("=" * 80)
-    print("✨ Summary:")
-    print(f"  Total trades:     {len(trades)}")
-    print(f"  Corrected:        {corrected_count}")
-    print(f"  Unchanged:        {unchanged_count}")
-    print()
 
     if not dry_run:
         # Save corrected trades
@@ -143,9 +122,8 @@ def recalculate_trades(
         with open(output_path, "w") as f:
             for trade in trades:
                 f.write(json.dumps(trade, default=str) + "\n")
-        print(f"✅ Corrected trades saved to: {output_path}")
     else:
-        print("ℹ️  Dry run - no files modified")
+        pass
 
     return corrected_count, unchanged_count
 
@@ -197,24 +175,17 @@ def main() -> None:
     input_path = Path(args.input)
     output_path = Path(args.output)
 
-    print("╔" + "=" * 78 + "╗")
-    print("║" + " " * 20 + "Historical P&L Recalculation" + " " * 30 + "║")
-    print("╚" + "=" * 78 + "╝")
-    print()
 
     # Analyze trades first
     analyze_trades(input_path)
 
     if args.analyze_only:
-        print("ℹ️  Analysis complete (--analyze-only specified)")
         return
 
     # Create backup if requested
     if args.backup and not args.dry_run:
         backup_path = input_path.with_suffix(f".backup_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.jsonl")
         shutil.copy2(input_path, backup_path)
-        print(f"💾 Backup created: {backup_path}")
-        print()
 
     # Recalculate
     recalculate_trades(
@@ -225,8 +196,6 @@ def main() -> None:
         default_contract_size=args.contract_size,
     )
 
-    print()
-    print("✨ Done!")
 
 
 if __name__ == "__main__":

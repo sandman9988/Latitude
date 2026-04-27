@@ -339,7 +339,7 @@ class TestPositionSizeFromVar:
     def test_leverage_cap_active(self):
         # Very small VaR → huge position, but leverage cap kicks in
         size = position_size_from_var(
-            var=0.0001, risk_budget_usd=10000.0, account_equity=10000.0, contract_size=100000.0, max_leverage=2.0
+            var=0.0001, risk_budget_usd=10000.0, account_equity=10000.0, contract_size=100000.0, max_leverage=2.0,
         )
         # risk_budget / var = 10000/0.0001 = 100,000,000
         # max_leveraged = 10000 * 2 = 20000

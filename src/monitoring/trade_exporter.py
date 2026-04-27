@@ -155,7 +155,7 @@ class TradeExporter:
 
                     writer.writerow(row)
                 except (ValueError, TypeError) as e:
-                    LOG.error("Trade %d formatting error: %s", trade.get("trade_num", -1), e)
+                    LOG.exception("Trade %d formatting error: %s", trade.get("trade_num", -1), e)
 
         return str(filepath)
 

@@ -48,7 +48,7 @@ def _bar_rows(n: int = 20, base: float = 90000.0, step: float = 10.0) -> list[di
                 "High": f"{o + 5:.2f}",
                 "Low": f"{o - 5:.2f}",
                 "Close": f"{o + 2:.2f}",
-            }
+            },
         )
     return rows
 
@@ -465,7 +465,7 @@ class TestOfflineAcceptance:
             [
                 {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
                 {"symbol": "XAUUSD", "timeframe_minutes": 15, "z_omega": 2.0, "accepted": True},
-            ]
+            ],
         )
         assert best["XAUUSD"]["timeframe_minutes"] == 15
 
@@ -475,7 +475,7 @@ class TestOfflineAcceptance:
                 {"symbol": "XAUUSD", "timeframe_minutes": 1, "z_omega": 3.0, "accepted": True},
                 {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 1.6, "accepted": True},
                 {"symbol": "XAUUSD", "timeframe_minutes": 5, "z_omega": 10.0, "accepted": False},
-            ]
+            ],
         )
 
         assert best[("XAUUSD", 1)]["z_omega"] == 3.0
@@ -497,7 +497,7 @@ class TestOfflineAcceptance:
                     "timeframe_minutes": 5,
                     "z_omega": 1.6,
                     "accepted_weights_path": f"{trigger};{harvester}",
-                }
+                },
             },
             dest,
         )
@@ -545,9 +545,9 @@ class TestOfflineAcceptance:
                             "symbol": "XAUUSD",
                             "timeframe_minutes": 5,
                             "z_omega": 0.8793465150180925,
-                        }
+                        },
                     ],
-                }
+                },
             ),
             encoding="utf-8",
         )
@@ -570,9 +570,9 @@ class TestOfflineAcceptance:
                             "symbol": "XAUUSD",
                             "timeframe_minutes": 5,
                             "z_omega": 1.6088,
-                        }
+                        },
                     },
-                }
+                },
             ),
             encoding="utf-8",
         )
@@ -585,9 +585,9 @@ class TestOfflineAcceptance:
                             "symbol": "XAUUSD",
                             "timeframe_minutes": 5,
                             "z_omega": 0.8793465150180925,
-                        }
+                        },
                     ],
-                }
+                },
             ),
             encoding="utf-8",
         )
@@ -767,8 +767,8 @@ class TestDiscoverJobs:
                         "mfe": 1.0,
                         "entry_bars": bars,
                         "exit_bars": bars[-5:],
-                    }
-                )
+                    },
+                ),
             )
         cache.write_text("\n".join(lines) + "\n")
 

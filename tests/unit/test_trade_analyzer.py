@@ -49,7 +49,7 @@ def _sample_rows(n: int = 20, *, seed: int = 42) -> list[dict]:
                 "equity_after": round(10_000 + pnl * (i + 1), 2),
                 "duration_seconds": duration,
                 "direction": rng.choice(["LONG", "SHORT"]),
-            }
+            },
         )
     return rows
 

@@ -21,13 +21,10 @@ import csv
 import json
 import logging
 import math
-import os
-import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 LOG = logging.getLogger(__name__)
 
@@ -38,6 +35,7 @@ LOG = logging.getLogger(__name__)
 @dataclass
 class TradeRecord:
     """A single trade with all available fields stitched from every source."""
+
     trade_id: int | None = None
     ticket: str | None = None
     position_id: str | None = None
@@ -147,9 +145,9 @@ def load_csv_bars(path: Path) -> list[list]:
             if not ts_str:
                 continue
             try:
-                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                ts = datetime.fromisoformat(ts_str)
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
+                    ts = ts.replace(tzinfo=UTC)
                 o = float(row["Open"])
                 h = float(row["High"])
                 l = float(row["Low"])
@@ -268,7 +266,7 @@ def _ts_parse(s: str) -> datetime | None:
         s = s.replace("Z", "+00:00")
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except (ValueError, TypeError):
         return None
@@ -363,13 +361,13 @@ def reconstruct(
         ep = c.get("entry_price", 0.0) or 0.0
         xp = c.get("exit_price", 0.0) or 0.0
         if ep > 0 and xp > 0:
-            bucket = int(round(ep * 100))
+            bucket = round(ep * 100)
             cache_by_bucket[bucket].append((ep, xp, c))
 
     # CSV time index for O(1) context lookup: bucket timestamp to nearest M5 boundary
     csv_by_bucket: dict[int, list[list]] = defaultdict(list)
     for b in csv_bars:
-        ts_s = int(round(_ts_key(b[0])))
+        ts_s = round(_ts_key(b[0]))
         bucket = (ts_s // 300) * 300  # snap to M5: 0, 300, 600, ...
         csv_by_bucket[bucket].append(b)
 
@@ -379,7 +377,7 @@ def reconstruct(
     hold_by_tid: dict[str, list[dict]] = defaultdict(list)
 
     for d in decisions:
-        ts_k = int(round(_ts_key(_ts_parse(d.get("timestamp", "")))))
+        ts_k = round(_ts_key(_ts_parse(d.get("timestamp", ""))))
         ag = d.get("agent", "")
         dec = d.get("decision", "")
         tid = d.get("trade_id")
@@ -393,7 +391,7 @@ def reconstruct(
     # Transaction index by timestamp (rounded to nearest second for fast lookup)
     txn_by_second: dict[int, list[dict]] = defaultdict(list)
     for t in transactions:
-        ts_k = int(round(_ts_key(_ts_parse(t.get("timestamp", "")))))
+        ts_k = round(_ts_key(_ts_parse(t.get("timestamp", ""))))
         txn_by_second[ts_k].append(t)
 
     # 3. Stitch each trade_log entry
@@ -411,7 +409,7 @@ def reconstruct(
         # --- Step A: Find closest CLOSE decision by timestamp (bucketed) ---
         close_decision = None
         if xt:
-            xt_k = int(round(_ts_key(xt)))
+            xt_k = round(_ts_key(xt))
             for offset in range(-10, 11):
                 candidates = close_by_second.get(xt_k + offset, [])
                 if candidates:
@@ -426,7 +424,7 @@ def reconstruct(
         # --- Step C: Find matching cache record by price bucket ---
         cache_record = None
         if ep > 0:
-            bucket = int(round(ep * 100))
+            bucket = round(ep * 100)
             candidates = cache_by_bucket.get(bucket, [])
             # Also check adjacent buckets for price slip
             for adj in (bucket - 1, bucket, bucket + 1):
@@ -444,7 +442,7 @@ def reconstruct(
         # --- Step D: Find preceding trigger decisions (bucketed timestamp) ---
         trig_entries = []
         if et:
-            et_k = int(round(_ts_key(et)))
+            et_k = round(_ts_key(et))
             for offset in range(-120, 1):  # within 2 min before entry
                 candidates = trig_by_second.get(et_k + offset, [])
                 trig_entries.extend(candidates)
@@ -452,7 +450,7 @@ def reconstruct(
         # --- Step E: Find matching transaction (bucketed timestamp lookup) ---
         matching_txn = None
         if xt:
-            xt_k = int(round(_ts_key(xt)))
+            xt_k = round(_ts_key(xt))
             for offset in range(-5, 6):
                 candidates = txn_by_second.get(xt_k + offset, [])
                 if candidates:
@@ -464,12 +462,12 @@ def reconstruct(
         csv_exit_ctx: list[list] = []
         if csv_bars:
             if et:
-                et_s = int(round(_ts_key(et)))
+                et_s = round(_ts_key(et))
                 et_bucket = (et_s // 300) * 300
                 for offset_b in range(-2, 3):  # ±2 M5 bars = ±10 min
                     csv_entry_ctx.extend(csv_by_bucket.get(et_bucket + offset_b * 300, []))
             if xt:
-                xt_s = int(round(_ts_key(xt)))
+                xt_s = round(_ts_key(xt))
                 xt_bucket = (xt_s // 300) * 300
                 for offset_b in range(-2, 3):
                     csv_exit_ctx.extend(csv_by_bucket.get(xt_bucket + offset_b * 300, []))
@@ -483,10 +481,7 @@ def reconstruct(
         cap_ratio = float(t.get("capture_ratio", 0) or 0)
         mfe_val = float(t.get("mfe_points", 0) or 0)
         pnl_pts = float(t.get("pnl_points", 0) or 0)
-        if mfe_val > 0:
-            derived_cap = pnl_pts / mfe_val if mfe_val > 0 else 0.0
-        else:
-            derived_cap = 0.0
+        derived_cap = (pnl_pts / mfe_val if mfe_val > 0 else 0.0) if mfe_val > 0 else 0.0
 
         has_wtl = t.get("winner_to_loser", False)
         if has_wtl:
@@ -686,8 +681,7 @@ def main() -> None:
 
     out_path = Path(args.out)
     with open(out_path, "w") as f:
-        for r in results:
-            f.write(json.dumps(r, default=str) + "\n")
+        f.writelines(json.dumps(r, default=str) + "\n" for r in results)
 
     LOG.info("Written %d records to %s", len(results), out_path)
 

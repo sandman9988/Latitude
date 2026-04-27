@@ -51,7 +51,7 @@ class TestActivityBonusPath:
                 "mfe": 20.0,
                 "mae": 5.0,
                 "winner_to_loser": False,
-            }
+            },
         )
 
         assert result["activity_bonus"] == pytest.approx(0.5)
@@ -66,7 +66,7 @@ class TestActivityBonusPath:
             {
                 "exit_pnl": 10.0,
                 "mfe": 20.0,
-            }
+            },
         )
 
         assert result["activity_bonus"] == pytest.approx(0.0)
@@ -81,7 +81,7 @@ class TestActivityBonusPath:
                 {
                     "exit_pnl": 5.0,
                     "mfe": 10.0,
-                }
+                },
             )
 
         assert shaper.component_stats["activity"]["count"] == 3

@@ -291,17 +291,10 @@ def discover_logs(root: Path) -> list[Path]:
 
 
 def print_summary(summary: dict) -> None:
-    print(f"{summary['path']}")
-    print(f"  total:             {summary['total']}")
-    print(f"  changed:           {summary['changed']}")
-    print(f"  backfilled points: {summary['backfilled_points']}")
-    print(f"  WTL changed:       {summary['wtl_changed']}")
-    print(f"  quality changed:   {summary['quality_changed']}")
-    print(f"  inferred CS:       {summary['inferred_contract_sizes']}")
     if summary.get("backup"):
-        print(f"  backup:            {summary['backup']}")
+        pass
     if summary.get("dry_run"):
-        print("  dry-run:           no file written")
+        pass
 
 
 def main() -> int:
@@ -315,7 +308,6 @@ def main() -> int:
 
     paths = discover_logs(args.data_root) if args.all_known else [args.input]
     if not paths:
-        print("No trade logs found.")
         return 1
 
     dry_run = not args.write

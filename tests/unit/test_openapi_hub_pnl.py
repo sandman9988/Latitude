@@ -9,12 +9,11 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
-from collections import deque
 from pathlib import Path
 
 import pytest
 
-from src.utils.safe_math import SAFE_DIV_MIN, SAFE_EPSILON, SafeMath
+from src.utils.safe_math import SAFE_EPSILON, SafeMath
 
 # ---------------------------------------------------------------------------
 # Load real trade records from cache file
@@ -52,7 +51,7 @@ def _load_cache_bars() -> list[tuple]:
                 ts_str = str(raw[0]).replace("Z", "+00:00")
                 ts = dt.datetime.fromisoformat(ts_str)
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=dt.timezone.utc)
+                    ts = ts.replace(tzinfo=dt.UTC)
                 seen[key] = (ts, float(raw[1]), float(raw[2]), float(raw[3]), float(raw[4]))
             except (ValueError, TypeError, IndexError):
                 continue
@@ -126,7 +125,7 @@ class TestRealTradePnL:
             recorded = float(t["pnl_pts"])
             expected = (xp - ep) * direction
             if abs(expected) > SAFE_EPSILON:
-                k = int(round(recorded / expected))
+                k = round(recorded / expected)
                 signs[k] = signs.get(k, 0) + 1
         assert signs, "Could not determine pnl_pts sign convention from any trade"
         total = sum(signs.values())
@@ -265,14 +264,14 @@ class TestBarBuilderRealTimestamps:
         for ts in bar_timestamps[:500]:
             snapped = ts.replace(
                 minute=(ts.minute // 5) * 5,
-                second=0, microsecond=0
+                second=0, microsecond=0,
             )
             assert snapped.minute % 5 == 0, f"Timestamp {ts} snapped to {snapped} not aligned to M5"
             assert snapped <= ts, f"Snapped {snapped} > original {ts}"
 
     def test_m1_bucket_alignment(self) -> None:
         """M1 BarBuilder must snap every minute uniquely."""
-        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.timezone.utc)
+        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.UTC)
         builder = self._make_builder(1)
         for minute in range(10):
             t = base + dt.timedelta(minutes=minute)
@@ -284,7 +283,7 @@ class TestBarBuilderRealTimestamps:
     def test_m240_bucket_alignment(self) -> None:
         """M240 (H4) BarBuilder must snap to 00/04/08/12/16/20 UTC."""
         valid_hours = {0, 4, 8, 12, 16, 20}
-        base = dt.datetime(2026, 4, 1, 0, 0, 0, tzinfo=dt.timezone.utc)
+        base = dt.datetime(2026, 4, 1, 0, 0, 0, tzinfo=dt.UTC)
         builder = self._make_builder(240)
         for hour in range(24):
             t = base + dt.timedelta(hours=hour)
@@ -309,7 +308,7 @@ class TestBarBuilderRealTimestamps:
     def test_bar_builder_update_returns_none_during_bucket(self) -> None:
         """BarBuilder.update() must return None until bucket closes."""
         builder = self._make_builder(5)
-        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.timezone.utc)
+        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.UTC)
         assert builder.update(base, 5000.0) is None
         assert builder.update(base + dt.timedelta(minutes=1), 5001.0) is None
         assert builder.update(base + dt.timedelta(minutes=4), 5002.0) is None
@@ -321,7 +320,7 @@ class TestBarBuilderRealTimestamps:
         Tick at 10:05 opens new bucket → returns (10:00, 5000, 5010, 4990, 5002).
         """
         builder = self._make_builder(5)
-        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.timezone.utc)
+        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.UTC)
 
         # First tick in bucket 10:00
         builder.update(base, 5000.0)
@@ -344,7 +343,7 @@ class TestBarBuilderRealTimestamps:
     def test_bar_builder_ohlc_integrity(self) -> None:
         """OHLC must obey o <= h, l >= c type relationships."""
         builder = self._make_builder(5)
-        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.timezone.utc)
+        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.UTC)
         ticks = [(0, 5000), (1, 5010), (2, 4990), (3, 5005), (4, 5002)]
         for offset, price in ticks:
             builder.update(base + dt.timedelta(minutes=offset), float(price))
@@ -361,7 +360,7 @@ class TestBarBuilderRealTimestamps:
         then an ISO timestamp after first tick."""
         builder = self._make_builder(5)
         assert builder.next_bar_close_utc() is None
-        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.timezone.utc)
+        base = dt.datetime(2026, 4, 1, 10, 0, 0, tzinfo=dt.UTC)
         builder.update(base, 5000.0)
         close_str = builder.next_bar_close_utc()
         assert close_str is not None, "Expected non-None after first tick"
@@ -369,7 +368,7 @@ class TestBarBuilderRealTimestamps:
 
     @staticmethod
     def _make_builder(tf_minutes: int):
-        from src.core.openapi_hub import BarBuilder  # noqa: PLC0415
+        from src.core.openapi_hub import BarBuilder
         return BarBuilder(tf_minutes)
 
 

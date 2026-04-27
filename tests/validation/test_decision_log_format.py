@@ -12,10 +12,6 @@ import json
 import sys
 from pathlib import Path
 
-print("=" * 70)
-print("TEST: Harvester Decision Log Capture")
-print("=" * 70)
-
 # Test decision log structure (simulating main bot's log format)
 log_path = Path("test_exports/harvester_decision_log.json")
 log_path.parent.mkdir(exist_ok=True, parents=True)
@@ -64,18 +60,13 @@ for bar in range(5):
     }
     decision_log.append(log_entry)
 
-    print(f"[BAR {bar}] MFE={mfe:.2f}, MAE={mae:.2f}, bars_held={bars_held}, exit={exit_action}")
 
 # Save decision log
 with open(log_path, "w") as f:
     json.dump(decision_log, f, indent=2)
 
-print(f"\n✓ Decision log saved: {log_path}")
 
 # --- VERIFICATION ---
-print("\n" + "=" * 70)
-print("VERIFICATION: Check all harvester fields are present")
-print("=" * 70)
 
 required_fields = ["mfe", "mae", "bars_held", "entry_price", "exit_action", "exit_conf"]
 missing_fields = []
@@ -85,34 +76,24 @@ for bar_idx, entry in enumerate(decision_log):
     for field in required_fields:
         if field not in details:
             missing_fields.append((bar_idx, field))
-            print(f"✗ BAR {bar_idx}: Missing field '{field}'")
 
 if not missing_fields:
-    print("✓ All harvester fields present in all log entries")
+    pass
 
 # Check MFE progression
 mfe_values = [e["details"]["mfe"] for e in decision_log]
 mfe_increases = all(mfe_values[i] <= mfe_values[i + 1] for i in range(len(mfe_values) - 1))
-print(f"✓ MFE increases monotonically: {mfe_values}" if mfe_increases else f"✗ MFE progression incorrect: {mfe_values}")
 
 # Check bars_held progression
 bars_values = [e["details"]["bars_held"] for e in decision_log]
 bars_increases = bars_values == list(range(1, 6))
-print(f"✓ bars_held increments correctly: {bars_values}" if bars_increases else f"✗ bars_held incorrect: {bars_values}")
 
 # Check exit signal
 exit_signals = [e["details"]["exit_action"] for e in decision_log]
 has_exit = 1 in exit_signals
-print("✓ Exit signal detected (action=1 at bar 4)" if has_exit else "✗ No exit signal")
 
 # Final result
-print("\n" + "=" * 70)
 if not missing_fields and mfe_increases and bars_increases and has_exit:
-    print("✓ ALL TESTS PASSED - Decision log format correct!")
-    print("=" * 70)
-    print("\nNext step: Verify live bot generates this log when market opens.")
     sys.exit(0)
 else:
-    print("✗ SOME TESTS FAILED")
-    print("=" * 70)
     sys.exit(1)

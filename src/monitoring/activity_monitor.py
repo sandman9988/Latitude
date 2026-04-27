@@ -73,21 +73,21 @@ class ActivityMonitor:
                 os.environ.get(
                     "MAX_BARS_INACTIVE",
                     str(PAPER_MAX_BARS_INACTIVE) if paper_mode else str(LIVE_MAX_BARS_INACTIVE),
-                )
+                ),
             )
         if min_trades_per_day is None:
             min_trades_per_day = float(
                 os.environ.get(
                     "MIN_TRADES_PER_DAY",
                     str(PAPER_MIN_TRADES_PER_DAY) if paper_mode else str(LIVE_MIN_TRADES_PER_DAY),
-                )
+                ),
             )
         if exploration_boost is None:
             exploration_boost = float(
                 os.environ.get(
                     "EXPLORATION_BOOST",
                     str(PAPER_EXPLORATION_BOOST) if paper_mode else str(LIVE_EXPLORATION_BOOST),
-                )
+                ),
             )
 
         # Fuzzy phase blending: interpolate between paper and live based on maturity
@@ -291,7 +291,7 @@ class CounterfactualAnalyzer:
         self.lookback_bars = lookback_bars
 
     def analyze_exit(
-        self, entry_price: float, exit_price: float, mfe: float, mfe_bar_offset: int, direction: int
+        self, entry_price: float, exit_price: float, mfe: float, mfe_bar_offset: int, direction: int,
     ) -> tuple[float, dict]:
         """Analyze actual exit vs optimal exit at MFE.
 
@@ -359,7 +359,6 @@ class CounterfactualAnalyzer:
 
 if __name__ == "__main__":
     # Self-test
-    print("Activity Monitor Tests:")
 
     monitor = ActivityMonitor(max_bars_inactive=10, exploration_boost=0.1)
 
@@ -367,22 +366,15 @@ if __name__ == "__main__":
     for _i in range(15):
         monitor.on_bar_close()
 
-    print(f"  After 15 bars: stagnant={monitor.is_stagnant}")
-    print(f"  Exploration bonus: {monitor.get_exploration_bonus():.4f}")
-    print(f"  Inactivity penalty: {monitor.get_inactivity_penalty():.4f}")
 
     # Execute a trade
     monitor.on_trade_executed()
-    print(f"  After trade: stagnant={monitor.is_stagnant}")
-    print(f"  Activity score: {monitor.activity_score:.3f}")
 
     # Test trade frequency
     for _i in range(5):
         monitor.on_trade_executed()
     freq = monitor.get_trade_frequency(window_hours=1.0)
-    print(f"  Trade frequency: {freq:.2f}/hour")
 
-    print("\nCounterfactual Analyzer Tests:")
 
     analyzer = CounterfactualAnalyzer()
 
@@ -395,9 +387,6 @@ if __name__ == "__main__":
         direction=1,
     )
 
-    print(f"  Early exit penalty: {metrics['early_exit_penalty']:.4f}")
-    print(f"  Efficiency: {metrics['efficiency']:.2%}")
-    print(f"  Missed PnL: {metrics['missed_pnl']:.2f}")
 
     # Test perfect exit at MFE
     cf_reward, metrics = analyzer.analyze_exit(
@@ -408,7 +397,4 @@ if __name__ == "__main__":
         direction=1,
     )
 
-    print(f"  Perfect exit bonus: {metrics['timing_bonus']:.4f}")
-    print(f"  Efficiency: {metrics['efficiency']:.2%}")
 
-    print("\nAll tests passed ✓")

@@ -293,7 +293,7 @@ def check_invariants(entries: list[dict]) -> list[str]:
                     # Check both currently-open and previously-closed trades
                     if tid and (tid in open_trades or tid in closed_trade_ids):
                         violations.append(
-                            f"[{sid}] Duplicate trade_id={tid} on second entry @{ts} (already seen in this session)"
+                            f"[{sid}] Duplicate trade_id={tid} on second entry @{ts} (already seen in this session)",
                         )
                     if tid:
                         open_trades[tid] = e
@@ -313,12 +313,12 @@ def check_invariants(entries: list[dict]) -> list[str]:
                 # the current-session open_trades.
                 if tid and not tid.startswith("rcv_") and tid not in open_trades and tid not in all_opened_tids:
                     violations.append(
-                        f"[{sid}] {decision} has trade_id={tid} @{ts} but no matching LONG/SHORT entry found"
+                        f"[{sid}] {decision} has trade_id={tid} @{ts} but no matching LONG/SHORT entry found",
                     )
                 # Ghost HOLD: HOLD fired after the trade was already closed in this session
                 if decision == "HOLD" and tid and tid in closed_trade_ids:
                     violations.append(
-                        f"[{sid}] Ghost HOLD: trade_id={tid} @{ts} appeared after CLOSE already recorded"
+                        f"[{sid}] Ghost HOLD: trade_id={tid} @{ts} appeared after CLOSE already recorded",
                     )
                 if decision == "CLOSE" and tid and tid in open_trades:
                     closed_trade_ids.add(tid)

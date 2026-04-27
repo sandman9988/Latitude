@@ -56,8 +56,8 @@ def hud(tmp_path: Path) -> TabbedHUD:
                 "timeframe_minutes": 15,
                 "trading_mode": "paper",
                 "starting_equity": 10000,
-            }
-        )
+            },
+        ),
     )
 
     # Two running bots — drives the ALL BOTS panel rows.
@@ -77,8 +77,8 @@ def hud(tmp_path: Path) -> TabbedHUD:
                     "total_trades": 2 if sym == "XAUUSD" else 1,
                     "total_pnl": 12345.67 if sym == "XAUUSD" else -12.34,
                     "win_rate": 0.5 if sym == "XAUUSD" else 0.0,
-                }
-            )
+                },
+            ),
         )
 
     # Mixed-mode trade log — drives period/symbol/mode breakdown tables.
@@ -94,7 +94,7 @@ def hud(tmp_path: Path) -> TabbedHUD:
                 "pnl": 12.5,
                 "mfe": 25.0,
                 "capture_ratio": 0.5,
-            }
+            },
         )
     for _ in range(3):
         trades.append(
@@ -107,7 +107,7 @@ def hud(tmp_path: Path) -> TabbedHUD:
                 "pnl": -7.2,
                 "mfe": 10.0,
                 "capture_ratio": -0.72,
-            }
+            },
         )
     tl = data_dir / "trade_log.jsonl"
     tl.write_text("\n".join(json.dumps(t) for t in trades) + "\n")
@@ -128,9 +128,9 @@ def hud(tmp_path: Path) -> TabbedHUD:
                 "context": {"regime": "TREND", "vpin_z": 0.5},
                 "reasoning": {"feasibility": 0.82, "predicted_runway": 0.6, "q_spread": 0.02},
                 "trade_id": "abcd1234",
-            }
+            },
         )
-        + "\n"
+        + "\n",
     )
 
     hud = TabbedHUD()
@@ -297,9 +297,9 @@ class TestTableAlignment:
                     "confidence": 0.47,
                     "context": {"price": 4723.18},
                     "reasoning": {},
-                }
+                },
             )
-            + "\n"
+            + "\n",
         )
 
         scoped_audit = tmp_path / "paper_XAUUSD_M5" / "logs" / "audit"
@@ -314,9 +314,9 @@ class TestTableAlignment:
                     "confidence": 0.82,
                     "context": {"price": 4720.0},
                     "reasoning": {"feasibility": 0.7},
-                }
+                },
             )
-            + "\n"
+            + "\n",
         )
 
         hud = TabbedHUD()
@@ -536,7 +536,7 @@ class TestPlumbing:
                 "entry_price": 100.0,
                 "exit_price": 90.0,
                 "mfe_points": 5.0,
-            }
+            },
         )
         assert ratio == pytest.approx(-2.0)
 
@@ -546,7 +546,7 @@ class TestPlumbing:
                 "pnl": "-7.5",
                 "mfe": "3.0",
                 "capture_ratio": "-2.5",
-            }
+            },
         )
         assert ratio == pytest.approx(-2.5)
 

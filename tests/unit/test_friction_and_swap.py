@@ -26,7 +26,7 @@ def test_friction_breakdown_includes_zero_swap_intraday(fc_xauusd):
     # Intraday total should exclude swap when not crossing rollover
     price = 4600.0
     out = fc_xauusd.calculate_total_friction(
-        quantity=0.1, side="BUY", price=price, holding_days=0.1, volatility_factor=1.0, crosses_rollover=False
+        quantity=0.1, side="BUY", price=price, holding_days=0.1, volatility_factor=1.0, crosses_rollover=False,
     )
     assert out["swap"] == pytest.approx(0.0)
     # Spread + commission + slippage must be positive
@@ -39,7 +39,7 @@ def test_friction_breakdown_includes_zero_swap_intraday(fc_xauusd):
 def test_friction_breakdown_includes_swap_overnight(fc_xauusd):
     price = 4600.0
     out = fc_xauusd.calculate_total_friction(
-        quantity=0.1, side="BUY", price=price, holding_days=1.0, volatility_factor=1.0, crosses_rollover=True
+        quantity=0.1, side="BUY", price=price, holding_days=1.0, volatility_factor=1.0, crosses_rollover=True,
     )
     assert out["swap"] != 0.0
     assert out["total"] == pytest.approx(out["spread"] + out["commission"] + out["slippage"] + out["swap"], rel=1e-6)
@@ -49,7 +49,7 @@ def test_friction_pct_uses_contract_size(monkeypatch):
     # Build a HarvesterAgent with a friction calculator whose contract_size is 100 (XAUUSD)
     fc = FrictionCalculator(symbol="XAUUSD", symbol_id=41, timeframe="M5", broker="default")
     harvester = HarvesterAgent(
-        window=64, n_features=10, enable_training=False, symbol="XAUUSD", timeframe="M5", friction_calculator=fc
+        window=64, n_features=10, enable_training=False, symbol="XAUUSD", timeframe="M5", friction_calculator=fc,
     )
 
     entry_price = 4600.0

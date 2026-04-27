@@ -272,7 +272,7 @@ class TestCmdPromote:
         registry = {
             "version": 1,
             "instruments": [
-                {"symbol": "USDJPY", "stage": "OFFLINE_TRAINING", "timeframe_minutes": 1440, "z_omega": 2.0}
+                {"symbol": "USDJPY", "stage": "OFFLINE_TRAINING", "timeframe_minutes": 1440, "z_omega": 2.0},
             ],
         }
 

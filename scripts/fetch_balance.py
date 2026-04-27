@@ -86,7 +86,7 @@ def _get_cred(name: str, tokens_file: dict[str, str], cli_value: str | None) -> 
         f"  export {name}=..., or add it to config/cTraderAppTokens."
     )
     raise SystemExit(
-        msg
+        msg,
     )
 
 
@@ -132,7 +132,7 @@ def fetch_and_write(
         )
         from twisted.internet import defer, reactor  # type: ignore
     except ImportError:
-        LOG.error("ctrader-open-api is not installed.  pip install ctrader-open-api")
+        LOG.exception("ctrader-open-api is not installed.  pip install ctrader-open-api")
         return None
 
     result: dict = {"error": None, "data": None}
@@ -290,7 +290,6 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
         f"&redirect_uri={urllib.parse.quote(redirect_uri)}"
         f"&scope=trading"
     )
-    print(f"Opening browser for authorisation...\n{auth_url}")
     webbrowser.open(auth_url)
 
     t.join(timeout=120)
@@ -309,7 +308,7 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
             "client_id": client_id,
             "client_secret": client_secret,
             "redirect_uri": redirect_uri,
-        }
+        },
     ).encode()
     req = urllib.request.Request(token_url, data=data, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -364,10 +363,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Auth-only mode
     if args.auth:
-        token = run_auth_flow(client_id, client_secret, redirect_uri)
-        print(f"\nCTRADER_ACCESS_TOKEN={token}")
-        print("\nAdd to config/cTraderAppTokens:")
-        print(f'  export CTRADER_ACCESS_TOKEN="{token}"')
+        run_auth_flow(client_id, client_secret, redirect_uri)
         return 0
 
     access_token = _get_cred("CTRADER_ACCESS_TOKEN", tokens_file, args.access_token)
@@ -432,7 +428,7 @@ def main(argv: list[str] | None = None) -> int:
         except subprocess.TimeoutExpired:
             LOG.warning("Fetch timed out — will retry in %d s", args.interval)
         except Exception as e:
-            LOG.error("Fetch error: %s — will retry in %d s", e, args.interval)
+            LOG.exception("Fetch error: %s — will retry in %d s", e, args.interval)
 
         # Sleep in small increments so SIGTERM is responsive
         for _ in range(args.interval):

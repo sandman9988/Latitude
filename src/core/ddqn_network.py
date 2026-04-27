@@ -62,7 +62,7 @@ def _select_device() -> torch.device:
             gfx_arch = "gfx10_series"
 
     LOG.info(
-        "[DDQN] GPU: %s (%.1f GB VRAM) — %s backend, arch=%s", name, vram_gb, "ROCm" if is_amd else "CUDA", gfx_arch
+        "[DDQN] GPU: %s (%.1f GB VRAM) — %s backend, arch=%s", name, vram_gb, "ROCm" if is_amd else "CUDA", gfx_arch,
     )
 
     return dev
@@ -497,7 +497,7 @@ class DDQNNetwork:
             try:
                 module.load_state_dict(sd)
             except Exception as exc:
-                LOG.error("[DDQN] load_state_dict failed for %s%s: %s", npz_prefix, type(module).__name__, exc)
+                LOG.exception("[DDQN] load_state_dict failed for %s%s: %s", npz_prefix, type(module).__name__, exc)
 
         _apply(self.online, "")
         _apply(self.target, "target_")

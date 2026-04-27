@@ -354,17 +354,11 @@ class RegimeDetector:
 # ----------------------------
 def _test_regime_detector() -> None:
     """Test regime detector with synthetic data."""
-    print("\n╔═══════════════════════════════════════════════════════════╗")
-    print("║     Phase 3.4: Regime Detector Self-Test                 ║")
-    print("╚═══════════════════════════════════════════════════════════╝\n")
-
     detector = RegimeDetector(window_size=50, update_interval=5)
     rng = np.random.default_rng(42)
 
     # Test 1: Trending market — returns with positive autocorrelation
     #   AR(1) returns with positive coefficient → VR > 1 → TRENDING
-    print("Test 1: TRENDING market (momentum in returns)")
-    print("-" * 60)
     price = 100000.0
     prices_list = []
     prev_ret = 0.0
@@ -376,17 +370,10 @@ def _test_regime_detector() -> None:
         _, _ = detector.add_price(price)
         prev_ret = ret
 
-    info = detector.get_regime_info()
-    print(f"Regime: {info['regime']}")
-    print(f"Damping ratio (ζ): {info['damping_ratio']:.3f}")
-    print(f"Runway multiplier: {info['runway_multiplier']:.2f}x")
-    print(f"Trigger adjustment: {info['trigger_adjustment']:+.4f}")
-    print()
+    detector.get_regime_info()
 
     # Test 2: Mean-reverting market — returns with negative autocorrelation
     #   AR(1) returns with negative coefficient → VR < 1 → MEAN_REVERTING
-    print("Test 2: MEAN-REVERTING market (choppy returns)")
-    print("-" * 60)
     detector2 = RegimeDetector(window_size=50, update_interval=5)
     base_price = 100000.0
     prev_ret = 0.0
@@ -397,16 +384,9 @@ def _test_regime_detector() -> None:
         _, _ = detector2.add_price(base_price)
         prev_ret = ret
 
-    info2 = detector2.get_regime_info()
-    print(f"Regime: {info2['regime']}")
-    print(f"Damping ratio (ζ): {info2['damping_ratio']:.3f}")
-    print(f"Runway multiplier: {info2['runway_multiplier']:.2f}x")
-    print(f"Trigger adjustment: {info2['trigger_adjustment']:+.4f}")
-    print()
+    detector2.get_regime_info()
 
     # Test 3: Transitional market (random walk)
-    print("Test 3: TRANSITIONAL market (random walk)")
-    print("-" * 60)
     detector3 = RegimeDetector(window_size=50, update_interval=5)
     base_price = 100000.0
     for _i in range(60):
@@ -415,22 +395,9 @@ def _test_regime_detector() -> None:
         base_price += noise
         _, _ = detector3.add_price(base_price)
 
-    info3 = detector3.get_regime_info()
-    print(f"Regime: {info3['regime']}")
-    print(f"Damping ratio (ζ): {info3['damping_ratio']:.3f}")
-    print(f"Runway multiplier: {info3['runway_multiplier']:.2f}x")
-    print(f"Trigger adjustment: {info3['trigger_adjustment']:+.4f}")
-    print()
+    detector3.get_regime_info()
 
     # Summary
-    print("=" * 60)
-    print("✅ Regime detection tests complete!")
-    print()
-    print("Expected behavior:")
-    print("  • TRENDING: ζ < 0.7, runway 1.3x, trigger adj -0.15 (fractional: 15% easier)")
-    print("  • MEAN_REVERTING: ζ > 1.3, runway 0.7x, trigger adj +0.15 (fractional: 15% harder)")
-    print("  • TRANSITIONAL: 0.7 ≤ ζ ≤ 1.3, runway 1.0x, trigger adj 0.0")
-    print()
 
 
 if __name__ == "__main__":

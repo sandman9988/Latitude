@@ -239,19 +239,11 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    print("=" * 80)
-    print("🚨 EMERGENCY POSITION CLOSER 🚨")
-    print("=" * 80)
-    print(f"\nMethod: {args.method.upper()}")
-    print("\nThis will IMMEDIATELY close ALL BTCUSD positions!")
-    print()
 
     confirm = input("Type 'CLOSE ALL' to confirm: ")
     if confirm != "CLOSE ALL":
-        print("❌ Aborted")
         return 1
 
-    print()
     LOG.info("Starting emergency close...")
 
     success = close_via_fix_session() if args.method == "fix" else close_via_running_bot()

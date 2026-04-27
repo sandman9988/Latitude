@@ -232,7 +232,7 @@ class KurtosisBreaker:
         self.min_samples = min_samples
         self.returns: deque[float] = deque(maxlen=KURTOSIS_HISTORY_LIMIT)
         self.state = BreakerState(
-            name="Kurtosis", threshold=threshold, cooldown_minutes=DEFAULT_BREAKER_COOLDOWN_MINUTES
+            name="Kurtosis", threshold=threshold, cooldown_minutes=DEFAULT_BREAKER_COOLDOWN_MINUTES,
         )
         # --- Adaptive-quantile plumbing (low-hanging-fruit risk tuner) ---
         self.adaptive: bool = bool(adaptive)
@@ -524,16 +524,16 @@ class CircuitBreakerManager:
         self.param_manager = param_manager
 
         self.sortino_threshold, sortino_source = self._resolve_param(
-            "sortino_threshold", sortino_threshold, MANAGER_DEFAULT_SORTINO
+            "sortino_threshold", sortino_threshold, MANAGER_DEFAULT_SORTINO,
         )
         self.kurtosis_threshold, kurtosis_source = self._resolve_param(
-            "kurtosis_threshold", kurtosis_threshold, MANAGER_DEFAULT_KURTOSIS
+            "kurtosis_threshold", kurtosis_threshold, MANAGER_DEFAULT_KURTOSIS,
         )
         self.max_drawdown, drawdown_source = self._resolve_param(
-            "max_drawdown_pct", max_drawdown, MANAGER_DEFAULT_MAX_DRAWDOWN
+            "max_drawdown_pct", max_drawdown, MANAGER_DEFAULT_MAX_DRAWDOWN,
         )
         self.max_consecutive_losses, loss_source = self._resolve_param(
-            "max_consecutive_losses", max_consecutive_losses, MANAGER_DEFAULT_MAX_LOSSES
+            "max_consecutive_losses", max_consecutive_losses, MANAGER_DEFAULT_MAX_LOSSES,
         )
         self.max_consecutive_losses = round(self.max_consecutive_losses)
 
@@ -582,7 +582,7 @@ class CircuitBreakerManager:
                     raise ValueError(msg)
                 return val, "explicit"
             except (TypeError, ValueError) as e:
-                LOG.error(
+                LOG.exception(
                     "[CIRCUIT-BREAKERS] Invalid explicit override for %s (%s) - using default %.3f: %s",
                     name,
                     explicit_value,
@@ -594,7 +594,7 @@ class CircuitBreakerManager:
         if self.param_manager is not None:
             try:
                 value = self.param_manager.get(
-                    self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default
+                    self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default,
                 )
                 val = float(value)
                 if not math.isfinite(val):
@@ -953,7 +953,7 @@ class CircuitBreakerManager:
             if "consecutive_losses" in state:
                 _restore_breaker(self.consecutive_losses_breaker.state, state["consecutive_losses"])
                 self.consecutive_losses_breaker.consecutive_losses = state["consecutive_losses"].get(
-                    "consecutive_losses", 0
+                    "consecutive_losses", 0,
                 )
 
             _mr_until = state.get("manual_reset_cooldown_until")
@@ -971,7 +971,7 @@ class CircuitBreakerManager:
             return True
 
         except Exception as e:
-            LOG.error("[CIRCUIT-BREAKER] Failed to restore state: %s", e)
+            LOG.exception("[CIRCUIT-BREAKER] Failed to restore state: %s", e)
             return False
 
 
@@ -980,106 +980,76 @@ class CircuitBreakerManager:
 # ==============================================================================
 
 if __name__ == "__main__":
-    print("=" * 80)
-    print("CIRCUIT BREAKERS - TEST SUITE")
-    print("=" * 80)
 
     # Test 1: Sortino Breaker
-    print("\n[Test 1] Sortino Ratio Breaker")
-    print("-" * 80)
 
     sortino_demo = SortinoBreaker(threshold=0.5, min_trades=10)
 
     # Simulate good trades
-    print("Simulating 10 profitable trades:")
     for _i in range(10):
         sortino_demo.update(0.02)  # +2% returns
 
     current_sortino = sortino_demo.get_current_sortino()
-    print(f"Sortino ratio: {current_sortino:.3f}")
-    print(f"Tripped: {sortino_demo.check()}")
 
     # Simulate bad trades
-    print("\nSimulating 5 large losses:")
     for _i in range(5):
         sortino_demo.update(-0.05)  # -5% losses
 
     current_sortino = sortino_demo.get_current_sortino()
-    print(f"Sortino ratio: {current_sortino:.3f}")
-    print(f"Tripped: {sortino_demo.check()}")
 
     # Test 2: Kurtosis Breaker
-    print("\n[Test 2] Kurtosis Breaker")
-    print("-" * 80)
 
     kurtosis_demo = KurtosisBreaker(threshold=5.0, min_samples=30)
 
     # Normal distribution
-    print("Simulating normal returns:")
     rng = np.random.default_rng(42)
     normal_returns = rng.normal(0, 0.02, 30)
     for ret in normal_returns:
         kurtosis_demo.update(ret)
 
     current_kurt = kurtosis_demo.get_current_kurtosis()
-    print(f"Kurtosis: {current_kurt:.3f} (normal ≈ 3.0)")
-    print(f"Tripped: {kurtosis_demo.check()}")
 
     # Fat-tailed distribution
-    print("\nAdding extreme outliers:")
     for _ in range(5):
         kurtosis_demo.update(0.15)  # Extreme positive
         kurtosis_demo.update(-0.15)  # Extreme negative
 
     current_kurt = kurtosis_demo.get_current_kurtosis()
-    print(f"Kurtosis: {current_kurt:.3f}")
-    print(f"Tripped: {kurtosis_demo.check()}")
 
     # Test 3: Drawdown Breaker
-    print("\n[Test 3] Drawdown Breaker")
-    print("-" * 80)
 
     drawdown_demo = DrawdownBreaker()
 
     # Simulate equity curve
     equity_series = [10000, 10500, 11000, 10800, 10200, 9500, 9000, 8500, 8000]
 
-    print("Equity progression:")
     for eq in equity_series:
         drawdown_demo.update(eq)
         dd = drawdown_demo.get_drawdown()
         mult = drawdown_demo.get_size_multiplier()
         tripped = drawdown_demo.check()
-        print(f"  Equity: ${eq:6.0f} | DD: {dd:5.1%} | Size mult: {mult:.2f} | Tripped: {tripped}")
 
     # Test 4: Consecutive Losses
-    print("\n[Test 4] Consecutive Losses Breaker")
-    print("-" * 80)
 
     consecutive_demo = ConsecutiveLossesBreaker(max_losses=5)
 
     # Simulate trade sequence
     result_sequence = [False, False, True, False, False, False, False, False, True, False]
 
-    print("Trade sequence:")
-    for i, result_is_win in enumerate(result_sequence):
+    for _i, result_is_win in enumerate(result_sequence):
         consecutive_demo.update(result_is_win)
         count = consecutive_demo.get_consecutive_losses()
         tripped = consecutive_demo.check()
 
         result_str = "WIN " if result_is_win else "LOSS"
-        print(f"  Trade {i + 1}: {result_str} | Consecutive losses: {count} | Tripped: {tripped}")
 
     # Test 5: Circuit Breaker Manager
-    print("\n[Test 5] Circuit Breaker Manager")
-    print("-" * 80)
 
     manager_demo = CircuitBreakerManager(
-        sortino_threshold=0.5, kurtosis_threshold=5.0, max_drawdown=0.20, max_consecutive_losses=3
+        sortino_threshold=0.5, kurtosis_threshold=5.0, max_drawdown=0.20, max_consecutive_losses=3,
     )
 
     # Simulate trading
-    print("\nSimulating trades:")
 
     demo_trades = [
         (100, 10100),  # Win
@@ -1089,47 +1059,28 @@ if __name__ == "__main__":
         (50, 9920),  # Would win but breaker tripped
     ]
 
-    for i, (trade_pnl, trade_equity) in enumerate(demo_trades):
-        print(f"\nTrade {i + 1}: P&L=${trade_pnl:+4.0f} | Equity=${trade_equity:.0f}")
+    for _i, (trade_pnl, trade_equity) in enumerate(demo_trades):
 
         manager_demo.update_trade(trade_pnl / 100, trade_equity)  # Normalize PnL
         manager_demo.check_all()
 
         status = manager_demo.get_status()
-        print(f"  Any tripped: {status['any_tripped']}")
-        print(f"  Size multiplier: {status['position_multiplier']:.2f}")
-        print(f"  Consecutive losses: {status['consecutive_losses']['current']}")
 
         if status["any_tripped"]:
             tripped_breakers = manager_demo.get_tripped_breakers()
-            for tripped_breaker in tripped_breakers:
-                print(f"  ⚠️  {tripped_breaker.name} TRIPPED: {tripped_breaker.trip_reason}")
+            for _tripped_breaker in tripped_breakers:
+                pass
 
     # Test 6: Auto-reset after cooldown
-    print("\n[Test 6] Auto-Reset After Cooldown")
-    print("-" * 80)
 
     # Manually trip a breaker
     cooldown_state = manager_demo.consecutive_losses_breaker.state
     cooldown_state.trip("Test", 5, 3)
-    print(f"Breaker tripped: {cooldown_state.is_tripped}")
 
     # Simulate cooldown elapsed
     fake_past = datetime.now(UTC) - timedelta(hours=4)
     cooldown_state.trip_time = fake_past
 
-    print(f"Cooldown can reset: {cooldown_state.can_reset()}")
 
     manager_demo.reset_if_cooldown_elapsed()
-    print(f"After auto-reset: {cooldown_state.is_tripped}")
 
-    print("\n" + "=" * 80)
-    print("✅ CIRCUIT BREAKERS READY")
-    print("=" * 80)
-    print("\nProtection layers:")
-    print("  ✓ Sortino ratio degradation")
-    print("  ✓ Excess kurtosis (fat tails)")
-    print("  ✓ Drawdown-based size reduction")
-    print("  ✓ Consecutive loss protection")
-    print("  ✓ Auto-reset after cooldown")
-    print("  ✓ Unified manager interface")

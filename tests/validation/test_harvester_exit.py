@@ -19,9 +19,6 @@ from src.agents.harvester_agent import HarvesterAgent
 
 def test_profit_target():
     """Test that harvester exits when profit target is hit."""
-    print("\n" + "=" * 70)
-    print("TEST 1: Profit Target Exit (30% MFE)")
-    print("=" * 70)
 
     harvester = HarvesterAgent(window=10, n_features=10)
 
@@ -38,22 +35,17 @@ def test_profit_target():
         mae = 0.0  # No adverse movement
         bars_held = 15
 
-        action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
+        action, _conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
 
         if action == 1:
-            print(f"✓ EXIT TRIGGERED at MFE={pct:.1f}%, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        print(f"  HOLD at MFE={pct:.1f}%, action={action}")
 
     assert exit_triggered, "No exit triggered at profit target"
 
 
 def test_stop_loss():
     """Test that harvester exits when stop loss is hit."""
-    print("\n" + "=" * 70)
-    print("TEST 2: Stop Loss Exit (20% MAE)")
-    print("=" * 70)
 
     harvester = HarvesterAgent(window=10, n_features=10)
 
@@ -68,22 +60,17 @@ def test_stop_loss():
         mfe = entry_price * 0.05  # Small profit before reversal
         bars_held = 15
 
-        action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
+        action, _conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price, direction=1)
 
         if action == 1:
-            print(f"✓ EXIT TRIGGERED at MAE={pct:.1f}%, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        print(f"  HOLD at MAE={pct:.1f}%, action={action}")
 
     assert exit_triggered, "No exit triggered at stop loss"
 
 
 def test_soft_time_stop():
     """Test that harvester exits on soft time stop (50 bars + profit)."""
-    print("\n" + "=" * 70)
-    print("TEST 3: Soft Time Stop (50 bars + 0.05% profit)")
-    print("=" * 70)
 
     harvester = HarvesterAgent(window=10, n_features=10)
 
@@ -95,22 +82,17 @@ def test_soft_time_stop():
     # Test various bar counts
     exit_triggered = False
     for bars in [40, 45, 50, 51, 52]:
-        action, conf = harvester.decide(market_state, mfe, mae, bars, entry_price, direction=1)
+        action, _conf = harvester.decide(market_state, mfe, mae, bars, entry_price, direction=1)
 
         if action == 1:
-            print(f"✓ EXIT TRIGGERED at bars_held={bars}, MFE=6.0%, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        print(f"  HOLD at bars_held={bars}")
 
     assert exit_triggered, "No exit triggered at soft time stop"
 
 
 def test_hard_time_stop():
     """Test that harvester exits on hard time stop (80 bars regardless)."""
-    print("\n" + "=" * 70)
-    print("TEST 4: Hard Time Stop (80 bars)")
-    print("=" * 70)
 
     harvester = HarvesterAgent(window=10, n_features=10)
 
@@ -122,13 +104,11 @@ def test_hard_time_stop():
     # Test various bar counts
     exit_triggered = False
     for bars in [70, 75, 79, 80, 81]:
-        action, conf = harvester.decide(market_state, mfe, mae, bars, entry_price, direction=1)
+        action, _conf = harvester.decide(market_state, mfe, mae, bars, entry_price, direction=1)
 
         if action == 1:
-            print(f"✓ EXIT TRIGGERED at bars_held={bars}, action={action}, conf={conf:.2f}")
             exit_triggered = True
             break
-        print(f"  HOLD at bars_held={bars}")
 
     assert exit_triggered, "No exit triggered at hard time stop"
 
@@ -141,18 +121,8 @@ if __name__ == "__main__":
     results.append(test_soft_time_stop())
     results.append(test_hard_time_stop())
 
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    print(f"Profit Target: {'✓ PASS' if results[0] else '✗ FAIL'}")
-    print(f"Stop Loss:     {'✓ PASS' if results[1] else '✗ FAIL'}")
-    print(f"Soft Time:     {'✓ PASS' if results[2] else '✗ FAIL'}")
-    print(f"Hard Time:     {'✓ PASS' if results[3] else '✗ FAIL'}")
-    print("=" * 70)
 
     if all(results):
-        print("✓ ALL TESTS PASSED")
         sys.exit(0)
     else:
-        print("✗ SOME TESTS FAILED")
         sys.exit(1)

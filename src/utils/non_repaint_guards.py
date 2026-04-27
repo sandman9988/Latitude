@@ -124,7 +124,7 @@ class NonRepaintBarAccess:
                 f"Call mark_bar_closed() first or use safe_get_previous(1)."
             )
             raise NonRepaintError(
-                msg
+                msg,
             )
 
         return self.data[-1]
@@ -180,7 +180,7 @@ class NonRepaintBarAccess:
         if offset == 0 and not self.is_bar_closed:
             msg = f"[{self.name}] Cannot use offset=0 when bar not closed. Use offset=1 or call mark_bar_closed() first."
             raise NonRepaintError(
-                msg
+                msg,
             )
 
         result = []
@@ -262,49 +262,37 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.DEBUG)
 
-    print("=" * 70)
-    print("NonRepaint Guards Self-Test")
-    print("=" * 70)
 
     # Test 1: Basic non-repaint access
-    print("\n[TEST 1] Basic non-repaint access")
     close = NonRepaintBarAccess("close", max_lookback=10)
 
     # Simulate 3 bars forming
     for i in range(3):
         close.append(100.0 + i)
-        print(f"  Bar {i} formed: {100.0 + i}")
 
     # Try to access bar[0] before close -> should FAIL
-    print("\n  Attempting bar[0] access before close...")
     try:
         val = close.get_current()
-        print(f"    ERROR: Should have raised NonRepaintError, got {val}")
         sys.exit(1)
-    except NonRepaintError as e:
-        print(f"    ✓ Correctly blocked: {e}")
+    except NonRepaintError:
+        pass
 
     # Access historical bars -> should SUCCEED
-    print("\n  Accessing bar[1] (previous closed bar)...")
     val = close.safe_get_previous(1)
     if val == TEST_BAR_VALUE_1:
-        print(f"    ✓ bar[1] = {val}")
+        pass
     else:
-        print(f"    ERROR: Expected {TEST_BAR_VALUE_1}, got {val}")
         sys.exit(1)
 
     # Mark bar closed and retry
-    print("\n  Marking bar closed...")
     close.mark_bar_closed()
     val = close.get_current()
     if val == TEST_BAR_VALUE_2:
-        print(f"    ✓ bar[0] = {val} (after mark_bar_closed)")
+        pass
     else:
-        print(f"    ERROR: Expected {TEST_BAR_VALUE_2}, got {val}")
         sys.exit(1)
 
     # Test 2: Series access
-    print("\n[TEST 2] Series access")
     close.mark_bar_opened()
     close.append(103.0)
     close.mark_bar_closed()
@@ -315,32 +303,24 @@ if __name__ == "__main__":
     series = close.get_series(3, offset=0)
     expected = [103.0, 102.0, 101.0]
     if series == expected:
-        print(f"    ✓ get_series(3, offset=0) = {series}")
+        pass
     else:
-        print(f"    ERROR: Expected {expected}, got {series}")
         sys.exit(1)
 
     # Test 3: Allow incomplete flag
-    print("\n[TEST 3] Allow incomplete flag for monitoring")
     close.mark_bar_opened()
     close.append(TEST_BAR_VALUE_4)  # Incomplete bar
 
     val = close.get_current(allow_incomplete=True)
     if val == TEST_BAR_VALUE_4:
-        print(f"    ✓ get_current(allow_incomplete=True) = {val}")
+        pass
     else:
-        print(f"    ERROR: Expected {TEST_BAR_VALUE_4}, got {val}")
         sys.exit(1)
 
     # Test 4: Invalid offset
-    print("\n[TEST 4] Invalid offset detection")
     try:
         series = close.get_series(5, offset=0)  # offset=0 with bar not closed
-        print("    ERROR: Should have raised NonRepaintError")
         sys.exit(1)
-    except NonRepaintError as e:
-        print(f"    ✓ Correctly rejected offset=0 when bar not closed: {str(e)[:80]}...")
+    except NonRepaintError:
+        pass
 
-    print("\n" + "=" * 70)
-    print("✓ All NonRepaint Guards tests passed!")
-    print("=" * 70)

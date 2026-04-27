@@ -712,7 +712,7 @@ class DualPolicy:
                     np.nan_to_num(jerk, nan=0.0, posinf=0.0, neginf=0.0),
                     np.nan_to_num(runway, nan=0.5, posinf=0.5, neginf=0.5),
                     np.nan_to_num(feasibility, nan=0.5, posinf=0.5, neginf=0.5),
-                ]
+                ],
             )
 
         # Add event time features if enabled (6 key features) — always include
@@ -986,7 +986,7 @@ class DualPolicy:
             agent.ddqn.save_weights(path)
             return True
         except Exception as e:
-            LOG.error("[CHECKPOINT] Failed to save %s weights: %s", label, e)
+            LOG.exception("[CHECKPOINT] Failed to save %s weights: %s", label, e)
             return False
 
     def _default_checkpoint_dir(self) -> Path:
@@ -1015,7 +1015,7 @@ class DualPolicy:
         # 1. Save DDQN weights
         success &= self._save_agent_weights(self.trigger, "trigger", str(checkpoint_path / "trigger_ddqn_weights.pt"))
         success &= self._save_agent_weights(
-            self.harvester, "harvester", str(checkpoint_path / "harvester_ddqn_weights.pt")
+            self.harvester, "harvester", str(checkpoint_path / "harvester_ddqn_weights.pt"),
         )
 
         # 2. Save experience buffers
@@ -1023,7 +1023,7 @@ class DualPolicy:
             success = False
 
         if self.harvester.buffer is not None and not self.harvester.buffer.save(
-            str(checkpoint_path / "harvester_buffer")
+            str(checkpoint_path / "harvester_buffer"),
         ):
             success = False
 
@@ -1044,7 +1044,7 @@ class DualPolicy:
             save_json_atomic(meta_path, metadata)
             LOG.info("[CHECKPOINT] Saved training metadata: %s", metadata)
         except Exception as e:
-            LOG.error("[CHECKPOINT] Failed to save metadata: %s", e)
+            LOG.exception("[CHECKPOINT] Failed to save metadata: %s", e)
             success = False
 
         # 4. Save regime detector state (price buffer) so regime survives restarts
@@ -1088,7 +1088,7 @@ class DualPolicy:
                 agent.ddqn.load_weights(str(weight_path))
                 loaded = True
             except Exception as e:
-                LOG.error("[CHECKPOINT] Failed to load %s weights: %s", agent_name, e)
+                LOG.exception("[CHECKPOINT] Failed to load %s weights: %s", agent_name, e)
         return loaded
 
     def _ckpt_load_buffers(self, cp: Path) -> bool:
@@ -1138,7 +1138,7 @@ class DualPolicy:
             LOG.info("[CHECKPOINT] Restored metadata: %s", metadata)
             return True
         except Exception as e:
-            LOG.error("[CHECKPOINT] Failed to load metadata: %s", e)
+            LOG.exception("[CHECKPOINT] Failed to load metadata: %s", e)
             return False
 
     def _ckpt_restore_regime(self, cp: Path) -> bool:
@@ -1213,20 +1213,14 @@ if __name__ == "__main__":
     import datetime as dt
 
     logging.basicConfig(level=logging.INFO)
-    print("=" * 70)
-    print("DualPolicy Self-Test")
-    print("=" * 70)
 
     # Test 1: Initialize
-    print("\n[TEST 1] Initialize DualPolicy")
     policy = DualPolicy(window=64)
     assert policy.current_position == 0
     assert policy.trigger is not None
     assert policy.harvester is not None
-    print("✓ DualPolicy initialized with trigger + harvester")
 
     # Test 2: Entry decision (flat)
-    print("\n[TEST 2] Entry decision (flat position)")
     bars = deque(maxlen=100)
     for i in range(100):
         t = dt.datetime.now(tz=dt.UTC)
@@ -1237,34 +1231,21 @@ if __name__ == "__main__":
     assert action in [0, 1, 2]
     assert 0 <= conf <= 1
     assert runway >= 0
-    print(f"✓ Entry decision: action={action}, conf={conf:.2f}, runway={runway:.4f}")
 
     # Test 3: Enter position
-    print("\n[TEST 3] Enter LONG position")
     policy.on_entry(direction=1, entry_price=TEST_ENTRY_PRICE, entry_time=dt.datetime.now(tz=dt.UTC))
     assert policy.current_position == 1
     assert abs(policy.entry_price - TEST_ENTRY_PRICE) < 1e-6
-    print(f"✓ Position entered: LONG @ {TEST_ENTRY_PRICE}")
 
     # Test 4: Exit decision (in position)
-    print("\n[TEST 4] Exit decision (in position)")
     current_price = 100050.0  # Small profit
     action, conf = policy.decide_exit(bars, current_price, imbalance=0.1)
     assert action in [0, 1]  # HOLD or CLOSE
     assert 0 <= conf <= 1
     assert policy.mfe > 0  # Should have tracked MFE
-    print(
-        f"✓ Exit decision: action={action} ({'CLOSE' if action == 1 else 'HOLD'}), "
-        f"conf={conf:.2f}, MFE={policy.mfe:.2f}"
-    )
 
     # Test 5: Exit position
-    print("\n[TEST 5] Exit position")
     policy.on_exit(exit_price=100050.0, capture_ratio=0.8, was_wtl=False)
     assert policy.current_position == 0
     assert SafeMath.is_zero(policy.mfe)
-    print("✓ Position closed, state reset")
 
-    print("\n" + "=" * 70)
-    print("✓ All DualPolicy tests passed!")
-    print("=" * 70)

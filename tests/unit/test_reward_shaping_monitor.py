@@ -219,7 +219,7 @@ def test_no_entry_pressure_relaxes_when_quality_favorable(tmp_path):
                 "symbol": "XAUUSD",
                 "timeframe": "M5",
                 "details": {"action": action, "confidence": 0.70, "feasibility": 0.70, "circuit_breaker": False},
-            }
+            },
         )
     decision_log_path = tmp_path / "decision_log.json"
     _write_json(decision_log_path, decision_log)
@@ -273,7 +273,7 @@ def test_no_entry_pressure_reads_scoped_audit_jsonl_fallback(tmp_path):
                 "decision": "NO_ENTRY" if i < 95 else "LONG",
                 "confidence": 0.70,
                 "reasoning": {"feasibility": 0.70, "circuit_breakers_ok": True},
-            }
+            },
         )
     rows.append(
         {
@@ -284,7 +284,7 @@ def test_no_entry_pressure_reads_scoped_audit_jsonl_fallback(tmp_path):
             "decision": "NO_ENTRY",
             "confidence": 0.70,
             "reasoning": {"feasibility": 0.70, "circuit_breakers_ok": True},
-        }
+        },
     )
     audit_path.write_text("\n".join(__import__("json").dumps(r) for r in rows) + "\n", encoding="utf-8")
 

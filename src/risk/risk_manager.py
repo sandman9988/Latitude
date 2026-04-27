@@ -236,10 +236,10 @@ class RiskManager:
         # Load confidence thresholds from param_manager if available, otherwise use provided/default values
         if param_manager is not None:
             self.min_confidence_entry = param_manager.get(
-                symbol, "entry_confidence_threshold", timeframe=timeframe, broker=broker, default=0.6
+                symbol, "entry_confidence_threshold", timeframe=timeframe, broker=broker, default=0.6,
             )
             self.min_confidence_exit = param_manager.get(
-                symbol, "exit_confidence_threshold", timeframe=timeframe, broker=broker, default=0.45
+                symbol, "exit_confidence_threshold", timeframe=timeframe, broker=broker, default=0.45,
             )
             LOG.info(
                 "[RISK] Loaded adaptive thresholds: entry=%.3f exit=%.3f (from LearnedParametersManager)",
@@ -861,7 +861,7 @@ class RiskManager:
         health = self._determine_health(breakers_tripped, risk_utilization, concentration)
 
         recommendations = self._build_base_recommendations(
-            breakers_tripped, risk_utilization, concentration, current_regime
+            breakers_tripped, risk_utilization, concentration, current_regime,
         )
         composite_predictor = self._add_extended_metrics(recommendations)
 
@@ -979,7 +979,7 @@ class RiskManager:
         rl_thresholds = self.get_rl_recommended_thresholds()
         if rl_thresholds.get("confidence", 0) > RL_MIN_CONFIDENCE_FOR_SUGGESTION:
             recommendations.append(
-                f"RL suggests: entry={rl_thresholds['entry_threshold']:.2f} exit={rl_thresholds['exit_threshold']:.2f}"
+                f"RL suggests: entry={rl_thresholds['entry_threshold']:.2f} exit={rl_thresholds['exit_threshold']:.2f}",
             )
         return composite_predictor
 
@@ -1443,7 +1443,7 @@ class RiskManager:
                 "confidence": confidence,
                 "approved": approved,
                 "outcome": outcome,
-            }
+            },
         )
 
     def get_rl_recommended_thresholds(self) -> dict[str, Any]:

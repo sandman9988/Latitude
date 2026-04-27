@@ -100,29 +100,19 @@ class SelfTestReport:
         return [r for r in self.results if r.sev == Sev.WARNING]
 
     def print_banner(self) -> None:
-        n = len(self.results)
-        n_pass = sum(1 for r in self.results if r.sev == Sev.PASS)
-        n_info = sum(1 for r in self.results if r.sev == Sev.INFO)
+        len(self.results)
+        sum(1 for r in self.results if r.sev == Sev.PASS)
+        sum(1 for r in self.results if r.sev == Sev.INFO)
         n_warn = len(self.warnings)
         n_crit = len(self.critical_failures)
 
-        print(f"\n{_BD}{'─' * 60}{_W}")
-        print(f"{_BD}  🔍 STARTUP SELF-TEST{_W}")
-        print(f"{_BD}{'─' * 60}{_W}")
-        for r in self.results:
-            print(str(r))
+        for _r in self.results:
+            pass
 
-        print(f"{_BD}{'─' * 60}{_W}")
-        if n_crit:
-            status_str = f"{_R}{_BD}FAILED ({n_crit} critical){_W}"
-        elif n_warn:
-            status_str = f"{_Y}DEGRADED ({n_warn} warnings){_W}"
+        if n_crit or n_warn:
+            pass
         else:
-            status_str = f"{_G}{_BD}ALL CLEAR{_W}"
-        print(
-            f"  Checks: {n}  {_G}✓{n_pass}{_W}  {_B}ℹ{n_info}{_W}  {_Y}⚠{n_warn}{_W}  {_R}✗{n_crit}{_W}  → {status_str}"
-        )
-        print(f"{_BD}{'─' * 60}{_W}\n")
+            pass
 
 
 # ── individual check helpers ──────────────────────────────────────────────────

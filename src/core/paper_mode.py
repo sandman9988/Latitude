@@ -130,19 +130,4 @@ def get_paper_settings() -> dict:
 
 if __name__ == "__main__":
     # Print settings for shell sourcing
-    print("# Paper Trading Mode - PURE EXPLORATION (No Gating)")
-    print("# Source this file before running bot:")
-    print()
-    print("export PAPER_MODE=1")
-    print("export DISABLE_GATES=1")
-    print("export FEAS_THRESHOLD=0.0")
-    print("export EPSILON_START=1.0")
-    print("export EPSILON_END=0.1")
-    print("export EPSILON_DECAY=0.9995")
-    print("export EXPLORATION_BOOST=0.5")
-    print("export MAX_BARS_INACTIVE=10")
-    print("export MIN_TRADES_PER_DAY=50")
-    print("export FORCE_EXPLORATION=1")
-    print()
-    print("# Then run the bot:")
-    print("# python3 ctrader_ddqn_paper.py")
+    pass

@@ -111,7 +111,7 @@ class TestEstimateExecutionCosts:
     def test_volatile_regime_increases_cost(self, model):
         normal = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         volatile = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="TRANSITIONAL"
+            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="TRANSITIONAL",
         )
         assert volatile.total_slippage_bps > normal.total_slippage_bps
         assert volatile.regime_adjustment_bps > 0
@@ -119,29 +119,29 @@ class TestEstimateExecutionCosts:
     def test_trending_regime_increases_cost(self, model):
         normal = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         trending = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="TRENDING"
+            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="TRENDING",
         )
         assert trending.total_slippage_bps > normal.total_slippage_bps
 
     def test_mean_reverting_decreases_cost(self, model):
         normal = model.estimate_execution_costs(side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="UNKNOWN")
         mr = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="MEAN_REVERTING"
+            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, regime="MEAN_REVERTING",
         )
         assert mr.total_slippage_bps < normal.total_slippage_bps
 
     def test_size_impact_zero_for_normal_size(self, model):
         costs = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, typical_quantity=0.10
+            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, typical_quantity=0.10,
         )
         assert abs(costs.size_impact_bps) < 0.01
 
     def test_size_impact_grows_for_large_orders(self, model):
         small = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, typical_quantity=0.10
+            side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, typical_quantity=0.10,
         )
         large = model.estimate_execution_costs(
-            side=OrderSide.BUY, quantity=1.0, mid_price=50000.0, typical_quantity=0.10
+            side=OrderSide.BUY, quantity=1.0, mid_price=50000.0, typical_quantity=0.10,
         )
         assert large.size_impact_bps > small.size_impact_bps
         assert large.total_slippage_bps > small.total_slippage_bps

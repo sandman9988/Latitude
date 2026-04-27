@@ -326,100 +326,53 @@ class TradeAnalyzer:
     def _print_mfe_mae_section(self, stats: dict) -> None:
         """Print MFE/MAE and duration sub-sections (only when data is available)."""
         if stats["avg_mfe"] is not None:
-            print(f"\n{'MFE/MAE ANALYSIS':-^80}")
-            print(f"Average MFE:         ${stats['avg_mfe']:>10.2f}")
-            print(f"Average MAE:         ${stats['avg_mae']:>10.2f}")
-            print(f"Avg Capture Eff:     {stats['avg_capture_efficiency'] * 100:>9.2f}%")
+            pass
 
         if stats["avg_duration_seconds"] is not None:
-            print(f"\n{'DURATION ANALYSIS':-^80}")
-            print(f"Avg Duration:        {stats['avg_duration_seconds'] / 60:>10.1f} minutes")
-            print(f"Median Duration:     {stats['median_duration_seconds'] / 60:>10.1f} minutes")
+            pass
 
     def _print_dual_agent_section(self, dual: dict) -> None:
         """Print dual-agent analysis sub-section."""
         if "error" in dual:
             return
-        print(f"\n{'DUAL-AGENT ANALYSIS':-^80}")
         if dual.get("trigger_quality_distribution"):
-            print("\nTrigger Quality Distribution:")
-            for quality, count in sorted(dual["trigger_quality_distribution"].items()):
-                print(f"  {quality:<20} {count:>5} trades")
+            for _quality, _count in sorted(dual["trigger_quality_distribution"].items()):
+                pass
         if dual.get("harvester_quality_distribution"):
-            print("\nHarvester Quality Distribution:")
-            for quality, count in sorted(dual["harvester_quality_distribution"].items()):
-                print(f"  {quality:<20} {count:>5} trades")
+            for _quality, _count in sorted(dual["harvester_quality_distribution"].items()):
+                pass
         if dual.get("avg_runway_error_pct") is not None:
-            print(f"\nRunway Prediction Error: {dual['avg_runway_error_pct']:.2f}%")
+            pass
 
     def print_report(self) -> None:
         """Print comprehensive analysis report to console."""
         stats = self.get_summary_stats()
 
-        print("=" * 80)
-        print("TRADE ANALYSIS REPORT")
-        print("=" * 80)
-        print(f"\nSource: {self.csv_path}")
-        print(f"Period: {stats['first_trade']} to {stats['last_trade']}")
-        print(f"\n{'OVERALL PERFORMANCE':-^80}")
-        print(f"Total Trades:        {stats['total_trades']:>10}")
-        print(f"Winning Trades:      {stats['winning_trades']:>10} ({stats['win_rate'] * 100:>6.2f}%)")
-        print(f"Losing Trades:       {stats['losing_trades']:>10}")
-        print(f"\nTotal PnL:           ${stats['total_pnl']:>10.2f}")
-        print(f"Average Win:         ${stats['avg_win']:>10.2f}")
-        print(f"Average Loss:        ${stats['avg_loss']:>10.2f}")
-        print(f"Profit Factor:       {stats['profit_factor']:>10.2f}")
-        print(f"Expectancy:          ${stats['expectancy']:>10.2f}")
 
-        print(f"\n{'RISK METRICS':-^80}")
-        print(f"Sharpe Ratio:        {stats['sharpe_ratio']:>10.3f}")
-        print(f"Sortino Ratio:       {stats['sortino_ratio']:>10.3f}")
-        print(f"Max Drawdown:        ${stats['max_drawdown']:>10.2f} ({stats['max_drawdown_pct']:.2f}%)")
-        print(f"Max Win Streak:      {stats['max_win_streak']:>10}")
-        print(f"Max Loss Streak:     {stats['max_loss_streak']:>10}")
 
         self._print_mfe_mae_section(stats)
 
         # Hourly analysis
-        print(f"\n{'BEST HOURS (Top 5)':-^80}")
         hourly = self.analyze_by_hour().head(5)
-        print(f"{'Hour':<10} {'Total PnL':<15} {'Avg PnL':<15} {'Trades':<10} {'Win Rate'}")
-        for hour, row in hourly.iterrows():
-            print(
-                f"{hour:02d}:00      ${row['total_pnl']:<13.2f} ${row['avg_pnl']:<13.2f} {int(row['num_trades']):<10} {row['win_rate'] * 100:.1f}%"
-            )
+        for _hour, _row in hourly.iterrows():
+            pass
 
         # Daily analysis
-        print(f"\n{'BEST DAYS':-^80}")
         daily = self.analyze_by_day()
-        print(f"{'Day':<15} {'Total PnL':<15} {'Avg PnL':<15} {'Trades':<10} {'Win Rate'}")
-        for day, row in daily.iterrows():
-            print(
-                f"{day:<15} ${row['total_pnl']:<13.2f} ${row['avg_pnl']:<13.2f} {int(row['num_trades']):<10} {row['win_rate'] * 100:.1f}%"
-            )
+        for _day, _row in daily.iterrows():
+            pass
 
         self._print_dual_agent_section(self.analyze_dual_agents())
 
         # Best and worst trades
-        print(f"\n{'BEST TRADES (Top 5)':-^80}")
         best = self.find_best_trades(5)
-        print(f"{'Trade#':<10} {'Time':<20} {'Dir':<8} {'PnL':<15} {'MFE':<15} {'Capture'}")
-        for _, trade in best.iterrows():
-            print(
-                f"{int(trade['trade_num']):<10} {trade['entry_time']!s:<20} {trade['direction']:<8} "
-                f"${trade['pnl']:<13.2f} ${trade['mfe']:<13.2f} {trade['capture_efficiency'] * 100:.1f}%"
-            )
+        for _, _trade in best.iterrows():
+            pass
 
-        print(f"\n{'WORST TRADES (Top 5)':-^80}")
         worst = self.find_worst_trades(5)
-        print(f"{'Trade#':<10} {'Time':<20} {'Dir':<8} {'PnL':<15} {'MAE'}")
-        for _, trade in worst.iterrows():
-            print(
-                f"{int(trade['trade_num']):<10} {trade['entry_time']!s:<20} {trade['direction']:<8} "
-                f"${trade['pnl']:<13.2f} ${trade['mae']:<13.2f}"
-            )
+        for _, _trade in worst.iterrows():
+            pass
 
-        print("=" * 80)
 
 
 def main() -> int:
@@ -438,15 +391,12 @@ def main() -> int:
             analyzer.print_report()
 
         if args.export:
-            output_path = analyzer.export_analysis(args.export)
-            print(f"\n✓ Analysis exported to: {output_path}")
+            analyzer.export_analysis(args.export)
         elif not args.quiet:
             # Auto-export if not suppressed
-            output_path = analyzer.export_analysis()
-            print(f"\n✓ Analysis exported to: {output_path}")
+            analyzer.export_analysis()
 
-    except Exception as e:
-        print(f"Error: {e}")
+    except Exception:
         return 1
 
     return 0

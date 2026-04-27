@@ -1173,126 +1173,81 @@ if __name__ == "__main__":
     _TEST_SYMBOL = "BTC/USD"
     _TEST_PARAMS_FILE = Path("data/test_params.json")
 
-    print("=" * 80)
-    print("LEARNED PARAMETERS SYSTEM - TEST SUITE")
-    print("=" * 80)
 
     # Test 1: Create adaptive parameter
-    print("\n[Test 1] Adaptive Parameter with Soft Bounds")
-    print("-" * 80)
 
     param = AdaptiveParam(name="test_param", value=0.5, min_bound=0.0, max_bound=1.0, learning_rate=0.1, momentum=0.9)
 
-    print(f"Initial value: {param.value:.4f}")
 
     # Positive gradient (increase)
-    for i in range(5):
+    for _i in range(5):
         new_val = param.update(0.2)
-        print(f"Update {i + 1}: value={new_val:.4f}, velocity={param.velocity:.4f}")
 
-    print(f"After 5 positive updates: {param.value:.4f}")
-    print("Bounded to [0, 1]: ✓" if 0 <= param.value <= 1 else "✗ OUT OF BOUNDS")
 
     # Test 2: Instrument parameters
-    print("\n[Test 2] Instrument Parameters")
-    print("-" * 80)
 
     btc_params = InstrumentParameters(_TEST_SYMBOL, "M1", "pepperstone")
     btc_params.add_param("position_size", 0.10, 0.01, 1.0)
     btc_params.add_param("stop_loss_pct", 0.02, 0.005, 0.10)
 
-    print(f"{_TEST_SYMBOL} position_size: {btc_params.get('position_size'):.2f}")
-    print(f"{_TEST_SYMBOL} stop_loss_pct: {btc_params.get('stop_loss_pct'):.3f}")
 
     # Update position size
     new_size = btc_params.update("position_size", 0.05)
-    print(f"After update: position_size = {new_size:.3f}")
 
     # Check staleness
     time.sleep(0.1)
     staleness = btc_params.get_staleness("position_size")
-    print(f"Position size staleness: {staleness:.3f} seconds")
-    print(f"Is stale (threshold 1s): {btc_params.is_stale('position_size', 1.0)}")
 
     # Test 3: Manager with multiple instruments
-    print("\n[Test 3] Learned Parameters Manager")
-    print("-" * 80)
 
     manager = LearnedParametersManager(_TEST_PARAMS_FILE)
 
     # Get BTC/USD parameters (auto-creates with defaults)
     btc_inst = manager.get_instrument(_TEST_SYMBOL, "M1", "pepperstone")
-    print(f"Created {_TEST_SYMBOL} with {len(btc_inst.params)} default parameters")
 
     # Get some parameter values
-    print(f"  capture_multiplier: {manager.get(_TEST_SYMBOL, 'capture_multiplier'):.2f}")
-    print(f"  wtl_penalty_multiplier: {manager.get(_TEST_SYMBOL, 'wtl_penalty_multiplier'):.2f}")
-    print(f"  base_position_size: {manager.get(_TEST_SYMBOL, 'base_position_size'):.2f}")
 
     # Add ETH/USD
     eth_inst = manager.get_instrument("ETH/USD", "M15", "pepperstone")
-    print(f"\nCreated ETH/USD with {len(eth_inst.params)} default parameters")
 
     # Test 4: Parameter updates
-    print("\n[Test 4] Parameter Updates with Gradients")
-    print("-" * 80)
 
     initial_capture = manager.get(_TEST_SYMBOL, "capture_multiplier")
-    print(f"Initial capture_multiplier: {initial_capture:.4f}")
 
     # Simulate positive gradient (increase reward)
-    for i in range(5):
+    for _i in range(5):
         new_val = manager.update(_TEST_SYMBOL, "capture_multiplier", 0.1)
-        print(f"  Update {i + 1}: {new_val:.4f}")
 
     final_capture = manager.get(_TEST_SYMBOL, "capture_multiplier")
-    print(f"Final capture_multiplier: {final_capture:.4f}")
-    print(f"Change: {final_capture - initial_capture:+.4f}")
 
     # Test 5: Persistence
-    print("\n[Test 5] Save/Load Persistence")
-    print("-" * 80)
 
     # Save
     manager.save()
-    print(f"✓ Saved to {manager.persistence_path}")
 
     # Create new manager and load
     manager2 = LearnedParametersManager(_TEST_PARAMS_FILE)
     loaded = manager2.load()
-    print(f"✓ Loaded: {loaded}")
 
     # Verify values match
     loaded_capture = manager2.get(_TEST_SYMBOL, "capture_multiplier")
-    print(f"Loaded capture_multiplier: {loaded_capture:.4f}")
-    print(f"Matches saved: {abs(loaded_capture - final_capture) < FLOATING_POINT_TOLERANCE}")
 
     # Test 6: Staleness detection
-    print("\n[Test 6] Staleness Detection")
-    print("-" * 80)
 
     time.sleep(0.5)
     stale = manager.check_staleness(threshold_seconds=0.3)
 
     if stale:
-        for inst_key, params in stale.items():
-            print(f"{inst_key}: {len(params)} stale parameters")
+        for _inst_key, _params in stale.items():
+            pass
     else:
-        print("No stale parameters found")
+        pass
 
     # Test 7: Summary
-    print("\n[Test 7] Manager Summary")
-    print("-" * 80)
 
     summary = manager.get_summary()
-    print(f"Instruments: {summary['num_instruments']}")
-    print(f"Total parameters: {summary['total_parameters']}")
-    print(f"Avg per instrument: {summary['parameters_per_instrument']:.1f}")
-    print(f"Instrument list: {', '.join(summary['instruments'])}")
 
     # Test 8: Soft bounds demonstration
-    print("\n[Test 8] Soft Bounds (Tanh Clamping)")
-    print("-" * 80)
 
     # Create parameter with narrow bounds
     narrow_param = AdaptiveParam(
@@ -1304,28 +1259,12 @@ if __name__ == "__main__":
         momentum=0.0,  # No momentum for clarity
     )
 
-    print("Applying large positive gradients:")
-    for i in range(10):
+    for _i in range(10):
         val = narrow_param.update(1.0)  # Large gradient
-        print(f"  Iteration {i + 1}: {val:.6f}")
 
-    print(f"\nFinal value: {narrow_param.value:.6f}")
-    print(f"Asymptotically approaches {narrow_param.max_bound}, never exceeds ✓")
 
     # Cleanup
     _test_path = Path(_TEST_PARAMS_FILE)
     if _test_path.exists():
         _test_path.unlink()
-        print("\n✓ Cleanup: Removed test file")
 
-    print("\n" + "=" * 80)
-    print("✅ ALL TESTS COMPLETE")
-    print("=" * 80)
-    print("\nLearned Parameters System ready for integration:")
-    print("  ✓ NO MAGIC NUMBERS - all parameters adaptive")
-    print("  ✓ Soft bounds via tanh (never hard limits)")
-    print("  ✓ Per instrument × timeframe × broker")
-    print("  ✓ Momentum-based updates")
-    print("  ✓ Persistence with versioning")
-    print("  ✓ Staleness detection")
-    print("  ✓ DRY - single source of truth for all parameters")

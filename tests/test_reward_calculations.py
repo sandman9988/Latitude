@@ -23,7 +23,7 @@ class MockBot:
     """Mock bot with reward calculation methods."""
 
     def _calculate_trigger_reward(
-        self, trade_summary: dict, predicted_runway: float, realized_vol: float = 0.01
+        self, trade_summary: dict, predicted_runway: float, realized_vol: float = 0.01,
     ) -> float:
         """
         Calculate reward for TriggerAgent based on prediction accuracy.
@@ -455,7 +455,7 @@ class TestRewardPnLCorrelation:
             rewards.append(reward)
 
         # Check distribution
-        mean_reward = np.mean(rewards)
+        np.mean(rewards)
         std_reward = np.std(rewards)
 
         # Should have rewards spread across range
@@ -463,7 +463,6 @@ class TestRewardPnLCorrelation:
         assert -1.0 <= max(rewards) <= 1.0, "Rewards outside range"
         assert std_reward > 0.1, f"Rewards too concentrated (std={std_reward:.3f})"
 
-        print(f"Harvester reward distribution: mean={mean_reward:.3f} std={std_reward:.3f}")
 
 
 if __name__ == "__main__":

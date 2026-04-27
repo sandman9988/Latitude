@@ -487,9 +487,6 @@ class TestStatisticalAggregations:
 
 def test_all_calculations():
     """Run all mathematical verification tests"""
-    print("\n" + "=" * 70)
-    print("MATHEMATICAL VERIFICATION TEST SUITE")
-    print("=" * 70)
 
     # Run all test classes manually
     test_classes = [
@@ -508,8 +505,6 @@ def test_all_calculations():
 
     for test_class in test_classes:
         class_name = test_class.__class__.__name__
-        print(f"\n{class_name}:")
-        print("-" * 70)
 
         # Get all test methods
         test_methods = [m for m in dir(test_class) if m.startswith("test_")]
@@ -519,26 +514,18 @@ def test_all_calculations():
             try:
                 method = getattr(test_class, method_name)
                 method()
-                print(f"  ✓ {method_name}")
                 passed_tests += 1
             except AssertionError as e:
-                print(f"  ✗ {method_name}: {e!s}")
                 failed_tests.append((class_name, method_name, str(e)))
             except Exception as e:
-                print(f"  ✗ {method_name}: ERROR - {e!s}")
                 failed_tests.append((class_name, method_name, f"ERROR: {e!s}"))
 
-    print("\n" + "=" * 70)
-    print(f"RESULTS: {passed_tests}/{total_tests} tests passed")
 
     if failed_tests:
-        print(f"\n{len(failed_tests)} FAILED TESTS:")
-        for class_name, method_name, error in failed_tests:
-            print(f"  - {class_name}.{method_name}")
-            print(f"    {error}")
+        for class_name, method_name, _error in failed_tests:
+            pass
         msg = f"{len(failed_tests)} mathematical verification(s) failed"
         raise AssertionError(msg)
-    print("\n✓ ALL MATHEMATICAL VERIFICATIONS PASSED")
 
 
 if __name__ == "__main__":

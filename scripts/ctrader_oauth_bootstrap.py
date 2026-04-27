@@ -63,12 +63,8 @@ def main() -> None:
     scope = os.environ.get("CTRADER_SCOPE", "trading").strip()
 
     auth = Auth(client_id, client_secret, redirect_uri)
-    auth_uri = auth.getAuthUri(scope=scope)
+    auth.getAuthUri(scope=scope)
 
-    print("\n1) Open this URL in a normal browser and login/allow access:\n")
-    print(auth_uri)
-    print(f"\n2) After allowing access, your browser will redirect to:\n   {redirect_uri}\n")
-    print("Waiting for redirect...\n")
 
     t = threading.Thread(target=run_server, daemon=True)
     t.start()
@@ -82,7 +78,6 @@ def main() -> None:
         raise SystemExit(msg)
 
     code = CodeHandler.code
-    print(f"Received code: {code[:8]}... (redacted)\n")
 
     token = auth.getToken(code)
     if token.get("errorCode"):
@@ -94,8 +89,6 @@ def main() -> None:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(token, f, indent=2)
 
-    print(f"Saved token to: {out_path}")
-    print("Keys: accessToken, refreshToken, expiresIn, tokenType\n")
 
 
 if __name__ == "__main__":

@@ -251,7 +251,7 @@ class TradeAuditLogger:
         )
 
     def log_position_update(
-        self, position_id: str, net_qty: float, avg_price: float, ticket: str, update_reason: str = "Fill"
+        self, position_id: str, net_qty: float, avg_price: float, ticket: str, update_reason: str = "Fill",
     ) -> None:
         """Log position quantity/price update."""
         self._write_entry(
@@ -329,7 +329,7 @@ class TradeAuditLogger:
         )
 
     def log_ticket_tracker_created(
-        self, ticket: str, position_id: str, direction: str, entry_price: float, quantity: float
+        self, ticket: str, position_id: str, direction: str, entry_price: float, quantity: float,
     ) -> None:
         """Log MFE/MAE tracker creation for ticket."""
         self._write_entry(
@@ -344,7 +344,7 @@ class TradeAuditLogger:
         )
 
     def log_ticket_tracker_removed(
-        self, ticket: str, position_id: str, final_mfe: float, final_mae: float, bars_held: int
+        self, ticket: str, position_id: str, final_mfe: float, final_mae: float, bars_held: int,
     ) -> None:
         """Log MFE/MAE tracker removal for ticket."""
         self._write_entry(
@@ -375,7 +375,7 @@ class TradeAuditLogger:
         )
 
     def log_state_load(
-        self, state_file: str, num_tickets_loaded: int, net_position_loaded: float, checksum_valid: bool = True
+        self, state_file: str, num_tickets_loaded: int, net_position_loaded: float, checksum_valid: bool = True,
     ) -> None:
         """Log state recovery event."""
         self._write_entry(
@@ -394,7 +394,7 @@ class TradeAuditLogger:
     # ==========================================================================
 
     def log_reconciliation(
-        self, expected_positions: int, broker_positions: int, discrepancies: list[str], reconciled: bool
+        self, expected_positions: int, broker_positions: int, discrepancies: list[str], reconciled: bool,
     ) -> None:
         """Log position reconciliation result."""
         self._write_entry(
@@ -421,7 +421,7 @@ class TradeAuditLogger:
         )
 
     def log_error(
-        self, error_type: str, error_message: str, context: dict[str, Any] | None = None, ticket: str | None = None
+        self, error_type: str, error_message: str, context: dict[str, Any] | None = None, ticket: str | None = None,
     ) -> None:
         """Log trade-related error."""
         self._write_entry(
@@ -472,75 +472,51 @@ if __name__ == "__main__":
     import tempfile
 
     logging.basicConfig(level=logging.INFO)
-    print("=" * 80)
-    print("TRADE AUDIT LOGGER - TEST SUITE")
-    print("=" * 80)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create test logger
         audit = TradeAuditLogger(log_dir=tmpdir, filename="test_trade_audit.jsonl")
 
         # Test full trade lifecycle
-        print("\n[Test] Complete Trade Lifecycle")
-        print("-" * 80)
 
         # 1. Submit order
         audit.log_order_submit("ORD001", "BUY", 0.1, 91850.0, ticket="186675801")
-        print("✓ Order submitted")
 
         # 2. Order accepted
         audit.log_order_accept("ORD001", broker_order_id="BROKER123", ticket="186675801")
-        print("✓ Order accepted")
 
         # 3. Order filled
         audit.log_order_fill("ORD001", 91851.0, 0.1, ticket="186675801", fill_id="FILL001")
-        print("✓ Order filled")
 
         # 4. Position opened
         audit.log_position_open("10028_ticket_186675801", "LONG", 0.1, 91851.0, ticket="186675801")
-        print("✓ Position opened")
 
         # 5. Ticket assigned
         audit.log_ticket_assigned("186675801", "10028_ticket_186675801", order_id="ORD001")
-        print("✓ Ticket assigned")
 
         # 6. Tracker created
         audit.log_ticket_tracker_created("186675801", "10028_ticket_186675801", "LONG", 91851.0, 0.1)
-        print("✓ Tracker created")
 
         # 7. Position closed
         audit.log_position_close("10028_ticket_186675801", 91900.0, 49.0, 75.0, 25.0, "186675801", bars_held=34)
-        print("✓ Position closed")
 
         # 8. Tracker removed
         audit.log_ticket_tracker_removed("186675801", "10028_ticket_186675801", 75.0, 25.0, 34)
-        print("✓ Tracker removed")
 
         # Test error logging
         audit.log_error("FILL_TIMEOUT", "No fill received after 30s", {"order_id": "ORD002"})
-        print("✓ Error logged")
 
         # Test state persistence
         audit.log_state_save("trade_integration_BTCUSD.json", 3, 0.3, checksum="ABC123")
-        print("✓ State save logged")
 
         # Verify file contents
         log_file = Path(tmpdir) / "test_trade_audit.jsonl"
         with open(log_file) as f:
             entries = [json.loads(line) for line in f]
 
-        print(f"\n✓ {len(entries)} audit entries written")
-        print(f"✓ Sequence numbers: 1 → {entries[-1]['sequence']}")
-        print("✓ All entries immutable and chronological")
 
         # Display sample entries
-        print("\nSample Entries:")
         for entry in entries[:5]:
-            print(f"  [{entry['sequence']}] {entry['event_type']}: ", end="")
             if "ticket" in entry:
-                print(f"ticket={entry['ticket']}", end=" ")
-            print(f"{entry['data']}")
+                pass
 
-        print("\n" + "=" * 80)
-        print("✓ All trade audit logger tests passed!")
-        print("=" * 80)

@@ -25,10 +25,10 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass
-from typing import Any
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +229,7 @@ class ProductionMonitor:
                     metric_value=self.metrics.last_trade_mins_ago / 60,
                     threshold=self.alert_no_trade_hours,
                     timestamp=time.time(),
-                )
+                ),
             )
 
         # Alert: Excessive drawdown
@@ -242,7 +242,7 @@ class ProductionMonitor:
                     metric_value=self.metrics.drawdown_current,
                     threshold=self.alert_drawdown_pct,
                     timestamp=time.time(),
-                )
+                ),
             )
 
         # Alert: Circuit breakers tripped
@@ -255,7 +255,7 @@ class ProductionMonitor:
                     metric_value=self.metrics.circuit_breakers_tripped,
                     threshold=0,
                     timestamp=time.time(),
-                )
+                ),
             )
 
         # Alert: FIX disconnected
@@ -268,7 +268,7 @@ class ProductionMonitor:
                     metric_value=0.0,
                     threshold=1.0,
                     timestamp=time.time(),
-                )
+                ),
             )
 
         # Alert: High memory usage
@@ -281,7 +281,7 @@ class ProductionMonitor:
                     metric_value=self.metrics.memory_usage_pct,
                     threshold=self.alert_memory_pct,
                     timestamp=time.time(),
-                )
+                ),
             )
 
         # Alert: High error rate
@@ -294,7 +294,7 @@ class ProductionMonitor:
                     metric_value=self.metrics.error_count_1h,
                     threshold=self.alert_error_rate_1h,
                     timestamp=time.time(),
-                )
+                ),
             )
 
         self.active_alerts = new_alerts
@@ -382,7 +382,7 @@ class ProductionMonitor:
             logger.info("   Endpoints: http://localhost:%s/metrics", self.http_port)
             logger.info("              http://localhost:%s/health", self.http_port)
         except Exception as e:
-            logger.error("Failed to start HTTP server: %s", e)
+            logger.exception("Failed to start HTTP server: %s", e)
 
     def stop_http_server(self) -> None:
         """Stop HTTP server."""
@@ -395,10 +395,8 @@ class ProductionMonitor:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    print("=== ProductionMonitor Self-Test ===\n")
 
     # Test 1: Basic metrics update
-    print("Test 1: Metrics update and JSON export")
     monitor = ProductionMonitor(http_enabled=False)
     monitor.update_metrics(
         realized_pnl_day=150.50,
@@ -412,55 +410,50 @@ if __name__ == "__main__":
 
     metrics_json = json.loads(monitor.get_metrics_json())
     if abs(metrics_json["metrics"]["realized_pnl_day"] - 150.50) < 0.01:
-        print("  ✓ Metrics updated correctly")
+        pass
     else:
-        print("  ✗ Metrics update failed")
+        pass
 
     # Test 2: No-trade alert
-    print("\nTest 2: No-trade alert")
     monitor2 = ProductionMonitor(alert_no_trade_hours=1.0, http_enabled=False)
     monitor2.update_metrics(last_trade_mins_ago=90)  # 1.5 hours
 
     if len(monitor2.active_alerts) > 0 and monitor2.active_alerts[0].category == "trade":
-        print(f"  ✓ Alert triggered: {monitor2.active_alerts[0].message}")
+        pass
     else:
-        print("  ✗ No alert triggered")
+        pass
 
     # Test 3: Drawdown alert
-    print("\nTest 3: Drawdown alert")
     monitor3 = ProductionMonitor(alert_drawdown_pct=0.05, http_enabled=False)
     monitor3.update_metrics(drawdown_current=0.12)  # 12% drawdown
 
     drawdown_alerts = [a for a in monitor3.active_alerts if a.category == "pnl"]
     if drawdown_alerts:
-        print(f"  ✓ Drawdown alert: {drawdown_alerts[0].message}")
+        pass
     else:
-        print("  ✗ No drawdown alert")
+        pass
 
     # Test 4: Circuit breaker alert
-    print("\nTest 4: Circuit breaker alert")
     monitor4 = ProductionMonitor(http_enabled=False)
     monitor4.update_metrics(circuit_breakers_tripped=2, circuit_breaker_names=["max_loss", "volatility"])
 
     cb_alerts = [a for a in monitor4.active_alerts if "circuit" in a.message.lower()]
     if cb_alerts:
-        print(f"  ✓ Circuit breaker alert: {cb_alerts[0].message}")
+        pass
     else:
-        print("  ✗ No circuit breaker alert")
+        pass
 
     # Test 5: FIX connection alert
-    print("\nTest 5: FIX connection alert")
     monitor5 = ProductionMonitor(http_enabled=False)
     monitor5.update_metrics(fix_connected=False)
 
     fix_alerts = [a for a in monitor5.active_alerts if a.severity == "critical"]
     if fix_alerts:
-        print(f"  ✓ Critical FIX alert: {fix_alerts[0].message}")
+        pass
     else:
-        print("  ✗ No FIX alert")
+        pass
 
     # Test 6: Metrics file persistence
-    print("\nTest 6: Metrics file persistence")
     import tempfile
 
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as _tmp:
@@ -472,16 +465,15 @@ if __name__ == "__main__":
         with open(temp_file) as f:
             saved = json.load(f)
         if saved["metrics"]["trades_total"] == 42:
-            print("  ✓ Metrics persisted to file")
+            pass
         else:
-            print("  ✗ Metrics file mismatch")
+            pass
     else:
-        print("  ✗ Metrics file not created")
+        pass
 
     temp_file.unlink(missing_ok=True)
 
     # Test 7: HTTP server (basic)
-    print("\nTest 7: HTTP server startup")
     monitor7 = ProductionMonitor(http_enabled=True, http_port=8766)
     monitor7.update_metrics(trades_today=5)
     monitor7.start_http_server()
@@ -495,12 +487,11 @@ if __name__ == "__main__":
         response = urllib.request.urlopen("http://localhost:8766/metrics", timeout=2)
         data = json.loads(response.read())
         if data["metrics"]["trades_today"] == 5:
-            print("  ✓ HTTP server working")
+            pass
         else:
-            print("  ✗ HTTP response mismatch")
-    except Exception as e:
-        print(f"  ✗ HTTP server failed: {e}")
+            pass
+    except Exception:
+        pass
     finally:
         monitor7.stop_http_server()
 
-    print("\n=== Self-Test Complete ===")

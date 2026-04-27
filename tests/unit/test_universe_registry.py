@@ -97,7 +97,7 @@ class TestRegisterUniverse:
         monkeypatch.setattr(to, "_UNIVERSE_PATH", uni)
 
         to._register_universe(
-            "EURUSD", _TF_H1_MINUTES, z_omega=2.5, weights_path="data/checkpoints/best/EURUSD_trigger.npz"
+            "EURUSD", _TF_H1_MINUTES, z_omega=2.5, weights_path="data/checkpoints/best/EURUSD_trigger.npz",
         )
 
         assert uni.exists()
@@ -221,7 +221,7 @@ class TestAutoPromoteCLI:
                 "0.0",  # promote regardless of ZOmega
                 "--workers",
                 "1",
-            ]
+            ],
         )
 
         assert ret == 0
@@ -254,7 +254,7 @@ class TestAutoPromoteCLI:
                 "9999.0",  # impossible to reach on 400 bars
                 "--workers",
                 "1",
-            ]
+            ],
         )
 
         if uni.exists():
@@ -283,7 +283,7 @@ class TestAutoPromoteCLI:
                 # NOTE: intentionally no --auto-promote
                 "--workers",
                 "1",
-            ]
+            ],
         )
 
         assert not uni.exists(), "universe.json should not be created without --auto-promote"
@@ -313,7 +313,7 @@ class TestAutoPromoteCLI:
                 "0.0",
                 "--workers",
                 "2",
-            ]
+            ],
         )
 
         assert ret == 0
@@ -344,7 +344,7 @@ class TestAutoPromoteCLI:
                 "0.0",
                 "--workers",
                 "1",
-            ]
+            ],
         )
 
         assert _entry(_read_universe(uni)["instruments"], "XAUUSD", 240)["stage"] == "LIVE"

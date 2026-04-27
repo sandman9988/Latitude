@@ -15,13 +15,7 @@ def verify_on_bar_close_sequence():
     3. No steps are skipped (except conditionally)
     """
 
-    print("\n" + "=" * 80)
-    print("on_bar_close() EXECUTION SEQUENCE VERIFICATION")
-    print("=" * 80)
 
-    print("\n📍 Source: ctrader_ddqn_paper.py :: on_bar_close() (starting ~line 2268)")
-    print("\nMethod signature: def on_bar_close(self, bar)")
-    print("  Input: bar = (timestamp, open, high, low, close)")
 
     # Actual code flow from ctrader_ddqn_paper.py
     steps = [
@@ -236,33 +230,15 @@ def verify_on_bar_close_sequence():
         },
     ]
 
-    print("\n" + "=" * 80)
-    print("STEP-BY-STEP EXECUTION SEQUENCE")
-    print("=" * 80)
 
-    required_steps = [s for s in steps if s["required"]]
-    optional_steps = [s for s in steps if not s["required"]]
+    [s for s in steps if s["required"]]
+    [s for s in steps if not s["required"]]
 
-    print(f"\n📊 Total Steps: {len(steps)}")
-    print(f"   • Required (always execute): {len(required_steps)}")
-    print(f"   • Conditional (may skip): {len(optional_steps)}")
 
     for step in steps:
-        print(f"\n{'=' * 80}")
-        print(f"STEP {step['num']:2d}: {step['name']} {'(REQUIRED)' if step['required'] else '(CONDITIONAL)'}")
-        print(f"{'=' * 80}")
-        print(f"📍 Line: {step['line']}")
-        print(f"✅ Verified: {step['verified']}")
-        print("\n💻 CODE:")
-        for line in step["code"].split("\n"):
-            print(f"    {line}")
-        print(f"\n📥 DATA IN:  {step['data_in']}")
-        print(f"📤 DATA OUT: {step['data_out']}")
-        print(f"📝 NOTE: {step['note']}")
+        for _line in step["code"].split("\n"):
+            pass
 
-    print("\n" + "=" * 80)
-    print("DATA FLOW VERIFICATION")
-    print("=" * 80)
 
     data_flows = [
         {"from_step": 2, "to_step": [7, 8, 9, 14, 15, 19], "data": "Bar OHLC (o, h, low_price, c)", "verified": "✅"},
@@ -290,116 +266,15 @@ def verify_on_bar_close_sequence():
         {"from_step": 12, "to_step": [14], "data": "Updated network weights → next bar decisions", "verified": "✅"},
     ]
 
-    print("\nData flows correctly between steps:")
-    for flow in data_flows:
-        print(f"\n  {flow['verified']} Step {flow['from_step']:2d} → Step {flow['to_step']}")
-        print(f"      Data: {flow['data']}")
+    for _flow in data_flows:
+        pass
 
-    print("\n" + "=" * 80)
-    print("CRITICAL DEPENDENCIES")
-    print("=" * 80)
 
-    print(
-        """
-    Step 14 (Agent Decisions) DEPENDS ON:
-      ├─ Step 2:  Bar OHLC data
-      ├─ Step 7:  VaR estimate (via position sizing)
-      ├─ Step 9:  Order book metrics (imbalance, depth_ratio)
-      ├─ Step 10: Realized volatility
-      ├─ Step 11: Event-time features
-      └─ Step 13: Circuit breaker status (may halt before step 14)
 
-    Step 18 (Order Execution) DEPENDS ON:
-      ├─ Step 14: Agent decision (desired position)
-      ├─ Step 7:  VaR estimate (position sizing)
-      └─ Step 13: Circuit breakers (must be OK)
 
-    Step 12 (Training) DEPENDS ON:
-      └─ Step 16: Experience buffers (from previous bars)
 
-    Step 19 (HUD Export) DEPENDS ON:
-      └─ ALL previous steps (aggregates entire system state)
-    """
-    )
 
-    print("\n" + "=" * 80)
-    print("EXECUTION GUARANTEES")
-    print("=" * 80)
 
-    print(
-        """
-    ✅ GUARANTEED to execute (every bar):
-       • Step 1:  Bar counter increment
-       • Step 2:  Bar data unpacking
-       • Step 5:  Activity monitor update
-       • Step 6:  Position timeout checks
-       • Step 7:  VaR update
-       • Step 9:  Order book metrics calculation
-       • Step 10: Realized volatility calculation
-       • Step 11: Event-time features calculation
-       • Step 13: Circuit breaker check
-       • Step 14: Agent decision (entry OR exit)
-       • Step 15: Decision logging
-       • Step 16: Experience storage
-       • Step 17: Decision log export
-       • Step 19: HUD data export
-
-    ⚙️  CONDITIONAL execution (depends on state):
-       • Step 3:  Log bar (every 10 bars)
-       • Step 4:  Auto-save (every 50 bars)
-       • Step 8:  Path recording (only if position open)
-       • Step 12: Training (every training_interval bars)
-       • Step 18: Order execution (only if desired != cur_pos)
-
-    🚫 EARLY RETURN conditions (skip remaining steps):
-       • Step 13: Circuit breakers tripped → halt trading
-       • Step 14: Depth check fails → skip entry decision
-    """
-    )
-
-    print("\n" + "=" * 80)
-    print("VERIFICATION RESULTS")
-    print("=" * 80)
-
-    print(
-        f"""
-    ✅ All {len(steps)} steps identified and documented
-    ✅ Execution order verified against source code
-    ✅ Data dependencies mapped correctly
-    ✅ Required vs conditional steps classified
-    ✅ Early return conditions identified
-    ✅ Critical safety checks (circuit breakers) before trading
-
-    📊 Step Distribution:
-       • Feature Calculation:  Steps 7, 9, 10, 11 (4 steps)
-       • Safety Checks:        Steps 6, 13 (2 steps)
-       • Agent Decisions:      Step 14 (1 step)
-       • Learning/Training:    Steps 12, 16 (2 steps)
-       • Logging/Monitoring:   Steps 3, 5, 15, 17, 19 (5 steps)
-       • Execution:            Step 18 (1 step)
-       • Housekeeping:         Steps 1, 2, 4, 8 (4 steps)
-
-    🎯 Key Insight:
-       The on_bar_close() pipeline is DETERMINISTIC and REPRODUCIBLE.
-       Given the same input bar and system state, the exact same sequence
-       of operations will execute with the same data flowing through.
-
-    ⚠️  Note on Step Count Discrepancy:
-       Original documentation listed 16 steps, but detailed code review
-       reveals 19 distinct operations. The additional steps are:
-       - Step 2:  Bar data unpacking (implicit but critical)
-       - Step 17: Decision log JSON export (separate from step 15)
-       - Step 18: Order execution (was implied in original step 9)
-    """
-    )
-
-    print("\n" + "=" * 80)
-    print("✅ VERIFICATION COMPLETE")
-    print("=" * 80)
-    print("\nConclusion: on_bar_close() executes in correct sequence with proper data flow.")
-    print("All steps are accounted for, dependencies are satisfied, and safety checks")
-    print("are positioned correctly to prevent invalid trading decisions.")
-    print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":

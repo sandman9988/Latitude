@@ -664,7 +664,7 @@ def _launch_paper_bot(
             f"{datetime.now(UTC).isoformat()}\n"
             f"Symbol={symbol}  TF=M{timeframe_minutes}  "
             f"SymbolID={symbol_id}  QTY={qty}\n"
-            f"{'=' * 60}\n"
+            f"{'=' * 60}\n",
         )
         log_fh.flush()
 
@@ -723,7 +723,7 @@ def _launch_hub(
             f"Open API hub started by run_universe  "
             f"{datetime.now(UTC).isoformat()}\n"
             f"Symbol={symbol}  TFs=[{tfs_str}]  SymbolID={symbol_id}  QTY={qty}\n"
-            f"{'=' * 60}\n"
+            f"{'=' * 60}\n",
         )
         log_fh.flush()
         proc = subprocess.Popen(
@@ -823,13 +823,13 @@ def _launch_hub_group(
             entry["paper_log"] = f"logs/hub_{symbol}.log"
         changed = True
     except Exception as exc:
-        LOG.error("Failed to launch hub for %s: %s", symbol, exc)
+        LOG.exception("Failed to launch hub for %s: %s", symbol, exc)
 
     return hub_pid, changed
 
 
 def _fix_ownership_blocked(
-    entry: dict, symbol: str, tf: int, topology: str, owner_key, entry_key: tuple
+    entry: dict, symbol: str, tf: int, topology: str, owner_key, entry_key: tuple,
 ) -> bool:
     """Return True (and log/clear) when this entry must not launch its own FIX session."""
     direct_fix_allowed = topology == _TOPOLOGY_ISOLATED or owner_key in {None, entry_key}
@@ -866,7 +866,7 @@ def _fix_pid_ready(entry: dict, symbol: str, tf: int) -> bool:
         return True
     if _runtime_weights_stale(entry, symbol, tf):
         LOG.info(
-            "%s M%d — promoted weights differ from runtime; restarting (PID %d)", symbol, tf, pid
+            "%s M%d — promoted weights differ from runtime; restarting (PID %d)", symbol, tf, pid,
         )
         _stop_pid(int(pid), f"{symbol} M{tf} paper bot")
         entry["paper_pid"] = None
@@ -907,12 +907,12 @@ def _launch_fix_paper_entry(
             time.sleep(launch_stagger_s)
         return True
     except Exception as exc:
-        LOG.error("Failed to launch paper bot for %s M%d: %s", symbol, tf, exc)
+        LOG.exception("Failed to launch paper bot for %s M%d: %s", symbol, tf, exc)
         return False
 
 
 def _launch_hub_topology_bots(
-    registry: dict, specs: dict, base_env: dict, launch_stagger_s: float
+    registry: dict, specs: dict, base_env: dict, launch_stagger_s: float,
 ) -> bool:
     """Group instruments by symbol and launch one hub per symbol. Returns changed."""
     instruments = registry.get("instruments", [])
@@ -934,7 +934,7 @@ def _launch_hub_topology_bots(
 
 
 def _launch_fix_topology_bots(
-    registry: dict, specs: dict, base_env: dict, launch_stagger_s: float, topology: str
+    registry: dict, specs: dict, base_env: dict, launch_stagger_s: float, topology: str,
 ) -> bool:
     """Iterate registry entries and launch FIX paper bots where needed. Returns changed."""
     instruments = registry.get("instruments", [])
@@ -990,46 +990,33 @@ def launch_paper_bots(
 def cmd_list(registry: dict) -> None:
     instruments = registry.get("instruments", [])
     if not instruments:
-        print(
-            "Universe is empty.\n"
-            "  Populate it with:  python3 train_offline.py <data> --auto-promote\n"
-            "  Or manually:       python3 run_universe.py --promote XAUUSD --timeframe 240"
-        )
         return
 
     header = f"{'Symbol':<12} {'Stage':<20} {'TF':>6} {'ZOmega':>9} {'PID':>8}  {'FIX':<18} {'Promoted':<22}  Running?"
-    sep = "-" * len(header)
-    print(f"\n{sep}")
-    print(header)
-    print(sep)
+    "-" * len(header)
     _rows = sorted(
         [e for e in instruments if isinstance(e, dict)],
         key=lambda x: (str(x.get("symbol", "")), int(x.get("timeframe_minutes", 0) or 0)),
     )
     for entry in _rows:
-        sym = str(entry.get("symbol", "?") or "?")
-        stage = entry.get("stage", "UNTRAINED")
-        tf = entry.get("timeframe_minutes", "?")
+        str(entry.get("symbol", "?") or "?")
+        entry.get("stage", "UNTRAINED")
+        entry.get("timeframe_minutes", "?")
         zo = entry.get("z_omega", 0.0)
         pid = entry.get("paper_pid")
-        prom = (entry.get("promoted_at") or "")[:19].replace("T", " ")
-        alive = "✓ running" if _pid_alive(pid) else ("✗ stopped" if pid else "—")
-        zo_str = f"{zo:.4f}" if isinstance(zo, float) else str(zo)
+        (entry.get("promoted_at") or "")[:19].replace("T", " ")
+        "✓ running" if _pid_alive(pid) else ("✗ stopped" if pid else "—")
+        f"{zo:.4f}" if isinstance(zo, float) else str(zo)
         if entry.get("broker_topology") and entry.get("broker_topology") != _TOPOLOGY_ISOLATED:
-            fix_status = (
+            (
                 "owner"
                 if entry.get("fix_session_owner")
                 else (f"wait {entry.get('fix_owner_symbol', '?')} M{entry.get('fix_owner_timeframe_minutes', '?')}")
             )
         elif entry.get("broker_topology") == _TOPOLOGY_ISOLATED:
-            fix_status = _TOPOLOGY_ISOLATED
+            pass
         else:
-            fix_status = "—"
-        print(
-            f"{sym:<12} {stage:<20} {tf!s:>6} {zo_str:>9} {pid or '—'!s:>8}  {fix_status:<18} {prom:<22}  {alive}"
-        )
-    print(sep)
-    print()
+            pass
 
 
 def cmd_promote(
@@ -1359,12 +1346,12 @@ def main(argv: list[str] | None = None) -> int:
                 registry = _load_universe()
                 registry = launch_paper_bots(registry, specs, base_env)
             except Exception as exc:
-                LOG.error("Supervisor poll error (will retry in %ds): %s", _WATCH_INTERVAL, exc)
+                LOG.exception("Supervisor poll error (will retry in %ds): %s", _WATCH_INTERVAL, exc)
     except KeyboardInterrupt:
         LOG.info(
             "Supervisor stopped.  Paper bots continue running in background.\n"
             "  Check status:  python3 run_universe.py --list\n"
-            "  Stop all bots: python3 run_universe.py --stop-all"
+            "  Stop all bots: python3 run_universe.py --stop-all",
         )
     return 0
 

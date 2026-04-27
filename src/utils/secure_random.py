@@ -272,38 +272,15 @@ def generate_oauth_state() -> str:
 
 # Example usage and tests
 if __name__ == "__main__":
-    print("=" * 70)
-    print("Secure Random Number Generation Examples")
-    print("=" * 70)
 
-    print("\n[1] Session Token (hex):")
-    print(f"    {SecureRandom.session_token()}")
 
-    print("\n[2] API Key (URL-safe):")
-    print(f"    {SecureRandom.api_key()}")
 
-    print("\n[3] Random Password:")
-    print(f"    {SecureRandom.password(16, use_punctuation=True)}")
 
-    print("\n[4] OAuth Nonce:")
-    print(f"    {SecureRandom.nonce()}")
 
-    print("\n[5] Random Integer (0-99):")
-    print(f"    {SecureRandom.randbelow(100)}")
 
-    print("\n[6] Random Choice:")
     choices = ["approve", "deny", "pending"]
-    print(f"    {SecureRandom.choice(choices)}")
 
-    print("\n[7] CSRF Token:")
-    print(f"    {generate_csrf_token()}")
 
-    print("\n[8] Timing-safe comparison:")
     token1 = SecureRandom.session_token()
     token2 = SecureRandom.session_token()
-    print(f"    Different tokens equal? {SecureRandom.compare_digest(token1, token2)}")
-    print(f"    Same token equal? {SecureRandom.compare_digest(token1, token1)}")
 
-    print("\n" + "=" * 70)
-    print("✓ All examples completed")
-    print("=" * 70)

@@ -301,7 +301,7 @@ class ExperienceBuffer:
         # Defensive: Validate inputs
         if not isinstance(state, np.ndarray) or not isinstance(next_state, np.ndarray):
             LOG.error(
-                "Invalid state type: state=%s, next_state=%s (experience not added)", type(state), type(next_state)
+                "Invalid state type: state=%s, next_state=%s (experience not added)", type(state), type(next_state),
             )
             return False
 
@@ -321,7 +321,7 @@ class ExperienceBuffer:
         try:
             regime_enum = RegimeSampling(regime)
         except ValueError:
-            LOG.error("Invalid regime value: %d (must be 0-3, experience not added)", regime)
+            LOG.exception("Invalid regime value: %d (must be 0-3, experience not added)", regime)
             return False
 
         # Use validated regime_enum (stored for regime-aware weighting)
@@ -374,7 +374,7 @@ class ExperienceBuffer:
         max_priority = float(
             np.max(self.tree.tree[self.tree.capacity - 1 : self.tree.capacity - 1 + self.tree.n_entries])
             if self.tree.n_entries > 0
-            else 1.0
+            else 1.0,
         )
 
         # Defensive: Cap max priority
@@ -592,7 +592,6 @@ class ExperienceBuffer:
 
         """
         import tempfile  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
 
         try:
             n = self.tree.n_entries
@@ -680,8 +679,6 @@ class ExperienceBuffer:
             True if load succeeded
 
         """
-        from pathlib import Path  # noqa: PLC0415
-
         # Handle both with and without .npz extension
         path = Path(filepath)
         if not path.exists():
@@ -761,13 +758,8 @@ class ExperienceBuffer:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    print("=" * 80)
-    print("ExperienceBuffer Module Tests")
-    print("=" * 80)
 
     # Test 1: SumTree basic operations
-    print("\n[Test 1] SumTree Basic Operations")
-    print("-" * 80)
 
     tree = SumTree(capacity=8)
     test_data: list[Experience | None] = [None] * 8
@@ -787,21 +779,17 @@ if __name__ == "__main__":
         test_data[idx] = test_exp
         tree.add(priority=float(idx + 1))
 
-    print(f"Total priority: {tree.total():.2f}")
-    print(f"Size: {tree.n_entries}")
 
     # Sample
     sample_data_idx = tree.sample(tree.total() * 0.5)
     sample_priority = tree.get_priority(sample_data_idx)
     sample_exp = test_data[sample_data_idx]
     if sample_exp is None:
-        print(f"Sampled: data_idx={sample_data_idx}, priority={sample_priority:.2f}, state=None")
+        pass
     else:
-        print(f"Sampled: data_idx={sample_data_idx}, priority={sample_priority:.2f}, state={sample_exp.state}")
+        pass
 
     # Test 2: ExperienceBuffer sampling
-    print("\n[Test 2] ExperienceBuffer Sampling")
-    print("-" * 80)
 
     buffer = ExperienceBuffer(capacity=1000)
 
@@ -820,35 +808,20 @@ if __name__ == "__main__":
     batch = buffer.sample(batch_size=32)
 
     if batch:
-        print("Batch shapes:")
-        print(f"  states: {batch['states'].shape}")
-        print(f"  actions: {batch['actions'].shape}")
-        print(f"  rewards: {batch['rewards'].shape}")
-        print(f"  weights: {batch['weights'].shape}")
         min_weight = batch["weights"].min()
         max_weight = batch["weights"].max()
-        print(f"  weights range: [{min_weight:.3f}, {max_weight:.3f}]")
 
     # Test 3: Priority updates
-    print("\n[Test 3] Priority Updates")
-    print("-" * 80)
 
     if batch:
         # Simulate TD-errors
         test_td_errors = RNG.uniform(0.0, 2.0, size=len(batch["indices"]))
 
-        print(f"Updating {len(test_td_errors)} priorities")
-        print(
-            f"TD-errors: min={test_td_errors.min():.3f}, max={test_td_errors.max():.3f}, mean={test_td_errors.mean():.3f}"
-        )
 
         buffer.update_priorities(batch["indices"], test_td_errors)
 
-        print("✓ Priority update complete")
 
     # Test 4: Staleness decay
-    print("\n[Test 4] Staleness Decay")
-    print("-" * 80)
 
     # Add old experience
     old_timestamp = time.time() - 86400  # 1 day ago
@@ -858,13 +831,8 @@ if __name__ == "__main__":
     new_timestamp = time.time()
     weight_new = buffer._calculate_staleness_weight(new_timestamp)
 
-    print(f"Old experience (1 day): weight={weight_old:.4f}")
-    print(f"New experience (now): weight={weight_new:.4f}")
-    print(f"Decay ratio: {weight_old / weight_new:.4f} (should be ~0.5)")
 
     # Test 5: Regime-aware weighting
-    print("\n[Test 5] Regime-Aware Weighting")
-    print("-" * 80)
 
     buffer.set_current_regime(RegimeSampling.TRENDING)
 
@@ -894,21 +862,14 @@ if __name__ == "__main__":
 
     if batch:
         # Count regimes in batch (need to track in Experience, not currently stored in batch)
-        print("✓ Regime-aware sampling active")
-        print(f"  Current regime: {RegimeSampling(buffer.current_regime).name}")
-        print(f"  Regime boost: {buffer.regime_boost}x")
+        pass
 
     # Test 6: Stats
-    print("\n[Test 6] Buffer Statistics")
-    print("-" * 80)
 
     stats = buffer.get_stats()
-    for key, value in stats.items():
+    for value in stats.values():
         if isinstance(value, float):
-            print(f"  {key}: {value:.4f}")
+            pass
         else:
-            print(f"  {key}: {value}")
+            pass
 
-    print("\n" + "=" * 80)
-    print("All tests complete!")
-    print("=" * 80)

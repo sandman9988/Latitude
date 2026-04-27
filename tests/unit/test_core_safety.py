@@ -423,7 +423,7 @@ def run_all_tests():
             test()
             passed += 1
         except AssertionError as e:
-            LOG.error("FAILED: %s - %s", test.__name__, e)
+            LOG.exception("FAILED: %s - %s", test.__name__, e)
             failed += 1
         except Exception as e:
             LOG.warning("SKIPPED: %s - %s", test.__name__, e)

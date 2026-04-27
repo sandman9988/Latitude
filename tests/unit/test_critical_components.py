@@ -117,7 +117,7 @@ def test_broker_execution_model_slippage():
     assert costs_sell.expected_fill_price < 50000.0, "SELL should receive below mid"
 
     LOG.info(
-        "✓ SELL slippage: %.1f bps, fill price: %.2f", costs_sell.total_slippage_bps, costs_sell.expected_fill_price
+        "✓ SELL slippage: %.1f bps, fill price: %.2f", costs_sell.total_slippage_bps, costs_sell.expected_fill_price,
     )
 
 
@@ -185,10 +185,10 @@ def run_all_tests():
             test()
             passed += 1
         except AssertionError as e:
-            LOG.error("FAILED: %s - %s", test.__name__, e)
+            LOG.exception("FAILED: %s - %s", test.__name__, e)
             failed += 1
         except Exception as e:
-            LOG.error("ERROR: %s - %s", test.__name__, e)
+            LOG.exception("ERROR: %s - %s", test.__name__, e)
             failed += 1
 
     LOG.info("\n" + "=" * 80)

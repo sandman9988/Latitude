@@ -289,7 +289,7 @@ class TestLiveRiskTuner:
         bot.policy.decide_exit.return_value = (1, 0.40)  # CLOSE, low confidence
 
         action, conf, already = bot._obc_get_exit_action(
-            price=100.0, imbalance=0.0, depth_ratio=1.0, vpin_zscore=0.0, event_features={}
+            price=100.0, imbalance=0.0, depth_ratio=1.0, vpin_zscore=0.0, event_features={},
         )
 
         assert action == 0

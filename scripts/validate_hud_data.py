@@ -98,7 +98,7 @@ class HUDDataValidator:
         if coverage < MIN_ENTRY_TIME_COVERAGE:
             self.issues.append(
                 f"⚠️  CRITICAL: Only {coverage:.1%} trades have entry_time "
-                f"({null_count} missing, affects avg_trade_duration calculation)"
+                f"({null_count} missing, affects avg_trade_duration calculation)",
             )
         elif null_count > 0:
             self.warnings.append(f"⚠️  {null_count} trades missing entry_time (will be excluded from duration calc)")
@@ -116,7 +116,7 @@ class HUDDataValidator:
         if coverage < MIN_QUANTITY_COVERAGE:
             self.issues.append(
                 f"❌ CRITICAL: {null_count}/{len(self.trade_log)} trades missing 'quantity' field. "
-                f"HUD cannot display: qty_usage_ratio, position_sizing, risk_per_trade"
+                f"HUD cannot display: qty_usage_ratio, position_sizing, risk_per_trade",
             )
 
         return coverage, null_count
@@ -137,14 +137,14 @@ class HUDDataValidator:
             if reconciled:
                 self.infos.append(
                     f"✓ PnL recalculation reconciled for {recalc_count} trades. "
-                    "Current pnl is account-currency; pnl_original is retained point-scale history."
+                    "Current pnl is account-currency; pnl_original is retained point-scale history.",
                 )
             else:
                 self.issues.append(
                     f"⚠️  CRITICAL: {recalc_count} trades ({recalc_count / len(self.trade_log):.1%}) have unreconciled recalculated PnL. "
                     f"Current total: ${current_pnl:.2f}, Original: ${original_pnl:.2f}, "
                     f"Variance: ${variance:.2f} ({variance_pct:.1f}%). "
-                    f"Mismatches against expected account-currency scale: {mismatches}"
+                    f"Mismatches against expected account-currency scale: {mismatches}",
                 )
 
         return {
@@ -168,7 +168,7 @@ class HUDDataValidator:
                 contract_size = float(
                     trade.get("scale_contract_size")
                     or trade.get("contract_size")
-                    or DEFAULT_CONTRACT_SIZE_BY_SYMBOL.get(symbol, 1.0)
+                    or DEFAULT_CONTRACT_SIZE_BY_SYMBOL.get(symbol, 1.0),
                 )
                 expected_from_original = float(trade.get("pnl_original", 0.0) or 0.0) * qty * contract_size
                 actual = float(trade.get("pnl", 0.0) or 0.0)
@@ -291,7 +291,7 @@ class HUDDataValidator:
         ok = True
         if actual_symbol and actual_symbol != expected_symbol:
             self.issues.append(
-                f"CRITICAL: {self._display_path(path)} symbol scope {actual_symbol} does not match expected {expected_symbol}"
+                f"CRITICAL: {self._display_path(path)} symbol scope {actual_symbol} does not match expected {expected_symbol}",
             )
             ok = False
         elif not actual_symbol:
@@ -300,7 +300,7 @@ class HUDDataValidator:
 
         if actual_tf and actual_tf != expected_tf:
             self.issues.append(
-                f"CRITICAL: {self._display_path(path)} timeframe scope M{actual_tf} does not match expected M{expected_tf}"
+                f"CRITICAL: {self._display_path(path)} timeframe scope M{actual_tf} does not match expected M{expected_tf}",
             )
             ok = False
         elif not actual_tf:
@@ -359,7 +359,7 @@ class HUDDataValidator:
             total_backups = sum(len(v) for v in backups.values())
             self.warnings.append(
                 f"⚠️  {total_backups} backup files detected across {len(backups)} data items. "
-                f"Multiple versions in play. Recommend archival strategy."
+                f"Multiple versions in play. Recommend archival strategy.",
             )
 
         return backups
@@ -432,25 +432,16 @@ class HUDDataValidator:
         """Print formatted report."""
         report = self.generate_report()
 
-        print("\n" + "=" * 100)
-        print("📋 HUD DATA VALIDATION REPORT")
-        print("=" * 100)
 
-        print(f"\nDate: {report['timestamp']}")
-        print(f"Trade Log Entries: {report['trade_log_count']}")
-        print(f"Health Score: {report['health_score']:.0f}/100")
 
         if report["issues"]:
-            print(f"\n❌ CRITICAL ISSUES ({len(report['issues'])}):")
-            for issue in report["issues"]:
-                print(f"   {issue}")
+            for _issue in report["issues"]:
+                pass
 
         if report["warnings"]:
-            print(f"\n⚠️  WARNINGS ({len(report['warnings'])}):")
-            for warning in report["warnings"]:
-                print(f"   {warning}")
+            for _warning in report["warnings"]:
+                pass
 
-        print("\n" + "=" * 100)
 
         return report
 
@@ -459,7 +450,6 @@ class HUDDataValidator:
         report = self.generate_report()
         with open(filepath, "w") as f:
             json.dump(report, f, indent=2)
-        print(f"✓ Report exported to {filepath}")
 
 
 # ============================================================================

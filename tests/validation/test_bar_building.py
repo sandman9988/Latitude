@@ -55,9 +55,6 @@ class BarBuilder:
 
 def test_basic_bar_aggregation():
     """Test OHLC aggregation within a single bar"""
-    print("\n" + "=" * 70)
-    print("TEST 1: Basic Bar Aggregation (OHLC)")
-    print("=" * 70)
 
     bb = BarBuilder(timeframe_minutes=15)
     base = dt.datetime(2026, 1, 11, 10, 0, 0, tzinfo=UTC)
@@ -69,7 +66,6 @@ def test_basic_bar_aggregation():
     assert bb.h == pytest.approx(100.0), f"High should be 100.0, got {bb.h}"
     assert bb.l == pytest.approx(100.0), f"Low should be 100.0, got {bb.l}"
     assert bb.c == pytest.approx(100.0), f"Close should be 100.0, got {bb.c}"
-    print("  ✓ First tick: O=100.0 H=100.0 L=100.0 C=100.0")
 
     # Update with higher price
     result = bb.update(base + dt.timedelta(seconds=30), 105.0)
@@ -78,7 +74,6 @@ def test_basic_bar_aggregation():
     assert bb.h == pytest.approx(105.0), f"High should update to 105.0, got {bb.h}"
     assert bb.l == pytest.approx(100.0), "Low should remain 100.0"
     assert bb.c == pytest.approx(105.0), f"Close should update to 105.0, got {bb.c}"
-    print("  ✓ High update: H=105.0 C=105.0")
 
     # Update with lower price
     result = bb.update(base + dt.timedelta(seconds=60), 95.0)
@@ -87,7 +82,6 @@ def test_basic_bar_aggregation():
     assert bb.h == pytest.approx(105.0), "High should remain 105.0"
     assert bb.l == pytest.approx(95.0), f"Low should update to 95.0, got {bb.l}"
     assert bb.c == pytest.approx(95.0), f"Close should update to 95.0, got {bb.c}"
-    print("  ✓ Low update: L=95.0 C=95.0")
 
     # Final close value
     result = bb.update(base + dt.timedelta(seconds=120), 102.0)
@@ -96,16 +90,11 @@ def test_basic_bar_aggregation():
     assert bb.h == pytest.approx(105.0), "High should remain 105.0"
     assert bb.l == pytest.approx(95.0), "Low should remain 95.0"
     assert bb.c == pytest.approx(102.0), f"Close should update to 102.0, got {bb.c}"
-    print("  ✓ Final bar state: O=100.0 H=105.0 L=95.0 C=102.0")
 
-    print("✅ PASSED: Bar aggregation works correctly")
 
 
 def test_bar_closure_timing():
     """Test bar closure at timeframe boundaries"""
-    print("\n" + "=" * 70)
-    print("TEST 2: Bar Closure Timing")
-    print("=" * 70)
 
     bb = BarBuilder(timeframe_minutes=15)
 
@@ -113,15 +102,12 @@ def test_bar_closure_timing():
     t1 = dt.datetime(2026, 1, 11, 10, 0, 0, tzinfo=UTC)
     result = bb.update(t1, 100.0)
     assert result is None, "First bar should not close immediately"
-    print(f"  Bar 1 opened at {t1.strftime('%H:%M:%S')}")
 
     result = bb.update(t1 + dt.timedelta(minutes=10), 105.0)
     assert result is None, "Tick at 10:10 should not close bar"
-    print("  Tick at 10:10:00 - bar still open")
 
     result = bb.update(t1 + dt.timedelta(minutes=14, seconds=59), 102.0)
     assert result is None, "Tick at 10:14:59 should not close bar"
-    print("  Tick at 10:14:59 - bar still open")
 
     # Bar 2: 10:15 - 10:29:59 (this should close Bar 1)
     t2 = dt.datetime(2026, 1, 11, 10, 15, 0, tzinfo=UTC)
@@ -136,22 +122,16 @@ def test_bar_closure_timing():
     assert h == pytest.approx(105.0), f"Closed bar H should be 105.0, got {h}"
     assert lo == pytest.approx(100.0), f"Closed bar L should be 100.0, got {lo}"
     assert c == pytest.approx(102.0), f"Closed bar C should be 102.0, got {c}"
-    print(f"  ✓ Bar closed at 10:15:00: O={o} H={h} L={lo} C={c}")
 
     # Verify new bar started
     assert bb.bucket == dt.datetime(2026, 1, 11, 10, 15, 0, tzinfo=UTC), "New bar should start at 10:15:00"
     assert bb.o == pytest.approx(103.0), "New bar O should be 103.0"
     assert bb.c == pytest.approx(103.0), "New bar C should be 103.0"
-    print(f"  ✓ New bar started at 10:15:00: O={bb.o}")
 
-    print("✅ PASSED: Bar closure timing is correct")
 
 
 def test_timeframe_alignment():
     """Test bar alignment for different timeframes"""
-    print("\n" + "=" * 70)
-    print("TEST 3: Timeframe Alignment")
-    print("=" * 70)
 
     test_cases = [
         (1, "10:00", "10:00"),  # M1
@@ -176,16 +156,11 @@ def test_timeframe_alignment():
             f"M{tf_minutes}: tick {tick_time} should align to {expected_bucket}, got {bucket.strftime('%H:%M')}"
         )
 
-        print(f"  ✓ M{tf_minutes:>2}: {tick_time} → {expected_bucket}")
 
-    print("✅ PASSED: Timeframe alignment is correct")
 
 
 def test_bar_boundary_detection():
     """Test detection of bar boundaries across different scenarios"""
-    print("\n" + "=" * 70)
-    print("TEST 4: Bar Boundary Detection")
-    print("=" * 70)
 
     bb = BarBuilder(timeframe_minutes=15)
 
@@ -198,12 +173,10 @@ def test_bar_boundary_detection():
         t = base + dt.timedelta(minutes=i)
         result = bb.update(t, 100.0 + i)
         assert result is None, f"Tick at minute {i} should not close bar"
-    print("  ✓ 14 ticks within bar - no closure")
 
     # Cross boundary
     result = bb.update(base + dt.timedelta(minutes=15), 115.0)
     assert result is not None, "Tick at minute 15 should close bar"
-    print("  ✓ Tick at minute 15 closes bar")
 
     # Scenario 2: Gap in data (simulates missing ticks)
     bb2 = BarBuilder(timeframe_minutes=15)
@@ -216,7 +189,6 @@ def test_bar_boundary_detection():
     assert result is not None, "Jump to 10:30 should close 10:00 bar"
     closed_time, _, _, _, _ = result
     assert closed_time == dt.datetime(2026, 1, 11, 10, 0, 0, tzinfo=UTC)
-    print("  ✓ Gap in data handled - bar closed at boundary")
 
     # Scenario 3: Hour boundary
     bb3 = BarBuilder(timeframe_minutes=15)
@@ -228,16 +200,11 @@ def test_bar_boundary_detection():
     assert result is not None, "Hour boundary should close bar"
     closed_time, _, _, _, _ = result
     assert closed_time == dt.datetime(2026, 1, 11, 10, 45, 0, tzinfo=UTC)
-    print("  ✓ Hour boundary handled correctly")
 
-    print("✅ PASSED: Bar boundary detection is correct")
 
 
 def test_data_integrity_across_bars():
     """Test that data doesn't leak between bars"""
-    print("\n" + "=" * 70)
-    print("TEST 5: Data Integrity Across Bar Transitions")
-    print("=" * 70)
 
     bb = BarBuilder(timeframe_minutes=15)
 
@@ -248,8 +215,7 @@ def test_data_integrity_across_bars():
     bb.update(base + dt.timedelta(seconds=60), 95.0)  # Low
     bb.update(base + dt.timedelta(seconds=90), 105.0)  # Close
 
-    bar1_o, bar1_h, bar1_l, bar1_c = bb.o, bb.h, bb.l, bb.c
-    print(f"  Bar 1: O={bar1_o} H={bar1_h} L={bar1_l} C={bar1_c}")
+    _bar1_o, _bar1_h, _bar1_l, _bar1_c = bb.o, bb.h, bb.l, bb.c
 
     # Bar 2: Should start fresh
     t2 = dt.datetime(2026, 1, 11, 10, 15, 0, tzinfo=UTC)
@@ -262,29 +228,22 @@ def test_data_integrity_across_bars():
     assert h == pytest.approx(110.0), f"Bar 1 H should be 110.0, got {h}"
     assert lo == pytest.approx(95.0), f"Bar 1 L should be 95.0, got {lo}"
     assert c == pytest.approx(105.0), f"Bar 1 C should be 105.0, got {c}"
-    print(f"  ✓ Bar 1 closed correctly: O={o} H={h} L={lo} C={c}")
 
     # Verify Bar 2 started fresh (no contamination from Bar 1)
     assert bb.o == pytest.approx(200.0), f"Bar 2 O should be 200.0, got {bb.o}"
     assert bb.h == pytest.approx(200.0), f"Bar 2 H should be 200.0, got {bb.h}"
     assert bb.l == pytest.approx(200.0), f"Bar 2 L should be 200.0, got {bb.l}"
     assert bb.c == pytest.approx(200.0), f"Bar 2 C should be 200.0, got {bb.c}"
-    print(f"  ✓ Bar 2 started fresh: O={bb.o} H={bb.h} L={bb.l} C={bb.c}")
 
     # Update Bar 2 and verify it doesn't affect closed Bar 1
     bb.update(t2 + dt.timedelta(seconds=30), 150.0)
     assert bb.l == pytest.approx(150.0), "Bar 2 L should update to 150.0"
     # Bar 1 values should remain unchanged (they're in 'result')
-    print("  ✓ Bar 2 updates don't affect closed Bar 1")
 
-    print("✅ PASSED: Data integrity maintained across bars")
 
 
 def test_edge_cases():
     """Test edge cases and unusual scenarios"""
-    print("\n" + "=" * 70)
-    print("TEST 6: Edge Cases")
-    print("=" * 70)
 
     # Edge case 1: Same price all ticks
     bb1 = BarBuilder(timeframe_minutes=15)
@@ -307,7 +266,6 @@ def test_edge_cases():
     assert (
         bb1.c == pytest.approx(100.0)
     )
-    print("  ✓ Same price all ticks: O=H=L=C=100.0")
 
     # Edge case 2: Extreme price swing
     bb2 = BarBuilder(timeframe_minutes=15)
@@ -317,7 +275,6 @@ def test_edge_cases():
 
     assert bb2.h == pytest.approx(1000.0), "Should handle extreme high"
     assert bb2.l == pytest.approx(1.0), "Should handle extreme low"
-    print("  ✓ Extreme price swing: L=1.0 to H=1000.0")
 
     # Edge case 3: Rapid-fire updates at boundary
     bb3 = BarBuilder(timeframe_minutes=1)
@@ -334,16 +291,11 @@ def test_edge_cases():
     assert result2 is None, "Subsequent ticks at same time should not close"
     assert result3 is None, "Subsequent ticks at same time should not close"
     assert bb3.c == pytest.approx(103.0), "Close should be last tick"
-    print("  ✓ Rapid-fire updates at boundary handled correctly")
 
-    print("✅ PASSED: All edge cases handled correctly")
 
 
 def run_all_tests():
     """Run all bar building tests"""
-    print("\n" + "=" * 70)
-    print("BAR BUILDING & BAR CLOSURE VERIFICATION TEST SUITE")
-    print("=" * 70)
 
     tests = [
         ("Basic Bar Aggregation", test_basic_bar_aggregation),
@@ -362,31 +314,15 @@ def run_all_tests():
             test_func()
             passed += 1
         except AssertionError as e:
-            print(f"❌ FAILED: {name}")
-            print(f"   Error: {e}")
             failed.append((name, str(e)))
         except Exception as e:
-            print(f"❌ ERROR: {name}")
-            print(f"   Exception: {e}")
             failed.append((name, f"Exception: {e}"))
 
-    print("\n" + "=" * 70)
-    print(f"TEST RESULTS: {passed}/{len(tests)} PASSED")
-    print("=" * 70)
 
     if failed:
-        print("\nFAILED TESTS:")
-        for name, error in failed:
-            print(f"  ❌ {name}: {error}")
+        for name, _error in failed:
+            pass
         return 1
-    print("\n✅ ALL BAR BUILDING TESTS PASSED")
-    print("\nVerified:")
-    print("  • OHLC aggregation within bars")
-    print("  • Bar closure at timeframe boundaries")
-    print("  • Correct alignment for M1, M5, M15, H1")
-    print("  • Boundary detection across gaps and hour changes")
-    print("  • Data integrity (no leakage between bars)")
-    print("  • Edge cases (same price, extreme swings, rapid updates)")
     return 0
 
 

@@ -211,7 +211,7 @@ class TestTradeExporterDefensivePaths:
                         "pnl": 5.0,
                         "mfe": 6.0,
                         "mae": 1.0,
-                    }
+                    },
                 ]
 
             def get_metrics(self):

@@ -28,17 +28,9 @@ def close_positions(symbol_id: int, quantity: float, side_to_close: str) -> None
         side_to_close: "LONG" or "SHORT" - which side to close
 
     """
-    print(f"Closing {quantity} {side_to_close} positions for symbol {symbol_id}")
-
     # Determine order side (opposite of position)
-    if side_to_close.upper() == "LONG":
-        order_side = fix.Side_SELL
-        side_name = "SELL"
-    else:
-        order_side = fix.Side_BUY
-        side_name = "BUY"
+    order_side = fix.Side_SELL if side_to_close.upper() == "LONG" else fix.Side_BUY
 
-    print(f"Will submit {side_name} order for {quantity} units")
 
     # Load settings
     settings = fix.SessionSettings("config/ctrader_trade.cfg")
@@ -46,10 +38,9 @@ def close_positions(symbol_id: int, quantity: float, side_to_close: str) -> None
     # Create session
     class SimpleApplication(fix.Application):
         def onCreate(self, sessionID) -> None:
-            print(f"Session created: {sessionID}")
+            pass
 
         def onLogon(self, sessionID) -> None:
-            print(f"Logged on: {sessionID}")
 
             # Submit close order
             clord_id = f"CLEANUP_{int(time.time())}"
@@ -62,10 +53,9 @@ def close_positions(symbol_id: int, quantity: float, side_to_close: str) -> None
             msg.setField(fix.OrderQty(round(quantity, 2)))
 
             fix.Session.sendToTarget(msg, sessionID)
-            print(f"✓ Submitted {side_name} order: {clord_id} for {quantity}")
 
         def onLogout(self, sessionID) -> None:
-            print(f"Logged out: {sessionID}")
+            pass
 
         def toAdmin(self, message, sessionID) -> None:
             pass
@@ -89,7 +79,6 @@ def close_positions(symbol_id: int, quantity: float, side_to_close: str) -> None
                         message.getField(clord_id)
                         avg_price = fix.AvgPx()
                         message.getField(avg_price)
-                        print(f"✓ Order filled: {clord_id.getValue()} @ {avg_price.getValue()}")
 
     app = SimpleApplication()
     store_factory = fix.FileStoreFactory(settings)
@@ -97,10 +86,8 @@ def close_positions(symbol_id: int, quantity: float, side_to_close: str) -> None
     initiator = fix.SocketInitiator(app, store_factory, settings, log_factory)
 
     initiator.start()
-    print("Waiting 5 seconds for order to fill...")
     time.sleep(5)
     initiator.stop()
-    print("Done")
 
 
 if __name__ == "__main__":

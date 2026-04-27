@@ -804,7 +804,7 @@ class FrictionCalculator:
         return n
 
     def calculate_swap(
-        self, quantity: float, side: str, holding_days: float = 1.0, crosses_rollover: bool = False, price: float = 0.0
+        self, quantity: float, side: str, holding_days: float = 1.0, crosses_rollover: bool = False, price: float = 0.0,
     ) -> float:
         """Calculate swap (overnight financing) cost in USD.
 
@@ -1025,12 +1025,10 @@ class FrictionCalculator:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    print("Testing FrictionCalculator module...")
 
     calc = FrictionCalculator(symbol="BTCUSD", symbol_id=10028)
 
     # Simulate cTrader symbol info
-    print("\n=== Test 1: Update symbol costs from cTrader ===")
     calc.update_symbol_costs(
         digits=2,
         pip_size=1.0,  # For BTCUSD, $1 = 1 pip
@@ -1043,10 +1041,8 @@ if __name__ == "__main__":
         min_volume=0.01,
         max_volume=100.0,
     )
-    print(f"✓ Symbol costs updated: commission=${calc.costs.commission_per_lot}/lot")
 
     # Simulate spread updates (BTCUSD typical spreads are $1-5)
-    print("\n=== Test 2: Track spreads ===")
     spreads_btc = [
         (50000.00, 50001.00),  # $1 spread
         (50000.00, 50001.50),  # $1.50 spread
@@ -1057,42 +1053,19 @@ if __name__ == "__main__":
     for bid, ask in spreads_btc:
         calc.update_spread(bid, ask)
 
-    print(f"✓ Spreads tracked: avg={calc.costs.avg_spread_pips:.2f} pips")
-    print(f"  Min: {calc.costs.min_spread_pips:.2f} pips")
-    print(f"  Max: {calc.costs.max_spread_pips:.2f} pips")
 
     # Calculate friction for a trade
-    print("\n=== Test 3: Calculate friction for BUY 0.10 lot @ $50,000 ===")
     friction = calc.calculate_total_friction(
-        quantity=0.10, side="BUY", price=50000.0, holding_days=1.0, volatility_factor=1.0
+        quantity=0.10, side="BUY", price=50000.0, holding_days=1.0, volatility_factor=1.0,
     )
 
-    print(f"Spread cost:     ${friction['spread']:.2f}")
-    print(f"Commission:      ${friction['commission']:.2f}")
-    print(f"Swap (1 day):    ${friction['swap']:.2f}")
-    print(f"Slippage:        ${friction['slippage']:.2f}")
-    print("─────────────────────────────")
-    print(f"TOTAL FRICTION:  ${friction['total']:.2f}")
-    print(f"Total in pips:   {friction['total_pips']:.2f} pips")
 
     # Test friction-adjusted P&L
-    print("\n=== Test 4: Friction-adjusted P&L ===")
     raw_pnl = 100.0  # Made $100 gross
     net_pnl = calc.get_friction_adjusted_pnl(
-        raw_pnl=raw_pnl, quantity=0.10, side="BUY", entry_price=50000.0, holding_days=1.0
+        raw_pnl=raw_pnl, quantity=0.10, side="BUY", entry_price=50000.0, holding_days=1.0,
     )
-    print(f"Raw P&L:         ${raw_pnl:.2f}")
-    print(f"Friction cost:   ${friction['total']:.2f}")
-    print(f"Net P&L:         ${net_pnl:.2f}")
-    print(f"Friction ratio:  {(friction['total'] / raw_pnl) * 100:.1f}% of gross profit")
 
     # Show statistics
-    print("\n=== Test 5: Friction statistics ===")
     stats = calc.get_statistics()
-    print(f"Symbol: {stats['symbol']}")
-    print(f"Average spread: {stats['avg_spread_pips']:.2f} pips")
-    print(f"Commission: ${stats['commission_per_lot']}/lot")
-    print(f"Swap long: {stats['swap_long']:.2f} pips/day")
-    print(f"Base slippage: {stats['base_slippage']:.2f} pips")
 
-    print("\n✅ All tests complete")

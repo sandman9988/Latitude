@@ -193,7 +193,7 @@ class RewardIntegrityMonitor:
                 correlation = 0.0
 
         except Exception as e:
-            LOG.error("[REWARD_INTEGRITY] Correlation calculation failed: %s", e)
+            LOG.exception("[REWARD_INTEGRITY] Correlation calculation failed: %s", e)
             correlation = 0.0
 
         # Detect outliers
@@ -371,7 +371,6 @@ if __name__ == "__main__":
     monitor = RewardIntegrityMonitor(correlation_threshold=0.7, min_samples=20)
 
     # Test 1: Good correlation (reward follows P&L)
-    print("\n--- Test 1: Good Correlation ---")
     for _i in range(50):
         pnl = rng.standard_normal() * 10  # Random P&L
         reward = pnl + rng.standard_normal() * 2  # Reward correlated with P&L
@@ -383,12 +382,8 @@ if __name__ == "__main__":
         )
 
     status = monitor.check_integrity()
-    print(f"Status: {status['status']}")
-    print(f"Correlation: {status['correlation']:.3f}")
-    print(f"Is Gaming: {status['is_gaming']}")
 
     # Test 2: Poor correlation (reward gaming)
-    print("\n--- Test 2: Poor Correlation (Gaming) ---")
     monitor.reset()
 
     for _i in range(50):
@@ -398,12 +393,8 @@ if __name__ == "__main__":
         monitor.add_trade(reward=reward, pnl=pnl)
 
     status = monitor.check_integrity()
-    print(f"Status: {status['status']}")
-    print(f"Correlation: {status['correlation']:.3f}")
-    print(f"Is Gaming: {status['is_gaming']}")
 
     # Test 3: Sign mismatches
-    print("\n--- Test 3: Sign Mismatches ---")
     monitor.reset()
 
     for _i in range(30):
@@ -413,7 +404,4 @@ if __name__ == "__main__":
         monitor.add_trade(reward=reward, pnl=pnl)
 
     status = monitor.check_integrity()
-    print(f"Status: {status['status']}")
-    print(f"Sign Mismatches: {status['sign_mismatches']}")
 
-    print("\n✓ RewardIntegrityMonitor self-test complete")

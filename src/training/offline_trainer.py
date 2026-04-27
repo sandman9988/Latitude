@@ -404,7 +404,7 @@ class _Simulator:
                 trigger_action=self.entry_action,
                 trigger_reward=float(trigger_reward),
                 capture_reward=float(capture_reward),
-            )
+            ),
         )
 
         with contextlib.suppress(Exception):
@@ -904,8 +904,8 @@ class OfflineTrainer:
                         "beta": round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
                         "trigger_buf": int(_trig.buffer.size) if _trig.buffer else 0,
                         "harvester_buf": int(_harv.buffer.size) if _harv.buffer else 0,
-                    }
-                )
+                    },
+                ),
             )
             tmp_path.replace(progress_path)
         except Exception:

@@ -166,7 +166,7 @@ def build_performance_snapshot(
                 "timeframe": _tf_label(timeframe_minutes),
                 "timeframe_minutes": int(timeframe_minutes),
                 "broker": broker,
-            }
+            },
         )
     else:
         snapshot["scope"] = "portfolio"
@@ -264,11 +264,9 @@ def trade_matches_scope(
 def main() -> int:
     args = parse_args()
     if bool(args.symbol) != bool(args.timeframe):
-        print("--symbol and --timeframe must be supplied together")
         return 2
     timeframe_minutes = _tf_to_minutes(args.timeframe)
     if args.timeframe and timeframe_minutes is None:
-        print(f"Unsupported timeframe: {args.timeframe}")
         return 2
 
     data_dir = args.data_dir
@@ -303,24 +301,6 @@ def main() -> int:
         now=now,
     )
 
-    print(
-        json.dumps(
-            {
-                "trade_log": str(trade_log),
-                "trades": len(scoped_trades),
-                "trades_unfiltered": len(trades),
-                "symbol": args.symbol,
-                "timeframe_minutes": timeframe_minutes,
-                "performance_lifetime_pnl": snapshot["lifetime"]["total_pnl"],
-                "performance_lifetime_capture": snapshot["lifetime"]["avg_capture_ratio"],
-                "epoch_included_trades": epoch["included_trades"] if epoch else None,
-                "epoch_excluded_trades": epoch["excluded_trades"] if epoch else None,
-                "write": bool(args.write),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
 
     if not args.write:
         return 0
@@ -328,22 +308,12 @@ def main() -> int:
     suffix = f"_{args.symbol.upper()}_M{timeframe_minutes}" if args.symbol and timeframe_minutes else ""
     perf_path = data_dir / f"performance_snapshot{suffix}.json"
     epoch_path = data_dir / f"stats_epoch_metrics{suffix}.json"
-    perf_backup = _backup(perf_path)
-    epoch_backup = _backup(epoch_path)
+    _backup(perf_path)
+    _backup(epoch_path)
     _atomic_write_json(perf_path, snapshot)
     if epoch is not None:
         _atomic_write_json(epoch_path, epoch)
 
-    print(
-        json.dumps(
-            {
-                "wrote": [str(perf_path), str(epoch_path) if epoch is not None else None],
-                "backups": [str(p) for p in (perf_backup, epoch_backup) if p is not None],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
     return 0
 
 

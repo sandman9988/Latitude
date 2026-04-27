@@ -414,7 +414,7 @@ def _load_offline_champion(
         loaders.extend(
             [
                 lambda: _offline_champion_from_universe(symbol, timeframe_minutes),
-            ]
+            ],
         )
     for loader in loaders:
         score, source = loader()
@@ -908,7 +908,7 @@ def _run_job(
                 else []
             )
     except Exception as exc:
-        logger.error("[WORKER] %s: failed to load bars: %s", label, exc)
+        logger.exception("[WORKER] %s: failed to load bars: %s", label, exc)
         return {
             "symbol": symbol,
             "timeframe_minutes": timeframe_minutes,
@@ -969,12 +969,12 @@ def _run_job(
     with _isolated_runtime_data_dir(offline_runtime_dir):
         if accept_if_better:
             incumbent_z_omega, incumbent_val_trades, incumbent_loaded = trainer.evaluate_runtime_checkpoint(
-                bot_checkpoint_dir
+                bot_checkpoint_dir,
             )
             legacy_checkpoint_dir = Path(checkpoint_dir)
             if not incumbent_loaded and legacy_checkpoint_dir != bot_checkpoint_dir:
                 incumbent_z_omega, incumbent_val_trades, incumbent_loaded = trainer.evaluate_runtime_checkpoint(
-                    legacy_checkpoint_dir
+                    legacy_checkpoint_dir,
                 )
 
         result = trainer.run()
@@ -1279,7 +1279,7 @@ def _combine_duplicate_jobs(candidates: list[Job]) -> Job:
         all_sources = {j.bars_file for j in jsonl_jobs}
         all_sources.add(csv_jobs[0].bars_file)
         source_files = tuple(
-            sorted(all_sources, key=_file_source_score, reverse=True)
+            sorted(all_sources, key=_file_source_score, reverse=True),
         )
         primary = csv_jobs[0]
         for candidate in csv_jobs[1:]:
@@ -1299,7 +1299,7 @@ def _combine_duplicate_jobs(candidates: list[Job]) -> Job:
                 {j.bars_file for j in jsonl_jobs},
                 key=_file_source_score,
                 reverse=True,
-            )
+            ),
         )
         primary = jsonl_jobs[0]
         for candidate in jsonl_jobs[1:]:
@@ -1495,27 +1495,18 @@ def print_summary(results: list[dict]) -> None:
         f"{'Symbol':<12} {'TF':>5} {'Trades':>7} {'ValTrades':>9} "
         f"{'Steps':>7} {'ZOmega':>9} {'Guard':>9} {'Time':>8}  Status"
     )
-    sep = "-" * len(header)
-    print(f"\n{sep}")
-    print(header)
-    print(sep)
+    "-" * len(header)
     for r in sorted(results, key=lambda x: (x["symbol"], x["timeframe_minutes"])):
-        label = _tf_label(r["timeframe_minutes"])
-        status = f"ERROR: {r['error'][:40]}" if r.get("error") else "OK"
+        _tf_label(r["timeframe_minutes"])
+        f"ERROR: {r['error'][:40]}" if r.get("error") else "OK"
         zo = r.get("z_omega", 0.0)
-        zo_str = f"{zo:.4f}" if zo != float("inf") else "  +inf"
+        f"{zo:.4f}" if zo != float("inf") else "  +inf"
         inc = r.get("acceptance_guard_z_omega", r.get("incumbent_z_omega", 0.0))
-        inc_str = f"{inc:.4f}" if inc != float("inf") else "  +inf"
+        f"{inc:.4f}" if inc != float("inf") else "  +inf"
         if not r.get("error") and r.get("accepted") is False:
-            status = f"REJECTED: {r.get('accept_reason', 'not_better')}"
+            f"REJECTED: {r.get('accept_reason', 'not_better')}"
         elif not r.get("error") and r.get("accepted") is True:
-            status = f"ACCEPTED: {r.get('accept_reason', 'better')}"
-        print(
-            f"{r['symbol']:<12} {label:>5} {r['train_trades']:>7} "
-            f"{r['val_trades']:>9} {r['total_train_steps']:>7} "
-            f"{zo_str:>9} {inc_str:>9} {r['elapsed_s']:>7.1f}s  {status}"
-        )
-    print(sep)
+            f"ACCEPTED: {r.get('accept_reason', 'better')}"
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -1528,10 +1519,10 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=__doc__.split("Options")[0],
     )
     p.add_argument(
-        "inputs", nargs="+", metavar="FILE_OR_DIR", help="CSV files, JSONL caches, or directories containing them"
+        "inputs", nargs="+", metavar="FILE_OR_DIR", help="CSV files, JSONL caches, or directories containing them",
     )
     p.add_argument(
-        "--symbols", nargs="+", default=None, metavar="SYM", help="Filter to specific symbols (default: all)"
+        "--symbols", nargs="+", default=None, metavar="SYM", help="Filter to specific symbols (default: all)",
     )
     p.add_argument(
         "--timeframes",
@@ -1566,7 +1557,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Epsilon at the start of each training epoch (default: 0.4)",
     )
     p.add_argument(
-        "--epsilon-end", type=float, default=0.05, metavar="E", help="Epsilon floor / val epsilon (default: 0.05)"
+        "--epsilon-end", type=float, default=0.05, metavar="E", help="Epsilon floor / val epsilon (default: 0.05)",
     )
     p.add_argument(
         "--penalty-scale",
@@ -1686,7 +1677,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def _build_variant_specs(
     variants: list,
     base_seed: int | None,
-    job: "Job",
+    job: Job,
     accept_if_better: bool,
 ) -> list[dict]:
     """Build serialisable per-job variant spec dicts for _run_job_tournament."""
@@ -1991,7 +1982,6 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.dry_run:
-        print("\n[DRY RUN] — no training executed.")
         return 0
 
     # On GPU systems, limit to 1 worker to avoid CUDA OOM from multiple
@@ -2179,12 +2169,10 @@ def main(argv: list[str] | None = None) -> int:
         best_dir = Path(args.checkpoint_dir) / "best"
         copy_best_weights(best, best_dir)
         LOG.info("Best weights written to %s/", best_dir)
-        print("\nBest weights by ZOmega:")
         for (_sym, _tf), r in sorted(best.items()):
             zo = r.get("z_omega", 0.0)
-            zo_str = f"{zo:.4f}" if zo != float("inf") else "+inf"
+            f"{zo:.4f}" if zo != float("inf") else "+inf"
             label = _tf_label(r["timeframe_minutes"])
-            print(f"  {r['symbol']:<12} {label:>5}  ZOmega={zo_str}")
 
         promoted: list[str] = []
         if args.auto_promote:
@@ -2205,8 +2193,7 @@ def main(argv: list[str] | None = None) -> int:
                 promoted.append(f"{sym} {label}")
 
         if promoted:
-            print(f"\n[UNIVERSE] {len(promoted)} bot(s) promoted to PAPER stage: " + ", ".join(promoted))
-            print("  Launch paper bots with:  python3 run_universe.py --watch")
+            pass
 
     n_ok = sum(1 for r in deduped + errored if not r.get("error"))
     n_err = len(deduped + errored) - n_ok

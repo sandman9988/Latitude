@@ -36,12 +36,12 @@ Usage:
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import logging
 import math
 import os
-import re
 import signal
 import socket
 import sys
@@ -55,7 +55,7 @@ from typing import Any
 
 import numpy as np
 
-from src.utils.safe_math import SAFE_DIV_MIN, SAFE_EPSILON, SAFE_SMALL, SafeMath  # noqa: E402
+from src.utils.safe_math import SAFE_DIV_MIN, SAFE_EPSILON, SAFE_SMALL, SafeMath
 
 LOG = logging.getLogger("openapi_hub")
 
@@ -198,11 +198,9 @@ def _write_json_atomic(path: Path, payload: dict, indent: int | None = None) -> 
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=indent, default=_json_default)
         os.replace(tmp_path, path)
-    except (IOError, OSError):
-        try:
+    except OSError:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -255,10 +253,8 @@ class BarBuilder:
             self.bucket, self.o, self.h, self.l, self.c = b, mid, mid, mid, mid
             return closed
         self.c = mid
-        if mid > self.h:
-            self.h = mid
-        if mid < self.l:
-            self.l = mid
+        self.h = max(self.h, mid)
+        self.l = min(self.l, mid)
         return None
 
     def next_bar_close_utc(self) -> str | None:
@@ -388,10 +384,8 @@ class TFAgent:
         ) if online_learning else None
         if self.circuit_breakers is not None:
             self.circuit_breakers.set_emergency_closer(_PaperEmergencyCloser(self))
-            try:
+            with contextlib.suppress(Exception):
                 self.circuit_breakers.restore_state(str(data_dir / "circuit_breakers.json"))
-            except Exception:
-                pass
 
         from src.risk.friction_costs import FrictionCalculator  # noqa: PLC0415
         self.friction_calc = FrictionCalculator(
@@ -618,15 +612,13 @@ class TFAgent:
         if len(self.bars) < _MIN_BARS_BEFORE_TRADE:
             if self.bar_count % 10 == 0:
                 self._write_telemetry()
-            try:
+            with contextlib.suppress(Exception):
                 self.decision_log.log_decision(
                     agent="TriggerAgent",
                     decision="WARMING_UP",
                     confidence=0.0,
                     context={"price": _c, "bars": self.bar_count, "required": _MIN_BARS_BEFORE_TRADE},
                 )
-            except Exception:
-                pass
             return
 
         if not self._harvester_preseeded:
@@ -753,14 +745,10 @@ class TFAgent:
         """
         threshold = 5.0
         if self.circuit_breakers is not None:
-            try:
+            with contextlib.suppress(Exception):
                 threshold = float(self.circuit_breakers.kurtosis_threshold)
-            except Exception:
-                pass
-        try:
+        with contextlib.suppress(Exception):
             self.var_estimator.kurtosis_monitor.threshold = threshold
-        except Exception:
-            pass
         return threshold
 
     def _get_var_kurtosis(self) -> tuple[float, float]:
@@ -964,7 +952,7 @@ class TFAgent:
                     "predicted_runway": float(runway),
                     "predicted_runway_gross": float(runway),
                     "predicted_runway_net": float(
-                        max(0.0, runway - (2.0 * half_spread / max(abs(price), 1.0)))
+                        max(0.0, runway - (2.0 * half_spread / max(abs(price), 1.0))),
                     ),
                     "feasibility": feasibility,
                     "geometry_efficiency": geom.get("efficiency", 0.0),
@@ -1009,7 +997,7 @@ class TFAgent:
             LOG.debug("[%s %s] decision_log error: %s", self.symbol, self.tf_label, e)
 
     def _calc_hold_reward(
-        self, cur_mfe: float, cur_mae: float, entry_price: float, bars_held: int
+        self, cur_mfe: float, cur_mae: float, entry_price: float, bars_held: int,
     ) -> float:
         """Incremental HOLD reward for one bar held in a position.
 
@@ -1041,7 +1029,7 @@ class TFAgent:
 
         return float(np.clip(
             capture_component + mfe_growth + mae_penalty + time_decay + opportunity_cost,
-            -1.0, 1.0
+            -1.0, 1.0,
         ))
 
     def _add_harvester_hold_experience(self) -> None:
@@ -1387,10 +1375,8 @@ class TFAgent:
                     b = (ts_val, float(row[1]), float(row[2]), float(row[3]), cur_close)
                     self.bars.append(b)
                     if prev_close > 0 and cur_close > 0:
-                        try:
+                        with contextlib.suppress(Exception):
                             self.var_estimator.update_return(math.log(cur_close / prev_close))
-                        except Exception:
-                            pass
                     prev_close = cur_close if cur_close > 0 else prev_close
                     loaded += 1
                 except Exception:
@@ -1796,10 +1782,8 @@ class TFAgent:
         self._entry_action = action
 
         # Snapshot bars for training cache
-        try:
+        with contextlib.suppress(Exception):
             self.bar_cache.snapshot_entry(self.bars)
-        except Exception:
-            pass
 
         # Notify DualPolicy
         try:
@@ -1936,7 +1920,7 @@ class TFAgent:
 
             if self._win_rate_ema < 0.40:
                 self._entry_conf_dynamic_floor = min(
-                    self._entry_conf_dynamic_floor + 0.02, _floor_max
+                    self._entry_conf_dynamic_floor + 0.02, _floor_max,
                 )
                 LOG.info(
                     "[%s %s] RiskTuner: win_rate=%.1f%% < 40%% → raise floor %.3f → %.3f",
@@ -1945,7 +1929,7 @@ class TFAgent:
                 )
             elif self._win_rate_ema > 0.65:
                 self._entry_conf_dynamic_floor = max(
-                    self._entry_conf_dynamic_floor - 0.01, _floor_min
+                    self._entry_conf_dynamic_floor - 0.01, _floor_min,
                 )
 
             # Persist floors periodically
@@ -2055,7 +2039,6 @@ class TFAgent:
     def _apply_capture_tighten(self, harv: Any, factor: float) -> None:
         """Tighten trailing activation, stop distance, and capture decay threshold."""
         from src.constants import (  # noqa: PLC0415
-            CAPTURE_DECAY_THRESHOLD,
             TRAILING_STOP_ACTIVATION_PCT,
             TRAILING_STOP_DISTANCE_PCT,
         )
@@ -2064,14 +2047,14 @@ class TFAgent:
         dist_floor = max(0.01, TRAILING_STOP_DISTANCE_PCT * tf_scale * 0.30)
 
         harv.trailing_stop_activation_pct = max(
-            trail_floor, harv.trailing_stop_activation_pct * factor
+            trail_floor, harv.trailing_stop_activation_pct * factor,
         )
         harv.trailing_stop_distance_pct = max(
-            dist_floor, harv.trailing_stop_distance_pct * factor
+            dist_floor, harv.trailing_stop_distance_pct * factor,
         )
         # Raise capture_decay_threshold so capture-decay fires sooner on giveback
         harv.capture_decay_threshold = min(
-            0.70, harv.capture_decay_threshold + (1.0 - factor) * 0.40
+            0.70, harv.capture_decay_threshold + (1.0 - factor) * 0.40,
         )
         LOG.info(
             "[%s %s] CAPTURE TIGHTEN (×%.2f): trail_act=%.3f%% dist=%.3f%% cd_thresh=%.3f",
@@ -2113,14 +2096,14 @@ class TFAgent:
         dist_ceil = TRAILING_STOP_DISTANCE_PCT * tf_scale * 1.50
 
         harv.trailing_stop_activation_pct = min(
-            trail_ceil, harv.trailing_stop_activation_pct / factor
+            trail_ceil, harv.trailing_stop_activation_pct / factor,
         )
         harv.trailing_stop_distance_pct = min(
-            dist_ceil, harv.trailing_stop_distance_pct / factor
+            dist_ceil, harv.trailing_stop_distance_pct / factor,
         )
         # Never relax capture_decay below original default
         harv.capture_decay_threshold = max(
-            CAPTURE_DECAY_THRESHOLD, harv.capture_decay_threshold * factor
+            CAPTURE_DECAY_THRESHOLD, harv.capture_decay_threshold * factor,
         )
         LOG.debug(
             "[%s %s] CAPTURE RELAX (×%.3f): trail_act=%.3f%% dist=%.3f%%",
@@ -2162,10 +2145,8 @@ class TFAgent:
 
         if self.circuit_breakers is not None:
             self.circuit_breakers.update_trade(pnl_usd, self.equity)
-        try:
+        with contextlib.suppress(Exception):
             self.reward_shaper.activity_monitor.on_trade_executed()
-        except Exception:
-            pass
 
         # MFE/MAE from DualPolicy internal state
         mfe = getattr(self.policy, "mfe", 0.0)
@@ -2307,11 +2288,9 @@ class TFAgent:
 
         _cb_tripped = []
         if self.circuit_breakers is not None:
-            try:
+            with contextlib.suppress(Exception):
                 _cb_tripped = [k for k, v in self.circuit_breakers.get_status().items()
                                if isinstance(v, dict) and v.get("tripped")]
-            except Exception:
-                pass
         # Snapshot risk state at close for trade_log
         _close_drawdown = max(0.0, (self.starting_equity - self.equity) / max(abs(self.starting_equity), 1.0))
         _close_cb_mult = self.circuit_breakers.get_position_size_multiplier() if self.circuit_breakers is not None else 1.0
@@ -2419,7 +2398,7 @@ class TFAgent:
             _seq = self._trade_sequence
             ticket = f"PAPER_{self._epoch_ts}_{_seq}"
         hold_secs = (exit_time - entry_time).total_seconds() if entry_time else 0.0
-        bars_held = int(round(hold_secs / max(self.timeframe_minutes * 60, 1)))
+        bars_held = round(hold_secs / max(self.timeframe_minutes * 60, 1))
         _price_ref = max(abs(entry_price), 1.0)
         runway_utilization = (pnl_pts / (predicted_runway_net * _price_ref)
                               if predicted_runway_net > 0 and abs(pnl_pts) > SAFE_EPSILON else 0.0)
@@ -2584,9 +2563,14 @@ class TFAgent:
 
         # Derive cross-period self-healing metrics from trade_log (single source of truth)
         try:
-            from src.utils.metrics_calculator import decision_quality, period_comparison, self_healing_metrics  # noqa: PLC0415
-            from src.persistence.trade_log_reader import read_all_trades  # noqa: PLC0415
             from datetime import timedelta  # noqa: PLC0415
+
+            from src.persistence.trade_log_reader import read_all_trades  # noqa: PLC0415
+            from src.utils.metrics_calculator import (  # noqa: PLC0415
+                decision_quality,
+                period_comparison,
+                self_healing_metrics,
+            )
 
             _all = read_all_trades()
             _bot_trades = [t for t in _all if t.get("symbol") == self.symbol
@@ -2774,7 +2758,7 @@ class TFAgent:
         if current_regime != self._prev_regime:
             LOG.info("[%s %s] Regime change: %s → %s", self.symbol, self.tf_label,
                      self._prev_regime, current_regime)
-            try:
+            with contextlib.suppress(Exception):
                 self.decision_log.log_decision(
                     agent="System",
                     decision="REGIME_CHANGE",
@@ -2782,8 +2766,6 @@ class TFAgent:
                     context={"prev_regime": self._prev_regime, "new_regime": current_regime},
                     reasoning={},
                 )
-            except Exception:
-                pass
             self._prev_regime = current_regime
 
         # Circuit breaker state change
@@ -2792,7 +2774,7 @@ class TFAgent:
             cleared = [b for b in self._prev_cb_tripped if b not in cb_tripped]
             LOG.info("[%s %s] CB state change: tripped=%s cleared=%s",
                      self.symbol, self.tf_label, newly_tripped, cleared)
-            try:
+            with contextlib.suppress(Exception):
                 self.decision_log.log_decision(
                     agent="System",
                     decision="CIRCUIT_BREAKER" if newly_tripped else "CB_CLEARED",
@@ -2804,8 +2786,6 @@ class TFAgent:
                     },
                     reasoning={},
                 )
-            except Exception:
-                pass
             self._prev_cb_tripped = cb_tripped
 
     def _write_risk_metrics(self) -> None:
@@ -2964,7 +2944,7 @@ class _PaperEmergencyCloser:
     and a breaker trips. In paper mode this just closes the open simulated position.
     """
 
-    def __init__(self, agent: "TFAgent") -> None:
+    def __init__(self, agent: TFAgent) -> None:
         self._agent = agent
 
     def close_all_positions(self, reason: str = "CIRCUIT_BREAKER") -> bool:
@@ -2977,7 +2957,7 @@ class _PaperEmergencyCloser:
                 LOG.warning("[EMERGENCY] Paper position closed: %s %s reason=%s",
                             agent.symbol, agent.tf_label, reason)
             except Exception as e:
-                LOG.error("[EMERGENCY] Close failed %s %s: %s", agent.symbol, agent.tf_label, e)
+                LOG.exception("[EMERGENCY] Close failed %s %s: %s", agent.symbol, agent.tf_label, e)
                 return False
         return True
 
@@ -3068,7 +3048,7 @@ class OpenAPIHub:
 
         # Control-file poll thread (kill-switch, CB reset, kurtosis gate reset)
         self._control_poll_thread = threading.Thread(
-            target=self._control_poll_fn, daemon=True, name=f"ctrl-{symbol}"
+            target=self._control_poll_fn, daemon=True, name=f"ctrl-{symbol}",
         )
         self._control_poll_thread.start()
 
@@ -3136,10 +3116,8 @@ class OpenAPIHub:
                 epsilon = float(_payload.get("epsilon", 1.0))
                 epsilon = max(0.0, min(1.0, epsilon))
                 for agent in self.agents.values():
-                    try:
+                    with contextlib.suppress(Exception):
                         agent.policy.trigger.epsilon = epsilon
-                    except Exception:
-                        pass
                 LOG.info("[HUB] Epsilon override applied: %.3f (%s)", epsilon, self.symbol)
             except Exception as _e:
                 LOG.debug("[HUB] Epsilon override error: %s", _e)
@@ -3152,10 +3130,8 @@ class OpenAPIHub:
             try:
                 _p.unlink(missing_ok=True)
                 for agent in self.agents.values():
-                    try:
+                    with contextlib.suppress(Exception):
                         agent.var_estimator.kurtosis_monitor.reset()
-                    except Exception:
-                        pass
                 LOG.info("[HUB] Kurtosis gate reset via HUD (%s)", self.symbol)
             except Exception as _e:
                 LOG.debug("[HUB] Kurtosis gate reset error: %s", _e)
@@ -3171,7 +3147,7 @@ class OpenAPIHub:
                 self._poll_kg_reset()
                 self._poll_epsilon_override()
             except Exception as _e:
-                LOG.error("[HUB] Control poll error: %s", _e)
+                LOG.exception("[HUB] Control poll error: %s", _e)
             time.sleep(5.0)
 
     def _execute_kill_switch(self, payload: dict) -> None:
@@ -3186,7 +3162,7 @@ class OpenAPIHub:
         else:
             LOG.critical("[KILL-SWITCH] All breakers tripped, positions confirmed closed (%s)", self.symbol)
 
-    def _kill_agent(self, agent: "TFAgent", reason: str, ts_now: dt.datetime) -> None:
+    def _kill_agent(self, agent: TFAgent, reason: str, ts_now: dt.datetime) -> None:
         if agent.circuit_breakers is not None:
             for _b in agent.circuit_breakers.breakers:
                 if not _b.state.is_tripped:
@@ -3196,7 +3172,7 @@ class OpenAPIHub:
             try:
                 agent._close_position(ts_now, fill)
             except Exception as _e:
-                LOG.error("[KILL-SWITCH] Close error %s %s: %s", agent.symbol, agent.tf_label, _e)
+                LOG.exception("[KILL-SWITCH] Close error %s %s: %s", agent.symbol, agent.tf_label, _e)
 
     def _on_message(self, client: Any, message: Any) -> None:
         self._last_heartbeat = time.time()  # any server message resets the watchdog
@@ -3221,7 +3197,7 @@ class OpenAPIHub:
             try:
                 handler(message)
             except Exception as e:
-                LOG.error("[HUB] Handler %d failed: %s", pt, e)
+                LOG.exception("[HUB] Handler %d failed: %s", pt, e)
         else:
             LOG.info("[HUB] Unhandled payloadType=%s (state=%s)", pt, self._state)
 
@@ -3682,7 +3658,7 @@ class OpenAPIHub:
             LOG.error("[HUB] Error from API: code=%s desc=%s",
                       getattr(res, "errorCode", "?"), getattr(res, "description", "?"))
         except Exception:
-            LOG.error("[HUB] Received error message (payloadType=2142)")
+            LOG.exception("[HUB] Received error message (payloadType=2142)")
 
     # ---- spot event handler ---------------------------------------------
 
@@ -3734,7 +3710,7 @@ class OpenAPIHub:
                               vpin_z=self._vpin_z,
                               has_real_sizes=self._has_real_sizes)
             except Exception as e:
-                LOG.error("[HUB] agent %s error: %s", agent.tf_label, e)
+                LOG.exception("[HUB] agent %s error: %s", agent.tf_label, e)
 
     # ---- shutdown -------------------------------------------------------
 
@@ -3746,10 +3722,8 @@ class OpenAPIHub:
             except Exception as e:
                 LOG.warning("[HUB] agent %s shutdown error: %s", agent.tf_label, e)
         if self._client and hasattr(self._client, "stopService"):
-            try:
+            with contextlib.suppress(Exception):
                 self._client.stopService()
-            except Exception:
-                pass
 
     # ---- start -----------------------------------------------------------
 
@@ -3759,7 +3733,7 @@ class OpenAPIHub:
             from ctrader_open_api import Client, TcpProtocol  # noqa: PLC0415
             from twisted.internet import reactor  # noqa: PLC0415
         except ImportError as e:
-            LOG.error("[HUB] ctrader-open-api or Twisted not installed: %s", e)
+            LOG.exception("[HUB] ctrader-open-api or Twisted not installed: %s", e)
             sys.exit(1)
 
         client = Client(self.host, _PORT, TcpProtocol)
@@ -3816,7 +3790,7 @@ def main() -> None:
     try:
         symbol_id = int(symbol_id_str)
     except ValueError:
-        LOG.error("[HUB] Invalid OPENAPI_SYMBOL_ID=%r", symbol_id_str)
+        LOG.exception("[HUB] Invalid OPENAPI_SYMBOL_ID=%r", symbol_id_str)
         sys.exit(1)
 
     # Timeframes
@@ -3824,7 +3798,7 @@ def main() -> None:
     try:
         timeframes = [int(x.strip()) for x in tf_raw.split(",") if x.strip()]
     except ValueError:
-        LOG.error("[HUB] Invalid OPENAPI_TIMEFRAMES=%r", tf_raw)
+        LOG.exception("[HUB] Invalid OPENAPI_TIMEFRAMES=%r", tf_raw)
         sys.exit(1)
 
     if not timeframes:

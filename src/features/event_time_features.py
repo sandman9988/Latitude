@@ -121,13 +121,13 @@ class EventTimeFeatureEngine:
         # Session overlaps (high liquidity)
         features["london_ny_overlap"] = float(
             self._is_session_active(dt, self.SESSIONS["LONDON"])
-            and self._is_session_active(dt, self.SESSIONS["NEW_YORK"])
+            and self._is_session_active(dt, self.SESSIONS["NEW_YORK"]),
         )
         features["tokyo_london_overlap"] = float(
-            self._is_session_active(dt, self.SESSIONS["TOKYO"]) and self._is_session_active(dt, self.SESSIONS["LONDON"])
+            self._is_session_active(dt, self.SESSIONS["TOKYO"]) and self._is_session_active(dt, self.SESSIONS["LONDON"]),
         )
         features["sydney_tokyo_overlap"] = float(
-            self._is_session_active(dt, self.SESSIONS["SYDNEY"]) and self._is_session_active(dt, self.SESSIONS["TOKYO"])
+            self._is_session_active(dt, self.SESSIONS["SYDNEY"]) and self._is_session_active(dt, self.SESSIONS["TOKYO"]),
         )
 
         # Week position (0 = Sunday open, 1 = Friday close)
@@ -322,55 +322,29 @@ class EventTimeFeatureEngine:
 
 def main() -> None:
     """Run event time features test suite."""
-    print("=" * 80)
-    print("EVENT-RELATIVE TIME FEATURES - TEST SUITE")
-    print("=" * 80)
-
     engine = EventTimeFeatureEngine()
 
     # Test 1: Current time features
-    print("\n[Test 1] Current Time Features")
-    print("-" * 80)
 
     now = datetime.now(UTC)
-    print(f"Current UTC time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     features = engine.calculate_features(now)
 
-    print(f"\nActive sessions: {', '.join(engine.get_active_sessions(now))}")
 
     # Session features
-    print("\nSession Proximity:")
     for session in ["london", "new_york", "tokyo", "sydney"]:
-        is_active = features.get(f"{session}_is_active", 0)
-        to_open = features.get(f"{session}_mins_to_open", 0)
-        to_close = features.get(f"{session}_mins_to_close", 0)
+        features.get(f"{session}_is_active", 0)
+        features.get(f"{session}_mins_to_open", 0)
+        features.get(f"{session}_mins_to_close", 0)
 
-        label = "ACTIVE" if is_active else "CLOSED"
-        print(f"  {session.title():12s}: {label:8s} | Open in: {to_open:+.3f} | Close in: {to_close:+.3f}")
 
     # Rollover
-    print("\nRollover:")
-    print(f"  Minutes to: {features['mins_to_rollover']:+.3f}")
-    print(f"  Minutes from: {features['mins_from_rollover']:+.3f}")
 
     # Overlaps
-    print("\nSession Overlaps:")
-    print(f"  London-NY: {features['london_ny_overlap']:.0f}")
-    print(f"  Tokyo-London: {features['tokyo_london_overlap']:.0f}")
-    print(f"  Sydney-Tokyo: {features['sydney_tokyo_overlap']:.0f}")
 
     # Time position
-    print("\nTime Position:")
-    print(f"  Week progress: {features['week_progress']:.3f}")
-    print(f"  Month progress: {features['month_progress']:.3f}")
-    print(f"  Day of week: {features['day_of_week']:.0f}")
-    print(f"  Hour of day: {features['hour_of_day']:.0f}")
-    print(f"  Is weekend: {features['is_weekend']:.0f}")
 
     # Test 2: Specific times
-    print("\n[Test 2] Specific Times")
-    print("-" * 80)
 
     test_times = [
         datetime(2026, 1, 10, 7, 0, tzinfo=UTC),  # London open
@@ -381,18 +355,12 @@ def main() -> None:
 
     for test_dt in test_times:
         features = engine.calculate_features(test_dt)
-        active = engine.get_active_sessions(test_dt)
-        high_liq = engine.is_high_liquidity_period(test_dt)
-        next_event, mins = engine.get_next_major_event(test_dt)
+        engine.get_active_sessions(test_dt)
+        engine.is_high_liquidity_period(test_dt)
+        _next_event, _mins = engine.get_next_major_event(test_dt)
 
-        print(f"\n{test_dt.strftime('%Y-%m-%d %H:%M UTC')}:")
-        print(f"  Active: {', '.join(active) if active else 'None'}")
-        print(f"  High liquidity: {high_liq}")
-        print(f"  Next event: {next_event} in {mins:.0f} mins")
 
     # Test 3: Week progress calculation
-    print("\n[Test 3] Week Progress")
-    print("-" * 80)
 
     # Sunday 21:00 UTC (week start)
     sun_start = datetime(2026, 1, 11, 21, 0, tzinfo=UTC)
@@ -401,33 +369,19 @@ def main() -> None:
     # Friday 21:00 UTC (week end)
     fri_end = datetime(2026, 1, 16, 21, 0, tzinfo=UTC)
 
-    for progress_label, dt in [
+    for _progress_label, dt in [
         ("Sunday 21:00", sun_start),
         ("Wednesday 12:00", wed_mid),
         ("Friday 21:00", fri_end),
     ]:
         features = engine.calculate_features(dt)
-        print(f"{progress_label:20s}: progress = {features['week_progress']:.3f}")
 
     # Test 4: Feature count
-    print("\n[Test 4] Feature Summary")
-    print("-" * 80)
 
     features = engine.calculate_features()
-    print(f"Total features: {len(features)}")
-    print("\nFeature list:")
-    for name, value in sorted(features.items()):
-        print(f"  {name:30s}: {value:+.4f}")
+    for _name, _value in sorted(features.items()):
+        pass
 
-    print("\n" + "=" * 80)
-    print("✅ EVENT-RELATIVE TIME FEATURES READY")
-    print("=" * 80)
-    print("\nKey benefits:")
-    print("  ✓ Session-aware features (better than raw time)")
-    print("  ✓ Normalized [-1, 1] for neural networks")
-    print("  ✓ Captures market microstructure")
-    print("  ✓ Liquidity period detection")
-    print("  ✓ Event proximity (rollover, opens, closes)")
 
 
 if __name__ == "__main__":

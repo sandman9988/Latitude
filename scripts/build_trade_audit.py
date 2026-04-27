@@ -32,10 +32,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -58,8 +59,8 @@ def _parse_ts(ts: str | None) -> datetime | None:
 def _abs_delta(a: datetime | None, b: datetime | None) -> float:
     if a is None or b is None:
         return float("inf")
-    a = a.astimezone(timezone.utc) if a.tzinfo else a.replace(tzinfo=timezone.utc)
-    b = b.astimezone(timezone.utc) if b.tzinfo else b.replace(tzinfo=timezone.utc)
+    a = a.astimezone(UTC) if a.tzinfo else a.replace(tzinfo=UTC)
+    b = b.astimezone(UTC) if b.tzinfo else b.replace(tzinfo=UTC)
     return abs((a - b).total_seconds())
 
 
@@ -72,10 +73,8 @@ def _load_jsonl(path: Path) -> list[dict]:
             line = line.strip()
             if not line:
                 continue
-            try:
+            with contextlib.suppress(json.JSONDecodeError):
                 records.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
     return records
 
 
@@ -107,10 +106,10 @@ def _parse_csv_ts(ts_raw: str) -> datetime | None:
         return None
     try:
         if ts_raw.isdigit():
-            return datetime.fromtimestamp(int(ts_raw), tz=timezone.utc)
-        dt = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            return datetime.fromtimestamp(int(ts_raw), tz=UTC)
+        dt = datetime.fromisoformat(ts_raw)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         return dt
     except (ValueError, AttributeError):
         return None
@@ -164,12 +163,12 @@ def load_history_csv(data_root: Path, symbol: str, tf_minutes: int) -> list[dict
 
 
 def _bars_during_trade(
-    bars: list[dict], entry_ts: datetime | None, exit_ts: datetime | None
+    bars: list[dict], entry_ts: datetime | None, exit_ts: datetime | None,
 ) -> list[dict]:
     if not bars or entry_ts is None or exit_ts is None:
         return []
-    entry_utc = entry_ts.astimezone(timezone.utc) if entry_ts.tzinfo else entry_ts.replace(tzinfo=timezone.utc)
-    exit_utc = exit_ts.astimezone(timezone.utc) if exit_ts.tzinfo else exit_ts.replace(tzinfo=timezone.utc)
+    entry_utc = entry_ts.astimezone(UTC) if entry_ts.tzinfo else entry_ts.replace(tzinfo=UTC)
+    exit_utc = exit_ts.astimezone(UTC) if exit_ts.tzinfo else exit_ts.replace(tzinfo=UTC)
     return [
         {
             "timestamp": b["ts"].isoformat(),
@@ -425,7 +424,7 @@ def _build_harvester_close_block(dec: dict) -> dict:
 
 
 def _build_exit_block(
-    trade: dict, harvester_close: dict | None, position_close_txn: dict | None, broker_exec: dict | None
+    trade: dict, harvester_close: dict | None, position_close_txn: dict | None, broker_exec: dict | None,
 ) -> dict:
     block: dict = {
         "time": trade.get("exit_time"),
@@ -578,7 +577,7 @@ def _build_outcome_block(trade: dict) -> dict:
 class _TxnPools:
     """Groups the three transaction event lists so _assemble_trade_record stays under 13 params."""
 
-    __slots__ = ("order_submits", "position_closes", "broker_execs")
+    __slots__ = ("broker_execs", "order_submits", "position_closes")
 
     def __init__(
         self,
@@ -591,7 +590,7 @@ class _TxnPools:
         self.broker_execs = broker_execs
 
     @classmethod
-    def from_transactions(cls, transactions: list[dict]) -> "_TxnPools":
+    def from_transactions(cls, transactions: list[dict]) -> _TxnPools:
         return cls(
             order_submits=[t for t in transactions if t.get("event_type") == "ORDER_SUBMIT"],
             position_closes=[t for t in transactions if t.get("event_type") == "POSITION_CLOSE"],
@@ -599,7 +598,7 @@ class _TxnPools:
         )
 
     @classmethod
-    def empty(cls) -> "_TxnPools":
+    def empty(cls) -> _TxnPools:
         return cls([], [], [])
 
 
@@ -653,14 +652,14 @@ def _harvester_decs_for_trade(
     if entry_ts is None or exit_ts is None:
         return []
 
-    entry_utc = entry_ts.astimezone(timezone.utc) if entry_ts.tzinfo else entry_ts.replace(tzinfo=timezone.utc)
-    exit_utc = exit_ts.astimezone(timezone.utc) if exit_ts.tzinfo else exit_ts.replace(tzinfo=timezone.utc)
+    entry_utc = entry_ts.astimezone(UTC) if entry_ts.tzinfo else entry_ts.replace(tzinfo=UTC)
+    exit_utc = exit_ts.astimezone(UTC) if exit_ts.tzinfo else exit_ts.replace(tzinfo=UTC)
     slack = max(60.0, match_window * 0.5)
     lo = entry_utc.timestamp() - slack
     hi = exit_utc.timestamp() + slack
     return [
         d for d in all_harvesters
-        if lo <= (_parse_ts(d.get("timestamp")) or entry_utc).replace(tzinfo=timezone.utc).timestamp() <= hi
+        if lo <= (_parse_ts(d.get("timestamp")) or entry_utc).replace(tzinfo=UTC).timestamp() <= hi
     ]
 
 
@@ -679,7 +678,7 @@ def _assemble_trade_record(
     cache_rec: dict | None = None,
 ) -> dict:
     harvester_decs = _harvester_decs_for_trade(
-        hex_id, harvester_by_id, all_harvesters, entry_ts, exit_ts, match_window
+        hex_id, harvester_by_id, all_harvesters, entry_ts, exit_ts, match_window,
     )
     harvester_close = next((d for d in harvester_decs if d.get("decision") == "CLOSE"), None)
     harvester_holds = [d for d in harvester_decs if d.get("decision") == "HOLD"]
@@ -733,7 +732,7 @@ def _assemble_trade_record(
             outcome_block["mae_points"] = cache_rec["mae"]
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": datetime.now(UTC).isoformat(),
         "decision_trade_id": hex_id,
         "trade_log_id": trade.get("trade_id"),
         "ticket": trade.get("ticket"),
@@ -766,7 +765,7 @@ def _assemble_trade_record(
 
 
 def _load_trade_log_with_fallback(
-    paper_dir: Path, symbol: str, tf_minutes: int
+    paper_dir: Path, symbol: str, tf_minutes: int,
 ) -> tuple[list[dict], Path]:
     """Return (trade_records, source_path), falling back to global log when local is absent/empty."""
     local_path = paper_dir / _TRADE_LOG_FILENAME
@@ -924,9 +923,7 @@ def _dir_matches(name: str, symbol: str, tf: str) -> bool:
     tf_up = tf.upper()
     if symbol and f"_{sym_up}_" not in name and not name.endswith(f"_{sym_up}"):
         return False
-    if tf and not name.endswith(f"_{tf_up}"):
-        return False
-    return True
+    return not (tf and not name.endswith(f"_{tf_up}"))
 
 
 def _discover_candidates(data_root: Path, symbol: str, tf: str) -> list[Path]:
@@ -947,21 +944,18 @@ def _sym_tf_from_dir(name: str) -> tuple[str, int]:
 
 
 def _emit_stdout(records: list[dict], pretty: bool) -> None:
-    indent = 2 if pretty else None
-    for r in records:
-        print(json.dumps(r, indent=indent, default=str))
+    for _r in records:
+        pass
 
 
 def _write_to_file(paper_dir: Path, records: list[dict]) -> int:
     out_path = paper_dir / "logs" / "audit" / "trade_lifecycle.jsonl"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    csv_count = sum(r["data_sources"]["csv_bars_used"] for r in records)
+    sum(r["data_sources"]["csv_bars_used"] for r in records)
     with open(out_path, "w", encoding="utf-8") as f:
         for i, r in enumerate(records):
             r["audit_seq"] = i + 1
             f.write(json.dumps(r, default=str) + "\n")
-    csv_note = f" ({csv_count} CSV bars)" if csv_count else ""
-    print(f"[OK] {paper_dir.name}: {len(records)} trade(s) → {out_path}{csv_note}")
     return len(records)
 
 
@@ -979,12 +973,10 @@ def main() -> None:
 
     data_root = Path(args.data_dir)
     if not data_root.exists():
-        print(f"[ERROR] Data directory not found: {data_root}", file=sys.stderr)
         sys.exit(1)
 
     candidates = _discover_candidates(data_root, args.symbol, args.tf)
     if not candidates:
-        print("[INFO] No matching paper directories found.", file=sys.stderr)
         sys.exit(0)
 
     total_written = 0
@@ -1000,7 +992,7 @@ def main() -> None:
             total_written += _write_to_file(paper_dir, records)
 
     if not args.stdout:
-        print(f"\n[DONE] {total_written} lifecycle records written across {len(candidates)} directory/ies.")
+        pass
 
 
 if __name__ == "__main__":

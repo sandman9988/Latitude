@@ -12,8 +12,7 @@ Uses:
 """
 
 import json
-from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -33,10 +32,10 @@ MFE_ZERO_THR    = 0.05 # points — below this = "zero MFE" on gold M5
 # ── Load bars ─────────────────────────────────────────────────────────────────
 def load_bars() -> pd.DataFrame:
     df = pd.read_csv(HIST_CSV, parse_dates=["Date & Time"])
-    df.rename(columns={"Date & Time": "ts", "Open": "o", "High": "h",
-                        "Low": "l", "Close": "c", "Volume": "v"}, inplace=True)
-    df.sort_values("ts", inplace=True)
-    df.reset_index(drop=True, inplace=True)
+    df = df.rename(columns={"Date & Time": "ts", "Open": "o", "High": "h",
+                        "Low": "l", "Close": "c", "Volume": "v"})
+    df = df.sort_values("ts")
+    df = df.reset_index(drop=True)
     df["ts"] = df["ts"].dt.tz_localize("UTC")
     return df
 
@@ -128,7 +127,7 @@ def load_m5_trades() -> list[dict]:
 
 
 def parse_ts(s: str) -> datetime:
-    return datetime.fromisoformat(s).astimezone(timezone.utc)
+    return datetime.fromisoformat(s).astimezone(UTC)
 
 
 # ── Match trade → bar index ───────────────────────────────────────────────────
@@ -165,54 +164,31 @@ def pct_str(n: int, total: int) -> str:
 
 
 def bucket_stats(values: list[float], label: str) -> None:
-    arr = np.array(values)
-    print(f"  {label}: n={len(arr)}  mean={arr.mean():.3f}  "
-          f"median={np.median(arr):.3f}  p25={np.percentile(arr,25):.3f}  "
-          f"p75={np.percentile(arr,75):.3f}  win%={100*(arr>0).mean():.1f}%")
+    np.array(values)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 def main() -> None:
-    print("Loading bars …")
     df = load_bars()
     df = add_atr(df)
     df = add_vol_regime(df)
 
-    print(f"Bars loaded: {len(df)}  ({df['ts'].iloc[0].date()} → {df['ts'].iloc[-1].date()})")
 
-    print("Loading trades …")
     trades = load_m5_trades()
-    print(f"XAUUSD M5 trades: {len(trades)}")
 
     tm = match_trades_to_bars(df, trades)
 
     # ── H1: Zero-MFE confirmation ─────────────────────────────────────────────
-    print("\n" + "="*70)
-    print("H1 — Do zero-MFE trades always lose?")
-    print("="*70)
 
-    zero_mfe = tm[tm["mfe"] < MFE_ZERO_THR]
-    nonzero_mfe = tm[tm["mfe"] >= MFE_ZERO_THR]
+    tm[tm["mfe"] < MFE_ZERO_THR]
+    tm[tm["mfe"] >= MFE_ZERO_THR]
 
-    print(f"Zero-MFE  (<{MFE_ZERO_THR} pts): {pct_str(len(zero_mfe), len(tm))}")
-    print(f"  Winners (pnl>0): {pct_str((zero_mfe['pnl']>0).sum(), len(zero_mfe))}")
-    print(f"  Losers  (pnl<0): {pct_str((zero_mfe['pnl']<0).sum(), len(zero_mfe))}")
-    print(f"  Mean PnL: {zero_mfe['pnl'].mean():.4f} pts")
-    print()
-    print(f"Non-zero MFE (>={MFE_ZERO_THR} pts): {pct_str(len(nonzero_mfe), len(tm))}")
-    print(f"  Winners (pnl>0): {pct_str((nonzero_mfe['pnl']>0).sum(), len(nonzero_mfe))}")
-    print(f"  Mean PnL: {nonzero_mfe['pnl'].mean():.4f} pts")
 
     # MFE distribution percentiles
-    print(f"\nMFE distribution (all trades):")
-    for p in [0, 5, 10, 25, 50, 75, 90, 95, 100]:
-        print(f"  p{p:3d}: {np.percentile(tm['mfe'], p):.3f} pts")
+    for _p in [0, 5, 10, 25, 50, 75, 90, 95, 100]:
+        pass
 
     # ── H2: Swing distance vs MFE ─────────────────────────────────────────────
-    print("\n" + "="*70)
-    print("H2 — Does swing-level distance (ATR-normalized) predict MFE?")
-    print("="*70)
-    print("Computing swing distances … (may take ~60s for 3K trades)")
 
     dists = []
     for _, row in tm.iterrows():
@@ -221,11 +197,9 @@ def main() -> None:
     tm["swing_dist"] = dists
 
     valid = tm[tm["swing_dist"].notna() & np.isfinite(tm["swing_dist"])]
-    print(f"Trades with valid swing distance: {len(valid)}/{len(tm)}")
 
     # Correlation
-    corr = valid[["swing_dist", "mfe"]].corr().iloc[0, 1]
-    print(f"Pearson correlation(swing_dist, MFE): {corr:.4f}")
+    valid[["swing_dist", "mfe"]].corr().iloc[0, 1]
 
     # Bucket by swing distance
     edges = [0, 0.5, 1.0, 1.5, 2.0, 3.0, 999]
@@ -233,47 +207,33 @@ def main() -> None:
     valid = valid.copy()
     valid["dist_bucket"] = pd.cut(valid["swing_dist"], bins=edges, labels=labels)
 
-    print("\nMFE and win-rate by distance to nearest swing level:")
-    print(f"  {'Bucket':<12}  {'N':>5}  {'MFE mean':>10}  {'MFE p50':>10}  {'Win%':>7}  {'PnL mean':>10}")
     for lbl in labels:
         grp = valid[valid["dist_bucket"] == lbl]
         if len(grp) == 0:
             continue
-        win_pct = 100 * (grp["pnl"] > 0).mean()
-        print(f"  {lbl:<12}  {len(grp):>5}  {grp['mfe'].mean():>10.3f}  "
-              f"{grp['mfe'].median():>10.3f}  {win_pct:>6.1f}%  {grp['pnl'].mean():>10.4f}")
+        100 * (grp["pnl"] > 0).mean()
 
     # ── H3: Vol regime vs MFE ─────────────────────────────────────────────────
-    print("\n" + "="*70)
-    print("H3 — Does volatility regime (σ_short / σ_long) predict MFE?")
-    print("="*70)
 
     tm2 = tm.copy()
     tm2["vol_ratio"] = df.loc[tm2["bar_idx"].values, "vol_ratio"].values
 
     valid2 = tm2[tm2["vol_ratio"].notna() & np.isfinite(tm2["vol_ratio"])]
-    corr2 = valid2[["vol_ratio", "mfe"]].corr().iloc[0, 1]
-    print(f"Pearson correlation(vol_ratio, MFE): {corr2:.4f}")
+    valid2[["vol_ratio", "mfe"]].corr().iloc[0, 1]
 
     # Expanding vol (ratio > 1.2) vs contracting (< 0.8) vs neutral
     expand  = valid2[valid2["vol_ratio"] > 1.2]
     neutral = valid2[(valid2["vol_ratio"] >= 0.8) & (valid2["vol_ratio"] <= 1.2)]
     contract = valid2[valid2["vol_ratio"] < 0.8]
 
-    for name, grp in [("Expanding vol (>1.2)", expand),
+    for _name, grp in [("Expanding vol (>1.2)", expand),
                        ("Neutral   (0.8-1.2)", neutral),
                        ("Contracting (<0.8) ", contract)]:
         if len(grp) == 0:
             continue
-        win_pct = 100 * (grp["pnl"] > 0).mean()
-        print(f"  {name}: n={len(grp):>4}  MFE mean={grp['mfe'].mean():.3f}  "
-              f"MFE p50={grp['mfe'].median():.3f}  win%={win_pct:.1f}%  "
-              f"pnl={grp['pnl'].mean():.4f}")
+        100 * (grp["pnl"] > 0).mean()
 
     # ── Combined gate simulation ──────────────────────────────────────────────
-    print("\n" + "="*70)
-    print("Combined gate simulation: swing_dist>1.0 ATR AND vol_ratio in [0.6, 1.4]")
-    print("="*70)
 
     both_valid = tm2[tm2["vol_ratio"].notna() & tm2["swing_dist"].notna()
                      & np.isfinite(tm2["vol_ratio"]) & np.isfinite(tm2["swing_dist"])].copy()
@@ -281,21 +241,13 @@ def main() -> None:
     gated_in  = both_valid[(both_valid["swing_dist"] > 1.0) &
                             (both_valid["vol_ratio"] > 0.6) &
                             (both_valid["vol_ratio"] < 1.4)]
-    gated_out = both_valid[~((both_valid["swing_dist"] > 1.0) &
+    both_valid[~((both_valid["swing_dist"] > 1.0) &
                               (both_valid["vol_ratio"] > 0.6) &
                               (both_valid["vol_ratio"] < 1.4))]
 
-    print(f"Would PASS gate: {pct_str(len(gated_in), len(both_valid))}")
-    print(f"  MFE mean={gated_in['mfe'].mean():.3f}  p50={gated_in['mfe'].median():.3f}  "
-          f"win%={100*(gated_in['pnl']>0).mean():.1f}%  pnl_mean={gated_in['pnl'].mean():.4f}")
-    print(f"Would BLOCK gate: {pct_str(len(gated_out), len(both_valid))}")
-    print(f"  MFE mean={gated_out['mfe'].mean():.3f}  p50={gated_out['mfe'].median():.3f}  "
-          f"win%={100*(gated_out['pnl']>0).mean():.1f}%  pnl_mean={gated_out['pnl'].mean():.4f}")
 
-    total_pnl_all   = both_valid["pnl"].sum()
-    total_pnl_gated = gated_in["pnl"].sum()
-    print(f"\nTotal PnL (all):   {total_pnl_all:.2f} pts")
-    print(f"Total PnL (gated): {total_pnl_gated:.2f} pts  ({100*total_pnl_gated/total_pnl_all:.1f}% of all on {100*len(gated_in)/len(both_valid):.1f}% of trades)")
+    both_valid["pnl"].sum()
+    gated_in["pnl"].sum()
 
 
 if __name__ == "__main__":

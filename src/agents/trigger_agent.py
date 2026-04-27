@@ -190,29 +190,29 @@ class TriggerAgent(AgentTrainingMixin):
                 self.feasibility_threshold = 0.0
             else:
                 self.feasibility_threshold, _ = self._resolve_gate_value(
-                    env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5
+                    env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5,
                 )
             self.confidence_floor, _ = self._resolve_gate_value(
-                env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55
+                env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55,
             )
 
         self.entry_conf_deadzone_low, _ = self._resolve_gate_value(
-            env_key="ENTRY_CONF_DEADZONE_LOW", param_name="entry_conf_deadzone_low", fallback=0.45
+            env_key="ENTRY_CONF_DEADZONE_LOW", param_name="entry_conf_deadzone_low", fallback=0.45,
         )
         self.entry_conf_deadzone_high, _ = self._resolve_gate_value(
-            env_key="ENTRY_CONF_DEADZONE_HIGH", param_name="entry_conf_deadzone_high", fallback=0.55
+            env_key="ENTRY_CONF_DEADZONE_HIGH", param_name="entry_conf_deadzone_high", fallback=0.55,
         )
         self.high_conf_risk_low, _ = self._resolve_gate_value(
-            env_key="HIGH_CONF_RISK_LOW", param_name="high_conf_risk_low", fallback=0.80
+            env_key="HIGH_CONF_RISK_LOW", param_name="high_conf_risk_low", fallback=0.80,
         )
         self.high_conf_risk_high, _ = self._resolve_gate_value(
-            env_key="HIGH_CONF_RISK_HIGH", param_name="high_conf_risk_high", fallback=0.90
+            env_key="HIGH_CONF_RISK_HIGH", param_name="high_conf_risk_high", fallback=0.90,
         )
         self.high_conf_vol_z_gate, _ = self._resolve_gate_value(
-            env_key="HIGH_CONF_VOL_Z_GATE", param_name="high_conf_vol_z_gate", fallback=1.0
+            env_key="HIGH_CONF_VOL_Z_GATE", param_name="high_conf_vol_z_gate", fallback=1.0,
         )
         self.high_conf_vpin_z_gate, _ = self._resolve_gate_value(
-            env_key="HIGH_CONF_VPIN_Z_GATE", param_name="high_conf_vpin_z_gate", fallback=2.0
+            env_key="HIGH_CONF_VPIN_Z_GATE", param_name="high_conf_vpin_z_gate", fallback=2.0,
         )
 
         # ── EWMA runway calibration ──────────────────────────────────────────
@@ -299,7 +299,7 @@ class TriggerAgent(AgentTrainingMixin):
         return None  # Carry on to normal model decision
 
     def _decide_numpy_path(
-        self, state: np.ndarray, regime_threshold_adj: float, friction_cost: float
+        self, state: np.ndarray, regime_threshold_adj: float, friction_cost: float,
     ) -> tuple[int, float, float]:
         """決 Decision path for the numpy-based DDQN or MA-crossover fallback."""
         if self.ddqn is not None and self.enable_training and self.training_steps > 0:
@@ -1005,7 +1005,7 @@ class TriggerAgent(AgentTrainingMixin):
         return 1.0 if trade_success else 0.0
 
     def _update_platt_from_trade(
-        self, entry_confidence: float, outcome: float, raw_confidence: float | None = None
+        self, entry_confidence: float, outcome: float, raw_confidence: float | None = None,
     ) -> None:
         """Update Platt calibration parameters from trade outcome."""
         if not (self.enable_training and hasattr(self, "platt_a")):
@@ -1014,7 +1014,7 @@ class TriggerAgent(AgentTrainingMixin):
         self.update_platt_params(predicted_prob, outcome, raw_prob=raw_confidence)
 
     def _update_confidence_from_trade(
-        self, utilization: float, actual_mfe: float = 0.0, entry_price: float = 0.0
+        self, utilization: float, actual_mfe: float = 0.0, entry_price: float = 0.0,
     ) -> None:
         """Update confidence_floor and related parameters using utilization."""
         if self.param_manager is None:
@@ -1113,48 +1113,32 @@ class TriggerAgent(AgentTrainingMixin):
 # ============================================================================
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    print("=" * 70)
-    print("TriggerAgent Self-Test")
-    print("=" * 70)
 
     rng = np.random.default_rng(42)
 
     # Test 1: Initialize without model (fallback)
-    print("\n[TEST 1] Initialize without model")
     trigger = TriggerAgent(window=STATE_WINDOW_SIZE, n_features=7)
     assert not trigger.use_torch
-    print("✓ Fallback mode initialized")
 
     # Test 2: Decide with synthetic state (flat position)
-    print("\n[TEST 2] Entry decision (flat position)")
     state = rng.standard_normal((STATE_WINDOW_SIZE, 7)).astype(np.float32)
     state[:, 2] = 0.35  # Strong positive MA diff → should signal LONG
     action, conf, runway = trigger.decide(state, current_position=0)
     assert action in [0, 1, 2]
     assert 0 <= conf <= 1
     assert runway >= 0
-    print(f"✓ Action: {action}, Confidence: {conf:.3f}, Runway: {runway:.4f}")
 
     # Test 3: Decide with existing position (should return NO_ENTRY)
-    print("\n[TEST 3] Entry decision (already in position)")
     action, conf, runway = trigger.decide(state, current_position=1)
     assert action == 0  # NO_ENTRY
     assert SafeMath.is_zero(conf)
     assert SafeMath.is_zero(runway)
-    print("✓ Correctly blocks entry when position exists")
 
     # Test 4: Update from trade (logging only)
-    print("\n[TEST 4] Update from trade outcome")
     trigger.update_from_trade(actual_mfe=0.0025, predicted_runway=0.0020)
-    print("✓ Trade outcome logged")
 
     # Test 5: Q-to-runway mapping
-    print("\n[TEST 5] Q-value to runway conversion")
-    assert trigger._q_to_runway(0.0) == Q_RUNWAY_MIN
-    assert trigger._q_to_runway(1.5) == Q_RUNWAY_MIN + (1.5 / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
-    assert trigger._q_to_runway(3.0) == Q_RUNWAY_MAX
-    print("✓ Q-to-runway mapping correct")
+    assert abs(trigger._q_to_runway(0.0) - Q_RUNWAY_MIN) < 1e-9
+    assert abs(trigger._q_to_runway(1.5) - (Q_RUNWAY_MIN + (1.5 / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN))) < 1e-9
+    assert abs(trigger._q_to_runway(3.0) - Q_RUNWAY_MAX) < 1e-9
 
-    print("\n" + "=" * 70)
-    print("✓ All TriggerAgent tests passed!")
-    print("=" * 70)

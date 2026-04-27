@@ -235,7 +235,7 @@ class TestLoadSymbolSpecs:
                 "swap_long": -1.0,
                 "swap_short": -2.0,
                 "triple_swap_day": 3,
-            }
+            },
         }
 
         with (

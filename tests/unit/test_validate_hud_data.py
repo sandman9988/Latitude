@@ -12,7 +12,7 @@ def test_multi_bot_check_validates_scope_not_root_equality(tmp_path):
                 "timeframe_minutes": 1,
                 "trigger_training_steps": 1,
                 "harvester_training_steps": 1,
-            }
+            },
         ),
         encoding="utf-8",
     )
@@ -23,7 +23,7 @@ def test_multi_bot_check_validates_scope_not_root_equality(tmp_path):
                 "timeframe_minutes": 5,
                 "trigger_training_steps": 99,
                 "harvester_training_steps": 42,
-            }
+            },
         ),
         encoding="utf-8",
     )

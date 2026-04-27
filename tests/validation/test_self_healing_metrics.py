@@ -8,15 +8,15 @@ insufficient data (< 100 trades for the specified symbol/TF/month).
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from src.utils.metrics_calculator import (
+    cap_trend,
     decision_quality,
     period_comparison,
-    cap_trend,
     self_healing_metrics,
 )
 
@@ -71,7 +71,7 @@ def xau_m5_hub_trades(xau_m5_trades) -> list[dict]:
 @pytest.fixture
 def xau_m5_recent_24h(xau_m5_trades) -> list[dict]:
     """XAUUSD M5 trades from the last 24h of the dataset."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cut = (now - timedelta(hours=24)).isoformat()
     return [t for t in xau_m5_trades if (t.get("exit_time") or "") >= cut]
 
@@ -79,7 +79,7 @@ def xau_m5_recent_24h(xau_m5_trades) -> list[dict]:
 @pytest.fixture
 def xau_m5_recent_7d(xau_m5_trades) -> list[dict]:
     """XAUUSD M5 trades from the last 7d of the dataset."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cut = (now - timedelta(days=7)).isoformat()
     return [t for t in xau_m5_trades if (t.get("exit_time") or "") >= cut]
 
@@ -286,9 +286,9 @@ class TestSelfHealingEdgeCases:
 
     def test_regime_breakdown_non_empty(self, xau_m5_trades):
         """_regime_breakdown must return at least one regime."""
-        from src.utils.metrics_calculator import _regime_breakdown  # noqa: PLC0415
+        from src.utils.metrics_calculator import _regime_breakdown
         result = _regime_breakdown(xau_m5_trades[:500])
         assert len(result) > 0, "No regimes found in real trade data"
-        for regime, stats in result.items():
+        for stats in result.values():
             assert stats["trades"] > 0
             assert isinstance(stats["pnl"], float)

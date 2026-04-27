@@ -62,9 +62,6 @@ class MockDualPolicy:
 
 def test_entry_to_exit_flow():
     """Test complete flow: FLAT → ENTRY → IN_POSITION → EXIT"""
-    print("\n" + "=" * 70)
-    print("TEST: Entry to Exit Flow with Harvester")
-    print("=" * 70)
 
     policy = MockDualPolicy()
     bars = deque(maxlen=100)
@@ -102,21 +99,15 @@ def test_entry_to_exit_flow():
                 policy.mfe = 0
                 policy.mae = 0
                 policy.bars_held = 0
-                print(f"\n[BAR {i}] ENTRY SIGNAL: LONG @ {c:.2f}, conf={confidence:.2f}")
         else:
             # IN POSITION: Check for exit
             exit_action, exit_conf = policy.decide_exit(bars, current_price=c)
             desired = 0 if exit_action == 1 else policy.current_position
 
-            print(
-                f"[BAR {i}] IN POSITION: MFE={policy.mfe:.2f}, MAE={policy.mae:.2f}, "
-                f"bars_held={policy.bars_held}, exit_action={exit_action}, conf={exit_conf:.2f}"
-            )
 
             # Simulate exit if signaled
             if exit_action == 1:
-                exit_pnl = c - policy.entry_price
-                print(f"[BAR {i}] EXIT SIGNAL: CLOSE @ {c:.2f}, PnL={exit_pnl:.2f}")
+                c - policy.entry_price
                 policy.current_position = 0
 
         # Log decision
@@ -140,9 +131,6 @@ def test_entry_to_exit_flow():
         decision_log.append(log_entry)
 
     # Verify flow
-    print("\n" + "-" * 70)
-    print("VERIFICATION:")
-    print("-" * 70)
 
     entry_found = False
     in_position_found = False
@@ -154,40 +142,26 @@ def test_entry_to_exit_flow():
         # Check for entry (action=1 means LONG entry signal)
         if details.get("action") == 1 and details.get("confidence") is not None:
             entry_found = True
-            print(
-                f"✓ Entry signal found at bar {entry['bar']}, action={details.get('action')}, conf={details.get('confidence'):.2f}"
-            )
 
         # Check for in-position (harvester active when cur_pos != 0)
         if details.get("mfe") is not None and details.get("exit_action") is not None:
             in_position_found = True
-            print(
-                f"✓ Harvester active at bar {entry['bar']}, "
-                f"MFE={details.get('mfe'):.2f}, MAE={details.get('mae'):.2f}, exit_action={details.get('exit_action')}"
-            )
 
         # Check for exit
         if details.get("exit_action") == 1:
             exit_found = True
-            print(f"✓ Exit signal found at bar {entry['bar']}, conf={details.get('exit_conf'):.2f}")
 
     # Summary
-    print("\n" + "=" * 70)
     if entry_found and in_position_found and exit_found:
-        print("✓ PASS: Complete entry→in_position→exit flow verified")
+        pass
     else:
-        print("✗ FAIL: Incomplete flow")
-        print(f"  Entry: {entry_found}, In-position: {in_position_found}, Exit: {exit_found}")
-    print("=" * 70)
+        pass
 
     assert entry_found and in_position_found and exit_found, "Incomplete entry→in_position→exit flow"
 
 
 def test_decision_log_harvester_fields():
     """Test that harvester-specific fields are captured in decision log"""
-    print("\n" + "=" * 70)
-    print("TEST: Harvester Fields in Decision Log")
-    print("=" * 70)
 
     policy = MockDualPolicy()
     policy.current_position = 1  # Already in position
@@ -199,20 +173,13 @@ def test_decision_log_harvester_fields():
     # Simulate a few bars in position
     for i in range(3):
         current_price = 90500.0 + i * 20  # Price rising
-        exit_action, _exit_conf = policy.decide_exit([], current_price=current_price)
+        _exit_action, _exit_conf = policy.decide_exit([], current_price=current_price)
 
-        print(
-            f"Bar {i}: MFE={policy.mfe:.2f}, MAE={policy.mae:.2f}, "
-            f"bars_held={policy.bars_held}, exit_action={exit_action}"
-        )
 
     # Verify harvester fields exist
     required_fields = ["mfe", "mae", "bars_held", "exit_action", "exit_conf"]
-    print("\n" + "-" * 70)
-    print("VERIFICATION:")
-    for field in required_fields:
-        print(f"✓ Field '{field}' is tracked by harvester")
-    print("=" * 70)
+    for _field in required_fields:
+        pass
 
 
 if __name__ == "__main__":
@@ -221,17 +188,12 @@ if __name__ == "__main__":
     results.append(("Entry to Exit Flow", test_entry_to_exit_flow()))
     results.append(("Harvester Fields", test_decision_log_harvester_fields()))
 
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
 
     all_passed = True
-    for test_name, passed in results:
+    for _test_name, passed in results:
         status = "✓ PASS" if passed else "✗ FAIL"
-        print(f"{status}: {test_name}")
         if not passed:
             all_passed = False
 
-    print("=" * 70)
 
     sys.exit(0 if all_passed else 1)

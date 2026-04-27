@@ -264,7 +264,7 @@ class TradeManagerIntegration:
                 self.cleanup_stale_trackers()
             elif self.position_tickets:
                 LOG.info(
-                    "[INTEGRATION] Starting with %d position ticket(s) - keeping trackers", len(self.position_tickets)
+                    "[INTEGRATION] Starting with %d position ticket(s) - keeping trackers", len(self.position_tickets),
                 )
 
             LOG.info(
@@ -570,7 +570,7 @@ class TradeManagerIntegration:
                     timeframe=self.app.timeframe_label,
                     broker="default",
                     default=2.5,
-                )
+                ),
             )
             self.hard_sl_pct = sl_pct
         self._submit_hard_sl(order.avg_price, 1 if order.side.name == "BUY" else -1)
@@ -881,7 +881,7 @@ class TradeManagerIntegration:
                 )
                 LOG.debug("[TRAILING-STOP] Modified stop order to %.5f", stop_price)
             except Exception as e:
-                LOG.error("[TRAILING-STOP] Failed to modify stop: %s", e)
+                LOG.exception("[TRAILING-STOP] Failed to modify stop: %s", e)
                 # Retry by submitting new stop
                 self.trailing_stop_order = None
                 self._submit_stop_order(stop_price)
@@ -897,7 +897,7 @@ class TradeManagerIntegration:
                 )
                 LOG.info("[TRAILING-STOP] Submitted stop order @ %.5f", stop_price)
             except Exception as e:
-                LOG.error("[TRAILING-STOP] Failed to submit stop: %s", e)
+                LOG.exception("[TRAILING-STOP] Failed to submit stop: %s", e)
 
     def disable_trailing_stop(self) -> None:
         """Disable trailing stop and cancel stop order."""
@@ -1318,7 +1318,7 @@ class TradeManagerIntegration:
         LOG.info(_MSG_RECOVERED_ENTRY, entry_price, direction, mfe, mae)
 
     def _notify_policy_after_recovery(
-        self, active_trackers: dict, position_tickets: dict, position_recovered: bool
+        self, active_trackers: dict, position_tickets: dict, position_recovered: bool,
     ) -> None:
         """Call policy.on_recovery (or on_entry) for the most recently persisted position."""
         if not hasattr(self.app, "policy"):
@@ -1486,7 +1486,7 @@ class TradeManagerIntegration:
                 # Alert could be sent here
                 if hasattr(self.app, "alert_manager"):
                     self.app.alert_manager.send_alert(
-                        "CRITICAL", f"Position validation failed: Expected {expected_direction}, got {actual_direction}"
+                        "CRITICAL", f"Position validation failed: Expected {expected_direction}, got {actual_direction}",
                     )
             else:
                 direction_str = self._format_direction_label(actual_direction)
@@ -1561,15 +1561,4 @@ class TradeManagerIntegration:
 
 
 if __name__ == "__main__":
-    print("TradeManager Integration Example")
-    print("\nIntegration Steps:")
-    print("1. Add TradeManagerIntegration to CTraderFixApp.__init__()")
-    print("2. Call initialize_trade_manager() in onCreate() for TRADE session")
-    print("3. Route ExecutionReport and PositionReport to TradeManager")
-    print("4. Replace send_market_order() with enter_position()/exit_position()")
-    print("\nBenefits:")
-    print("  ✓ Centralized order management")
-    print("  ✓ Complete order lifecycle tracking")
-    print("  ✓ Automatic position reconciliation")
-    print("  ✓ Clean separation of concerns")
-    print("  ✓ Easy to test and debug")
+    pass

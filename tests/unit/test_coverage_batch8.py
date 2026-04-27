@@ -348,7 +348,7 @@ class TestTradeExporterEdges:
                 "mfe": 5.0,
                 "mae": -3.0,
                 "equity_after": 10000.0,
-            }
+            },
         ]
         mock_tracker.get_metrics.return_value = {
             "total_trades": 1,

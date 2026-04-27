@@ -34,7 +34,10 @@ import logging
 import math
 import sys
 from collections import deque
-from typing import Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 LOG = logging.getLogger(__name__)
 
@@ -366,12 +369,8 @@ if __name__ == "__main__":
 
     import numpy as np
 
-    print("=" * 70)
-    print("Ring Buffer Stats Self-Test")
-    print("=" * 70)
 
     # Test 1: RollingMean correctness
-    print("\n[TEST 1] RollingMean correctness")
     period = 5
     mean_tracker = RollingMean(period)
     values = [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]
@@ -383,13 +382,11 @@ if __name__ == "__main__":
     # Mean should be 40.0
     expected_mean = 40.0
     if abs(mean_tracker.value - expected_mean) < FLOATING_POINT_TOLERANCE:
-        print(f"    ✓ RollingMean = {mean_tracker.value:.2f} (expected {expected_mean:.2f})")
+        pass
     else:
-        print(f"    ERROR: Expected {expected_mean}, got {mean_tracker.value}")
         sys.exit(1)
 
     # Test 2: RollingVariance correctness
-    print("\n[TEST 2] RollingVariance correctness")
     var_tracker = RollingVariance(period)
 
     for val in values:
@@ -404,14 +401,11 @@ if __name__ == "__main__":
     std_error = abs(var_tracker.std - expected_std)
 
     if mean_error < FLOATING_POINT_TOLERANCE and std_error < FLOATING_POINT_TOLERANCE:
-        print(f"    ✓ Mean = {var_tracker.mean:.2f} (expected {expected_mean:.2f})")
-        print(f"    ✓ Std = {var_tracker.std:.2f} (expected {expected_std:.2f})")
+        pass
     else:
-        print(f"    ERROR: Mean error = {mean_error}, Std error = {std_error}")
         sys.exit(1)
 
     # Test 3: RollingMinMax correctness
-    print("\n[TEST 3] RollingMinMax correctness")
     minmax_tracker = RollingMinMax(period)
 
     for val in values:
@@ -424,16 +418,11 @@ if __name__ == "__main__":
         abs(minmax_tracker.min_value - expected_min) < FLOATING_POINT_TOLERANCE
         and abs(minmax_tracker.max_value - expected_max) < FLOATING_POINT_TOLERANCE
     ):
-        print(f"    ✓ Min = {minmax_tracker.min_value:.2f} (expected {expected_min:.2f})")
-        print(f"    ✓ Max = {minmax_tracker.max_value:.2f} (expected {expected_max:.2f})")
+        pass
     else:
-        print(
-            f"    ERROR: Min {minmax_tracker.min_value} vs {expected_min}, Max {minmax_tracker.max_value} vs {expected_max}"
-        )
         sys.exit(1)
 
     # Test 4: Performance comparison
-    print("\n[TEST 4] Performance comparison (O(1) vs O(N))")
     period = 100
     n_iterations = 10000
 
@@ -461,15 +450,11 @@ if __name__ == "__main__":
     naive_time = time.perf_counter() - start
 
     speedup = naive_time / ring_time
-    print(f"    Ring buffer: {ring_time * 1000:.2f} ms")
-    print(f"    Naive O(N):  {naive_time * 1000:.2f} ms")
-    print(f"    ✓ Speedup: {speedup:.2f}x faster")
 
     if speedup < MIN_SPEEDUP_EXPECTED:
-        print(f"    WARNING: Expected >{MIN_SPEEDUP_EXPECTED}x speedup, got {speedup:.2f}x")
+        pass
 
     # Test 5: Numerical stability
-    print("\n[TEST 5] Numerical stability (large values)")
     var_tracker = RollingVariance(10)
 
     # Add large values that could cause overflow in naive variance
@@ -481,11 +466,7 @@ if __name__ == "__main__":
 
     # Should have small std (around 0.3) despite large mean (around 1e10)
     if var_tracker.std < 1.0:
-        print(f"    ✓ Stable std = {var_tracker.std:.6f} with mean = {var_tracker.mean:.2e}")
+        pass
     else:
-        print(f"    ERROR: Std too large: {var_tracker.std}")
         sys.exit(1)
 
-    print("\n" + "=" * 70)
-    print("✓ All Ring Buffer tests passed!")
-    print("=" * 70)

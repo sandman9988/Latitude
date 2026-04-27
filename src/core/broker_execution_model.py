@@ -294,7 +294,7 @@ def _test_basic_execution_costs() -> None:
 
     # BUY order in normal regime
     costs = model.estimate_execution_costs(
-        side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, spread_bps=5.0, regime="UNKNOWN"
+        side=OrderSide.BUY, quantity=0.10, mid_price=50000.0, spread_bps=5.0, regime="UNKNOWN",
     )
 
     # Should have spread cost + base slippage
@@ -337,7 +337,7 @@ def _test_asymmetric_slippage() -> None:
 def _test_regime_impact() -> None:
     """Test regime multipliers."""
     model = BrokerExecutionModel(
-        base_slippage_bps=10.0, volatile_multiplier=2.0, trending_multiplier=1.5, mean_reverting_multiplier=0.8
+        base_slippage_bps=10.0, volatile_multiplier=2.0, trending_multiplier=1.5, mean_reverting_multiplier=0.8,
     )
 
     qty = 0.10
@@ -397,7 +397,7 @@ def _test_cost_cap() -> None:
     )
 
     costs = model.estimate_execution_costs(
-        side=OrderSide.BUY, quantity=10.0, mid_price=50000.0, regime="TRANSITIONAL", typical_quantity=0.10
+        side=OrderSide.BUY, quantity=10.0, mid_price=50000.0, regime="TRANSITIONAL", typical_quantity=0.10,
     )
 
     # Should be capped
@@ -414,7 +414,7 @@ def _test_position_size_adjustment() -> None:
 
     target = 0.10
     adjusted = model.adjust_position_size_for_costs(
-        side=OrderSide.BUY, target_quantity=target, mid_price=50000.0, regime="TRANSITIONAL"
+        side=OrderSide.BUY, target_quantity=target, mid_price=50000.0, regime="TRANSITIONAL",
     )
 
     # Adjusted should be less than target

@@ -102,7 +102,7 @@ class AtomicPersistence:
                 raise
 
         except (OSError, ValueError) as e:
-            logger.error("Failed to save %s: %s", filename, e)
+            logger.exception("Failed to save %s: %s", filename, e)
             return False
 
     def load_json(self, filename: str, verify_crc: bool = True) -> dict[str, Any] | None:
@@ -153,7 +153,7 @@ class AtomicPersistence:
 
                         if stored_crc != computed_crc:
                             logger.error(
-                                "CRC mismatch in %s: stored=%08x, computed=%08x", filename, stored_crc, computed_crc
+                                "CRC mismatch in %s: stored=%08x, computed=%08x", filename, stored_crc, computed_crc,
                             )
                             # Try to restore from backup
                             return self._restore_from_backup(filename)
@@ -171,11 +171,11 @@ class AtomicPersistence:
                 return cast("dict[str, Any]", envelope_data)
 
             except json.JSONDecodeError as decode_e:
-                logger.error("JSON decode failed for %s: %s", filename, decode_e)
+                logger.exception("JSON decode failed for %s: %s", filename, decode_e)
                 return self._restore_from_backup(filename)
 
         except OSError as e:
-            logger.error("Failed to load %s: %s", filename, e)
+            logger.exception("Failed to load %s: %s", filename, e)
             return None
 
     def _create_backup(self, target_path: Path) -> bool:
@@ -194,7 +194,7 @@ class AtomicPersistence:
             return True
 
         except OSError as e:
-            logger.error("Backup creation failed: %s", e)
+            logger.exception("Backup creation failed: %s", e)
             return False
 
     def _cleanup_old_backups(self, target_path: Path) -> None:
@@ -251,7 +251,7 @@ class AtomicPersistence:
             return cast("dict[str, Any]", data)
 
         except (OSError, json.JSONDecodeError) as e:
-            logger.error("Restore from backup failed: %s", e)
+            logger.exception("Restore from backup failed: %s", e)
             return None
 
     def list_backups(self, filename: str) -> list[str]:
@@ -301,7 +301,7 @@ class JournaledPersistence(AtomicPersistence):
                             uncommitted_count += 1
                             # Could implement replay logic here
                     except json.JSONDecodeError as e:
-                        logger.error("Malformed journal entry %d: %s (skipping)", line_no, e)
+                        logger.exception("Malformed journal entry %d: %s (skipping)", line_no, e)
                         error_count += 1
                         continue
 
@@ -319,7 +319,7 @@ class JournaledPersistence(AtomicPersistence):
                 logger.warning("Failed to archive journal: %s", e)
 
         except OSError as e:
-            logger.error("Journal recovery failed: %s", e)
+            logger.exception("Journal recovery failed: %s", e)
 
     def _journal_write(self, operation: str, filename: str, data_hash: int | None = None) -> bool:
         """Write operation to journal."""
@@ -340,7 +340,7 @@ class JournaledPersistence(AtomicPersistence):
             return True
 
         except OSError as e:
-            logger.error("Journal write failed: %s", e)
+            logger.exception("Journal write failed: %s", e)
             return False
 
     def _journal_commit(self, filename: str) -> bool:
@@ -355,7 +355,6 @@ if __name__ == "__main__":
     # Self-test
     TEST_FILENAME = "test_params.json"
 
-    print("AtomicPersistence Tests:")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         ap = AtomicPersistence(tmpdir)
@@ -367,25 +366,17 @@ if __name__ == "__main__":
             "learned_vpin_z_limit": 2.0,
         }
 
-        print("  Saving test data...")
         success = ap.save_json(test_data, TEST_FILENAME)
-        print(f"    Save: {'✓' if success else '✗'}")
 
-        print("  Loading test data...")
         loaded = ap.load_json(TEST_FILENAME)
-        print(f"    Load: {'✓' if loaded == test_data else '✗'}")
-        print(f"    Data matches: {loaded == test_data}")
 
         # Test backup
-        print("  Modifying and saving again...")
         test_data["learned_spread_relax"] = 2.0
         ap.save_json(test_data, TEST_FILENAME)
 
         test_backups = ap.list_backups(TEST_FILENAME)
-        print(f"    Backups created: {len(test_backups)}")
 
         # Test CRC corruption detection
-        print("  Testing CRC corruption detection...")
         target = Path(tmpdir) / TEST_FILENAME
         with open(target, encoding="utf-8") as read_f:
             envelope_data = json.load(read_f)
@@ -394,8 +385,6 @@ if __name__ == "__main__":
             json.dump(envelope_data, write_f)
 
         loaded_corrupted = ap.load_json(TEST_FILENAME, verify_crc=True)
-        print(f"    Corrupted restore: {'✓' if loaded_corrupted else '✗'}")
         if loaded_corrupted:
-            print(f"    Restored value: {loaded_corrupted.get('learned_spread_relax')}")
+            pass
 
-    print("\nAll tests passed ✓")

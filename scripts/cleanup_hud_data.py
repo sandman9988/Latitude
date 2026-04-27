@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,16 +43,11 @@ BACKUP_PATTERNS = {
 def analyze_data_dir():
     """Analyze what needs cleanup."""
     if not DATA_DIR.exists():
-        print("❌ Data directory not found")
         return None
 
-    print("\n" + "=" * 100)
-    print("📋 DATA CLEANUP ANALYSIS")
-    print("=" * 100)
 
     now = datetime.now(UTC)
     # Find stale files
-    print(f"\n🗁 Files to Archive (> {STALE_THRESHOLD_DAYS} days old):")
     stale_files = []
     for json_file in DATA_DIR.glob("*.json"):
         mtime = datetime.fromtimestamp(json_file.stat().st_mtime, UTC)
@@ -59,12 +55,10 @@ def analyze_data_dir():
 
         if json_file.name in ARCHIVABLE_FILES and age_days > STALE_THRESHOLD_DAYS:
             stale_files.append((json_file.name, age_days, mtime))
-            print(f"  ❌ {json_file.name:40} | {age_days:3}d old | {mtime.date()}")
 
     # Find backup clutter
-    print("\n📦 Backup Files to Consolidate:")
     backups_to_delete = []
-    for filename, patterns in BACKUP_PATTERNS.items():
+    for patterns in BACKUP_PATTERNS.values():
         backup_files = []
         for pattern in patterns:
             backup_files.extend(DATA_DIR.glob(pattern))
@@ -72,25 +66,15 @@ def analyze_data_dir():
         if backup_files:
             # Keep most recent, delete others
             backup_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-            kept = backup_files[:KEEP_RECENT_BACKUPS]
+            backup_files[:KEEP_RECENT_BACKUPS]
             to_delete = backup_files[KEEP_RECENT_BACKUPS:]
 
-            print(f"\n  {filename}:")
-            print(f"    Keep:   {kept[0].name if kept else 'none'}")
             if to_delete:
-                print(f"    Delete: {len(to_delete)} files")
                 for f in to_delete:
-                    age = (now - datetime.fromtimestamp(f.stat().st_mtime, UTC)).days
-                    print(f"      - {f.name} ({age}d old)")
+                    (now - datetime.fromtimestamp(f.stat().st_mtime, UTC)).days
                     backups_to_delete.extend(to_delete)
 
     # Summary
-    print("\n" + "=" * 100)
-    print("SUMMARY:")
-    print(f"  Files to archive: {len(stale_files)}")
-    print(f"  Backup files to delete: {len(backups_to_delete)}")
-    print(f"  Archive location: {ARCHIVE_DIR}")
-    print("=" * 100 + "\n")
 
     return stale_files, backups_to_delete
 
@@ -98,53 +82,44 @@ def analyze_data_dir():
 def execute_cleanup(dry_run: bool = True) -> None:
     """Execute the cleanup operations."""
     if not DATA_DIR.exists():
-        print("❌ Data directory not found")
         return
 
     stale_files, backups_to_delete = analyze_data_dir()
 
     if dry_run:
-        print("🔄 DRY-RUN MODE: No files will be modified\n")
+        pass
 
     # Archive stale files
     if stale_files:
         if not dry_run:
             ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-        print("Archiving stale files:")
         for filename, _age_days, mtime in stale_files:
             src = DATA_DIR / filename
             dst = ARCHIVE_DIR / f"{filename}.{mtime.strftime('%Y%m%d_%H%M%S')}"
 
             if dry_run:
-                print(f"  → {filename} → archive/")
+                pass
             else:
                 try:
                     shutil.copy2(src, dst)
                     src.unlink()
-                    print(f"  ✓ {filename} → archive/")
-                except Exception as e:
-                    print(f"  ❌ {filename} - Error: {e}")
+                except Exception:
+                    pass
 
     # Delete old backups
     if backups_to_delete:
-        print("\nDeleting old backup files:")
         for backup_file in backups_to_delete:
             if dry_run:
-                print(f"  → DELETE {backup_file.name}")
+                pass
             else:
-                try:
+                with contextlib.suppress(Exception):
                     backup_file.unlink()
-                    print(f"  ✓ Deleted {backup_file.name}")
-                except Exception as e:
-                    print(f"  ❌ {backup_file.name} - Error: {e}")
 
     if not dry_run:
-        print("\n✓ Cleanup complete!")
-        print(f"✓ Created archive: {ARCHIVE_DIR}")
-        print("✓ Run: python3 scripts/cleanup_hud_data.py --analyze  # Verify")
+        pass
     else:
-        print("\n✓ Dry-run complete. Run with --execute to apply changes.")
+        pass
 
 
 def main() -> None:

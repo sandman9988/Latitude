@@ -299,10 +299,10 @@ def run_all_tests():
             test()
             passed += 1
         except AssertionError as e:
-            LOG.error(f"FAILED: {test.__name__} - {e}")
+            LOG.exception(f"FAILED: {test.__name__} - {e}")
             failed += 1
         except Exception as e:
-            LOG.error(f"ERROR: {test.__name__} - {e}")
+            LOG.exception(f"ERROR: {test.__name__} - {e}")
             failed += 1
 
     LOG.info("\n" + "=" * 80)

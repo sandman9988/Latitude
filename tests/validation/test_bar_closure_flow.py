@@ -17,16 +17,10 @@ def trace_bar_closure_events():
     Based on ctrader_ddqn_paper.py lines 1641-1651
     """
 
-    print("\n" + "=" * 80)
-    print("BAR CLOSURE EVENT FLOW - Complete Sequence")
-    print("=" * 80)
 
-    print("\n📍 LOCATION: ctrader_ddqn_paper.py :: try_bar_update() (Line ~1641)")
-    print("\nTRIGGER: BarBuilder.update() returns non-None (closed bar)")
-    print("-" * 80)
 
     # Simulated bar closure
-    closed_bar = (
+    (
         dt.datetime(2026, 1, 11, 10, 0, 0, tzinfo=UTC),  # timestamp
         100.0,  # open
         105.0,  # high
@@ -34,13 +28,7 @@ def trace_bar_closure_events():
         102.0,  # close
     )
 
-    print("\nCLOSED BAR DATA:")
-    print(f"  Timestamp: {closed_bar[0]}")
-    print(f"  OHLC: O={closed_bar[1]} H={closed_bar[2]} L={closed_bar[3]} C={closed_bar[4]}")
 
-    print("\n" + "=" * 80)
-    print("EVENT SEQUENCE (in order of execution)")
-    print("=" * 80)
 
     events = [
         {
@@ -149,28 +137,13 @@ def trace_bar_closure_events():
     ]
 
     for event in events:
-        print(f"\n{'=' * 80}")
-        print(f"STEP {event['step']}: {event['name']}")
-        print(f"{'=' * 80}")
-        print(f"📍 Line: {event['line']}")
-        print("\n💻 CODE:")
-        for line in event["code"].split("\n"):
-            print(f"    {line}")
-        print("\n📝 DESCRIPTION:")
-        print(f"    {event['description']}")
-        print("\n🎯 IMPACT:")
-        print(f"    {event['impact']}")
+        for _line in event["code"].split("\n"):
+            pass
         if "details" in event:
-            print("\n🔍 DETAILS:")
-            for detail in event["details"]:
-                print(f"    {detail}")
+            for _detail in event["details"]:
+                pass
 
-    print("\n" + "=" * 80)
-    print("CRITICAL INSIGHT: on_bar_close() Deep Dive")
-    print("=" * 80)
 
-    print("\nThe on_bar_close() method (Step 8) is the HEART of the trading system.")
-    print("It triggers a complex cascade of operations:\n")
 
     on_bar_close_steps = [
         ("1. Bar Counter Increment", "self.bar_count += 1"),
@@ -191,126 +164,18 @@ def trace_bar_closure_events():
         ("16. Timeout Checks", "self.trade_integration.check_pending_order_timeouts()"),
     ]
 
-    for i, (description, code) in enumerate(on_bar_close_steps, 1):
-        print(f"\n  {i:2d}. {description}")
-        print(f"      → {code}")
+    for _i, (_description, _code) in enumerate(on_bar_close_steps, 1):
+        pass
 
-    print("\n" + "=" * 80)
-    print("NON-REPAINT GUARD MECHANISM")
-    print("=" * 80)
 
-    print("\nThe non-repaint guards follow a strict state machine:\n")
-    print("  STATE 1: Bar Open (is_bar_closed=False)")
-    print("    • bar[0] access → BLOCKED (raises NonRepaintError)")
-    print("    • bar[1+] access → ALLOWED")
-    print("    • Purpose: Prevent using incomplete bar data")
-    print()
-    print("  STATE 2: Bar Close Event (triggered by _mark_non_repaint_closed())")
-    print("    • is_bar_closed=True")
-    print("    • bar[0] access → ALLOWED (bar is complete)")
-    print("    • Agents can now safely use bar[0] data")
-    print()
-    print("  STATE 3: New Bar Opened (triggered by _mark_non_repaint_opened())")
-    print("    • is_bar_closed=False")
-    print("    • bar[0] access → BLOCKED again")
-    print("    • Cycle repeats")
 
-    print("\n" + "=" * 80)
-    print("DATA FLOW DIAGRAM")
-    print("=" * 80)
 
-    print(
-        """
-    BarBuilder.update()
-         │
-         ├─ Returns None → (bar still building, exit)
-         │
-         └─ Returns (time, O, H, L, C) → BAR CLOSED!
-                 │
-                 ├──► Log closure
-                 ├──► Reset tick counter
-                 ├──► Update price series (close, high, low, etc.)
-                 ├──► Mark bar closed (enable bar[0] access)
-                 ├──► Update statistics
-                 ├──► Append to bar history
-                 │
-                 ├──► on_bar_close() ⭐
-                 │         │
-                 │         ├──► Calculate features
-                 │         ├──► Detect regime
-                 │         ├──► Estimate VaR
-                 │         ├──► TriggerAgent → entry decision
-                 │         ├──► HarvesterAgent → exit decision
-                 │         ├──► Risk validation
-                 │         ├──► Execute orders
-                 │         ├──► Update performance
-                 │         ├──► Store experience
-                 │         ├──► Train agents (if enabled)
-                 │         └──► Export HUD data
-                 │
-                 └──► Mark new bar opened (disable bar[0] access)
-    """
-    )
 
-    print("\n" + "=" * 80)
-    print("TIMING & FREQUENCY")
-    print("=" * 80)
 
-    print(
-        """
-    Bar Closure Frequency (depends on timeframe):
-    • M1  (1-minute):   ~1,440 closures/day  (every minute)
-    • M5  (5-minute):   ~288 closures/day    (every 5 minutes)
-    • M15 (15-minute):  ~96 closures/day     (every 15 minutes)
-    • H1  (1-hour):     ~24 closures/day     (every hour)
 
-    Each closure triggers:
-    • Feature computation: ~2-5ms
-    • Agent decisions: ~1-2ms each
-    • Risk checks: ~1ms
-    • Total overhead: ~5-10ms per bar
 
-    Between bar closures (during bar building):
-    • Ticks update MFE/MAE: ~0.1ms per tick
-    • VPIN calculations: ~0.2ms per tick
-    • No trading decisions made
-    """
-    )
-
-    print("\n" + "=" * 80)
-    print("KEY TAKEAWAYS")
-    print("=" * 80)
-
-    print(
-        """
-    ✅ Bar closure is the PRIMARY event that drives trading decisions
-    ✅ Non-repaint guards ensure no look-ahead bias
-    ✅ All agent decisions happen in on_bar_close()
-    ✅ Between closures, only MFE/MAE tracking occurs
-    ✅ The system is event-driven, not tick-driven
-    ✅ Feature calculation is bar-synchronized
-    ✅ Orders are only submitted at bar close (not on ticks)
-
-    🚫 What does NOT happen on bar closure:
-    • No position reconciliation (happens on ExecutionReport)
-    • No quote updates (happens on MarketDataSnapshotFullRefresh)
-    • No FIX protocol messages sent (except orders)
-
-    ⚠️  Critical for understanding:
-    The bot makes decisions ONCE per bar, not continuously!
-    This is by design to prevent overtrading and maintain discipline.
-    """
-    )
 
 
 if __name__ == "__main__":
     trace_bar_closure_events()
 
-    print("\n" + "=" * 80)
-    print("✅ BAR CLOSURE EVENT FLOW DOCUMENTED")
-    print("=" * 80)
-    print("\nFor implementation details, see:")
-    print("  • ctrader_ddqn_paper.py :: try_bar_update() (line ~1641)")
-    print("  • ctrader_ddqn_paper.py :: on_bar_close() (line ~2300+)")
-    print("  • non_repaint_guards.py :: mark_bar_closed/opened()")
-    print("=" * 80 + "\n")

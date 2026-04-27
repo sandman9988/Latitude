@@ -171,7 +171,7 @@ class CachedTradeLogReader:
             self._trades = new_trades
             LOG.debug("[TRADE_LOG] Cache refreshed, %d trades loaded", len(new_trades))
         except Exception as e:
-            LOG.error("[TRADE_LOG] Failed to reload trades: %s (cache unchanged)", e)
+            LOG.exception("[TRADE_LOG] Failed to reload trades: %s (cache unchanged)", e)
             # Leave cache as-is, will retry next time
 
     def invalidate(self) -> None:

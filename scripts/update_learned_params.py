@@ -43,14 +43,10 @@ def list_parameters(path: Path, instrument_key: str) -> int:
     manager = _load_manager(path)
     instrument = manager.instruments.get(instrument_key)
     if instrument is None:
-        print(f"{path}: instrument not found: {instrument_key}")
         return 1
 
-    print(f"\n{path} :: {instrument_key}")
-    print("-" * 80)
     for name in sorted(instrument.params):
-        param = instrument.params[name]
-        print(f"{name:42s} = {param.value}")
+        instrument.params[name]
     return 0
 
 
@@ -58,17 +54,14 @@ def update_parameter(path: Path, instrument_key: str, param_name: str, value: fl
     manager = _load_manager(path)
     instrument = manager.instruments.get(instrument_key)
     if instrument is None:
-        print(f"{path}: instrument not found: {instrument_key}")
         return 1
     if param_name not in instrument.params:
-        print(f"{path}: parameter not found in {instrument_key}: {param_name}")
         return 1
 
     symbol, timeframe, broker = _split_instrument_key(instrument_key)
-    old_value = instrument.params[param_name].value
-    new_value = manager.set_value(symbol, param_name, value, timeframe=timeframe, broker=broker)
+    instrument.params[param_name].value
+    manager.set_value(symbol, param_name, value, timeframe=timeframe, broker=broker)
     manager.save()
-    print(f"{path}: {instrument_key}.{param_name} {old_value} -> {new_value}")
     return 0
 
 
@@ -101,7 +94,6 @@ def main() -> int:
         return list_parameters(path, instrument_key)
 
     if not args.param or args.value is None:
-        print("--param and --value are required unless --list is used")
         return 2
 
     rc = 0

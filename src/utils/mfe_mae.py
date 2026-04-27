@@ -56,7 +56,7 @@ class MFEMAECalculator:
                 LOG.error("[MFE_MAE] Invalid entry_price=%.5f — cannot track", entry_price or 0)
                 return
         except TypeError:
-            LOG.error("[MFE_MAE] Non-numeric entry_price=%r — cannot track", entry_price)
+            LOG.exception("[MFE_MAE] Non-numeric entry_price=%r — cannot track", entry_price)
             return
         if direction not in (1, -1):
             LOG.warning("[MFE_MAE] Invalid direction=%d — defaulting to LONG", direction)

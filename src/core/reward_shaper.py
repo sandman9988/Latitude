@@ -230,7 +230,7 @@ class RewardShaper:
         return reward
 
     def calculate_wtl_penalty(
-        self, was_wtl: bool, mfe: float, exit_pnl: float, bars_from_mfe_to_exit: int = 0
+        self, was_wtl: bool, mfe: float, exit_pnl: float, bars_from_mfe_to_exit: int = 0,
     ) -> float:
         """Penalty for Winner-to-Loser trades (had profit, ended in loss).
 
@@ -365,7 +365,7 @@ class RewardShaper:
         r_counterfactual = 0.0
         if entry_price > 0 and exit_price > 0 and mfe > 0:
             r_counterfactual, _ = self.counterfactual.analyze_exit(
-                entry_price, exit_price, mfe, mfe_bar_offset, direction
+                entry_price, exit_price, mfe, mfe_bar_offset, direction,
             )
             self.component_stats["counterfactual"]["sum"] += r_counterfactual
             self.component_stats["counterfactual"]["count"] += 1
@@ -416,7 +416,7 @@ class RewardShaper:
                     1 if r_activity != 0 else 0,
                     1 if r_counterfactual != 0 else 0,
                     1 if r_ensemble != 0 else 0,
-                ]
+                ],
             ),
         }
 
@@ -449,7 +449,7 @@ class RewardShaper:
         current_p50 = self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED)
         new_p50 = (1 - alpha) * current_p50 + alpha * mfe
         self.param_manager.set_value(
-            self.symbol, "mfe_p50_baseline", new_p50, timeframe=self.timeframe, broker=self.broker
+            self.symbol, "mfe_p50_baseline", new_p50, timeframe=self.timeframe, broker=self.broker,
         )
 
         # p75 baseline (high-end proxy: EMA with upward bias on large moves)
@@ -459,7 +459,7 @@ class RewardShaper:
         p75_alpha = 0.10 if mfe > current_p75 else 0.03
         new_p75 = (1 - p75_alpha) * current_p75 + p75_alpha * mfe
         self.param_manager.set_value(
-            self.symbol, "opportunity_p75_baseline", new_p75, timeframe=self.timeframe, broker=self.broker
+            self.symbol, "opportunity_p75_baseline", new_p75, timeframe=self.timeframe, broker=self.broker,
         )
 
     def adapt_weights(self, performance_delta: float) -> None:
@@ -832,27 +832,18 @@ class RewardShaper:
 
 # Example usage and testing
 if __name__ == "__main__":
-    print("Testing RewardShaper module...")
 
     shaper = RewardShaper(symbol="BTCUSD", timeframe="M15")
 
     # Test 1: Good capture efficiency
-    print("\n=== Test 1: Good Capture (exit_pnl=80, MFE=100) ===")
     reward1 = shaper.calculate_total_reward({"exit_pnl": 80.0, "mfe": 100.0, "mae": 20.0, "winner_to_loser": False})
-    print(f"Capture Efficiency: {reward1['capture_efficiency']:+.4f}")
-    print(f"Total Reward: {reward1['total_reward']:+.4f}")
 
     # Test 2: Winner-to-Loser scenario
-    print("\n=== Test 2: Winner-to-Loser (MFE=150, exit_pnl=-30) ===")
     reward2 = shaper.calculate_total_reward(
-        {"exit_pnl": -30.0, "mfe": 150.0, "mae": 50.0, "winner_to_loser": True, "bars_from_mfe": 20}
+        {"exit_pnl": -30.0, "mfe": 150.0, "mae": 50.0, "winner_to_loser": True, "bars_from_mfe": 20},
     )
-    print(f"Capture Efficiency: {reward2['capture_efficiency']:+.4f}")
-    print(f"WTL Penalty: {reward2['wtl_penalty']:+.4f}")
-    print(f"Total Reward: {reward2['total_reward']:+.4f}")
 
     # Test 3: Missed opportunity
-    print("\n=== Test 3: Missed Opportunity (potential_mfe=200, signal=0.8) ===")
     reward3 = shaper.calculate_total_reward(
         {
             "exit_pnl": 0.0,
@@ -861,54 +852,32 @@ if __name__ == "__main__":
             "winner_to_loser": False,
             "potential_mfe": 200.0,
             "signal_strength": 0.8,
-        }
+        },
     )
-    print(f"Opportunity Cost: {reward3['opportunity_cost']:+.4f}")
-    print(f"Total Reward: {reward3['total_reward']:+.4f}")
 
     # Show summary
-    print(shaper.print_summary())
 
     # ===== Phase 3.2: Dual-Agent Reward Tests =====
-    print("\n" + "=" * 70)
-    print("Phase 3.2: Dual-Agent Reward Tests")
-    print("=" * 70)
 
     # Test 4: TriggerAgent - Perfect prediction
-    print("\n=== Test 4: TriggerAgent - Perfect Prediction ===")
     trigger_result = shaper.calculate_trigger_reward(
         actual_mfe=0.0025,  # 25 pips achieved
         predicted_runway=0.0025,  # 25 pips predicted
     )
-    print(f"Runway Reward: {trigger_result['runway_reward']:+.4f}")
-    print(f"Utilization: {trigger_result['utilization']:.2f}x")
-    print(f"Error: {trigger_result['error_pct']:.1f}%")
-    print(f"Quality: {trigger_result['prediction_quality']}")
 
     # Test 5: TriggerAgent - Exceeded prediction
-    print("\n=== Test 5: TriggerAgent - Exceeded Prediction ===")
     trigger_result2 = shaper.calculate_trigger_reward(
         actual_mfe=0.0040,  # 40 pips achieved
         predicted_runway=0.0025,  # 25 pips predicted (underpredicted)
     )
-    print(f"Runway Reward: {trigger_result2['runway_reward']:+.4f}")
-    print(f"Utilization: {trigger_result2['utilization']:.2f}x")
-    print(f"Error: {trigger_result2['error_pct']:.1f}%")
-    print(f"Quality: {trigger_result2['prediction_quality']}")
 
     # Test 6: TriggerAgent - Fell short
-    print("\n=== Test 6: TriggerAgent - Fell Short ===")
     trigger_result3 = shaper.calculate_trigger_reward(
         actual_mfe=0.0010,  # 10 pips achieved
         predicted_runway=0.0025,  # 25 pips predicted (overpredicted)
     )
-    print(f"Runway Reward: {trigger_result3['runway_reward']:+.4f}")
-    print(f"Utilization: {trigger_result3['utilization']:.2f}x")
-    print(f"Error: {trigger_result3['error_pct']:.1f}%")
-    print(f"Quality: {trigger_result3['prediction_quality']}")
 
     # Test 7: HarvesterAgent - Excellent capture
-    print("\n=== Test 7: HarvesterAgent - Excellent Capture (85%) ===")
     harvester_result = shaper.calculate_harvester_reward(
         exit_pnl=0.0034,
         mfe=0.0040,
@@ -916,16 +885,8 @@ if __name__ == "__main__":
         _bars_held=15,
         _bars_from_mfe_to_exit=3,
     )
-    print(f"Harvester Reward: {harvester_result['harvester_reward']:+.4f}")
-    print(f"Capture Ratio: {harvester_result['capture_ratio']:.1%}")
-    print(f"Quality: {harvester_result['quality']}")
-    print(
-        f"Components: capture={harvester_result['capture_efficiency']:+.4f}, "
-        f"wtl={harvester_result['wtl_penalty']:+.4f}, timing={harvester_result['timing_penalty']:+.4f}"
-    )
 
     # Test 8: HarvesterAgent - WTL scenario
-    print("\n=== Test 8: HarvesterAgent - Winner-to-Loser ===")
     harvester_result2 = shaper.calculate_harvester_reward(
         exit_pnl=-0.0010,
         mfe=0.0040,
@@ -933,13 +894,8 @@ if __name__ == "__main__":
         _bars_held=30,
         _bars_from_mfe_to_exit=25,
     )
-    print(f"Harvester Reward: {harvester_result2['harvester_reward']:+.4f}")
-    print(f"Capture Ratio: {harvester_result2['capture_ratio']:.1%}")
-    print(f"Quality: {harvester_result2['quality']}")
-    print(f"WTL Penalty: {harvester_result2['wtl_penalty']:+.4f} (severe)")
 
     # Test 9: Full dual-agent rewards
-    print("\n=== Test 9: Full Dual-Agent Trade ===")
     dual_result = shaper.calculate_dual_agent_rewards(
         # Trigger: predicted 25 pips, got 30 pips
         actual_mfe=0.0030,
@@ -950,12 +906,4 @@ if __name__ == "__main__":
         bars_held=20,
         bars_from_mfe_to_exit=5,
     )
-    print(f"Total Reward: {dual_result['total_reward']:+.4f}")
-    print(f"  Trigger Reward (40%): {dual_result['trigger_reward']:+.4f}")
-    print(f"  Harvester Reward (60%): {dual_result['harvester_reward']:+.4f}")
-    print(f"Trigger Quality: {dual_result['trigger_breakdown']['prediction_quality']}")
-    print(f"Harvester Quality: {dual_result['harvester_breakdown']['quality']}")
 
-    print("\n" + "=" * 70)
-    print("✅ All dual-agent reward tests complete!")
-    print("=" * 70)

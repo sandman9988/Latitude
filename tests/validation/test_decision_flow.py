@@ -14,7 +14,6 @@ from pathlib import Path
 
 def test_decision_log_structure():
     """Test that decision log can be written with expected structure"""
-    print("Testing decision log structure...")
 
     # Simulate bar data
     t = dt.datetime(2026, 1, 10, 16, 30, tzinfo=dt.UTC)
@@ -66,7 +65,6 @@ def test_decision_log_structure():
     with open(test_log_path, "w", encoding="utf-8") as f:
         json.dump(log_entries, f, indent=2)
 
-    print(f"✓ Written test decision log to {test_log_path}")
 
     # Verify it can be read back
     with open(test_log_path, encoding="utf-8") as f:
@@ -87,13 +85,10 @@ def test_decision_log_structure():
     assert details["depth_ratio"] == pytest.approx(1.15), "Depth ratio should be set"
     assert details["imbalance"] == pytest.approx(0.02), "Imbalance should be set"
 
-    print("✓ All decision variables correctly captured")
-    print(json.dumps(entry, indent=2))
 
 
 def test_decision_flow_logic():
     """Test the decision flow logic sequence"""
-    print("\nTesting decision flow sequence...")
 
     # Simulate the flow
     steps = []
@@ -133,15 +128,13 @@ def test_decision_flow_logic():
     # 10. Order execution
     steps.append("10. Calculate order size and send order")
 
-    for step in steps:
-        print(f"  {step}")
+    for _step in steps:
+        pass
 
-    print("\n✓ Decision flow sequence validated")
 
 
 def test_bar_builder():
     """Test the BarBuilder logic"""
-    print("\nTesting BarBuilder...")
 
     class SimpleBarBuilder:
         def __init__(self, timeframe_minutes=1) -> None:
@@ -179,17 +172,14 @@ def test_bar_builder():
     t1 = dt.datetime(2026, 1, 10, 16, 30, 10, tzinfo=dt.UTC)
     closed = builder.update(t1, 90500.0)
     assert closed is None, "First update should not close a bar"
-    print(f"  Update 1: {t1} @ 90500.0 -> No bar closed")
 
     t2 = dt.datetime(2026, 1, 10, 16, 30, 25, tzinfo=dt.UTC)
     closed = builder.update(t2, 90520.0)
     assert closed is None, "Second update in same minute should not close bar"
-    print(f"  Update 2: {t2} @ 90520.0 -> No bar closed")
 
     t3 = dt.datetime(2026, 1, 10, 16, 30, 45, tzinfo=dt.UTC)
     closed = builder.update(t3, 90490.0)
     assert closed is None, "Third update in same minute should not close bar"
-    print(f"  Update 3: {t3} @ 90490.0 -> No bar closed")
 
     # Move to next minute - should close previous bar
     t4 = dt.datetime(2026, 1, 10, 16, 31, 5, tzinfo=dt.UTC)
@@ -203,51 +193,30 @@ def test_bar_builder():
     assert lo == pytest.approx(90490.0), "Low should be min price"
     assert c == pytest.approx(90490.0), "Close should be last price before bar close"
 
-    print(f"  ✓ Bar closed: {bar_time} O={o} H={h} L={lo} C={c}")
-    print("✓ BarBuilder logic validated")
 
 
 def test_hud_integration():
     """Test that HUD can read decision log"""
-    print("\nTesting HUD integration...")
 
     test_log_path = Path("data/test_decision_log.json")
     if not test_log_path.exists():
-        print("  ⚠ Test decision log not found, creating it first...")
         test_decision_log_structure()
 
     # Read decision log (as HUD would)
     with open(test_log_path, encoding="utf-8") as f:
         entries = json.load(f)
 
-    print(f"  ✓ Read {len(entries)} entries from decision log")
 
     # Display last entry (as HUD Tab 6 would)
     if entries:
         entry = entries[-1]
-        details = entry["details"]
+        entry["details"]
 
-        print("\n  Latest Decision:")
-        print(f"    Timestamp: {entry['timestamp']}")
-        print(
-            f"    OHLC: {details['open']:.2f} / {details['high']:.2f} / {details['low']:.2f} / {details['close']:.2f}"
-        )
-        print(f"    Action: {details.get('action', 'None')} (Confidence: {details.get('confidence', 'N/A')})")
-        print(f"    Runway: {details.get('runway', 'N/A')}")
-        print(f"    Feasibility: {details.get('feasibility', 'N/A')}")
-        print(
-            f"    Depth: Bid={details.get('depth_bid', 'N/A')} Ask={details.get('depth_ask', 'N/A')} Ratio={details.get('depth_ratio', 'N/A')}"
-        )
-        print(f"    Desired Position: {details.get('desired', 'None')} (Current: {details.get('cur_pos', 0)})")
 
-    print("\n✓ HUD integration validated")
 
 
 def main():
     """Run all tests"""
-    print("=" * 70)
-    print("DECISION FLOW OFFLINE TESTING")
-    print("=" * 70)
 
     tests = [
         ("Decision Log Structure", test_decision_log_structure),
@@ -264,16 +233,12 @@ def main():
             result = test_func()
             if result:
                 passed += 1
-        except Exception as e:
-            print(f"✗ Test failed: {e}")
+        except Exception:
             import traceback
 
             traceback.print_exc()
             failed += 1
 
-    print("\n" + "=" * 70)
-    print(f"RESULTS: {passed} passed, {failed} failed")
-    print("=" * 70)
 
     return failed == 0
 

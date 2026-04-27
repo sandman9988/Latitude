@@ -100,7 +100,7 @@ class BotPersistenceManager:
             try:
                 temp_file.replace(model_file)
             except OSError as replace_err:
-                LOG.error("[PERSISTENCE] Failed to replace %s with %s: %s", model_file, temp_file, replace_err)
+                LOG.exception("[PERSISTENCE] Failed to replace %s with %s: %s", model_file, temp_file, replace_err)
                 # Clean up orphaned temp file
                 with contextlib.suppress(OSError):
                     temp_file.unlink()
@@ -116,7 +116,7 @@ class BotPersistenceManager:
                     "timeframe": timeframe,
                     "agent_type": agent_type,
                     "agent_idx": agent_idx,
-                }
+                },
             )
 
             self.persistence.save_json(metadata, str(meta_file.relative_to(self.base_dir)))
@@ -125,7 +125,7 @@ class BotPersistenceManager:
             return True
 
         except Exception as e:
-            LOG.error("[PERSISTENCE] Failed to save model: %s", e)
+            LOG.exception("[PERSISTENCE] Failed to save model: %s", e)
             # Clean up temp file on any error
             with contextlib.suppress(OSError):
                 temp_file.unlink()
@@ -146,13 +146,13 @@ class BotPersistenceManager:
             LOG.info("[PERSISTENCE] Loaded %s agent %s: %s/%s", agent_type, agent_idx, symbol, timeframe)
             return state_dict
         except Exception as e:
-            LOG.error("[PERSISTENCE] Failed to load model: %s", e)
+            LOG.exception("[PERSISTENCE] Failed to load model: %s", e)
             return None
 
     # ========== SESSION STATS ==========
 
     def save_session_stats(
-        self, stats: dict[str, Any], symbol: str, timeframe: str, session_id: str | None = None
+        self, stats: dict[str, Any], symbol: str, timeframe: str, session_id: str | None = None,
     ) -> bool:
         """Save statistics for current trading session.
 
@@ -228,7 +228,7 @@ class BotPersistenceManager:
                     "trades": stats.get("total_trades", 0),
                     "pnl": stats.get("total_pnl", 0.0),
                     "timestamp": datetime.now(UTC).isoformat() + "Z",
-                }
+                },
             )
 
         # Keep only last 100 sessions in history
@@ -337,7 +337,7 @@ class BotPersistenceManager:
     # ========== CHECKPOINT MANAGEMENT ==========
 
     def save_checkpoint(
-        self, state: dict[str, Any], symbol: str, timeframe: str, checkpoint_name: str = "latest"
+        self, state: dict[str, Any], symbol: str, timeframe: str, checkpoint_name: str = "latest",
     ) -> bool:
         """Save bot state checkpoint (positions, buffers, bars, etc.).
 

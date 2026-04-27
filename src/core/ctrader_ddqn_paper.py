@@ -55,7 +55,7 @@ except ImportError:
                 "__repr__": lambda _self: f"<{name}>",
                 "setField": lambda _self, *_a: None,
                 "getHeader": lambda _self: type(
-                    "Header", (), {"setField": lambda _s, *_a: None, "getField": lambda _s, *_a: ""}
+                    "Header", (), {"setField": lambda _s, *_a: None, "getField": lambda _s, *_a: ""},
                 )(),
                 "getString": lambda _self: "",
                 "getValue": lambda _self: "",
@@ -471,7 +471,7 @@ class Policy:
                 np.nan_to_num(ret5, nan=0.0, posinf=0.0, neginf=0.0),
                 np.nan_to_num(ma_diff, nan=0.0, posinf=0.0, neginf=0.0),
                 np.nan_to_num(vol, nan=0.0, posinf=0.0, neginf=0.0),
-            ]
+            ],
         ).T
         feats = feats[-self.window :].astype(np.float32)
         mu = feats.mean(axis=0, keepdims=True)
@@ -650,7 +650,7 @@ class PathRecorder:
                 raise
             LOG.info("[PATH] Saved to %s", filename)
         except Exception as e:
-            LOG.error("[PATH] Failed to save: %s", e)
+            LOG.exception("[PATH] Failed to save: %s", e)
 
 
 # ----------------------------
@@ -893,7 +893,7 @@ class CTraderFixApp(fix.Application):
         # FIX: Initialize as EMPTY dict - don't create default tracker that prevents epsilon-greedy exploration
         self.default_position_id = "default"
         self.mfe_mae_trackers: dict[
-            str, MFEMAETracker
+            str, MFEMAETracker,
         ] = {}  # FIXED: was {self.default_position_id: self.mfe_mae_tracker}
         self.path_recorders: dict[str, PathRecorder] = {}  # FIXED: was {self.default_position_id: self.path_recorder}
         self._tracker_lock = threading.Lock()  # Protects mfe_mae_trackers & path_recorders across FIX callbacks
@@ -943,7 +943,7 @@ class CTraderFixApp(fix.Application):
 
         # Adaptive regularization for online learning
         self.adaptive_reg = AdaptiveRegularization(
-            initial_l2=0.0001, initial_dropout=0.1, l2_range=(1e-5, 1e-2), dropout_range=(0.0, 0.5)
+            initial_l2=0.0001, initial_dropout=0.1, l2_range=(1e-5, 1e-2), dropout_range=(0.0, 0.5),
         )
 
         # Handbook Phase 1: Circuit Breakers (safety shutdown system)
@@ -1056,7 +1056,7 @@ class CTraderFixApp(fix.Application):
                 timeframe=self.timeframe_label,
                 broker=self.broker,
                 default=0.6,
-            )
+            ),
         )
         self._exit_conf_dynamic_floor = float(
             self.param_manager.get(
@@ -1065,7 +1065,7 @@ class CTraderFixApp(fix.Application):
                 timeframe=self.timeframe_label,
                 broker=self.broker,
                 default=0.45,
-            )
+            ),
         )
         self.entry_vpin_z = 0.0  # VPIN z-score at entry time (for regime-conditioned reward)
         self.current_trade_id: str | None = None  # Correlation ID linking entry → HOLD(s) → CLOSE in decision log
@@ -1197,7 +1197,7 @@ class CTraderFixApp(fix.Application):
 
         # Audit logging for transaction trail and decision debugging
         self.transaction_log = TransactionLogger(
-            log_dir=str(self.shared_hud_dir / "logs" / "audit"), filename="transactions.jsonl"
+            log_dir=str(self.shared_hud_dir / "logs" / "audit"), filename="transactions.jsonl",
         )
         self.decision_log = DecisionLogger(
             log_dir=str(self.hud_data_dir / "logs" / "audit"),
@@ -1369,7 +1369,7 @@ class CTraderFixApp(fix.Application):
                 self.send_md_subscribe_spot()
                 self._last_md_resubscribe_time = time.time()
             except Exception as e:
-                LOG.error("[HEALTH] Failed to re-subscribe market data: %s", e)
+                LOG.exception("[HEALTH] Failed to re-subscribe market data: %s", e)
 
     def _emit_watchdog_notify(self) -> None:
         """Send systemd WATCHDOG=1 datagram if watchdog is enabled and healthy."""
@@ -1485,7 +1485,7 @@ class CTraderFixApp(fix.Application):
             LOG.info("[HEALTH] Sent TestRequest to %s session", qual)
             return True
         except Exception as e:
-            LOG.error("[HEALTH] Failed to send TestRequest to %s: %s", qual, e)
+            LOG.exception("[HEALTH] Failed to send TestRequest to %s: %s", qual, e)
             return False
 
     def _force_session_restart(self, session_id, qual: str, reason: str = "manual") -> bool:
@@ -1536,7 +1536,7 @@ class CTraderFixApp(fix.Application):
                 # Also check for kurtosis gate reset request
                 self._check_kurtosis_gate_reset_request()
             except Exception as _e:
-                LOG.error("[KILL-SWITCH] Poll error: %s", _e)
+                LOG.exception("[KILL-SWITCH] Poll error: %s", _e)
             time.sleep(5)
         LOG.info("[KILL-SWITCH] Monitor stopped")
 
@@ -1548,7 +1548,7 @@ class CTraderFixApp(fix.Application):
             with open(self._kill_switch_path) as _ksf:
                 return json.load(_ksf)
         except (json.JSONDecodeError, ValueError) as exc:
-            LOG.error("[KILL-SWITCH] Corrupted payload file: %s", exc)
+            LOG.exception("[KILL-SWITCH] Corrupted payload file: %s", exc)
             return None
 
     def _execute_kill_switch(self, payload: dict) -> None:
@@ -1591,7 +1591,7 @@ class CTraderFixApp(fix.Application):
             self.circuit_breakers.save_state(self._circuit_breaker_state_path)
             LOG.info("[CB-RESET] ✓ All circuit breakers reset, kurtosis gate reset, and state persisted")
         except Exception as _e:
-            LOG.error("[CB-RESET] Error processing reset request: %s", _e)
+            LOG.exception("[CB-RESET] Error processing reset request: %s", _e)
 
     def _check_kurtosis_gate_reset_request(self) -> None:
         """Poll for kurtosis_gate_reset.json written by HUD and reset gate if found."""
@@ -1607,7 +1607,7 @@ class CTraderFixApp(fix.Application):
             self.kurtosis_monitor.reset()
             LOG.info("[KURTOSIS-GATE] ✓ Kurtosis gate reset and entries re-enabled")
         except Exception as _e:
-            LOG.error("[KURTOSIS-GATE] Error processing reset request: %s", _e)
+            LOG.exception("[KURTOSIS-GATE] Error processing reset request: %s", _e)
 
     def stop_health_monitor(self) -> None:
         """Gracefully stop the health monitor thread."""
@@ -1664,7 +1664,7 @@ class CTraderFixApp(fix.Application):
             self.trade_exporter.export_all(self.performance, prefix=f"shutdown_{timestamp}")
             LOG.info("[SHUTDOWN] ✓ Exported %d trades", len(trades))
         except Exception as e:
-            LOG.error("[SHUTDOWN] Export failed: %s", e)
+            LOG.exception("[SHUTDOWN] Export failed: %s", e)
 
     def _shutdown_save_checkpoint(self) -> None:
         """Save training checkpoint on shutdown when supported."""
@@ -1674,7 +1674,7 @@ class CTraderFixApp(fix.Application):
             self.policy.save_checkpoint()
             LOG.info("[SHUTDOWN] ✓ Training checkpoint saved")
         except Exception as e:
-            LOG.error("[SHUTDOWN] Checkpoint failed: %s", e)
+            LOG.exception("[SHUTDOWN] Checkpoint failed: %s", e)
 
     def _shutdown_log_stats(self) -> None:
         """Emit a final shutdown metrics log line."""
@@ -2138,7 +2138,7 @@ class CTraderFixApp(fix.Application):
             time.sleep(self.security_list_timeout)
             if self.symbol_id_pending and not self.security_list_received:
                 LOG.warning(
-                    "[TRADE] SecurityList timeout after %.1fs - using config fallback", self.security_list_timeout
+                    "[TRADE] SecurityList timeout after %.1fs - using config fallback", self.security_list_timeout,
                 )
                 self._resolve_symbol_id_from_config()
 
@@ -2167,7 +2167,7 @@ class CTraderFixApp(fix.Application):
             LOG.error("[TRADE] ✗ Cannot resolve symbol ID for %s - not in symbol_specs.json", self.symbol)
             LOG.error("[TRADE] Please add '%s' with 'symbol_id' to config/symbol_specs.json", self.symbol)
         except Exception as e:
-            LOG.error("[TRADE] Error loading symbol_specs.json: %s", e)
+            LOG.exception("[TRADE] Error loading symbol_specs.json: %s", e)
 
     def _parse_security_group(self, msg: fix.Message, idx: int) -> tuple[str, int] | None:
         """Parse NoRelatedSym group at 1-based index idx+1. Returns (symbol_name, sec_id) or None."""
@@ -2390,7 +2390,7 @@ class CTraderFixApp(fix.Application):
             LOG.warning("[QUOTE] Invalid entry %d: %s", i, e)
             return None
         except Exception as e:
-            LOG.error("[QUOTE] Unexpected error parsing entry %d: %s", i, e)
+            LOG.exception("[QUOTE] Unexpected error parsing entry %d: %s", i, e)
             return None
 
     def _update_best_prices(self) -> None:
@@ -2415,7 +2415,7 @@ class CTraderFixApp(fix.Application):
             LOG.warning("[QUOTE] Invalid NoMDEntries field: %s", e)
             return
         except Exception as e:
-            LOG.error("[QUOTE] Error parsing market data snapshot: %s", e)
+            LOG.exception("[QUOTE] Error parsing market data snapshot: %s", e)
             return
 
         self.order_book.reset()
@@ -2571,7 +2571,7 @@ class CTraderFixApp(fix.Application):
             LOG.warning("[QUOTE] Invalid NoMDEntries in incremental: %s", e)
             return
         except Exception as e:
-            LOG.error("[QUOTE] Error parsing incremental refresh: %s", e)
+            LOG.exception("[QUOTE] Error parsing incremental refresh: %s", e)
             return
 
         for i in range(1, n + 1):
@@ -3242,7 +3242,7 @@ class CTraderFixApp(fix.Application):
                         mfe_delta * 0.3 - mae_delta * 0.4 + time_decay,
                         -0.5,
                         0.5,
-                    )
+                    ),
                 )
                 self.policy.add_harvester_experience(
                     state=state,
@@ -3770,7 +3770,7 @@ class CTraderFixApp(fix.Application):
                 msg.getField(f705)
                 short_qty = float(f705.getValue())
         except (ValueError, TypeError) as e:
-            LOG.error("[TRADE] Invalid position quantity: %s. Using 0.", e)
+            LOG.exception("[TRADE] Invalid position quantity: %s. Using 0.", e)
 
         net = long_qty - short_qty
         # Cache cur_pos once to avoid race: FIX callbacks could change
@@ -3831,7 +3831,7 @@ class CTraderFixApp(fix.Application):
             if self.real_account_balance is None and self.real_account_equity is None:
                 LOG.warning(
                     "[ACCOUNT] CollateralReport received but no EndCash/TotalNetValue — "
-                    "broker may not support account balance queries via FIX"
+                    "broker may not support account balance queries via FIX",
                 )
         except Exception as e:
             LOG.error("[ACCOUNT] Failed to parse CollateralReport: %s", e, exc_info=True)
@@ -4073,7 +4073,7 @@ class CTraderFixApp(fix.Application):
         return shaped_rewards, pnl_pts
 
     def _add_trigger_experience_for_close(
-        self, summary: dict, pnl: float, entry_price: float, _pnl_pts: float, _shaped_rewards: dict
+        self, summary: dict, pnl: float, entry_price: float, _pnl_pts: float, _shaped_rewards: dict,
     ) -> float:
         """Add TriggerAgent online-learning experience; return trigger_reward (0.0 if skipped)."""
         has_method = hasattr(self.policy, "add_trigger_experience")
@@ -4191,7 +4191,7 @@ class CTraderFixApp(fix.Application):
         raw_reward = harvester_result["harvester_reward"]
         capture_reward = float(np.clip(raw_reward + regime_adj, -2.0, 2.0))
         LOG.debug(
-            "[CLOSE_REWARD] harvester_raw=%.4f regime_adj=%.4f final=%.4f", raw_reward, regime_adj, capture_reward
+            "[CLOSE_REWARD] harvester_raw=%.4f regime_adj=%.4f final=%.4f", raw_reward, regime_adj, capture_reward,
         )
         next_state = getattr(getattr(self.policy, "harvester", None), "last_state", None)
         if next_state is not None:
@@ -4338,10 +4338,10 @@ class CTraderFixApp(fix.Application):
 
             _trade_qty = summary.get("filled_qty") or self._get_live_qty()
             _entry_predicted_runway_net = float(
-                getattr(self, "predicted_runway_net", getattr(self, "predicted_runway", 0.0)) or 0.0
+                getattr(self, "predicted_runway_net", getattr(self, "predicted_runway", 0.0)) or 0.0,
             )
             _entry_predicted_runway_gross = float(
-                getattr(self, "predicted_runway_gross", _entry_predicted_runway_net) or 0.0
+                getattr(self, "predicted_runway_gross", _entry_predicted_runway_net) or 0.0,
             )
             trade_attr = self._build_trade_attribution(
                 summary=summary,
@@ -4398,16 +4398,16 @@ class CTraderFixApp(fix.Application):
 
             if not _is_ghost_reconcile:
                 trigger_reward = self._add_trigger_experience_for_close(
-                    summary, pnl, entry_price, pnl_pts, shaped_rewards
+                    summary, pnl, entry_price, pnl_pts, shaped_rewards,
                 )
                 self._add_harvester_experience_for_close(
-                    summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward
+                    summary, pnl, entry_price, exit_price, pnl_pts, shaped_rewards, trigger_reward,
                 )
                 self._update_risk_feedback_thresholds(pnl=pnl)
             else:
                 trigger_reward = 0.0
                 LOG.info(
-                    "[GHOST-RECONCILE] Skipping replay-buffer updates for ghost-recovered trade (approx PnL=%.4f)", pnl
+                    "[GHOST-RECONCILE] Skipping replay-buffer updates for ghost-recovered trade (approx PnL=%.4f)", pnl,
                 )
             # Ghost-reconcile trades use approximate mid-price exits and represent
             # recovered stale state — do not feed their P&L to circuit breakers.
@@ -5013,7 +5013,7 @@ class CTraderFixApp(fix.Application):
                     ", ".join(files.values()),
                 )
             except Exception as e:
-                LOG.error("[AUTOSAVE] ✗ Failed at bar %d: %s", self.bar_count, e)
+                LOG.exception("[AUTOSAVE] ✗ Failed at bar %d: %s", self.bar_count, e)
         self.activity_monitor.on_bar_close()
         if self.trade_integration and self.trade_integration.trade_manager:
             self.trade_integration.trade_manager.check_all_position_request_timeouts()
@@ -5164,13 +5164,13 @@ class CTraderFixApp(fix.Application):
         if train_metrics.get("trigger"):
             self.last_trigger_loss = train_metrics["trigger"].get("loss", self.last_trigger_loss)
             self.last_trigger_tau = train_metrics["trigger"].get(
-                "adaptive_tau", getattr(self, "last_trigger_tau", 0.005)
+                "adaptive_tau", getattr(self, "last_trigger_tau", 0.005),
             )
             self.last_trigger_grad_norm = train_metrics["trigger"].get("grad_norm", 0.0)
         if train_metrics.get("harvester"):
             self.last_harvester_loss = train_metrics["harvester"].get("loss", self.last_harvester_loss)
             self.last_harvester_tau = train_metrics["harvester"].get(
-                "adaptive_tau", getattr(self, "last_harvester_tau", 0.005)
+                "adaptive_tau", getattr(self, "last_harvester_tau", 0.005),
             )
             self.last_harvester_grad_norm = train_metrics["harvester"].get("grad_norm", 0.0)
 
@@ -5197,7 +5197,7 @@ class CTraderFixApp(fix.Application):
     def _obc_maybe_checkpoint(self) -> None:
         """Auto-save policy checkpoint on step cadence."""
         total_steps = getattr(self.policy.trigger, "training_steps", 0) + getattr(
-            self.policy.harvester, "training_steps", 0
+            self.policy.harvester, "training_steps", 0,
         )
         if total_steps <= 0 or total_steps % 50 != 0:
             return
@@ -5633,13 +5633,13 @@ class CTraderFixApp(fix.Application):
         """Handle exit decision when in a position. Returns decision tuple."""
         t, o, h, low_price, c = bar
         exit_action, exit_conf, _already_closing = self._obc_get_exit_action(
-            c, imbalance, depth_ratio, vpin_zscore, event_features
+            c, imbalance, depth_ratio, vpin_zscore, event_features,
         )
         desired = 0 if exit_action == 1 else self.cur_pos
         self._last_harvester_conf = 0.9 * self._last_harvester_conf + 0.1 * exit_conf
         metrics = self._obc_get_tracker_metrics(c)
         _bar_trade_id, _close_pending = self._obc_log_harvester_decision(
-            exit_action, exit_conf, _already_closing, c, metrics
+            exit_action, exit_conf, _already_closing, c, metrics,
         )
         # When HARVESTER decides to exit this bar, cancel the trailing stop order
         # first to prevent a double-fill (stop + market exit both executing).
@@ -5941,7 +5941,7 @@ class CTraderFixApp(fix.Application):
     def _obc_var_gate(self, vpin_zscore: float, realized_vol: float) -> bool:
         """Gate new entries based on VaR threshold."""
         current_var = self.var_estimator.estimate_var(
-            regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
+            regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol,
         )
         self.last_estimated_var = current_var
         self.entry_var = current_var
@@ -6174,7 +6174,7 @@ class CTraderFixApp(fix.Application):
             try:
                 realized_vol = self._calculate_rs_volatility() if len(self.bars) >= MIN_BARS_FOR_VOL_CALC else 0.005
                 state = self.policy._build_state(
-                    self.bars, imbalance, vpin_zscore, depth_ratio, realized_vol, event_features
+                    self.bars, imbalance, vpin_zscore, depth_ratio, realized_vol, event_features,
                 )
                 if state is not None and hasattr(self.policy, "trigger"):
                     self.policy.trigger.last_state = state.copy()
@@ -6182,7 +6182,7 @@ class CTraderFixApp(fix.Application):
             except Exception as e:
                 LOG.debug("[IN-POSITION] Failed to update trigger.last_state: %s", e)
             exit_action, exit_conf, desired, _bar_trade_id, _close_pending = self._obc_handle_in_position(
-                bar, imbalance, depth_ratio, vpin_zscore, event_features
+                bar, imbalance, depth_ratio, vpin_zscore, event_features,
             )
         else:
             action, desired = self._obc_simple_policy_decide(bar)
@@ -6560,7 +6560,7 @@ class CTraderFixApp(fix.Application):
                     # Whether the bot is currently in a position — used by HUD
                     # to label which buffer is actively filling right now.
                     "is_in_position": self.cur_pos != 0,
-                }
+                },
             )
             return
         stats["trigger_buffer_size"] = self._get_policy_buffer_size("trigger")
@@ -6654,7 +6654,7 @@ class CTraderFixApp(fix.Application):
         """Estimate current VaR and cache last_estimated_var."""
         if hasattr(self.var_estimator, "estimate_var"):
             current_var = self.var_estimator.estimate_var(
-                regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol
+                regime=self._current_var_regime(), vpin_z=vpin_zscore, current_vol=realized_vol,
             )
         else:
             current_var = 0.0
@@ -6842,7 +6842,7 @@ class CTraderFixApp(fix.Application):
             risk_metrics = self._build_hud_risk_metrics()
             self._write_hud_json("risk_metrics.json", risk_metrics)
         except Exception as e:
-            LOG.error("[HUD] Failed to export data: %s", str(e))
+            LOG.exception("[HUD] Failed to export data: %s", str(e))
 
     def _get_hud_current_price(self) -> float:
         """Resolve the current price for HUD exports."""
@@ -7050,7 +7050,7 @@ class CTraderFixApp(fix.Application):
             LOG.debug("[SAVE] Trade %d saved successfully", trade_id)
 
         except Exception as e:
-            LOG.error("[SAVE] Failed to save trade %d: %s", trade_id, e)
+            LOG.exception("[SAVE] Failed to save trade %d: %s", trade_id, e)
             LOG.warning("[SAVE] Trade data preserved in backup: %s", backup_file)
             # Backup file persists for manual recovery
             raise
@@ -7073,7 +7073,7 @@ class CTraderFixApp(fix.Application):
 
             # GAP 10.1: Log component health change
             self.transaction_log.log_component_health(
-                component=component, healthy=False, error_count=self.component_error_counts[component]
+                component=component, healthy=False, error_count=self.component_error_counts[component],
             )
 
             LOG.error(
@@ -7166,7 +7166,7 @@ def _load_and_validate_config() -> tuple[int, str, float, int, str, str]:
         qty = float(_env("CTRADER_QTY", "QTY", "0.01"))
         timeframe_minutes = int(_env("CTRADER_TIMEFRAME_MIN", "TIMEFRAME_MINUTES", "1"))
     except (ValueError, TypeError) as e:
-        LOG.error("[CONFIG] Invalid configuration value: %s", e)
+        LOG.exception("[CONFIG] Invalid configuration value: %s", e)
         raise SystemExit(1) from e
 
     cfg_quote = os.environ.get("CTRADER_CFG_QUOTE", "ctrader_quote.cfg")
@@ -7251,7 +7251,7 @@ def main() -> None:
         try:
             fcntl.flock(_lock_fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            LOG.error(
+            LOG.exception(
                 "[SINGLETON] Another paper bot is already running for %s M%d "
                 "(lock held on %s).  Exiting to avoid paper_stats file races.",
                 symbol,
@@ -7338,12 +7338,12 @@ def main() -> None:
         try:
             initiator_q.stop()
         except Exception as e:
-            LOG.error("[SHUTDOWN] Error stopping QUOTE initiator: %s", e)
+            LOG.exception("[SHUTDOWN] Error stopping QUOTE initiator: %s", e)
 
         try:
             initiator_t.stop()
         except Exception as e:
-            LOG.error("[SHUTDOWN] Error stopping TRADE initiator: %s", e)
+            LOG.exception("[SHUTDOWN] Error stopping TRADE initiator: %s", e)
 
         LOG.info("Shutdown complete")
 

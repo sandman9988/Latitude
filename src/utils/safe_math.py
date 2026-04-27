@@ -71,7 +71,7 @@ class SafeMath:
             return dec.quantize(quant, rounding=ROUND_HALF_UP)
 
         except (InvalidOperation, ValueError, TypeError, OverflowError) as e:
-            LOG.error("to_decimal failed for value=%s, digits=%d: %s", value, digits, e)
+            LOG.exception("to_decimal failed for value=%s, digits=%d: %s", value, digits, e)
             raise
 
     @staticmethod
@@ -107,7 +107,7 @@ class SafeMath:
             return result
 
         except (InvalidOperation, ValueError, TypeError) as e:
-            LOG.error("quantize failed for value=%s, digits=%d: %s", value, digits, e)
+            LOG.exception("quantize failed for value=%s, digits=%d: %s", value, digits, e)
             return Decimal(0).quantize(Decimal(1).scaleb(-digits))
 
     @staticmethod
@@ -340,7 +340,7 @@ class SafeMath:
             LOG.warning("Percentile calculation failed: %s", e)
             return default
         except Exception as e:
-            LOG.error("Unexpected error in percentile calculation: %s", e)
+            LOG.exception("Unexpected error in percentile calculation: %s", e)
             return default
 
     @staticmethod
@@ -394,7 +394,7 @@ class SafeMath:
 
     @staticmethod
     def running_variance_update(
-        old_variance: float, old_mean: float, new_mean: float, new_value: float, count: int
+        old_variance: float, old_mean: float, new_mean: float, new_value: float, count: int,
     ) -> float:
         """Welford's online variance update."""
         if count < MIN_SAMPLE_COUNT:

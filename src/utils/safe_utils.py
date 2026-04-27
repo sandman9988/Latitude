@@ -13,7 +13,10 @@ import tempfile
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
@@ -317,32 +320,15 @@ def safe_percentile(values: list[float], percentile: float, default: float = 0.0
 
 if __name__ == "__main__":
     # Self-test
-    print("SafeMath Tests:")
-    print(f"  safe_div(10, 2) = {SafeMath.safe_div(10, 2)}")  # 5.0
-    print(f"  safe_div(10, 0) = {SafeMath.safe_div(10, 0)}")  # 0.0
-    print(f"  safe_div(float('nan'), 2) = {SafeMath.safe_div(float('nan'), 2)}")  # 0.0
-    print(f"  clamp(5, 0, 10) = {SafeMath.clamp(5, 0, 10)}")  # 5
-    print(f"  clamp(15, 0, 10) = {SafeMath.clamp(15, 0, 10)}")  # 10
-    print(f"  clamp(float('inf'), 0, 10) = {SafeMath.clamp(float('inf'), 0, 10)}")  # 5.0
 
-    print("\nSafeArray Tests:")
     arr = [1, 2, 3, 4, 5]
-    print(f"  safe_get(arr, 2) = {SafeArray.safe_get(arr, 2)}")  # 3
-    print(f"  safe_get(arr, 10) = {SafeArray.safe_get(arr, 10)}")  # None
-    print(f"  safe_get_series(arr, 0) = {SafeArray.safe_get_series(arr, 0)}")  # 5
-    print(f"  safe_get_series(arr, 1) = {SafeArray.safe_get_series(arr, 1)}")  # 4
 
-    print("\nSafeDeque Tests:")
     sd = SafeDeque(maxlen=3, name="test")
     sd.append(1)
     sd.append(2)
     sd.append(3)
-    print(f"  last() = {sd.last()}")  # 3
-    print(f"  get_series(1) = {sd.get_series(1)}")  # 2
     sd.append(4)  # Should evict 1
-    print(f"  After append(4), get_series(2) = {sd.get_series(2)}")  # 2
 
-    print("\nAll tests passed ✓")
 
 
 # ----------------------------

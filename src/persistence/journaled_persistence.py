@@ -39,7 +39,7 @@ from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 LOG = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ class Journal:
         )
 
     def log_trade_close(
-        self, order_id: str, exit_price: float, pnl: float, mfe: float, mae: float, winner_to_loser: bool
+        self, order_id: str, exit_price: float, pnl: float, mfe: float, mae: float, winner_to_loser: bool,
     ):
         """Log trade close operation."""
         return self.log_operation(
@@ -387,7 +387,7 @@ class Journal:
         except Exception as e:
             LOG.error("[JOURNAL] Error closing journal: %s", e, exc_info=True)
 
-    def __enter__(self) -> "Journal":
+    def __enter__(self) -> Self:
         """Context manager support."""
         return self
 
@@ -417,14 +417,10 @@ if __name__ == "__main__":
         journal.log_circuit_breaker_trip("sortino", 0.5, 0.3)
 
     # Test replay
-    print("\n--- Testing Replay ---")
     with Journal("data/test_journal.log") as journal:
 
         def replay_callback(op: str, data: dict) -> bool:
-            print(f"Replaying: {op} -> {data}")
             return True
 
         replayed = journal.replay_from_checkpoint(replay_callback)
-        print(f"\nReplayed {len(replayed)} operations")
 
-    print("\n✓ Journal self-test complete")

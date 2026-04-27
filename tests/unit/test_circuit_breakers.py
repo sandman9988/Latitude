@@ -430,9 +430,9 @@ class TestCircuitBreakerManager:
                         "threshold": 3.0,
                         "cooldown_minutes": 60,
                         "returns": [],
-                    }
-                }
-            )
+                    },
+                },
+            ),
         )
 
         mgr = CircuitBreakerManager(symbol="XAUUSD", timeframe="M5", broker="default", param_manager=pm)

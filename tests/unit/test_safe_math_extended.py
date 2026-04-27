@@ -39,7 +39,6 @@ class TestToDecimalQuantize:
         assert result == Decimal("1.23457")
 
     def test_to_decimal_invalid(self):
-        from decimal import Decimal
 
         with pytest.raises((ValueError, Exception)):
             SafeMath.to_decimal("not_a_number", 2)

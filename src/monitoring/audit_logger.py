@@ -71,7 +71,7 @@ class TransactionLogger:
             with self.lock, open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
         except Exception as e:
-            LOG.error("[AUDIT] Failed to write transaction log: %s", e)
+            LOG.exception("[AUDIT] Failed to write transaction log: %s", e)
 
     def log_order_submit(self, order_id: str, side: str, quantity: float, price: float | None = None) -> None:
         """Log order submission."""
@@ -259,7 +259,7 @@ class DecisionLogger:
                     f.write(json.dumps(entry, default=str) + "\n")
                     f.flush()
             except Exception as e:
-                LOG.error("[DECISION] Failed to write decision log: %s", e)
+                LOG.exception("[DECISION] Failed to write decision log: %s", e)
 
     def log_trigger_decision(
         self,
@@ -385,14 +385,9 @@ if __name__ == "__main__":
     import tempfile
 
     logging.basicConfig(level=logging.INFO)
-    print("=" * 80)
-    print("AUDIT LOGGER - TEST SUITE")
-    print("=" * 80)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Test 1: Transaction Logger
-        print("\n[Test 1] Transaction Logger")
-        print("-" * 80)
 
         tx_log = TransactionLogger(log_dir=tmpdir, filename="test_transactions.jsonl")
 
@@ -408,14 +403,10 @@ if __name__ == "__main__":
         with open(log_file) as f:
             lines = f.readlines()
 
-        print(f"✓ Logged {len(lines)} transactions")
         for line in lines:
             entry = json.loads(line)
-            print(f"  {entry['event_type']}: {entry['data']}")
 
         # Test 2: Decision Logger
-        print("\n[Test 2] Decision Logger")
-        print("-" * 80)
 
         dec_log = DecisionLogger(log_dir=tmpdir, filename="test_decisions.jsonl")
 
@@ -450,11 +441,6 @@ if __name__ == "__main__":
         with open(log_file) as f:
             lines = f.readlines()
 
-        print(f"✓ Logged {len(lines)} decisions")
         for line in lines:
             entry = json.loads(line)
-            print(f"  {entry['agent']}: {entry['decision']} (conf={entry['confidence']:.2f})")
 
-        print("\n" + "=" * 80)
-        print("✓ All audit logger tests passed!")
-        print("=" * 80)

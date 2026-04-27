@@ -85,9 +85,7 @@ def new_runway_volratio(sigma: float, sigma_long: float) -> float:
 
 
 def print_section(title: str) -> None:
-    print(f"\n{'=' * 70}")
-    print(f"  {title}")
-    print(f"{'=' * 70}")
+    pass
 
 
 def print_comparison_table(labels: list[str], results: dict[str, dict]) -> None:
@@ -95,9 +93,7 @@ def print_comparison_table(labels: list[str], results: dict[str, dict]) -> None:
     metrics = list(next(iter(results.values())).keys())
     # Header
     col_w = 16
-    header = f"{'Metric':<25}" + "".join(f"{label:>{col_w}}" for label in labels)
-    print(header)
-    print("-" * len(header))
+    f"{'Metric':<25}" + "".join(f"{label:>{col_w}}" for label in labels)
     for m in metrics:
         row = f"{m:<25}"
         for label in labels:
@@ -108,7 +104,6 @@ def print_comparison_table(labels: list[str], results: dict[str, dict]) -> None:
                 row += f"{val:>{col_w}.4f}"
             else:
                 row += f"{val!s:>{col_w}}"
-        print(row)
 
 
 def discrimination_ratio(forecasts: np.ndarray, actuals: np.ndarray) -> float:
@@ -166,7 +161,6 @@ def test_bars_cache() -> None:
     with open(PROJECT_ROOT / "data" / "bars_cache.json") as f:
         cache = json.load(f)
     raw_bars = cache["bars"]  # list of [ts, o, h, l, c]
-    print(f"  Loaded {len(raw_bars)} bars ({raw_bars[0][0][:16]} → {raw_bars[-1][0][:16]})")
 
     WARMUP = 50  # need 50 bars for sigma_long
     HORIZON = 10  # forward MFE horizon (10 bars = 50 min)
@@ -233,14 +227,6 @@ def test_bars_cache() -> None:
     fc_BC = np.array(fc_BC)
     actual_mfe_arr = np.array(actual_mfe)
 
-    print(f"  Evaluation points: {len(actual_mfe)}")
-    print(
-        f"  HMM fitted for: {hmm_fitted_count}/{len(actual_mfe)} points "
-        f"({100 * hmm_fitted_count / max(1, len(actual_mfe)):.0f}%)"
-    )
-    print(f"  Actual MFE range: [{actual_mfe_arr.min():.6f}, {actual_mfe_arr.max():.6f}]")
-    print(f"  Mean actual MFE: {actual_mfe_arr.mean():.6f}")
-    print()
 
     # Compute metrics
     results = {
@@ -254,11 +240,8 @@ def test_bars_cache() -> None:
     print_comparison_table(labels, results)
 
     # Interpretation
-    print()
-    best_spear = max(results.items(), key=lambda x: x[1].get("spearman_r") or -1)
-    best_disc = max(results.items(), key=lambda x: x[1].get("disc_ratio") or 0)
-    print(f"  Best Spearman ρ:      {best_spear[0]} ({best_spear[1]['spearman_r']:.4f})")
-    print(f"  Best discrimination:  {best_disc[0]} ({best_disc[1]['disc_ratio']:.4f})")
+    max(results.items(), key=lambda x: x[1].get("spearman_r") or -1)
+    max(results.items(), key=lambda x: x[1].get("disc_ratio") or 0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -274,11 +257,9 @@ def test_training_cache() -> None:
         for line in f:
             ep = json.loads(line.strip())
             episodes.append(ep)
-    print(f"  Loaded {len(episodes)} episodes")
 
     # We need episodes with exit_bars (have at least 30 bars for vol + HMM warmup)
     usable = [ep for ep in episodes if len(ep.get("exit_bars", [])) >= 30]
-    print(f"  Usable (≥30 exit_bars): {len(usable)}")
 
     SHORT_VOL_WIN = 10
     LONG_VOL_WIN = 30  # Use 30 instead of 50 since episode bar count varies
@@ -345,11 +326,6 @@ def test_training_cache() -> None:
     actual_mfe_arr = np.array(actual_mfe_list)
     actual_pnl_arr = np.array(actual_pnl)
 
-    print(f"  Valid data points: {len(actual_mfe_list)}")
-    print(f"  Actual MFE range: [{actual_mfe_arr.min():.6f}, {actual_mfe_arr.max():.6f}]")
-    print(f"  Mean actual MFE: {actual_mfe_arr.mean():.6f}")
-    print(f"  Win rate (pnl > 0): {100 * np.mean(actual_pnl_arr > 0):.1f}%")
-    print()
 
     # Metrics
     results = {
@@ -363,12 +339,8 @@ def test_training_cache() -> None:
     print_comparison_table(labels, results)
 
     # PnL-weighted analysis: filter by forecast quartiles
-    print()
-    print("  PnL Filter Analysis (take trades only when forecast > median):")
-    print(f"  {'Method':<20} {'Avg PnL (all)':>14} {'Avg PnL (filtered)':>18} {'Improvement':>14}")
-    print(f"  {'-' * 66}")
     avg_all = float(np.mean(actual_pnl_arr))
-    for label, forecasts in [
+    for _label, forecasts in [
         ("OLD (static)", fc_old),
         ("B (vol ratio)", fc_B),
         ("C (HMM blend)", fc_C),
@@ -377,15 +349,11 @@ def test_training_cache() -> None:
         median_fc = np.median(forecasts)
         mask = forecasts > median_fc
         avg_filtered = float(np.mean(actual_pnl_arr[mask])) if mask.sum() > 0 else 0
-        improvement = ((avg_filtered / avg_all) - 1) * 100 if avg_all != 0 else 0
-        print(f"  {label:<20} {avg_all:>14.3f} {avg_filtered:>18.3f} {improvement:>13.1f}%")
+        ((avg_filtered / avg_all) - 1) * 100 if avg_all != 0 else 0
 
     # Best method
-    print()
-    best_spear = max(results.items(), key=lambda x: x[1].get("spearman_r") or -1)
-    best_disc = max(results.items(), key=lambda x: x[1].get("disc_ratio") or 0)
-    print(f"  Best Spearman ρ:      {best_spear[0]} ({best_spear[1]['spearman_r']:.4f})")
-    print(f"  Best discrimination:  {best_disc[0]} ({best_disc[1]['disc_ratio']:.4f})")
+    max(results.items(), key=lambda x: x[1].get("spearman_r") or -1)
+    max(results.items(), key=lambda x: x[1].get("disc_ratio") or 0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -395,9 +363,6 @@ def test_training_cache() -> None:
 
 def test_ewma_calibration() -> None:
     print_section("TEST 3: EWMA Calibration — Online Learning Simulation")
-    print("  Simulates the EWMA Q→Runway feedback loop on training cache episodes.")
-    print("  Uses synthetic Q-values derived from regime + vol context.")
-    print()
 
     episodes: list[dict[str, Any]] = []
     with open(PROJECT_ROOT / "data" / "training_cache_XAUUSD_M5.jsonl") as f:
@@ -493,44 +458,30 @@ def test_ewma_calibration() -> None:
         update_ewma(synthetic_q, mfe_frac)
 
     if len(static_errors) < 5:
-        print("  Not enough data after warmup to draw conclusions.")
         return
 
     static_errors = np.array(static_errors)
     calibrated_errors = np.array(calibrated_errors)
 
-    print(f"  Total trades: {len(episodes)}, Warmup: {WARMUP_TRADES}, Evaluated: {len(static_errors)}")
-    print(f"  EWMA bucket fill: {ewma_counts}")
-    print()
-    print(f"  {'Metric':<30} {'Static':>12} {'Calibrated':>12} {'Δ%':>10}")
-    print(f"  {'-' * 64}")
 
     mae_s = float(np.mean(static_errors))
     mae_c = float(np.mean(calibrated_errors))
-    delta = ((mae_c / mae_s) - 1) * 100 if mae_s > 0 else 0
-    print(f"  {'Mean Abs Error (post-warmup)':<30} {mae_s:>12.6f} {mae_c:>12.6f} {delta:>9.1f}%")
+    ((mae_c / mae_s) - 1) * 100 if mae_s > 0 else 0
 
     med_s = float(np.median(static_errors))
     med_c = float(np.median(calibrated_errors))
-    delta_med = ((med_c / med_s) - 1) * 100 if med_s > 0 else 0
-    print(f"  {'Median Abs Error':<30} {med_s:>12.6f} {med_c:>12.6f} {delta_med:>9.1f}%")
+    ((med_c / med_s) - 1) * 100 if med_s > 0 else 0
 
     p90_s = float(np.percentile(static_errors, 90))
     p90_c = float(np.percentile(calibrated_errors, 90))
-    delta_p90 = ((p90_c / p90_s) - 1) * 100 if p90_s > 0 else 0
-    print(f"  {'P90 Error':<30} {p90_s:>12.6f} {p90_c:>12.6f} {delta_p90:>9.1f}%")
+    ((p90_c / p90_s) - 1) * 100 if p90_s > 0 else 0
 
     # How many times calibrated was better?
-    better_count = int(np.sum(calibrated_errors < static_errors))
-    total = len(static_errors)
-    print(f"  {'Calibrated wins':<30} {better_count:>12d}/{total:<12d}")
+    int(np.sum(calibrated_errors < static_errors))
+    len(static_errors)
 
     if len(warmup_static) >= 3:
-        print()
-        print(f"  Warmup period MAE (first {WARMUP_TRADES} trades):")
-        print(f"    Static:     {np.mean(warmup_static):.6f}")
-        print(f"    Calibrated: {np.mean(warmup_calibrated):.6f}")
-        print("    (Calibrated falls back to static during warmup — should be equal)")
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -540,10 +491,6 @@ def test_ewma_calibration() -> None:
 
 def test_entry_decision_quality() -> None:
     print_section("TEST 4: Entry Decision Quality — Would Enhancements Filter Better?")
-    print("  For each forecast method, simulate a simple filter:")
-    print("  ENTER if combined_forecast > threshold; skip otherwise.")
-    print("  Compare avg PnL, win rate, and risk-adjusted return across thresholds.")
-    print()
 
     episodes: list[dict[str, Any]] = []
     with open(PROJECT_ROOT / "data" / "training_cache_XAUUSD_M5.jsonl") as f:
@@ -593,37 +540,23 @@ def test_entry_decision_quality() -> None:
         mfe_list.append(abs(ep.get("mfe", 0)))
 
     if len(pnl_list) < 10:
-        print("  Not enough data.")
         return
 
     pnl_arr = np.array(pnl_list)
     mfe_arr = np.array(mfe_list)
 
-    print(f"  Total trades: {len(pnl_list)}")
-    print(f"  Baseline avg PnL: {np.mean(pnl_arr):.3f} pts")
-    print(f"  Baseline win rate: {100 * np.mean(pnl_arr > 0):.1f}%")
-    print()
 
     # Test at different percentile thresholds
     for pct in [25, 50, 75]:
-        print(f"  ── Threshold: Top {100 - pct}% of forecasts (p{pct} cutoff) ──")
-        print(
-            f"  {'Method':<14} {'Threshold':>10} {'Trades':>8} {'Avg PnL':>10} {'Win Rate':>10} {'Avg MFE':>10} {'PnL Improv':>12}"
-        )
-        print(f"  {'-' * 74}")
-        for name, fc_list in forecasts_map.items():
+        for fc_list in forecasts_map.values():
             fc = np.array(fc_list)
             thresh = np.percentile(fc, pct)
             mask = fc >= thresh
-            n_trades = mask.sum()
+            mask.sum()
             avg_pnl = float(np.mean(pnl_arr[mask]))
-            win_rate = float(np.mean(pnl_arr[mask] > 0)) * 100
-            avg_mfe = float(np.mean(mfe_arr[mask]))
-            improv = ((avg_pnl / np.mean(pnl_arr)) - 1) * 100 if np.mean(pnl_arr) != 0 else 0
-            print(
-                f"  {name:<14} {thresh:>10.4f} {n_trades:>8d} {avg_pnl:>10.3f} {win_rate:>9.1f}% {avg_mfe:>10.3f} {improv:>11.1f}%"
-            )
-        print()
+            float(np.mean(pnl_arr[mask] > 0)) * 100
+            float(np.mean(mfe_arr[mask]))
+            ((avg_pnl / np.mean(pnl_arr)) - 1) * 100 if np.mean(pnl_arr) != 0 else 0
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -638,10 +571,6 @@ def main() -> None:
     logging.getLogger("src.features.regime_detector").setLevel(logging.WARNING)
     logging.getLogger("src.features.hmm_regime").setLevel(logging.WARNING)
 
-    print("\n" + "╔" + "═" * 68 + "╗")
-    print("║  EMPIRICAL BACKTEST: Runway Enhancement Comparison               ║")
-    print("║  Comparing OLD (static) vs B (vol ratio) vs C (HMM) vs B+C      ║")
-    print("╚" + "═" * 68 + "╝")
 
     test_bars_cache()
     test_training_cache()
@@ -649,15 +578,6 @@ def main() -> None:
     test_entry_decision_quality()
 
     print_section("SUMMARY")
-    print("  Key:")
-    print("    Spearman ρ  — Higher = forecast ranks match actual MFE ranks better")
-    print("    Disc ratio  — Higher = forecast correctly separates good from bad entries")
-    print("    MAE (norm)  — Lower = absolute forecast error is smaller")
-    print("    PnL filter  — Avg PnL when only taking high-forecast trades")
-    print()
-    print("  Enhancements that show improvement across multiple tests are")
-    print("  candidates for production. Those that don't should be disabled.")
-    print()
 
 
 if __name__ == "__main__":

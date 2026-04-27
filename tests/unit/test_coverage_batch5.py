@@ -54,8 +54,8 @@ class TestTradeAnalyzerGaps:
                 extra_columns={
                     "predicted_runway": [0.0, -1.0],
                     "mfe": [5.0, 3.0],
-                }
-            )
+                },
+            ),
         )
         ta = TradeAnalyzer(str(csv_file))
         result = ta.analyze_dual_agents()

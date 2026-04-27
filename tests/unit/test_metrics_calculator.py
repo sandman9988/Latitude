@@ -7,8 +7,7 @@ high from bad normalization script) can never silently regress.
 
 import pytest
 
-from src.utils.metrics_calculator import period_metrics, _trade_excursion_and_capture
-
+from src.utils.metrics_calculator import _trade_excursion_and_capture, period_metrics
 
 # ── capture ratio derivation ──────────────────────────────────────────────────
 

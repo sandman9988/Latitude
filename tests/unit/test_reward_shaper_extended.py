@@ -32,7 +32,7 @@ class TestTotalRewardExtended:
                 "exit_price": 95050.0,
                 "direction": 1,
                 "mfe_bar_offset": 5,
-            }
+            },
         )
         # Counterfactual analyzer runs, may produce non-zero adjustment
         assert "counterfactual_adjustment" in result
@@ -45,7 +45,7 @@ class TestTotalRewardExtended:
                 "mae": 10.0,
                 "winner_to_loser": False,
                 "ensemble_bonus": 0.3,
-            }
+            },
         )
         assert result["ensemble_bonus"] == pytest.approx(0.3)
 
@@ -56,7 +56,7 @@ class TestTotalRewardExtended:
                 "mfe": 0.0,
                 "mae": 0.0,
                 "winner_to_loser": False,
-            }
+            },
         )
         assert result["capture_efficiency"] == pytest.approx(0.0)
         assert result["wtl_penalty"] == pytest.approx(0.0)
@@ -68,7 +68,7 @@ class TestTotalRewardExtended:
                 "mfe": 100.0,
                 "mae": 20.0,
                 "winner_to_loser": False,
-            }
+            },
         )
         assert result["components_active"] >= 1
 
@@ -251,7 +251,7 @@ class TestStatisticsExtended:
                     "mfe": 100.0,
                     "mae": 20.0,
                     "winner_to_loser": False,
-                }
+                },
             )
         stats = shaper.get_statistics()
         assert stats["total_rewards_calculated"] == 5

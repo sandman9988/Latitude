@@ -6,7 +6,6 @@ JournaledPersistence subclass (recover, journal_write, journal_commit).
 """
 
 import json
-import os
 import time
 from unittest.mock import patch
 

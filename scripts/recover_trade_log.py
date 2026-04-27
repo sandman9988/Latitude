@@ -26,7 +26,6 @@ def log_msg(msg: str, level: str = "INFO") -> None:
     """Log recovery operations."""
     ts = datetime.now(UTC).isoformat()
     log_entry = f"[{ts}] [{level}] {msg}"
-    print(log_entry)
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LOG_FILE, "a") as f:
         f.write(log_entry + "\n")
@@ -43,29 +42,16 @@ def analyze_trade_log() -> None:
         trades = [json.loads(line.strip()) for line in f if line.strip()]
 
     null_entry_times = [i for i, t in enumerate(trades) if t.get("entry_time") is None]
-    missing_qty = [i for i, t in enumerate(trades) if "quantity" not in t or t.get("quantity") is None]
+    [i for i, t in enumerate(trades) if "quantity" not in t or t.get("quantity") is None]
     recalc_trades = [i for i, t in enumerate(trades) if t.get("pnl_recalculated")]
 
-    print("\n" + "=" * 80)
-    print("📊 TRADE LOG ANALYSIS")
-    print("=" * 80)
-    print(f"\nTotal trades: {len(trades)}")
-    print("\nData Quality Issues:")
-    print(f"  • NULL entry_time: {len(null_entry_times)} trades")
     if null_entry_times:
-        print(f"    Indices: {null_entry_times[:10]} {'...' if len(null_entry_times) > 10 else ''}")
-    print(f"  • Missing quantity: {len(missing_qty)} trades ({len(missing_qty) / len(trades) * 100:.1f}%)")
-    print(f"  • Recalculated PnL: {len(recalc_trades)} trades ({len(recalc_trades) / len(trades) * 100:.1f}%)")
+        pass
 
     if recalc_trades:
-        orig_pnl = sum(t.get("pnl_original", 0) for t in trades if "pnl_original" in t)
-        curr_pnl = sum(t.get("pnl", 0) for t in trades)
-        print("\n  • PnL Variance:")
-        print(f"    Original total: ${orig_pnl:.2f}")
-        print(f"    Current total:  ${curr_pnl:.2f}")
-        print(f"    Difference:     ${abs(curr_pnl - orig_pnl):.2f}")
+        sum(t.get("pnl_original", 0) for t in trades if "pnl_original" in t)
+        sum(t.get("pnl", 0) for t in trades)
 
-    print("\n" + "=" * 80)
 
 
 def estimate_entry_time(trade: dict) -> str | None:
@@ -143,9 +129,6 @@ def verify_pnl_recalculation() -> None:
         log_msg("No recalculated trades found - PnL appears original", "INFO")
         return
 
-    print("\n" + "=" * 80)
-    print("🔍 PNL RECALCULATION VERIFICATION")
-    print("=" * 80)
 
     # Check if recalculation was done correctly
     unreasonable_changes = []
@@ -158,14 +141,11 @@ def verify_pnl_recalculation() -> None:
                 unreasonable_changes.append((t, orig, curr, change_pct))
 
     if unreasonable_changes:
-        print(f"\n⚠️  Found {len(unreasonable_changes)} trades with suspicious changes (>100%):")
-        for _trade, orig, curr, pct in unreasonable_changes[:5]:
-            print(f"   Trade: Original ${orig:.2f} → Current ${curr:.2f} ({pct:.0f}% change)")
-        print("\n📝 These may require manual review. See data/trade_log.jsonl for details.")
+        for _trade, orig, curr, _pct in unreasonable_changes[:5]:
+            pass
     else:
-        print(f"\n✓ All {len(recalc_trades)} recalculated trades have reasonable changes (<100%)")
+        pass
 
-    print("\n" + "=" * 80)
 
 
 def main() -> None:

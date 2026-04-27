@@ -9,12 +9,9 @@ and the supporting helpers that compose them into the rendered frame.
 from __future__ import annotations
 
 import io
-import json
 from contextlib import redirect_stdout
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-
-import pytest
 
 from src.monitoring.hud_tabbed import (
     _ANSI_DIM,
@@ -28,7 +25,7 @@ from src.monitoring.hud_tabbed import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-UTC = timezone.utc
+UTC = UTC
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -415,7 +412,7 @@ class TestOfflineJobZoStr:
 
     def test_high_zo_is_green(self):
         hud = TabbedHUD()
-        col, _ = hud._offline_job_status("done")
+        _col, _ = hud._offline_job_status("done")
         s = hud._offline_job_zo_str(1.5, "done", 10)
         assert _ANSI_G in s
         assert "1.5000" in _strip_ansi(s)

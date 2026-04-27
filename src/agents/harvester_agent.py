@@ -224,7 +224,7 @@ class HarvesterAgent(AgentTrainingMixin):
                 )
                 return True, (1, 1.0)  # CLOSE with full confidence
         except (ValueError, TypeError, ZeroDivisionError) as e:
-            LOG.error("[HARVESTER_EMERGENCY_SL] Error calculating MAE percentage: %s", e)
+            LOG.exception("[HARVESTER_EMERGENCY_SL] Error calculating MAE percentage: %s", e)
 
         return False, None
 
@@ -360,7 +360,7 @@ class HarvesterAgent(AgentTrainingMixin):
         return action, confidence
 
     def _decide_with_torch(
-        self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float
+        self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float,
     ) -> tuple[int, float]:
         """Make decision using PyTorch model.
 
@@ -572,7 +572,7 @@ class HarvesterAgent(AgentTrainingMixin):
         return action, confidence
 
     def _build_full_state(
-        self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float
+        self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float,
     ) -> np.ndarray:
         """Build full state vector with market features + position stats.
 
@@ -740,7 +740,7 @@ class HarvesterAgent(AgentTrainingMixin):
         return max(1, round(float(bars) * tf_minutes * ticks_per_min))
 
     def _check_soft_time_stop(
-        self, ticks_held: int, mfe_pct: float, current_profit_pct: float, net_profit_pct: float
+        self, ticks_held: int, mfe_pct: float, current_profit_pct: float, net_profit_pct: float,
     ) -> bool:
         """Check if soft time stop is triggered."""
         soft_limit_ticks = self._bars_to_ticks(self.soft_time_stop_bars)
@@ -851,38 +851,38 @@ class HarvesterAgent(AgentTrainingMixin):
 
         # Base defaults scaled by timeframe
         self.profit_target_pct = self._get_param(
-            "harvester_profit_target_pct", PROFIT_TARGET_PCT_DEFAULT * timeframe_scale
+            "harvester_profit_target_pct", PROFIT_TARGET_PCT_DEFAULT * timeframe_scale,
         )
         self.stop_loss_pct = self._get_param("harvester_stop_loss_pct", STOP_LOSS_PCT_DEFAULT * timeframe_scale)
         self.soft_time_stop_bars = round(self._get_param("harvester_soft_time_bars", SOFT_TIME_STOP_BARS / timeframe_scale))
         self.hard_time_stop_bars = round(self._get_param("harvester_hard_time_bars", HARD_TIME_STOP_BARS / timeframe_scale))
         self.min_soft_profit_pct = self._get_param(
-            "harvester_min_soft_profit_pct", MIN_SOFT_PROFIT_PCT * timeframe_scale
+            "harvester_min_soft_profit_pct", MIN_SOFT_PROFIT_PCT * timeframe_scale,
         )
         # Trailing / breakeven thresholds — all scaled by timeframe so the same
         # constants work correctly across M5 (scale=0.6) through H4 (scale=3.5).
         self.trailing_stop_activation_pct = self._get_param(
-            "harvester_trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT * timeframe_scale
+            "harvester_trailing_stop_activation_pct", TRAILING_STOP_ACTIVATION_PCT * timeframe_scale,
         )
         self.trailing_stop_distance_pct = self._get_param(
-            "harvester_trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT * timeframe_scale
+            "harvester_trailing_stop_distance_pct", TRAILING_STOP_DISTANCE_PCT * timeframe_scale,
         )
         self.breakeven_trigger_pct = self._get_param(
-            "harvester_breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT * timeframe_scale
+            "harvester_breakeven_trigger_pct", BREAKEVEN_TRIGGER_PCT * timeframe_scale,
         )
         self.micro_winner_mfe_threshold_pct = self._get_param(
-            "harvester_micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT * timeframe_scale
+            "harvester_micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT * timeframe_scale,
         )
         self.capture_decay_min_mfe_pct = self._get_param(
-            "harvester_capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT * timeframe_scale
+            "harvester_capture_decay_min_mfe_pct", CAPTURE_DECAY_MIN_MFE_PCT * timeframe_scale,
         )
         self.capture_decay_threshold = self._get_param("harvester_capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)
         self.micro_winner_giveback_pct = self._get_param(
-            "harvester_micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT
+            "harvester_micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT,
         )
         self.early_adverse_mae_pct = self._get_param("harvester_early_adverse_mae_pct", 0.22 * timeframe_scale)
         self.early_adverse_mfe_ceiling_pct = self._get_param(
-            "harvester_early_adverse_mfe_ceiling_pct", 0.08 * timeframe_scale
+            "harvester_early_adverse_mfe_ceiling_pct", 0.08 * timeframe_scale,
         )
         self.early_adverse_ticks = round(self._get_param("harvester_early_adverse_ticks", 120))
         self.chop_soft_mult = self._get_param("harvester_chop_soft_mult", 0.80)
@@ -1045,7 +1045,7 @@ class HarvesterAgent(AgentTrainingMixin):
                 trail_floor = max(0.05, TRAILING_STOP_DISTANCE_PCT * tf_scale * 0.5)
                 trail_ceiling = max(trail_floor + 0.01, TRAILING_STOP_DISTANCE_PCT * tf_scale * 2.5)
                 self.trailing_stop_distance_pct = max(
-                    trail_floor, min(trail_ceiling, current_trail + trail_gradient * current_trail)
+                    trail_floor, min(trail_ceiling, current_trail + trail_gradient * current_trail),
                 )
                 LOG.debug(
                     "[HARVESTER] Updated trailing distance: %.4f%% (floor=%.4f ceiling=%.4f)",
@@ -1132,7 +1132,7 @@ class HarvesterAgent(AgentTrainingMixin):
             "capture_decay_threshold": float(getattr(self, "capture_decay_threshold", CAPTURE_DECAY_THRESHOLD)),
             "micro_winner_giveback_pct": float(getattr(self, "micro_winner_giveback_pct", MICRO_WINNER_GIVEBACK_PCT)),
             "micro_winner_mfe_threshold_pct": float(
-                getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT)
+                getattr(self, "micro_winner_mfe_threshold_pct", MICRO_WINNER_MFE_THRESHOLD_PCT),
             ),
             "micro_trend_relief": float(self._get_param("harvester_micro_trend_relief", 0.35)),
         }
@@ -1143,20 +1143,14 @@ class HarvesterAgent(AgentTrainingMixin):
 # ============================================================================
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    print("=" * 70)
-    print("HarvesterAgent Self-Test")
-    print("=" * 70)
 
     rng = np.random.default_rng(42)
 
     # Test 1: Initialize without model (fallback)
-    print("\n[TEST 1] Initialize without model")
     harvester = HarvesterAgent(window=STATE_WINDOW_SIZE, n_features=10)
     assert not harvester.use_torch
-    print("✓ Fallback mode initialized")
 
     # Test 2: Decide with synthetic state (profit target)
-    print("\n[TEST 2] Exit decision (profit target hit)")
     market_state = rng.standard_normal((STATE_WINDOW_SIZE, 7)).astype(np.float32)
     entry_price = 100000.0
     mfe = entry_price * 0.004  # 0.4% MFE (above 0.3% target)
@@ -1166,33 +1160,23 @@ if __name__ == "__main__":
     action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price)
     assert action == 1  # Should CLOSE (profit target)
     assert 0 <= conf <= 1
-    print(f"✓ Action: {action} (CLOSE), Confidence: {conf:.3f}")
 
     # Test 3: Decide with stop loss
-    print("\n[TEST 3] Exit decision (stop loss hit)")
     mfe = entry_price * 0.001  # 0.1% MFE
     mae = entry_price * 0.003  # 0.3% MAE (above 0.2% stop)
 
     action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price)
     assert action == 1  # Should CLOSE (stop loss)
-    print(f"✓ Action: {action} (CLOSE), Confidence: {conf:.3f}")
 
     # Test 4: Decide with HOLD (no exit conditions)
-    print("\n[TEST 4] Exit decision (hold position)")
     mfe = entry_price * 0.002  # 0.2% MFE (below target)
     mae = entry_price * 0.0015  # 0.15% MAE (below stop)
     bars_held = 5
 
     action, conf = harvester.decide(market_state, mfe, mae, bars_held, entry_price)
     assert action == 0  # Should HOLD
-    print(f"✓ Action: {action} (HOLD), Confidence: {conf:.3f}")
 
     # Test 5: Update from trade (logging only)
-    print("\n[TEST 5] Update from trade outcome")
     harvester.update_from_trade(capture_ratio=0.75, was_wtl=False)
     harvester.update_from_trade(capture_ratio=0.0, was_wtl=True)
-    print("✓ Trade outcomes logged")
 
-    print("\n" + "=" * 70)
-    print("✓ All HarvesterAgent tests passed!")
-    print("=" * 70)

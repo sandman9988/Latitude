@@ -195,22 +195,4 @@ def create_emergency_closer(trade_integration: "TradeManagerIntegration") -> Eme
 
 
 if __name__ == "__main__":
-    print("=" * 80)
-    print("EMERGENCY POSITION CLOSER - Circuit Breaker Integration")
-    print("=" * 80)
-    print("\nFeatures:")
-    print("  ✓ Closes ALL positions immediately")
-    print("  ✓ Handles hedging mode (close by ticket)")
-    print("  ✓ Handles netting mode (close net position)")
-    print("  ✓ Retry logic for failed closes")
-    print("  ✓ Verification that all positions closed")
-    print("\nUsage in circuit breaker:")
-    print("  from src.risk.emergency_close import create_emergency_closer")
-    print("  emergency_closer = create_emergency_closer(trade_integration)")
-    print("  if circuit_breaker.is_tripped:")
-    print("      emergency_closer.close_all_positions('CIRCUIT_BREAKER')")
-    print("\nIntegration points:")
-    print("  1. CircuitBreakerManager.check_all() → calls emergency close")
-    print("  2. Manual trigger via API/script")
-    print("  3. Crash recovery (close orphaned positions)")
-    print("=" * 80)
+    pass

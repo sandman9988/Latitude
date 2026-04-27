@@ -86,7 +86,7 @@ class RewardShapingMonitor:
             max_value=1.0,
         )
         target_trending_participation = self._legacy_kwargs.pop(
-            "target_trending_participation", target_trending_participation
+            "target_trending_participation", target_trending_participation,
         )
         self.target_trending_participation = max(0.1, min(1.0, float(target_trending_participation)))
 
@@ -97,7 +97,7 @@ class RewardShapingMonitor:
             max_value=1.0,
         )
         target_mean_reverting_participation = self._legacy_kwargs.pop(
-            "target_mean_reverting_participation", target_mean_reverting_participation
+            "target_mean_reverting_participation", target_mean_reverting_participation,
         )
         self.target_mean_reverting_participation = max(0.0, min(1.0, float(target_mean_reverting_participation)))
         self.compare_short_window_hours = self._env_int(
@@ -107,7 +107,7 @@ class RewardShapingMonitor:
             max_value=72,
         )
         self.compare_short_window_hours = int(
-            self._legacy_kwargs.pop("compare_short_window_hours", self.compare_short_window_hours)
+            self._legacy_kwargs.pop("compare_short_window_hours", self.compare_short_window_hours),
         )
         self.compare_baseline_7d_days = self._env_int(
             "REWARD_MONITOR_COMPARE_BASELINE_7D_DAYS",
@@ -116,7 +116,7 @@ class RewardShapingMonitor:
             max_value=30,
         )
         self.compare_baseline_7d_days = int(
-            self._legacy_kwargs.pop("compare_baseline_7d_days", self.compare_baseline_7d_days)
+            self._legacy_kwargs.pop("compare_baseline_7d_days", self.compare_baseline_7d_days),
         )
         self.compare_baseline_30d_days = self._env_int(
             "REWARD_MONITOR_COMPARE_BASELINE_30D_DAYS",
@@ -125,24 +125,24 @@ class RewardShapingMonitor:
             max_value=120,
         )
         self.compare_baseline_30d_days = int(
-            self._legacy_kwargs.pop("compare_baseline_30d_days", self.compare_baseline_30d_days)
+            self._legacy_kwargs.pop("compare_baseline_30d_days", self.compare_baseline_30d_days),
         )
         self.apply_recommendations = bool(
             self._legacy_kwargs.pop(
                 "apply_recommendations",
                 self._env_bool("REWARD_MONITOR_APPLY_RECOMMENDATIONS", default=True),
-            )
+            ),
         )
 
         data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
         decision_log_path_explicit = "decision_log_path" in self._legacy_kwargs or bool(
-            os.environ.get("REWARD_MONITOR_DECISION_LOG_PATH", "").strip()
+            os.environ.get("REWARD_MONITOR_DECISION_LOG_PATH", "").strip(),
         )
         self.trade_log_path = Path(
             self._legacy_kwargs.pop(
                 "trade_log_path",
                 os.environ.get("REWARD_MONITOR_TRADE_LOG_PATH", str(data_dir / "trade_log.jsonl")),
-            )
+            ),
         )
         self.decision_log_path = Path(
             self._legacy_kwargs.pop(
@@ -151,7 +151,7 @@ class RewardShapingMonitor:
                     "REWARD_MONITOR_DECISION_LOG_PATH",
                     str(data_dir / f"decision_log_{self.symbol}_M{self._timeframe_minutes()}.json"),
                 ),
-            )
+            ),
         )
         self._decision_log_path_explicit = decision_log_path_explicit
         self._allow_unscoped_decisions = self._env_bool(
@@ -159,7 +159,7 @@ class RewardShapingMonitor:
             default=False,
         )
         risk_metrics_path_explicit = "risk_metrics_path" in self._legacy_kwargs or bool(
-            os.environ.get("REWARD_MONITOR_RISK_METRICS_PATH", "").strip()
+            os.environ.get("REWARD_MONITOR_RISK_METRICS_PATH", "").strip(),
         )
         _risk_default = data_dir / f"risk_metrics_{self.symbol}_M{self._timeframe_minutes()}.json"
         if not _risk_default.exists():
@@ -168,7 +168,7 @@ class RewardShapingMonitor:
             self._legacy_kwargs.pop(
                 "risk_metrics_path",
                 os.environ.get("REWARD_MONITOR_RISK_METRICS_PATH", str(_risk_default)),
-            )
+            ),
         )
         self._risk_metrics_path_explicit = risk_metrics_path_explicit
         self._allow_unscoped_risk_metrics = self._env_bool(
@@ -180,7 +180,7 @@ class RewardShapingMonitor:
         # via kwargs or REWARD_MONITOR_OUTPUT_PATH env var.
         _default_output = data_dir / f"reward_shaping_monitor_{self.symbol}_{self.timeframe}.json"
         self.output_path = Path(
-            self._legacy_kwargs.pop("output_path", os.environ.get("REWARD_MONITOR_OUTPUT_PATH", str(_default_output)))
+            self._legacy_kwargs.pop("output_path", os.environ.get("REWARD_MONITOR_OUTPUT_PATH", str(_default_output))),
         )
         self.last_run_ts = 0.0
         self._last_decision_log_source: str | None = None
@@ -241,7 +241,7 @@ class RewardShapingMonitor:
         context = payload.get("context", {}) if isinstance(payload.get("context"), dict) else {}
         scope = payload.get("scope", {}) if isinstance(payload.get("scope"), dict) else {}
         sym = str(
-            payload.get("symbol") or details.get("symbol") or context.get("symbol") or scope.get("symbol") or ""
+            payload.get("symbol") or details.get("symbol") or context.get("symbol") or scope.get("symbol") or "",
         ).upper()
 
         raw_tfm = (
@@ -261,7 +261,7 @@ class RewardShapingMonitor:
                     or details.get("timeframe")
                     or context.get("timeframe")
                     or scope.get("timeframe")
-                    or ""
+                    or "",
                 )
                 .strip()
                 .upper()
@@ -481,13 +481,13 @@ class RewardShapingMonitor:
                 stats["no_entry_count"] += 1
                 confidence = float(details.get("confidence", entry.get("confidence", 0.0)) or 0.0)
                 feasibility = float(
-                    details.get("feasibility", entry.get("feasibility", reasoning.get("feasibility", 0.0))) or 0.0
+                    details.get("feasibility", entry.get("feasibility", reasoning.get("feasibility", 0.0))) or 0.0,
                 )
                 circuit_breaker = bool(
                     details.get(
                         "circuit_breaker",
                         entry.get("circuit_breaker", not bool(reasoning.get("circuit_breakers_ok", True))),
-                    )
+                    ),
                 )
                 if confidence >= 0.55 and feasibility >= 0.50 and not circuit_breaker:
                     stats["confident_no_entry_count"] += 1
@@ -548,7 +548,7 @@ class RewardShapingMonitor:
                     payload = json.load(fh)
                 if isinstance(payload, dict):
                     explicit_legacy = self._risk_metrics_path_explicit and not self._path_has_any_scope(
-                        self.risk_metrics_path
+                        self.risk_metrics_path,
                     )
                     if not self._payload_matches_scope(
                         payload,
@@ -865,7 +865,7 @@ class RewardShapingMonitor:
                 timeframe=self.timeframe,
                 broker=self.broker,
                 default=0.0,
-            )
+            ),
         )
         proposed = current + delta
         spec = self.param_manager.param_specs.get(param_name)
@@ -905,7 +905,7 @@ class RewardShapingMonitor:
                     "reason": suggestion.reason,
                     "previous": suggestion.current,
                     "applied": round(float(new_value), 6),
-                }
+                },
             )
         if applied:
             self.param_manager.save()

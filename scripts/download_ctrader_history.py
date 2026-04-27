@@ -43,6 +43,7 @@ Max bars per API call: 4 096.  Requests are chunked automatically.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import datetime
 import logging
@@ -50,8 +51,11 @@ import os
 import re
 import sys
 import time
-from collections.abc import Generator
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 LOG = logging.getLogger(__name__)
 
@@ -115,7 +119,7 @@ def _get_cred(name: str, tokens_file: dict[str, str], cli_value: str | None) -> 
         f"  export {name}=..., or add it to config/cTraderAppTokens."
     )
     raise SystemExit(
-        msg
+        msg,
     )
 
 
@@ -183,7 +187,6 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
         "&response_type=code"
         "&scope=trading"
     )
-    print(f"Opening browser for OAuth2 authorisation...\n{auth_url}")
     webbrowser.open(auth_url)
 
     # Wait up to 120 seconds for the callback
@@ -204,7 +207,7 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
             "redirect_uri": redirect_uri,
             "client_id": client_id,
             "client_secret": client_secret,
-        }
+        },
     ).encode()
     req = urllib.request.Request(
         "https://connect.spotware.com/apps/token",
@@ -219,7 +222,6 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
         msg = f"Token exchange failed: {payload}"
         raise SystemExit(msg)
 
-    print(f"\nAccess token obtained.  Set it permanently with:\n  export CTRADER_ACCESS_TOKEN={access_token!r}")
     return access_token
 
 
@@ -235,7 +237,7 @@ def _check_library() -> None:
     except ImportError as exc:
         msg = "ctrader-open-api is not installed.\n  pip install ctrader-open-api\nThen re-run this script."
         raise SystemExit(
-            msg
+            msg,
         ) from exc
 
 
@@ -250,7 +252,7 @@ def _ms_to_dt(ms: int) -> datetime.datetime:
 try:
     from twisted.internet.defer import inlineCallbacks as _inline_callbacks  # type: ignore
 except ImportError:
-    def _inline_callbacks(f):  # type: ignore[misc]  # noqa: N802
+    def _inline_callbacks(f):  # type: ignore[misc]
         return f
 
 
@@ -283,7 +285,7 @@ def _fetch_all_bars(client, account_id: int, symbol_id: int, period: int,
                     to_dt: datetime.datetime, label: str) -> Generator:
     from ctrader_open_api import Protobuf  # type: ignore
     from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAGetTrendbarsReq  # type: ignore
-    from twisted.internet import defer  # type: ignore  # noqa: F401
+    from twisted.internet import defer  # type: ignore
 
     all_bars: list = []
     chunk_td = datetime.timedelta(minutes=MAX_BARS_PER_REQUEST * timeframe_minutes)
@@ -328,7 +330,7 @@ def _download_one(
         ProtoOAApplicationAuthReq,
         ProtoOASymbolsListReq,
     )
-    from twisted.internet import defer  # type: ignore  # noqa: F401
+    from twisted.internet import defer  # type: ignore
 
     period = _TF_MINUTES_TO_PERIOD.get(timeframe_minutes)
     if period is None:
@@ -360,19 +362,15 @@ def _download_one(
     symbol_id = _find_symbol_id(Protobuf.extract(sym_msg), symbol_name)
     if symbol_id is None:
         LOG.error("Symbol %r not found on this account", symbol_name)
-        try:
+        with contextlib.suppress(Exception):
             client.stopService()
-        except Exception:
-            pass
         defer.returnValue(None)
 
     label = f"{symbol_name} M{timeframe_minutes}"
     all_bars = yield _fetch_all_bars(client, account_id, symbol_id, period,
                                      timeframe_minutes, from_dt, to_dt, label)
-    try:
+    with contextlib.suppress(Exception):
         client.stopService()
-    except Exception:
-        pass
     if not all_bars:
         LOG.error("No bars returned for %s M%d — check account ID and date range", symbol_name, timeframe_minutes)
         defer.returnValue(None)
@@ -419,7 +417,7 @@ def download_symbol(
             )
             result[0] = out
         except Exception as exc:
-            LOG.error("Download error for %s M%d: %s", symbol_name, timeframe_minutes, exc)
+            LOG.exception("Download error for %s M%d: %s", symbol_name, timeframe_minutes, exc)
         finally:
             if reactor.running:
                 reactor.stop()
@@ -459,10 +457,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--auth", action="store_true", help="Run OAuth2 auth flow to obtain an access token, then exit.")
     ap.add_argument("--symbol", nargs="+", metavar="SYM", help="One or more symbol names, e.g. EURUSD GBPUSD")
     ap.add_argument(
-        "--timeframe", nargs="+", type=int, metavar="MIN", help="One or more timeframe values in minutes, e.g. 1 5 60"
+        "--timeframe", nargs="+", type=int, metavar="MIN", help="One or more timeframe values in minutes, e.g. 1 5 60",
     )
     ap.add_argument(
-        "--from", dest="date_from", type=_parse_date, metavar="YYYY-MM-DD", help="Start date (inclusive, UTC)"
+        "--from", dest="date_from", type=_parse_date, metavar="YYYY-MM-DD", help="Start date (inclusive, UTC)",
     )
     ap.add_argument(
         "--to",
@@ -473,11 +471,11 @@ def main(argv: list[str] | None = None) -> int:
         help="End date (exclusive, UTC).  Defaults to today.",
     )
     ap.add_argument(
-        "--demo", action="store_true", default=True, help="Use demo server (default).  Pass --live to override."
+        "--demo", action="store_true", default=True, help="Use demo server (default).  Pass --live to override.",
     )
     ap.add_argument("--live", dest="demo", action="store_false", help="Use live server instead of demo.")
     ap.add_argument(
-        "--output-dir", type=Path, default=Path("data/history"), help="Output directory (default: data/history/)"
+        "--output-dir", type=Path, default=Path("data/history"), help="Output directory (default: data/history/)",
     )
     ap.add_argument("--client-id", help="OAuth2 client ID (overrides env/tokens file)")
     ap.add_argument("--client-secret", help="OAuth2 client secret (overrides env/tokens file)")
@@ -500,8 +498,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Auth-only mode
     if args.auth:
-        token = run_auth_flow(client_id, client_secret, redirect_uri)
-        print(f"CTRADER_ACCESS_TOKEN={token}")
+        run_auth_flow(client_id, client_secret, redirect_uri)
         return 0
 
     # Validate required args for download mode
@@ -562,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
                     LOG.error("   ✗  %s M%d failed", symbol, tf)
                     results.append(0)
             except Exception as exc:
-                LOG.error("   ✗  %s M%d error: %s", symbol, tf, exc)
+                LOG.exception("   ✗  %s M%d error: %s", symbol, tf, exc)
                 results.append(0)
         reactor.stop()
 

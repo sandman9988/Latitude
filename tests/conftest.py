@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -43,7 +43,7 @@ def _load_bars_from_jsonl(path: Path) -> list[tuple]:
                 ts_str = str(raw[0]).replace("Z", "+00:00")
                 ts = datetime.fromisoformat(ts_str)
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
+                    ts = ts.replace(tzinfo=UTC)
                 seen[key] = (ts, float(raw[1]), float(raw[2]), float(raw[3]), float(raw[4]))
             except (ValueError, TypeError, IndexError):
                 continue
