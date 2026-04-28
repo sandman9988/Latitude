@@ -37,6 +37,23 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 - Weekend offline training should run per symbol/timeframe from the complete
   available cache set discovered under `data/training_cache_*_<TF>.jsonl` and
   per-bot cache directories.
+- `train_offline.py` must keep `data/offline_training_status.json`
+  restartable while work is unfinished. The status file should include
+  supervisor metadata (`pid`, `python`, `argv`, `cwd`, restart count, heartbeat)
+  so `run_universe.py --watch` can recover queued/running work after watcher,
+  Open API hub, shell, or host restarts.
+- `run_universe.py --watch` owns offline-training reconciliation during normal
+  operations. It must not launch duplicate training if a live `train_offline.py`
+  process exists for this checkout, but it should restart missing or stalled
+  unfinished queues until the status is complete. The default stall threshold is
+  `UNIVERSE_OFFLINE_STALL_SECS=3600`; autorestart can be disabled with
+  `UNIVERSE_OFFLINE_AUTORESTART=0`.
+- On resume, completed `(symbol, timeframe_minutes)` entries in the offline
+  status remain `done` and should not be retrained unless
+  `CTRADER_OFFLINE_RESUME_STATUS=0` is set or the operator starts a fresh run.
+- Legacy unfinished status files without supervisor metadata may be rebuilt from
+  the status rows plus discovered scoped cache/history inputs, but new runs
+  should always write explicit restart metadata.
 - Tournament variants are evaluated per symbol/timeframe. Promote only the best
   accepted candidate for that exact pair.
 - Acceptance must beat the evaluated runtime incumbent and the registered

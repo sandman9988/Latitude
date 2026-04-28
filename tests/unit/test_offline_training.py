@@ -98,6 +98,40 @@ class TestZOmega:
         assert z_omega(base) == pytest.approx(z_omega(scaled), abs=1e-4)
 
 
+class TestOfflineStatusResume:
+    def test_completed_resume_entries_returns_done_jobs_only(self, monkeypatch):
+        monkeypatch.delenv("CTRADER_OFFLINE_RESUME_STATUS", raising=False)
+        status = {
+            "status": "running",
+            "results": [
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "done", "z_omega": 1.2},
+                {"symbol": "XAUUSD", "timeframe_minutes": 1, "status": "queued"},
+                {"symbol": "BTCUSD", "timeframe_minutes": 1, "status": "error"},
+            ],
+        }
+
+        entries = to._completed_resume_entries(status)
+
+        assert set(entries) == {("XAUUSD", 5)}
+        assert entries[("XAUUSD", 5)]["z_omega"] == pytest.approx(1.2)
+
+    def test_completed_resume_entries_can_be_disabled(self, monkeypatch):
+        monkeypatch.setenv("CTRADER_OFFLINE_RESUME_STATUS", "0")
+        status = {
+            "status": "running",
+            "results": [{"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "done"}],
+        }
+
+        assert to._completed_resume_entries(status) == {}
+
+    def test_offline_supervisor_payload_is_restartable(self):
+        payload = to._offline_supervisor_payload(["data/history", "--workers", "2"])
+
+        assert payload["restartable"] is True
+        assert Path(payload["argv"][0]).name == "train_offline.py"
+        assert payload["argv"][1:] == ["data/history", "--workers", "2"]
+
+
 # ── _detect_columns ───────────────────────────────────────────────────────────
 
 

@@ -1,6 +1,6 @@
 # Deployment & Operations Documentation Index
 
-**Last Updated:** April 25, 2026
+**Last Updated:** April 28, 2026
 **Purpose:** Quick navigation for deployment-related documents
 
 ---
@@ -85,6 +85,7 @@
 | `scripts/weekend_offline_training.sh` | Guarded per-timeframe offline tournament training |
 | `scripts/setup_weekend_training.sh` | Install/update weekend training cron entry |
 | `run.sh` | Main bot launcher |
+| `run_universe.py --watch` | Universe supervisor and unfinished offline-training autorestart |
 
 Usage shortcuts:
 
@@ -128,6 +129,7 @@ python run_universe.py --watch # start universe supervisor
 2. Install cron: `./run.sh weekend-train-setup`
 3. Run manually: `./run.sh weekend-train` (exits if market is open)
 4. Verify accepted candidates in `data/checkpoints/offline_champions.json` and `data/universe.json`
+5. If interrupted, keep `run_universe.py --watch` running; it restarts unfinished queued/running offline jobs from `data/offline_training_status.json`
 
 ---
 

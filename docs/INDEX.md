@@ -1,6 +1,6 @@
 # cTrader DDQN Bot — Documentation Index
 
-**Last Updated:** April 25, 2026
+**Last Updated:** April 28, 2026
 **Status:** ✅ Operational — test suite green
 
 ---
@@ -40,11 +40,11 @@
 | Document | Purpose | Audience | Freshness |
 | -------- | ------- | -------- | --------- |
 | [CURRENT_STATE.md](CURRENT_STATE.md) | **Latest system status** | All | ✅ Apr 25 |
-| [../AGENTS.md](../AGENTS.md) | Coding-agent instructions and source-of-truth rules | Developers | ✅ Apr 25 |
+| [../AGENTS.md](../AGENTS.md) | Coding-agent instructions and source-of-truth rules | Developers | ✅ Apr 28 |
 | [../MASTER_HANDBOOK.md](../MASTER_HANDBOOK.md) | Authoritative system design | Developers | ✅ Apr 25 |
 | [archive/REMOVED_LEGACY_CODE.md](archive/REMOVED_LEGACY_CODE.md) | Removed legacy-code manifest | Developers | ✅ Apr 25 |
 | [QUICKSTART.md](QUICKSTART.md) | End-to-end setup guide | New users | ✅ Apr 25 |
-| [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) | Offline→paper→live champion workflow | Developers | ✅ Apr 25 |
+| [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) | Offline→paper→live champion workflow | Developers | ✅ Apr 28 |
 
 ### `/docs/guides` (User Guides)
 
@@ -117,6 +117,14 @@
 ---
 
 ## Recent Changes
+
+### April 28, 2026 — offline training recovery
+
+- **Added:** `train_offline.py` restart metadata in `data/offline_training_status.json`
+- **Added:** `run_universe.py --watch` reconciliation for unfinished offline training queues
+- **Added:** Resume behavior that preserves completed `(symbol, timeframe_minutes)` jobs
+- **Added:** Legacy recovery command rebuild for old unfinished status files without supervisor metadata
+- **Updated:** AGENTS.md and operations docs with offline autorestart controls
 
 ### April 25, 2026 — doc cleanup + code fixes
 

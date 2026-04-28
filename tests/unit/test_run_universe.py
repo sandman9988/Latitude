@@ -147,6 +147,112 @@ class TestPidAlive:
             assert ru._pid_alive(999999) is False
 
 
+class TestOfflineTrainingSupervisor:
+    def test_offline_status_active_detects_unfinished_queue(self):
+        status = {"status": "running", "results": [{"status": "done"}, {"status": "queued"}]}
+        assert ru._offline_status_active(status)
+
+    def test_offline_status_active_ignores_complete_status(self):
+        status = {"status": "complete", "results": [{"status": "queued"}]}
+        assert not ru._offline_status_active(status)
+
+    def test_reconcile_restarts_dead_unfinished_training(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        status_path = tmp_path / "data" / "offline_training_status.json"
+        log_path = tmp_path / "logs" / "train_offline_supervisor.log"
+        monkeypatch.setattr(ru, "_OFFLINE_STATUS_PATH", status_path)
+        monkeypatch.setattr(ru, "_OFFLINE_SUPERVISOR_LOG", log_path)
+
+        script = tmp_path / "train_offline.py"
+        script.write_text("#!/usr/bin/env python3\n")
+        python = sys.executable
+        status_path.parent.mkdir(parents=True)
+        status_path.write_text(json.dumps({
+            "status": "running",
+            "supervisor": {
+                "pid": 987654,
+                "python": python,
+                "argv": [str(script), "data/history", "--workers", "2"],
+                "cwd": str(tmp_path),
+                "restart_count": 0,
+            },
+            "results": [
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "done"},
+                {"symbol": "XAUUSD", "timeframe_minutes": 1, "status": "queued"},
+            ],
+        }))
+
+        captured = {}
+
+        def _fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["cwd"] = kwargs.get("cwd")
+            captured["env"] = kwargs.get("env", {})
+            proc = MagicMock()
+            proc.pid = 24680
+            return proc
+
+        monkeypatch.setattr(ru, "_pid_is_train_offline", lambda _pid: False)
+        monkeypatch.setattr(ru, "_find_train_offline_pid", lambda _cwd=None: None)
+        monkeypatch.setattr(ru.subprocess, "Popen", _fake_popen)
+
+        ru._reconcile_offline_training({})
+
+        assert captured["cmd"] == [python, str(script), "data/history", "--workers", "2"]
+        assert captured["cwd"] == str(tmp_path)
+        assert captured["env"]["CTRADER_OFFLINE_RESUME_STATUS"] == "1"
+        assert captured["env"]["CTRADER_OFFLINE_RESTART_COUNT"] == "1"
+        updated = json.loads(status_path.read_text())
+        assert updated["supervisor"]["pid"] == 24680
+        assert updated["supervisor"]["restart_count"] == 1
+
+    def test_reconcile_does_not_duplicate_live_training(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        status_path = tmp_path / "data" / "offline_training_status.json"
+        monkeypatch.setattr(ru, "_OFFLINE_STATUS_PATH", status_path)
+        status_path.parent.mkdir(parents=True)
+        status_path.write_text(json.dumps({
+            "status": "running",
+            "supervisor": {"pid": 123, "argv": ["train_offline.py"], "cwd": str(tmp_path)},
+            "results": [{"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "running"}],
+        }))
+        popen = MagicMock()
+        monkeypatch.setattr(ru, "_pid_is_train_offline", lambda _pid: True)
+        monkeypatch.setattr(ru, "_offline_training_stalled", lambda _env: False)
+        monkeypatch.setattr(ru.subprocess, "Popen", popen)
+
+        ru._reconcile_offline_training({})
+
+        popen.assert_not_called()
+
+    def test_legacy_offline_restart_command_rebuilds_from_status(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ru, "_PROJECT_ROOT", tmp_path)
+        cache = tmp_path / "data" / "training_cache_XAUUSD_M5.jsonl"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("{}\n")
+        status = {
+            "status": "running",
+            "results": [
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "done"},
+                {"symbol": "XAUUSD", "timeframe_minutes": 1, "status": "queued"},
+            ],
+        }
+
+        command_info = ru._legacy_offline_restart_command(status, {"WEEKEND_TRAIN_WORKERS": "3"})
+
+        assert command_info is not None
+        cmd, cwd = command_info
+        assert cwd == str(tmp_path)
+        assert cmd[:2] == [ru._resolve_python_executable({}), "train_offline.py"]
+        assert "data/training_cache_XAUUSD_M5.jsonl" in cmd
+        assert cmd[cmd.index("--symbols") + 1] == "XAUUSD"
+        timeframe_start = cmd.index("--timeframes") + 1
+        timeframe_end = cmd.index("--workers")
+        assert cmd[timeframe_start:timeframe_end] == ["M1", "M5"]
+        assert cmd[cmd.index("--workers") + 1] == "3"
+
+
 class TestRuntimeIsolation:
     def test_resolve_python_executable_prefers_project_venv(self, tmp_path, monkeypatch):
         venv_python = tmp_path / ".venv/bin/python"

@@ -39,6 +39,50 @@ universe watcher only when needed, runs `train_offline.py`, syncs accepted
 champions into isolated runtime checkpoint directories, and restarts the watcher
 if it was running before training.
 
+### Queue Recovery And Autorestart
+
+Offline training is restartable while `data/offline_training_status.json` shows
+queued or running jobs. New `train_offline.py` runs write supervisor metadata
+into that file:
+
+- process id and heartbeat
+- Python executable
+- original command arguments
+- working directory
+- restart count
+
+`run_universe.py --watch` checks this status on startup and every supervisor
+poll. If unfinished offline training has no live `train_offline.py` process, the
+watcher restarts the saved command with `CTRADER_OFFLINE_RESUME_STATUS=1`. If the
+process is live, it is left alone so duplicate offline trainers are not spawned.
+If the status/progress files stop updating for longer than
+`UNIVERSE_OFFLINE_STALL_SECS` (default `3600` seconds), the watcher terminates
+and restarts the unfinished queue. Restarts are capped by
+`UNIVERSE_OFFLINE_MAX_RESTARTS` (default `12`).
+
+Resume keeps completed `(symbol, timeframe_minutes)` rows marked `done` and only
+queues unfinished rows. Set `CTRADER_OFFLINE_RESUME_STATUS=0` only when you
+intentionally want to ignore the previous status and rerun all discovered jobs.
+
+Operational controls:
+
+```bash
+# Disable watcher-managed offline training recovery
+UNIVERSE_OFFLINE_AUTORESTART=0 python3 run_universe.py --watch
+
+# Use a shorter stall threshold while testing recovery
+UNIVERSE_OFFLINE_STALL_SECS=900 python3 run_universe.py --watch
+
+# Inspect recovery decisions and restarted training output
+tail -f logs/train_offline_supervisor.log
+```
+
+For older interrupted runs that predate supervisor metadata, the watcher can
+rebuild a recovery command from the unfinished status rows and the available
+`data/training_cache_*_M*.jsonl`, `data/paper_*_M*/training_cache_*_M*.jsonl`,
+and `data/history/*_M*.csv` inputs. New runs should rely on the explicit
+metadata path.
+
 ### Acceptance Rules
 
 For every `(symbol, timeframe_minutes)` pair:

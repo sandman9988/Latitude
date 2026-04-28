@@ -106,6 +106,13 @@ _PROJECT_VENV_PYTHONS = (
     _PROJECT_ROOT / "venv/bin/python",
     _PROJECT_ROOT / "venv/bin/python3",
 )
+_OFFLINE_STATUS_PATH = Path("data/offline_training_status.json")
+_OFFLINE_SUPERVISOR_LOG = Path("logs/train_offline_supervisor.log")
+_OFFLINE_AUTORESTART_ENV = "UNIVERSE_OFFLINE_AUTORESTART"
+_OFFLINE_STALL_SECS_ENV = "UNIVERSE_OFFLINE_STALL_SECS"
+_OFFLINE_MAX_RESTARTS_ENV = "UNIVERSE_OFFLINE_MAX_RESTARTS"
+_OFFLINE_RESTART_COUNT_ENV = "CTRADER_OFFLINE_RESTART_COUNT"
+_OFFLINE_RESUME_ENV = "CTRADER_OFFLINE_RESUME_STATUS"
 
 # Paper-mode env defaults (mirror .env.example PAPER_MODE block)
 _PAPER_ENV_DEFAULTS: dict[str, str] = {
@@ -415,6 +422,268 @@ def _resolve_python_executable(base_env: dict[str, str]) -> str:
         return explicit_python
 
     return sys.executable
+
+
+def _env_truthy(base_env: dict[str, str], key: str, default: str = "1") -> bool:
+    return str(base_env.get(key) or os.environ.get(key) or default).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _env_int(base_env: dict[str, str], key: str, default: int, low: int = 0) -> int:
+    raw = str(base_env.get(key) or os.environ.get(key) or default).strip()
+    try:
+        return max(low, int(raw))
+    except ValueError:
+        LOG.warning("Ignoring invalid %s=%r", key, raw)
+        return default
+
+
+def _read_offline_status() -> dict:
+    if not _OFFLINE_STATUS_PATH.exists():
+        return {}
+    try:
+        with open(_OFFLINE_STATUS_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        LOG.warning("Could not read %s: %s", _OFFLINE_STATUS_PATH, exc)
+        return {}
+
+
+def _write_offline_status(status: dict) -> None:
+    _OFFLINE_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _OFFLINE_STATUS_PATH.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(status, f, indent=2)
+    tmp.replace(_OFFLINE_STATUS_PATH)
+
+
+def _offline_status_active(status: dict) -> bool:
+    if status.get("status") in {"complete", "completed"}:
+        return False
+    results = status.get("results") or []
+    if not isinstance(results, list) or not results:
+        return status.get("status") == "running"
+    return any(isinstance(r, dict) and r.get("status") in {"queued", "running"} for r in results)
+
+
+def _cmdline_for_pid(pid: int) -> str:
+    proc_cmdline = Path("/proc") / str(pid) / "cmdline"
+    try:
+        return proc_cmdline.read_text().replace("\x00", " ").strip()
+    except OSError:
+        return ""
+
+
+def _pid_is_train_offline(pid: int | None) -> bool:
+    if not _pid_alive(pid):
+        return False
+    return "train_offline.py" in _cmdline_for_pid(int(pid))
+
+
+def _find_train_offline_pid(cwd: str | None = None) -> int | None:
+    proc_root = Path("/proc")
+    if not proc_root.exists():
+        return None
+    wanted_cwd = str(Path(cwd or _PROJECT_ROOT).resolve())
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        cmdline = _cmdline_for_pid(pid)
+        if "train_offline.py" not in cmdline:
+            continue
+        try:
+            proc_cwd = str((entry / "cwd").resolve())
+        except OSError:
+            proc_cwd = ""
+        if proc_cwd == wanted_cwd or not cwd:
+            return pid
+    return None
+
+
+def _offline_progress_mtime() -> float:
+    mtimes = []
+    for path in Path("data").glob("offline_progress_*_M*.json"):
+        try:
+            mtimes.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    try:
+        mtimes.append(_OFFLINE_STATUS_PATH.stat().st_mtime)
+    except OSError:
+        pass
+    return max(mtimes) if mtimes else 0.0
+
+
+def _offline_training_stalled(base_env: dict[str, str]) -> bool:
+    stall_secs = _env_int(base_env, _OFFLINE_STALL_SECS_ENV, 3600, low=60)
+    last_update = _offline_progress_mtime()
+    return bool(last_update and (time.time() - last_update) > stall_secs)
+
+
+def _offline_restart_command(status: dict, base_env: dict[str, str]) -> tuple[list[str], str] | None:
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    argv = supervisor.get("argv") if isinstance(supervisor, dict) else None
+    if not isinstance(argv, list) or not argv:
+        return _legacy_offline_restart_command(status, base_env)
+    script_and_args = [str(part) for part in argv]
+    if Path(script_and_args[0]).name != "train_offline.py":
+        return _legacy_offline_restart_command(status, base_env)
+    python_exec = str(supervisor.get("python") or "").strip()
+    if not python_exec or not Path(python_exec).exists():
+        python_exec = _resolve_python_executable(base_env)
+    cwd = str(supervisor.get("cwd") or _PROJECT_ROOT)
+    return [python_exec, *script_and_args], cwd
+
+
+def _offline_status_targets(status: dict) -> tuple[list[str], list[str]]:
+    symbols: set[str] = set()
+    timeframes: set[str] = set()
+    for entry in status.get("results") or []:
+        if not isinstance(entry, dict):
+            continue
+        symbol = str(entry.get("symbol") or "").upper().strip()
+        if symbol:
+            symbols.add(symbol)
+        try:
+            timeframes.add(f"M{int(entry.get('timeframe_minutes'))}")
+        except (TypeError, ValueError):
+            continue
+    return sorted(symbols), sorted(timeframes, key=lambda x: int(x[1:]))
+
+
+def _discover_offline_training_inputs(symbols: list[str]) -> list[str]:
+    inputs: list[Path] = []
+    data_root = Path("data")
+    for symbol in symbols:
+        inputs.extend(data_root.glob(f"training_cache_{symbol}_M*.jsonl"))
+        inputs.extend(data_root.glob(f"paper_{symbol}_M*/training_cache_{symbol}_M*.jsonl"))
+        history_root = data_root / "history"
+        inputs.extend(history_root.glob(f"{symbol}_M*.csv"))
+    return [path.as_posix() for path in sorted(set(inputs)) if path.is_file()]
+
+
+def _legacy_offline_restart_command(status: dict, base_env: dict[str, str]) -> tuple[list[str], str] | None:
+    symbols, timeframes = _offline_status_targets(status)
+    inputs = _discover_offline_training_inputs(symbols)
+    if not symbols or not timeframes or not inputs:
+        return None
+    python_exec = _resolve_python_executable(base_env)
+    cmd = [
+        python_exec,
+        "train_offline.py",
+        *inputs,
+        "--symbols",
+        *symbols,
+        "--timeframes",
+        *timeframes,
+        "--workers",
+        str(base_env.get("WEEKEND_TRAIN_WORKERS") or "2"),
+        "--n-epochs",
+        str(base_env.get("WEEKEND_TRAIN_EPOCHS") or "3"),
+        "--warm-start",
+        "--accept-if-better",
+        "--auto-promote",
+        "--acceptance-margin",
+        str(base_env.get("WEEKEND_TRAIN_ACCEPTANCE_MARGIN") or "0.0"),
+        "--retrain-rounds",
+        str(base_env.get("WEEKEND_TRAIN_RETRAIN_ROUNDS") or "6"),
+        "--paper-threshold",
+        str(base_env.get("WEEKEND_TRAIN_PAPER_THRESHOLD") or "1.0"),
+        "--focused-cap-per-side",
+        str(base_env.get("WEEKEND_TRAIN_FOCUSED_CAP_PER_SIDE") or "10"),
+        "--focused-cap-lookback-days",
+        str(base_env.get("WEEKEND_TRAIN_FOCUSED_CAP_LOOKBACK_DAYS") or "7"),
+        "--focused-cap-passes",
+        str(base_env.get("WEEKEND_TRAIN_FOCUSED_CAP_PASSES") or "2"),
+        "--tournament-variants",
+        str(base_env.get("WEEKEND_TRAIN_TOURNAMENT_VARIANTS") or "6"),
+        "--tournament-seed",
+        str(base_env.get("WEEKEND_TRAIN_TOURNAMENT_SEED") or "8675309"),
+    ]
+    return cmd, str(_PROJECT_ROOT)
+
+
+def _reconcile_offline_training(base_env: dict[str, str]) -> None:
+    """Restart unfinished offline training after watcher/openapi restarts."""
+    if not _env_truthy(base_env, _OFFLINE_AUTORESTART_ENV, "1"):
+        return
+    status = _read_offline_status()
+    if not _offline_status_active(status):
+        return
+
+    supervisor = status.get("supervisor") if isinstance(status.get("supervisor"), dict) else {}
+    cwd = str(supervisor.get("cwd") or _PROJECT_ROOT)
+    pid = supervisor.get("pid")
+    try:
+        pid_int = int(pid) if pid is not None else None
+    except (TypeError, ValueError):
+        pid_int = None
+
+    if _pid_is_train_offline(pid_int):
+        if not _offline_training_stalled(base_env):
+            return
+        LOG.warning("Offline training PID %d appears stalled; restarting unfinished queue", pid_int)
+        _stop_pid(pid_int, label="offline training")
+        status = _read_offline_status() or status
+
+    live_pid = _find_train_offline_pid(cwd)
+    if live_pid:
+        status.setdefault("supervisor", {})["pid"] = live_pid
+        status["supervisor"]["last_seen_at"] = datetime.now(UTC).isoformat()
+        _write_offline_status(status)
+        return
+
+    command_info = _offline_restart_command(status, base_env)
+    if command_info is None:
+        LOG.warning("Unfinished offline training has no restartable command in %s", _OFFLINE_STATUS_PATH)
+        return
+
+    restart_count = int(supervisor.get("restart_count") or 0)
+    max_restarts = _env_int(base_env, _OFFLINE_MAX_RESTARTS_ENV, 12, low=1)
+    if restart_count >= max_restarts:
+        LOG.error("Offline training restart limit reached (%d); leaving queue for manual recovery", max_restarts)
+        return
+
+    cmd, run_cwd = command_info
+    Path("logs").mkdir(exist_ok=True)
+    env = {
+        **base_env,
+        _OFFLINE_RESUME_ENV: "1",
+        _OFFLINE_RESTART_COUNT_ENV: str(restart_count + 1),
+        "PYTHONUNBUFFERED": "1",
+    }
+    with open(_OFFLINE_SUPERVISOR_LOG, "a") as log_fh:
+        log_fh.write(
+            f"\n{'=' * 60}\n"
+            f"Offline training restarted by run_universe {datetime.now(UTC).isoformat()}\n"
+            f"cwd={run_cwd}\ncmd={' '.join(cmd)}\n{'=' * 60}\n",
+        )
+        log_fh.flush()
+        proc = subprocess.Popen(
+            cmd,
+            cwd=run_cwd,
+            env=env,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    status.setdefault("supervisor", {})
+    status["supervisor"].update({
+        "pid": proc.pid,
+        "restart_count": restart_count + 1,
+        "restarted_at": datetime.now(UTC).isoformat(),
+        "last_heartbeat": datetime.now(UTC).isoformat(),
+    })
+    status["status"] = "running"
+    _write_offline_status(status)
+    LOG.warning("Restarted unfinished offline training queue as PID %d", proc.pid)
 
 
 def _launch_stagger_seconds(base_env: dict[str, str]) -> float:
@@ -990,33 +1259,39 @@ def launch_paper_bots(
 def cmd_list(registry: dict) -> None:
     instruments = registry.get("instruments", [])
     if not instruments:
+        print("Universe is empty.")
         return
 
     header = f"{'Symbol':<12} {'Stage':<20} {'TF':>6} {'ZOmega':>9} {'PID':>8}  {'FIX':<18} {'Promoted':<22}  Running?"
-    "-" * len(header)
+    print(header)
+    print("-" * len(header))
     _rows = sorted(
         [e for e in instruments if isinstance(e, dict)],
         key=lambda x: (str(x.get("symbol", "")), int(x.get("timeframe_minutes", 0) or 0)),
     )
     for entry in _rows:
-        str(entry.get("symbol", "?") or "?")
-        entry.get("stage", "UNTRAINED")
-        entry.get("timeframe_minutes", "?")
+        symbol = str(entry.get("symbol", "?") or "?")
+        stage = entry.get("stage", "UNTRAINED")
+        timeframe = entry.get("timeframe_minutes", "?")
         zo = entry.get("z_omega", 0.0)
         pid = entry.get("paper_pid")
-        (entry.get("promoted_at") or "")[:19].replace("T", " ")
-        "✓ running" if _pid_alive(pid) else ("✗ stopped" if pid else "—")
-        f"{zo:.4f}" if isinstance(zo, float) else str(zo)
+        promoted_at = (entry.get("promoted_at") or "")[:19].replace("T", " ")
+        running = "running" if _pid_alive(pid) else ("stopped" if pid else "-")
+        zo_text = f"{zo:.4f}" if isinstance(zo, float) else str(zo)
         if entry.get("broker_topology") and entry.get("broker_topology") != _TOPOLOGY_ISOLATED:
-            (
+            fix_status = (
                 "owner"
                 if entry.get("fix_session_owner")
                 else (f"wait {entry.get('fix_owner_symbol', '?')} M{entry.get('fix_owner_timeframe_minutes', '?')}")
             )
         elif entry.get("broker_topology") == _TOPOLOGY_ISOLATED:
-            pass
+            fix_status = "isolated"
         else:
-            pass
+            fix_status = ""
+        print(
+            f"{symbol:<12} {stage:<20} {str(timeframe):>6} {zo_text:>9} "
+            f"{str(pid or '-'):>8}  {fix_status:<18} {promoted_at:<22}  {running}",
+        )
 
 
 def cmd_promote(
@@ -1327,6 +1602,7 @@ def main(argv: list[str] | None = None) -> int:
     LOG.info("Universe: %s", _UNIVERSE_PATH)
     LOG.info("Broker topology: %s", _broker_topology(base_env))
     registry = launch_paper_bots(registry, specs, base_env)
+    _reconcile_offline_training(base_env)
     cmd_list(registry)
 
     if not args.watch:
@@ -1344,6 +1620,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 # Re-read file so new train_offline.py promotions are picked up
                 registry = _load_universe()
+                _reconcile_offline_training(base_env)
                 registry = launch_paper_bots(registry, specs, base_env)
             except Exception as exc:
                 LOG.exception("Supervisor poll error (will retry in %ds): %s", _WATCH_INTERVAL, exc)

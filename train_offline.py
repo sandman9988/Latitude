@@ -69,6 +69,8 @@ LOG = logging.getLogger("train_offline")
 _STATUS_PATH = Path("data/offline_training_status.json")
 _OFFLINE_CHAMPIONS_NAME = "offline_champions.json"
 _CAPTURE_RATIO_FLOOR = 1e-9
+_OFFLINE_RESUME_ENV = "CTRADER_OFFLINE_RESUME_STATUS"
+_OFFLINE_RESTART_COUNT_ENV = "CTRADER_OFFLINE_RESTART_COUNT"
 
 # Universe registry — shared with run_universe.py; records trained instruments
 # and their current pipeline stage (UNTRAINED → OFFLINE_TRAINING → PAPER → …)
@@ -87,13 +89,71 @@ def _tf_label(minutes: int) -> str:
     return _MAP.get(int(minutes), f"M{minutes}")
 
 
+def _offline_supervisor_payload(argv: list[str] | None = None) -> dict[str, Any]:
+    """Metadata run_universe.py can use to restart an unfinished training run."""
+    script = sys.argv[0] if Path(sys.argv[0]).name == "train_offline.py" else str(Path(__file__).resolve())
+    raw_argv = list(sys.argv if argv is None else [script, *argv])
+    restart_count_raw = os.environ.get(_OFFLINE_RESTART_COUNT_ENV, "0")
+    try:
+        restart_count = max(0, int(restart_count_raw))
+    except ValueError:
+        restart_count = 0
+    return {
+        "pid": os.getpid(),
+        "python": sys.executable,
+        "argv": raw_argv,
+        "cwd": str(Path.cwd()),
+        "restartable": True,
+        "restart_count": restart_count,
+        "last_heartbeat": datetime.now(UTC).isoformat(),
+    }
+
+
 def _write_status(data: dict) -> None:
     """Atomically write offline training status for HUD consumption."""
+    supervisor = data.setdefault("supervisor", _offline_supervisor_payload())
+    if isinstance(supervisor, dict):
+        supervisor["pid"] = os.getpid()
+        supervisor["last_heartbeat"] = datetime.now(UTC).isoformat()
     _STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = _STATUS_PATH.with_suffix(".tmp")
     with open(tmp, "w") as _f:
         json.dump(data, _f, indent=2)
     tmp.replace(_STATUS_PATH)
+
+
+def _load_offline_status() -> dict[str, Any]:
+    if not _STATUS_PATH.exists():
+        return {}
+    try:
+        with open(_STATUS_PATH) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _status_job_key(entry: dict[str, Any]) -> tuple[str, int] | None:
+    try:
+        return str(entry.get("symbol", "")).upper(), int(entry.get("timeframe_minutes", 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _completed_resume_entries(status: dict[str, Any]) -> dict[tuple[str, int], dict[str, Any]]:
+    """Completed jobs from a previous interrupted run that should not be repeated."""
+    if os.environ.get(_OFFLINE_RESUME_ENV, "1").strip().lower() in {"0", "false", "no", "off"}:
+        return {}
+    if status.get("status") not in {"running", "interrupted", "stalled"}:
+        return {}
+    completed: dict[tuple[str, int], dict[str, Any]] = {}
+    for entry in status.get("results") or []:
+        if not isinstance(entry, dict) or entry.get("status") != "done":
+            continue
+        key = _status_job_key(entry)
+        if key is not None:
+            completed[key] = dict(entry)
+    return completed
 
 
 def _register_universe(
@@ -1100,7 +1160,12 @@ def _run_job_tournament(
             deploy_candidate=v["deploy_candidate"],
         )
         if result.get("error"):
-            logger.warning("[TOURNAMENT-WORKER] %s variant %s errored: %s", label, v.get("candidate_id"), result["error"])
+            logger.warning(
+                "[TOURNAMENT-WORKER] %s variant %s errored: %s",
+                label,
+                v.get("candidate_id"),
+                result["error"],
+            )
             continue
         if best is None or _prefer_training_result(result, best):
             best = result
@@ -1933,6 +1998,7 @@ def _execute_pool(
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -2001,6 +2067,46 @@ def main(argv: list[str] | None = None) -> int:
         _gpu_available = torch.cuda.is_available()
     except Exception:
         _gpu_available = False
+    all_jobs = list(jobs)
+    resume_entries = _completed_resume_entries(_load_offline_status())
+    if resume_entries:
+        resume_keys = {
+            key
+            for key in resume_entries
+            if any(j.symbol == key[0] and j.timeframe_minutes == key[1] for j in all_jobs)
+        }
+        if resume_keys:
+            jobs = [j for j in jobs if (j.symbol, j.timeframe_minutes) not in resume_keys]
+            LOG.info(
+                "[RESUME] Skipping %d already-completed offline job(s) from %s",
+                len(resume_keys),
+                _STATUS_PATH,
+            )
+    if not jobs:
+        LOG.info("[RESUME] All discovered offline jobs were already complete.")
+        _ot_status = {
+            "status": "complete",
+            "started_at": datetime.now(UTC).isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
+            "total_jobs": len(all_jobs),
+            "elapsed_s": 0.0,
+            "supervisor": _offline_supervisor_payload(raw_argv),
+            "results": [
+                resume_entries.get(
+                    (j.symbol, j.timeframe_minutes),
+                    {
+                        "symbol": j.symbol,
+                        "timeframe_minutes": j.timeframe_minutes,
+                        "label": _tf_label(j.timeframe_minutes),
+                        "status": "done",
+                    },
+                )
+                for j in all_jobs
+            ],
+        }
+        _write_status(_ot_status)
+        return 0
+
     if _gpu_available and (args.workers is None or args.workers > 1):
         LOG.info("[SPAWN] GPU detected — forcing 1 worker to prevent CUDA contention")
         n_workers = 1
@@ -2016,16 +2122,20 @@ def main(argv: list[str] | None = None) -> int:
         "status": "running",
         "started_at": datetime.now(UTC).isoformat(),
         "completed_at": None,
-        "total_jobs": len(jobs),
+        "total_jobs": len(all_jobs),
         "elapsed_s": 0.0,
+        "supervisor": _offline_supervisor_payload(raw_argv),
         "results": [
-            {
-                "symbol": j.symbol,
-                "timeframe_minutes": j.timeframe_minutes,
-                "label": _tf_label(j.timeframe_minutes),
-                "status": "queued",
-            }
-            for j in jobs
+            resume_entries.get(
+                (j.symbol, j.timeframe_minutes),
+                {
+                    "symbol": j.symbol,
+                    "timeframe_minutes": j.timeframe_minutes,
+                    "label": _tf_label(j.timeframe_minutes),
+                    "status": "queued",
+                },
+            )
+            for j in all_jobs
         ],
     }
     _write_status(_ot_status)

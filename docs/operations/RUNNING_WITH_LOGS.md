@@ -208,6 +208,28 @@ The bot writes logs to multiple locations:
 2. **Python Logs**: `logs/python/bot.log`
 3. **cTrader Logs**: `logs/ctrader/app.log`
 4. **Startup Log**: `logs/startup.log` (from run.sh)
+5. **Universe Watcher**: `logs/universe_watch.log` when the watcher is started
+   with `nohup`/background redirection
+6. **Offline Training Recovery**: `logs/train_offline_supervisor.log` for
+   watcher-managed offline-training restarts and resumed training output
+
+### Offline Training Recovery Checks
+
+When weekend/offline training is interrupted, `run_universe.py --watch` checks
+`data/offline_training_status.json` and restarts unfinished queued/running work
+if no live `train_offline.py` process exists. Confirm recovery with:
+
+```bash
+pgrep -af 'run_universe.py --watch|train_offline.py'
+python3 -m json.tool data/offline_training_status.json | sed -n '1,120p'
+tail -f logs/train_offline_supervisor.log
+```
+
+Autorestart is on by default. Disable it for manual recovery with:
+
+```bash
+UNIVERSE_OFFLINE_AUTORESTART=0 python3 run_universe.py --watch
+```
 
 ---
 
@@ -268,4 +290,3 @@ $ ./scripts/stream_logs.sh
 - [SYSTEM_FLOW.md](SYSTEM_FLOW.md) - Complete execution flow
 - [GAP_ANALYSIS_AND_REMEDIATION_SCHEDULE.md](GAP_ANALYSIS_AND_REMEDIATION_SCHEDULE.md) - Known issues
 - [MASTER_HANDBOOK.md](MASTER_HANDBOOK.md) - System architecture
-
