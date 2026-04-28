@@ -1235,6 +1235,50 @@ class TabbedHUD:
             ),
         )
 
+    def _enrich_offline_stats_from_champions(self) -> None:
+        """Back-fill missing metadata in 'done' status entries from offline_champions.json.
+
+        The misplaced break bug in train_offline._execute_pool caused z_omega,
+        val_trades, train_trades, total_train_steps, accepted, and accept_reason
+        to never be written to offline_training_status.json for any completed job
+        in a running process. This enriches those entries from the champions registry
+        so the HUD shows correct data without waiting for a new training run.
+        """
+        results = self.offline_stats.get("results")
+        if not isinstance(results, list):
+            return
+        # Load champions registry
+        _champ_path = self.data_dir / "checkpoints" / "offline_champions.json"
+        if not _champ_path.exists():
+            return
+        try:
+            _raw = json.loads(_champ_path.read_text())
+            champions: dict = _raw.get("champions", {})
+        except Exception:
+            return
+        for entry in results:
+            if not isinstance(entry, dict) or entry.get("status") != "done":
+                continue
+            if entry.get("z_omega") is not None:
+                continue
+            sym = str(entry.get("symbol", "")).upper()
+            tf = int(entry.get("timeframe_minutes", 0) or 0)
+            if not sym or not tf:
+                continue
+            key = f"{sym}_M{tf}"
+            champ = champions.get(key)
+            if not isinstance(champ, dict):
+                continue
+            zo = champ.get("z_omega")
+            if zo is None:
+                continue
+            entry["z_omega"] = float(zo)
+            entry["val_trades"] = int(champ.get("val_trades", 0) or 0)
+            entry.setdefault("train_trades", 0)
+            entry.setdefault("total_train_steps", 0)
+            entry.setdefault("accepted", True)
+            entry.setdefault("accept_reason", "champion_registry")
+
     def _load_universe_stats(self) -> None:
         """Load universe.json, annotate liveness, auto-prune dead entries."""
         _uni_path = self.data_dir / "universe.json"
@@ -1413,6 +1457,7 @@ class TabbedHUD:
 
         self._load_json("production_metrics.json", "production_metrics")
         self._load_json("offline_training_status.json", "offline_stats")
+        self._enrich_offline_stats_from_champions()
         self._load_universe_stats()
         self._load_all_training_stats()
 
