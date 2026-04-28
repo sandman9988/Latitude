@@ -17,6 +17,7 @@ Note: Ctrl+C is ignored to prevent accidental termination when copying text.
 """
 
 import contextlib
+import glob as _glob
 import io
 import json
 import logging
@@ -574,7 +575,7 @@ class TabbedHUD:
 
     def _has_active_scope(self) -> bool:
         return bool(
-            str(getattr(self, "active_sym", "") or "").strip() and int(getattr(self, "active_tf_min", 0) or 0) > 0,
+            str(getattr(self, "active_sym", "") or "").strip() and int(getattr(self, "active_tf_min", 0) or 0) > 0
         )
 
     def _active_scope_label(self) -> str:
@@ -595,7 +596,7 @@ class TabbedHUD:
         ]
 
     def _period_rows_for_trades(
-        self, trades: list[dict], all_trades: list[dict] | None = None,
+        self, trades: list[dict], all_trades: list[dict] | None = None
     ) -> list[tuple[str, dict]]:
         """Build period metric rows for an already-scoped trade list."""
         _starting = self._universe_starting_equity()
@@ -798,7 +799,7 @@ class TabbedHUD:
                 elif key.lower() == "j":
                     if self.current_tab == "trades" and not self._trades_detail:
                         _page_cnt = min(
-                            self._trades_per_page, len(self._trades_view) - self._trades_page * self._trades_per_page,
+                            self._trades_per_page, len(self._trades_view) - self._trades_page * self._trades_per_page
                         )
                         self._trades_cursor = min(self._trades_cursor + 1, max(0, _page_cnt - 1))
                         self._force_redraw = True
@@ -852,7 +853,8 @@ class TabbedHUD:
                     time.sleep(_sleep_for)
             except KeyboardInterrupt:
                 break
-            except Exception:
+            except Exception as e:
+                print(f"\033[0mHUD Error: {e}")
                 time.sleep(2)
 
     def _load_performance_snapshot(self) -> None:
@@ -1562,7 +1564,7 @@ class TabbedHUD:
                         "symbol_id": item["symbol_id"],
                         "timeframe_minutes": item["timeframe_minutes"],
                         "qty": item["qty"],
-                    },
+                    }
                 )
         return profiles
 
@@ -1839,7 +1841,7 @@ class TabbedHUD:
                 "depth_ask": _rm.get("depth_ask", self.market_stats.get("depth_ask", 0.0)),
                 "order_book_bids": _rm.get("order_book_bids", self.market_stats.get("order_book_bids", [])),
                 "order_book_asks": _rm.get("order_book_asks", self.market_stats.get("order_book_asks", [])),
-            },
+            }
         )
 
     def _disable_raw_mode(self) -> None:
@@ -1925,8 +1927,16 @@ class TabbedHUD:
             print("  • Minimum 80x24 terminal size recommended")
             print("  • Bot must be running and exporting data files")
 
+            print("\n\033[1m🔧 TROUBLESHOOTING\033[0m\n")
+            print("  Data stale warning    - Bot may be paused or crashed")
+            print("  Missing files         - Check that bot is running and exporting")
+            print("  Garbled display       - Ensure terminal supports UTF-8 and ANSI colors")
+            print("  Keyboard not working  - Try running in a different terminal emulator")
+
+            print("\n" + "─" * 80)
             input("Press Enter to return to HUD...")
-        except Exception:
+        except Exception as e:
+            print(f"Error displaying help: {e}")
             input("Press Enter to continue...")
         finally:
             self._enable_raw_mode()
@@ -1934,12 +1944,14 @@ class TabbedHUD:
     def _control_file_targets(self, filename: str) -> list[Path]:
         """Return root and per-bot control-file paths for HUD broadcasts."""
         targets: list[Path] = [self.data_dir / filename]
-        with contextlib.suppress(OSError):
+        try:
             targets.extend(
                 bot_dir / filename
                 for bot_dir in sorted(self.data_dir.glob("paper_*_M*"))
                 if bot_dir.is_dir()
             )
+        except OSError:
+            pass
 
         seen: set[Path] = set()
         unique: list[Path] = []
@@ -1989,6 +2001,17 @@ class TabbedHUD:
         self._disable_raw_mode()
         try:
             os.system("clear" if os.name != "nt" else "cls")
+            RED = _ANSI_R
+            YLW = _ANSI_Y
+            RST = _ANSI_RST
+            print(RED + "╔" + "═" * 60 + "╗")
+            print("║" + " " * 16 + "⚠️  EMERGENCY KILL SWITCH" + " " * 17 + "║")
+            print("╚" + "═" * 60 + "╝" + RST + "\n")
+            print("This will (within ~5 seconds, regardless of bar interval):")
+            print("  1. Trip ALL circuit breakers immediately")
+            print("  2. Close ALL open positions via emergency close")
+            print("  3. Halt all new entries until circuit breakers are manually reset\n")
+            print(YLW + "Type KILL and press Enter to confirm, or press Enter to abort:" + RST)
             confirm = input("> ").strip()
             if confirm == "KILL":
                 _ks_data = {
@@ -1997,11 +2020,14 @@ class TabbedHUD:
                     "timestamp": datetime.now(UTC).isoformat(),
                 }
                 self._broadcast_control_file("kill_switch.json", _ks_data, prefix=".kill_switch_")
+                print("\n" + RED + "✓ KILL SWITCH ACTIVATED — bot will close all positions within 5 seconds" + RST)
                 self._set_notification("🚨 KILL SWITCH ACTIVATED — closing all positions", ttl=120)
                 input("\nPress Enter to return to HUD...")
             else:
+                print("\n" + YLW + "Aborted — no action taken." + RST)
                 time.sleep(1)
-        except Exception:
+        except Exception as e:
+            print(f"Error: {e}")
             with contextlib.suppress(Exception):
                 input("Press Enter to continue...")
         finally:
@@ -2012,7 +2038,15 @@ class TabbedHUD:
         self._disable_raw_mode()
         try:
             os.system("clear" if os.name != "nt" else "cls")
+            YLW = _ANSI_Y
+            GRN = _ANSI_G
+            RED = _ANSI_R
+            DIM = _ANSI_DIM
+            RST = _ANSI_RST
 
+            print(YLW + "╔" + "═" * 60 + "╗")
+            print("║" + " " * 14 + "🔌 CIRCUIT BREAKER REVIEW" + " " * 19 + "║")
+            print("╚" + "═" * 60 + "╝" + RST + "\n")
 
             # Load circuit_breakers.json
             _cb_path = self.data_dir / "circuit_breakers.json"
@@ -2035,7 +2069,7 @@ class TabbedHUD:
             _kurt_gate_active = bool(self.risk_stats.get("kurtosis_gate_active", False))
             _kurtosis_now = float(self.risk_stats.get("kurtosis", 0.0) or 0.0)
             _kurtosis_threshold = float(
-                self.risk_stats.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD,
+                self.risk_stats.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
             )
             _risk_scope = self._risk_scope_label(self.risk_stats)
             for _key, (_label, _explain) in _breaker_labels.items():
@@ -2058,24 +2092,33 @@ class TabbedHUD:
                         _reason = f"Kurtosis gate active [{_risk_scope}] (entry gate)"
                         _tv = _kurtosis_now
                         _th = _kurtosis_threshold
+                    print(f"  {RED}✗ {_label}: TRIPPED{RST}")
+                    print(f"    Reason:    {YLW}{_reason}{RST}")
+                    print(f"    Value:     {_tv:.4f}  (threshold: {_th:.4f})")
                     if _trip_ts:
+                        print(f"    Tripped:   {_trip_ts[:19]}")
                         try:
                             _trip_dt = datetime.fromisoformat(_trip_ts)
                             _elapsed = (datetime.now(UTC) - _trip_dt).total_seconds() / 60.0
                             _remaining = max(0, _cd_mins - _elapsed)
                             if _remaining > 0:
-                                pass
+                                print(f"    Cooldown:  {_remaining:.0f}m remaining (auto-reset after {_cd_mins}m)")
                             else:
-                                pass
+                                print(f"    Cooldown:  {GRN}Elapsed — safe to reset{RST}")
                         except (ValueError, TypeError):
                             pass
+                    print()
                 else:
-                    pass
+                    print(f"  {GRN}✓ {_label}: OK{RST}")
 
             if not _any_tripped:
+                print(f"\n  {GRN}All circuit breakers are OK — nothing to reset.{RST}")
                 input("\nPress Enter to return to HUD...")
                 return
 
+            print(f"\n{DIM}Resetting will allow the bot to resume trading immediately.{RST}")
+            print(f"{DIM}Only reset if you understand why the breaker tripped and the condition is resolved.{RST}\n")
+            print(YLW + "Type 'reset' and press Enter to reset all tripped breakers, or press Enter to abort:" + RST)
             confirm = input("> ").strip()
             if confirm.upper() == "RESET":
                 _reset_data = {
@@ -2087,11 +2130,14 @@ class TabbedHUD:
                     _reset_data,
                     prefix=".cb_reset_",
                 )
+                print(f"\n{GRN}✓ Reset request sent — bot will reset breakers within ~5 seconds{RST}")
                 self._set_notification("🔄 Circuit breaker reset requested", ttl=30)
                 input("\nPress Enter to return to HUD...")
             else:
+                print(f"\n{YLW}Aborted — no action taken.{RST}")
                 time.sleep(1)
-        except Exception:
+        except Exception as e:
+            print(f"Error: {e}")
             with contextlib.suppress(Exception):
                 input("Press Enter to continue...")
         finally:
@@ -2102,13 +2148,33 @@ class TabbedHUD:
         self._disable_raw_mode()
         try:
             os.system("clear" if os.name != "nt" else "cls")
+            YLW = _ANSI_Y
+            GRN = _ANSI_G
+            DIM = _ANSI_DIM
+            RST = _ANSI_RST
 
+            print(YLW + "╔" + "═" * 60 + "╗")
+            print("║" + " " * 14 + "📅 STATS EPOCH MANAGER" + " " * 22 + "║")
+            print("╚" + "═" * 60 + "╝" + RST + "\n")
 
             if self._stats_epoch:
                 _epoch_str = self._stats_epoch.strftime("%Y-%m-%d %H:%M UTC")
+                print(f"  Current epoch: {GRN}{_epoch_str}{RST}")
+                print(
+                    f"  Excluded:      {self._stats_epoch_excluded} trades, "
+                    f"${self._stats_epoch_excluded_pnl:+.2f} PnL\n"
+                )
             else:
-                pass
+                print(f"  Current epoch: {DIM}None (all trades included){RST}\n")
 
+            print("  Options:")
+            print(f"    {YLW}1{RST}  Set epoch to NOW (fresh start from this moment)")
+            print(f"    {YLW}2{RST}  Set epoch to start of today")
+            print(f"    {YLW}3{RST}  Set epoch to 7 days ago")
+            print(f"    {YLW}4{RST}  Set epoch to 30 days ago")
+            print(f"    {YLW}5{RST}  Enter a custom date (YYYY-MM-DD)")
+            print(f"    {YLW}c{RST}  Clear epoch (show all trades)")
+            print(f"    {DIM}Enter{RST}  Cancel\n")
             choice = input("Selection: ").strip().lower()
 
             _now = datetime.now(UTC)
@@ -2127,6 +2193,7 @@ class TabbedHUD:
                 if _parsed:
                     _new_epoch = _parsed
                 else:
+                    print(f"\n  {_ANSI_R}Invalid date format.{RST}")
                     input("Press Enter to return to HUD...")
                     return
             elif choice == "c":
@@ -2143,7 +2210,8 @@ class TabbedHUD:
             self._set_notification(f"Stats epoch set to {_label}", ttl=6)
             # Force metrics recompute on next refresh
             self._trade_log_reader.invalidate()
-        except Exception:
+        except Exception as exc:
+            print(f"\nError: {exc}")
             with contextlib.suppress(Exception):
                 input("Press Enter to continue...")
         finally:
@@ -2161,7 +2229,7 @@ class TabbedHUD:
             )
             if result.returncode == 0:
                 self._set_notification(
-                    "Session saved → restart run.sh to apply new instrument/mode config", ttl=12,
+                    "Session saved → restart run.sh to apply new instrument/mode config", ttl=12
                 )
             else:
                 self._set_notification("Session selector cancelled — no changes made", ttl=6)
@@ -2327,7 +2395,7 @@ class TabbedHUD:
 
     @staticmethod
     def _with_right_scrollbar(
-        lines: list[str], *, offset: int, max_scroll: int, body_rows: int, width: int,
+        lines: list[str], *, offset: int, max_scroll: int, body_rows: int, width: int
     ) -> list[str]:
         """Append a visual right-edge scrollbar to body lines."""
         if width < 20 or body_rows <= 0 or max_scroll <= 0:
@@ -2488,7 +2556,7 @@ class TabbedHUD:
         ofs_end_str = ofs.get("completed_at", "")
         if ofs_status == "running" and ofs_start_str:
             try:
-                _start = datetime.fromisoformat(ofs_start_str)
+                _start = datetime.fromisoformat(ofs_start_str.replace("Z", "+00:00"))
                 ofs_elapsed = (datetime.now(UTC) - _start).total_seconds()
             except (ValueError, TypeError):
                 ofs_elapsed = ofs.get("elapsed_s", 0.0)
@@ -2641,7 +2709,7 @@ class TabbedHUD:
         print(f"  \033[1m📈 TRADING PIPELINE\033[0m  {hdr_badge}")
         print()
         for _, entry in sorted(
-            uni.items(), key=lambda kv: (str(kv[1].get("symbol", "")), int(kv[1].get("timeframe_minutes", 0) or 0)),
+            uni.items(), key=lambda kv: (str(kv[1].get("symbol", "")), int(kv[1].get("timeframe_minutes", 0) or 0))
         ):
             self._render_pipeline_card(str(entry.get("symbol", "?")), entry)
         print()
@@ -2702,8 +2770,7 @@ class TabbedHUD:
             t_str = f"{_ANSI_G}TRADE ✓{_ANSI_RST}" if t_ok else f"{_ANSI_R}TRADE ✗{_ANSI_RST}"
             h_str = f"{_ANSI_G}healthy{_ANSI_RST}" if healthy else f"{_ANSI_Y}unhealthy{_ANSI_RST}"
             r_col = _ANSI_G if recon == 0 else (_ANSI_Y if recon < 5 else _ANSI_R)
-            r_str = f"{r_col}R:{recon}{_ANSI_RST}"
-            print(f"    {q_str}  {t_str}  {h_str}  {r_str}")
+            print(f"    FIX: {q_str}  {t_str}  {h_str}  │  reconnects: {r_col}{recon}{_ANSI_RST}")
 
             # ── activity ─────────────────────────────────────────────────────
             bars = ps.get("bar_count", 0)
@@ -2719,7 +2786,7 @@ class TabbedHUD:
             _re = ps.get("real_account_equity")
             _rm = ps.get("real_margin_free")
             if _rb is not None:
-                _rb_pnl = pnl
+                _rb_pnl = pnl  # compare relative to starting point
                 _rb_c = _ANSI_G if _rb_pnl >= 0 else _ANSI_R
                 _re_str = f"  │  Equity: {_ANSI_B}{float(_re):,.2f}{_ANSI_RST}" if _re is not None else ""
                 _rm_str = f"  │  Free margin: {_ANSI_B}{float(_rm):,.2f}{_ANSI_RST}" if _rm is not None else ""
@@ -2741,21 +2808,17 @@ class TabbedHUD:
             h_bar = self._pp_bar(h_buf / _RT_HARV_CAP if _RT_HARV_CAP else 0)
             t_pct = f"{100 * t_buf / _RT_TRIG_CAP:4.0f}%" if _RT_TRIG_CAP else ""
             h_pct = f"{100 * h_buf / _RT_HARV_CAP:4.0f}%" if _RT_HARV_CAP else ""
-
-            _t_ready_col = _ANSI_G if t_ready else _ANSI_DIM
-            _h_ready_col = _ANSI_G if h_ready else _ANSI_DIM
-            print(
-                f"    Trigger: {t_bar} {t_pct}  steps={t_steps}  ε={t_eps:.4f}  "
-                f"loss={t_loss:.4f}  {_t_ready_col}ready{_ANSI_RST}"
-            )
-            print(
-                f"    Harvester: {h_bar} {h_pct}  steps={h_steps}  β={h_beta:.3f}  "
-                f"loss={h_loss:.4f}  {_h_ready_col}ready{_ANSI_RST}"
-            )
+            t_rd = f"{_ANSI_G}ready{_ANSI_RST}" if t_ready else f"{_ANSI_Y}filling{_ANSI_RST}"
+            h_rd = f"{_ANSI_G}ready{_ANSI_RST}" if h_ready else f"{_ANSI_Y}filling{_ANSI_RST}"
+            t_ls = f"{t_loss:.4f}" if t_loss > 0 else f"{_ANSI_DIM}—{_ANSI_RST}"
+            h_ls = f"{h_loss:.4f}" if h_loss > 0 else f"{_ANSI_DIM}—{_ANSI_RST}"
+            print(f"    Trig:  {t_steps:>6,} steps  ε={t_eps:.3f}  buf {t_bar}{t_pct}  loss {t_ls}  {t_rd}")
+            print(f"    Harv:  {h_steps:>6,} steps  β={h_beta:.3f}  buf {h_bar}{h_pct}  loss {h_ls}  {h_rd}")
         else:
             started = entry.get("paper_started_at", "")
             started_str = started[:19].replace("T", " ") if started else "—"
-            print(f"    started: {started_str}  │  no stats yet")
+            print(f"    {_ANSI_DIM}Stats not yet available  (started {started_str}){_ANSI_RST}")
+        print()
 
     def _render_live_trigger_agent(self, ts: dict, pm: dict) -> None:
         """Render the Trigger Agent training block."""
@@ -2766,13 +2829,14 @@ class TabbedHUD:
             except (TypeError, ValueError):
                 return None
 
-        ts.get("trigger_buffer_size", 0)
+        trig_buf = ts.get("trigger_buffer_size", 0)
         trig_added = ts.get("trigger_total_added", 0)
         trig_loss = ts.get("trigger_loss", 0.0)
-        ts.get("trigger_epsilon", 0.0)
+        trig_eps = ts.get("trigger_epsilon", 0.0)
         is_in_pos = ts.get("is_in_position")  # None = unknown (old data)
         # Prefer training_stats confidence (single source of truth); fall back to production_metrics
         trig_conf = ts.get("trigger_confidence", pm.get("trigger_confidence_avg", 0.5))
+        ready_t = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if trig_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
         # Buffer fill-status annotation: trigger only fills when bot is FLAT
         if is_in_pos is True:
             _trig_buf_note = f"  {_ANSI_Y}⏸ paused — bot in position{_ANSI_RST}"
@@ -2780,36 +2844,55 @@ class TabbedHUD:
             _trig_buf_note = f"  {_ANSI_G}⬆ filling — bot flat{_ANSI_RST}"
         else:
             _trig_buf_note = ""
+        print(f"  \033[1m🎯 TRIGGER AGENT  (Entry)\033[0m  {ready_t}  {_ANSI_DIM}fills when flat{_ANSI_RST}")
+        print(f"    Steps:  {trig_steps:>10,}   Velocity: {self._rt_velocity(self._trig_step_hist)}")
+        print(f"    Buffer: {self._rt_pct_bar(trig_buf, _RT_TRIG_CAP)}  {trig_buf:,}/{_RT_TRIG_CAP:,}{_trig_buf_note}")
         if trig_added > 0:
-            pass
+            print(f"    Added:  {trig_added:,} total experiences")
+        print(f"    ε:      {self._rt_eps_bar(trig_eps)}")
         # Regime-aware epsilon factor: 1.0 = normal decay, <1.0 = slower (exploring more)
         _regime_f = ts.get("trigger_epsilon_regime_factor", 1.0)
         _rf_col = _ANSI_G if _regime_f >= 0.9 else (_ANSI_Y if _regime_f >= 0.7 else _ANSI_B)
+        print(
+            f"    ε ζ:    {_rf_col}{_regime_f:.2f}{_ANSI_RST}  {_ANSI_DIM}(decay factor — 1.0 normal, <1 slower){_ANSI_RST}"
+        )
         # Adaptive tau (target network update rate)
         _trig_tau = ts.get("trigger_tau", 0.005)
         _tau_col = _ANSI_G if _trig_tau > 0.003 else (_ANSI_Y if _trig_tau > 0.001 else _ANSI_R)
+        print(f"    τ:      {_tau_col}{_trig_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
         _tl_str = f"{trig_loss:.6f}" if trig_loss > 0 else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
+        print(f"    Loss:   {_tl_str}")
+        print(f"    Trend:  {self._rt_trend(self._trig_loss_hist)}")
         _sp = self._rt_spark(self._trig_loss_hist)
         if _sp:
-            pass
+            print(f"    Hist:   {_sp}")
         if CONF_HEALTHY_LOW < trig_conf < CONF_HEALTHY_HIGH:
             _cc = _ANSI_G
         elif CONF_WARM_LOW < trig_conf <= CONF_HEALTHY_LOW:
             _cc = _ANSI_Y
         else:
             _cc = _ANSI_R
+        print(f"    Conf:   {_cc}{trig_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
         _entry_floor = _to_float(ts.get("entry_conf_dynamic_floor"))
         if _entry_floor is None:
-            pass
+            print(f"    RL min: {_ANSI_DIM}—{_ANSI_RST}  {_ANSI_DIM}(risk tuner pending){_ANSI_RST}")
         else:
             _floor_col = _ANSI_G if _entry_floor <= 0.75 else (_ANSI_Y if _entry_floor <= 0.85 else _ANSI_R)
             _gap = float(trig_conf) - _entry_floor
             _gap_col = _ANSI_G if _gap >= 0 else _ANSI_R
+            print(
+                f"    RL min: {_floor_col}{_entry_floor:.3f}{_ANSI_RST}  "
+                f"{_ANSI_DIM}(dynamic entry floor){_ANSI_RST}  Δnow {_gap_col}{_gap:+.3f}{_ANSI_RST}"
+            )
         _rw_total = int(ts.get("trigger_runway_cal_total_samples", 0) or 0)
         _rw_active = int(ts.get("trigger_runway_cal_active_buckets", 0) or 0)
         _rw_reliable = bool(ts.get("trigger_runway_predictor_reliable", False))
         _rw_col = _ANSI_G if _rw_reliable else _ANSI_Y
         _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
+        print(
+            f"    Runway: {_rw_col}{_rw_lbl}{_ANSI_RST}  {_ANSI_DIM}samples={_rw_total} active_buckets={_rw_active}{_ANSI_RST}"
+        )
+        print()
 
     def _render_live_harvester_agent(self, ts: dict, pm: dict) -> None:
         """Render the Harvester Agent training block."""
@@ -2820,13 +2903,14 @@ class TabbedHUD:
             except (TypeError, ValueError):
                 return None
 
-        ts.get("harvester_buffer_size", 0)
+        harv_buf = ts.get("harvester_buffer_size", 0)
         harv_added = ts.get("harvester_total_added", 0)
         harv_loss = ts.get("harvester_loss", 0.0)
-        ts.get("harvester_beta", 0.4)
-        ts.get("harvester_min_hold_ticks", 10)
+        harv_beta = ts.get("harvester_beta", 0.4)
+        harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
         is_in_pos = ts.get("is_in_position")
         harv_conf = ts.get("harvester_confidence", pm.get("harvester_confidence_avg", 0.5))
+        ready_h = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if harv_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
         # Buffer fill-status annotation: harvester only fills when bot is IN POSITION
         if is_in_pos is True:
             _harv_buf_note = f"  {_ANSI_G}⬆ filling — in position{_ANSI_RST}"
@@ -2834,33 +2918,50 @@ class TabbedHUD:
             _harv_buf_note = f"  {_ANSI_Y}⏸ paused — bot flat{_ANSI_RST}"
         else:
             _harv_buf_note = ""
+        print(f"  \033[1m🌾 HARVESTER AGENT  (Exit)\033[0m  {ready_h}  {_ANSI_DIM}fills in position{_ANSI_RST}")
+        print(f"    Steps:  {harv_steps:>10,}   Velocity: {self._rt_velocity(self._harv_step_hist)}")
+        print(f"    Buffer: {self._rt_pct_bar(harv_buf, _RT_HARV_CAP)}  {harv_buf:,}/{_RT_HARV_CAP:,}{_harv_buf_note}")
         if harv_added > 0:
-            pass
+            print(f"    Added:  {harv_added:,} total experiences")
+        print(f"    β IS:   {self._rt_beta_bar(harv_beta)}")
         # Adaptive tau (target network update rate)
         _harv_tau = ts.get("harvester_tau", 0.005)
         _htau_col = _ANSI_G if _harv_tau > 0.003 else (_ANSI_Y if _harv_tau > 0.001 else _ANSI_R)
+        print(f"    τ:      {_htau_col}{_harv_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
         _hl_str = f"{harv_loss:.6f}" if harv_loss > 0 else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
+        print(f"    Loss:   {_hl_str}")
+        print(f"    Trend:  {self._rt_trend(self._harv_loss_hist)}")
         _sp = self._rt_spark(self._harv_loss_hist)
         if _sp:
-            pass
+            print(f"    Hist:   {_sp}")
         if CONF_HEALTHY_LOW < harv_conf < CONF_HEALTHY_HIGH:
             _cc = _ANSI_G
         elif CONF_WARM_LOW < harv_conf <= CONF_HEALTHY_LOW:
             _cc = _ANSI_Y
         else:
             _cc = _ANSI_R
+        print(f"    Conf:   {_cc}{harv_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
         _exit_floor = _to_float(ts.get("exit_conf_dynamic_floor"))
         if _exit_floor is None:
-            pass
+            print(f"    RL min: {_ANSI_DIM}—{_ANSI_RST}  {_ANSI_DIM}(risk tuner pending){_ANSI_RST}")
         else:
             _floor_col = _ANSI_G if _exit_floor <= 0.65 else (_ANSI_Y if _exit_floor <= 0.80 else _ANSI_R)
             _gap = float(harv_conf) - _exit_floor
             _gap_col = _ANSI_G if _gap >= 0 else _ANSI_R
+            print(
+                f"    RL min: {_floor_col}{_exit_floor:.3f}{_ANSI_RST}  "
+                f"{_ANSI_DIM}(dynamic exit floor){_ANSI_RST}  Δnow {_gap_col}{_gap:+.3f}{_ANSI_RST}"
+            )
         # Regime-aware hold duration
         _hold_mult = ts.get("harvester_regime_hold_mult", 1.0)
         _hm_col = _ANSI_G if _hold_mult > 1.0 else (_ANSI_Y if _hold_mult >= 0.9 else _ANSI_R)
+        print(
+            f"    Hold:   {harv_min_hold} ticks min  {_hm_col}×{_hold_mult:.2f}{_ANSI_RST}  {_ANSI_DIM}(regime mult — >1 trend run, <1 quick exit){_ANSI_RST}"
+        )
         _cd = float(ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
         _mw = float(ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
+        print(f"    WTL:    {_ANSI_Y}capture_decay<{_cd:.2f}  micro_giveback>{_mw:.2f}×MFE{_ANSI_RST}")
+        print()
 
     def _render_live_arena_and_health(
         self,
@@ -2870,16 +2971,28 @@ class TabbedHUD:
         total_agents = ts.get("total_agents", 0)
         if total_agents > 0:
             diversity = ts.get("arena_diversity", {})
-            diversity.get("trigger_diversity", 0) if isinstance(diversity, dict) else 0
-            diversity.get("harvester_diversity", 0) if isinstance(diversity, dict) else 0
-            ts.get("last_agreement_score", 0)
-            ts.get("consensus_mode", "unknown")
-        ts.get("last_training_time", "Never")
-        self.bot_config.get("training_enabled", False)
+            trig_div = diversity.get("trigger_diversity", 0) if isinstance(diversity, dict) else 0
+            harv_div = diversity.get("harvester_diversity", 0) if isinstance(diversity, dict) else 0
+            agreement = ts.get("last_agreement_score", 0)
+            consensus = ts.get("consensus_mode", "unknown")
+            print("  \033[1m🤖 ARENA\033[0m")
+            print(f"    Agents: {total_agents}   Consensus: {consensus}   Agreement: {agreement:.3f}")
+            print(f"    Diversity — Trig: {trig_div:.3f}   Harv: {harv_div:.3f}")
+            print()
+        last_train = ts.get("last_training_time", "Never")
+        train_on = self.bot_config.get("training_enabled", False)
+        train_str = f"{_ANSI_G}ON{_ANSI_RST}" if train_on else f"{_ANSI_R}OFF{_ANSI_RST}"
+        trig_ok = f"{_ANSI_G}✓{_ANSI_RST}" if trig_ready else f"{_ANSI_Y}⏳{_ANSI_RST}"
+        harv_ok = f"{_ANSI_G}✓{_ANSI_RST}" if harv_ready else f"{_ANSI_Y}⏳{_ANSI_RST}"
+        print("  \033[1m📊 LEARNING HEALTH\033[0m")
+        print(f"    Training: {train_str}   Last event: {last_train}")
+        print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
+        print()
 
     def _render_training(self) -> None:
         """Render agent training status."""
         ts = self.training_stats
+        print(f"  {_ANSI_DIM}(canonical source: training_stats_*.json; per-bot file preferred){_ANSI_RST}\n")
         pm = self.production_metrics.get("metrics", {})
         ofs = self.offline_stats
         if ofs:
@@ -2910,13 +3023,14 @@ class TabbedHUD:
         if not _training_items:
             _ts_nonempty = any(v for v in ts.values() if v)
             if not _ts_nonempty:
+                print(f"\033[1m🤖 {_mode_label} BOT TRAINING\033[0m  {_ANSI_DIM}(no live bot running){_ANSI_RST}\n")
                 return
             _training_items = [
                 {
                     "symbol": self.active_sym,
                     "timeframe_minutes": self.active_tf_min,
                     "stats": ts,
-                },
+                }
             ]
 
         for _idx, _item in enumerate(_training_items):
@@ -2931,11 +3045,17 @@ class TabbedHUD:
             _item_pm_payload = self._load_bot_production_metrics(_sym_for_label, int(_tf_for_label or 0))
             _item_pm = _item_pm_payload.get("metrics", pm) if isinstance(_item_pm_payload, dict) else pm
             _train_label = f"{_mode_label} {_scope} TRAINING" if _scope != "BOT" else f"{_mode_label} BOT TRAINING"
+            print(f"\033[1m🤖 {_train_label}\033[0m\n")
+            trig_ready = _its.get("trigger_ready", False)
+            harv_ready = _its.get("harvester_ready", False)
+            trig_steps = _its.get("trigger_training_steps", 0)
+            harv_steps = _its.get("harvester_training_steps", 0)
             self._render_live_trigger_agent(_its, _item_pm)
             self._render_live_harvester_agent(_its, _item_pm)
             self._render_live_arena_and_health(_its)
             if _idx < len(_training_items) - 1:
-                pass
+                print("  " + "─" * (self._term_width() - 4))
+                print()
 
         # Next-update hint — training stats only refresh on bar close
         _nbc_raw = self.market_stats.get("next_bar_close_utc")
@@ -2968,6 +3088,7 @@ class TabbedHUD:
                     _d = int(_rem) // 86400
                     _h = (int(_rem) % 86400) // 3600
                     _hint = f"{_d}d {_h}h"
+                print(f"  {_ANSI_DIM}ℹ️  Training stats update on bar close — next in {_hint}{_ANSI_RST}")
             except Exception:
                 pass
         elif _tf_min:
@@ -2978,10 +3099,11 @@ class TabbedHUD:
                 _lbl = f"{_tf_min // 60}h"
             else:
                 _lbl = f"{_tf_min}m"
+            print(f"  {_ANSI_DIM}ℹ️  Training stats update every {_lbl} bar close (awaiting first tick){_ANSI_RST}")
 
     def _render_header(self) -> None:
         """Render header."""
-        self.heartbeat_chars[self.heartbeat_idx]
+        heartbeat = self.heartbeat_chars[self.heartbeat_idx]
         W = self._term_width()
         inner = W - 2  # space inside the box borders
 
@@ -2991,22 +3113,30 @@ class TabbedHUD:
         title = "ADAPTIVE RL TRADING BOT - TABBED HUD"
         pad_total = inner - len(title)
         pad_l = pad_total // 2
-        pad_total - pad_l
+        pad_r = pad_total - pad_l
 
         if cb_active:
             alert = "⚠️  CIRCUIT BREAKER ACTIVE - TRADING HALTED ⚠️"
             alert_pad = inner - len(alert)
             al = alert_pad // 2
-            alert_pad - al
+            ar = alert_pad - al
+            print("\033[41;97m╔" + "═" * inner + "╗\033[0m")
+            print("\033[41;97m║" + " " * al + alert + " " * ar + "║\033[0m")
+            print("\033[41;97m╚" + "═" * inner + "╝\033[0m")
         elif kurt_gate:
             _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
             _kurt_note = "entries BLOCKED" if _is_live_mode else "entries bypassed in paper mode"
             alert = f"⚡ KURTOSIS GATE ACTIVE — {_kurt_note}"
             alert_pad = inner - len(alert)
             al = alert_pad // 2
-            alert_pad - al
+            ar = alert_pad - al
+            print("\033[43;30m╔" + "═" * inner + "╗\033[0m")
+            print("\033[43;30m║" + " " * al + alert + " " * ar + "║\033[0m")
+            print("\033[43;30m╚" + "═" * inner + "╝\033[0m")
         else:
-            pass
+            print("╔" + "═" * inner + "╗")
+            print("║" + " " * pad_l + title + " " * pad_r + "║")
+            print("╚" + "═" * inner + "╝")
 
         # Bot info
         # Use the active-position bot's paper_stats for correct symbol/tf/uptime
@@ -3014,18 +3144,19 @@ class TabbedHUD:
         _aps = (
             self._load_bot_stats(self.active_sym, self.active_tf_min) if self.active_sym and self.active_tf_min else {}
         )
-        _aps.get("symbol") or self.bot_config.get("symbol", "UNKNOWN")
+        symbol = _aps.get("symbol") or self.bot_config.get("symbol", "UNKNOWN")
         _tf_min = _aps.get("timeframe_minutes") or self.bot_config.get("timeframe_minutes")
-        self._format_timeframe_minutes_label(_tf_min)
+        tf = self._format_timeframe_minutes_label(_tf_min)
         uptime = _aps.get("uptime_seconds") or self.bot_config.get("uptime_seconds", 0)
-        int(uptime // 3600)
-        int((uptime % 3600) // 60)
+        hours = int(uptime // 3600)
+        minutes = int((uptime % 3600) // 60)
 
         price = self.position.get("current_price", 0)
-        self.last_update or datetime.now(UTC)
+        now = self.last_update or datetime.now(UTC)
         # When FLAT the bot writes current_price=0.0 — show "—" instead of 0.00000
         _direction = self.position.get("direction", "FLAT")
         _pdec = self._price_decimals(price)
+        price_str = f"{price:.{_pdec}f}" if (price and _direction != "FLAT") else "—"
 
         # Next-bar countdown — computed from next_bar_close_utc (updated every tick)
         _nbc_str = ""
@@ -3065,6 +3196,7 @@ class TabbedHUD:
         else:
             _mode_badge = f"{_ANSI_DIM}● OFFLINE{_ANSI_RST}"
 
+        print(f"\n🎯 {symbol} @ {tf}  {_mode_badge}    💲 {price_str}    ⏱  {hours:02d}h {minutes:02d}m{_nbc_str}")
         _fleet: dict[str, list[int]] = {}
         for _bot in self.all_bots_stats:
             _sym = str(_bot.get("symbol", "") or "").upper()
@@ -3080,10 +3212,13 @@ class TabbedHUD:
                 _tfs = sorted(set(_fleet[_sym]))
                 _tf_labels = ",".join([self._format_timeframe_minutes_label(_v) for _v in _tfs])
                 _chunks.append(f"{_sym}[{_tf_labels}]")
+            print(f"{_ANSI_DIM}🧭 Active paper TFs: {' | '.join(_chunks)}{_ANSI_RST}")
+        print(f"{heartbeat} {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
     def _render_tab_bar(self) -> None:
         """Render tab navigation bar — adapts to terminal width."""
         W = self._term_width()
+        print("\n" + "─" * W)
 
         # Pick label set based on available width.
         # Full (emoji) ~104 cols, medium (no emoji, full names) ~85 cols,
@@ -3110,6 +3245,8 @@ class TabbedHUD:
                 tabs.append(visible)
             visible_col = end + 1
 
+        print("".join(tabs))
+        print("─" * W)
 
     def _render_position_block(self) -> None:
         """Render the position header block (always fixed height to avoid layout jumps)."""
@@ -3119,6 +3256,7 @@ class TabbedHUD:
             if _mode == "paper"
             else (f"  {_ANSI_G}(live){_ANSI_RST}" if _mode == "live" else "")
         )
+        print(f"\n\033[1m📊 POSITION\033[0m{_mode_tag}")
         _open_positions: list[tuple[str, dict]] = []
         for _bot in self.all_bots_stats or []:
             _pos = _bot.get("_position", {}) if isinstance(_bot, dict) else {}
@@ -3138,6 +3276,10 @@ class TabbedHUD:
             _open_positions.append((_label, self.position))
         if len(_open_positions) > 1:
             _total_unreal = sum(float(_p.get("unrealized_pnl", 0.0) or 0.0) for _, _p in _open_positions)
+            print(
+                f"  {_ANSI_B}{len(_open_positions)} open positions{_ANSI_RST}  |  "
+                f"Unrealized: {self._pnl_color(_total_unreal)}{_total_unreal:+.2f}{_ANSI_RST}"
+            )
             for _label, _p in sorted(_open_positions, key=lambda kv: (kv[0], str(kv[1].get("position_id", ""))))[:8]:
                 _direction = str(_p.get("direction", "FLAT")).upper()
                 _dc = _ANSI_G if _direction == "LONG" else (_ANSI_R if _direction == "SHORT" else _ANSI_DIM)
@@ -3146,44 +3288,60 @@ class TabbedHUD:
                 _pnl = float(_p.get("unrealized_pnl", 0.0) or 0.0)
                 _ticks = _p.get("ticks_held", _p.get("bars_held", 0))
                 _dec = self._price_decimals(max(_entry, _current, 0.0))
+                print(
+                    f"  {_label:<13} {_dc}{_direction:<5}{_ANSI_RST} "
+                    f"{_entry:.{_dec}f} → {_current:.{_dec}f}  "
+                    f"{self._pnl_color(_pnl)}{_pnl:+.2f}{_ANSI_RST}  ticks:{_ticks}"
+                )
             if len(_open_positions) > 8:
-                pass
+                print(f"  {_ANSI_DIM}… {len(_open_positions) - 8} more open positions{_ANSI_RST}")
             return
         direction = self.position.get("direction", "FLAT")
         entry = self.position.get("entry_price", 0)
         current = self.position.get("current_price", 0)
         pnl = self.position.get("unrealized_pnl", 0)
         bars = self.position.get("bars_held", 0)
-        self.position.get("ticks_held", bars)
-        if direction in {"LONG", "SHORT"}:
-            pass
+        ticks = self.position.get("ticks_held", bars)
+        if direction == "LONG":
+            dir_color = _ANSI_G
+        elif direction == "SHORT":
+            dir_color = _ANSI_R
         else:
-            pass
-        self._pnl_color(pnl)
+            dir_color = _ANSI_Y
+        pnl_color = self._pnl_color(pnl)
         _dec = self._price_decimals(max(entry, current, 0.0))
         # Line 1: direction / entry / price
         if direction == "FLAT":
-            pass
+            print(f"  {dir_color}FLAT{_ANSI_RST}  (no open position)")
         else:
-            pass
+            print(
+                f"  {dir_color}{direction}{_ANSI_RST} @ {entry:.{_dec}f} → {current:.{_dec}f}  |  "
+                f"PnL: {pnl_color}{pnl:+.2f}{_ANSI_RST}  |  Ticks: {ticks}"
+            )
         # Line 2: MFE/MAE (always printed — blank spacer when FLAT for stable layout)
         if direction != "FLAT":
-            self.position.get("mfe", 0.0)
-            self.position.get("mae", 0.0)
+            mfe = self.position.get("mfe", 0.0)
+            mae = self.position.get("mae", 0.0)
+            mfe_color = _ANSI_G if mfe > 0 else _ANSI_Y
+            mae_color = _ANSI_R if mae > 0 else _ANSI_Y
+            print(
+                f"  MFE: {mfe_color}+{mfe:.2f}{_ANSI_RST}  |  MAE: {mae_color}-{mae:.2f}{_ANSI_RST}  (USD, excl. spread)"
+            )
         else:
-            pass  # stable height spacer
+            print()  # stable height spacer
         # Line 3: PID / tracker (always printed — blank spacer when not available)
         _pid = self.position.get("position_id", "") if direction != "FLAT" else ""
         _tkey = self.position.get("tracker_key", "") if direction != "FLAT" else ""
         if _pid:
-            pass
+            print(f"  {_ANSI_DIM}PID: {_pid}  tracker: {_tkey}{_ANSI_RST}")
         else:
-            pass  # stable height spacer
+            print()  # stable height spacer
 
     def _render_all_bots_panel(self) -> None:
         """Render a compact one-row-per-bot fleet summary."""
         bots = self.all_bots_stats
         if not bots:
+            print(f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}No bots currently running{_ANSI_RST}")
             return
         _preferred_tf = {1: 0, 5: 1, 15: 2, 30: 3, 60: 4, 240: 5}
         bots = sorted(
@@ -3194,6 +3352,9 @@ class TabbedHUD:
                 int(b.get("timeframe_minutes", 0) or 0),
             ),
         )
+        print(
+            f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}— SESSION metrics (reset on each bot restart; see SYMBOL/TF SNAPSHOT below for lifetime){_ANSI_RST}"
+        )
         # Column widths — keep header, row, and separator in lock-step.
         # Widths:  Bot=13  Status=7  Bars=4  Position=22  T-buf=5  H-buf=5
         #          SessTrd=7  SessPnL=11  SessWin=7
@@ -3201,6 +3362,8 @@ class TabbedHUD:
             f"  {'Bot':<13}  {'Status':<7}  {'Bars':>4}  {'Position':<22}"
             f"  {'T-buf':>5}  {'H-buf':>5}  {'SessTrd':>7}  {'SessPnL':>11}  {'SessWin':>7}"
         )
+        print(f"\033[2m{_hdr}\033[0m")
+        print("  " + "─" * (_visible_width(_hdr) - 2))
         _now = datetime.now(UTC)
         for bot in bots:
             sym = bot.get("symbol", "?")
@@ -3242,14 +3405,15 @@ class TabbedHUD:
             # Status column — emit a fixed 7-visible-cell token regardless of
             # colour codes so the padding below stays aligned.
             if not _pid_alive or not conn:
-                _status_vis, _status_col = "● STALE", _ANSI_R
+                status_vis, status_col = "● STALE", _ANSI_R
             elif _age <= _live_age:
-                _status_vis, _status_col = "● LIVE ", _ANSI_G
+                status_vis, status_col = "● LIVE ", _ANSI_G
             elif _age <= _slow_age or _awaiting_bar:
-                _status_vis, _status_col = "● SLOW ", _ANSI_Y
+                status_vis, status_col = "● SLOW ", _ANSI_Y
             else:
-                _status_vis, _status_col = "● STALE", _ANSI_R
-            bot.get("bar_count", 0)
+                status_vis, status_col = "● STALE", _ANSI_R
+            status = f"{status_col}{status_vis:<7}{_ANSI_RST}"
+            bars = bot.get("bar_count", 0)
             # Position — build visible and colored strings separately to keep columns aligned
             pos = bot.get("_position", {})
             direction = (pos.get("direction") or "FLAT").upper()
@@ -3258,26 +3422,36 @@ class TabbedHUD:
             if direction != "FLAT":
                 visible_pos = f"{direction:<5}@{entry_px:.0f}({unreal:+.0f})"
                 dir_c = _ANSI_G if direction == "LONG" else _ANSI_R
-                (
+                colored_pos = (
                     f"{dir_c}{direction:<5}{_ANSI_RST}"
                     f"@{entry_px:.0f}"
                     f"({self._pnl_color(unreal)}{unreal:+.0f}{_ANSI_RST})"
                 )
             else:
                 visible_pos = "FLAT"
-            " " * max(0, 22 - len(visible_pos))
-            bot.get("trigger_buffer", 0)
-            bot.get("harvester_buffer", 0)
-            int(bot.get("total_trades", 0) or 0)
-            float(bot.get("total_pnl", 0.0) or 0.0)
-            float(bot.get("win_rate", 0.0) or 0.0) * 100
+                colored_pos = f"{_ANSI_DIM}FLAT{_ANSI_RST}"
+            pos_pad = " " * max(0, 22 - len(visible_pos))
+            trig_buf = bot.get("trigger_buffer", 0)
+            harv_buf = bot.get("harvester_buffer", 0)
+            trades = int(bot.get("total_trades", 0) or 0)
+            pnl = float(bot.get("total_pnl", 0.0) or 0.0)
+            wr = float(bot.get("win_rate", 0.0) or 0.0) * 100
             # Truncate bot label so it never spills beyond the 13-cell column.
-            label if len(label) <= 13 else label[:12] + "…"
+            label_cell = label if len(label) <= 13 else label[:12] + "…"
+            wr_str = f"{wr:>5.1f}%" if trades > 0 else "      -"
+            print(
+                f"  {label_cell:<13}  {status}  {bars:>4}  {colored_pos}{pos_pad}"
+                f"  {trig_buf:>5}  {harv_buf:>5}  {trades:>7}  "
+                f"{self._pnl_color(pnl)}{pnl:>+11.2f}{_ANSI_RST}  {wr_str:>7}"
+            )
 
     def _render_overview(self) -> None:
         """Render overview tab - compact summary."""
         self._render_all_bots_panel()
         self._render_position_block()
+        print(
+            f"  {_ANSI_DIM}(canonical performance source: trade_log.jsonl; mode from performance_snapshot.json){_ANSI_RST}"
+        )
 
         # Account balance / equity
         _mode = (
@@ -3294,6 +3468,7 @@ class TabbedHUD:
                 else (f"  {_ANSI_Y}(paper){_ANSI_RST} + {_ANSI_G}(live){_ANSI_RST}" if _mode == "mixed" else "")
             )
         )
+        print(f"\n\033[1m💰 ACCOUNT\033[0m{_acct_tag}")
         # Prefer starting_equity from universe.json for the active symbol.
         # bot_config.json is shared across bots; the last writer may reflect a
         # different instrument's equity baseline.
@@ -3317,8 +3492,15 @@ class TabbedHUD:
             _unreal_str = f"{_ANSI_DIM}—{_ANSI_RST}"
         else:
             _unreal_str = f"{self._pnl_color(_unreal)}{_unreal:+.2f}\033[0m"
+        print(
+            f"  Balance: {self._pnl_color(_balance - _starting)}{_balance:>10.2f}\033[0m{_live_tag}  |  "
+            f"Equity:  {self._pnl_color(_equity - _starting)}{_equity:>10.2f}\033[0m  |  "
+            f"Unrealized: {_unreal_str}"
+            f"{_margin_str}"
+        )
 
         # Quick metrics
+        print(f"\n\033[1m📈 LAST 24H\033[0m  {_ANSI_DIM}(rolling 24-hour window from trade_log.jsonl){_ANSI_RST}")
         _mode = (
             getattr(self, "_trade_log_mode", "")
             or getattr(self, "_perf_snapshot_mode", "")
@@ -3333,15 +3515,21 @@ class TabbedHUD:
             _l_trades = _live.get("total_trades", 0)
             _l_wr = _live.get("win_rate", 0) * 100
             _l_pnl = _live.get("total_pnl", 0)
+            print(f"  Paper: {_p_trades} trades | WR {_p_wr:.1f}% | PnL {self._pnl_color(_p_pnl)}{_p_pnl:+.2f}\033[0m")
+            print(f"  Live:  {_l_trades} trades | WR {_l_wr:.1f}% | PnL {self._pnl_color(_l_pnl)}{_l_pnl:+.2f}\033[0m")
         else:
             d = self.daily_metrics
-            d.get("total_trades", 0)
-            d.get("win_rate", 0) * 100
-            d.get("total_pnl", 0)
+            trades = d.get("total_trades", 0)
+            wr = d.get("win_rate", 0) * 100
+            day_pnl = d.get("total_pnl", 0)
+            print(
+                f"  Trades: {trades}  |  Win Rate: {wr:.1f}%  |  PnL: {self._pnl_color(day_pnl)}{day_pnl:+.2f}\033[0m"
+            )
 
             recent_pnl = d.get("recent_pnl_sequence", [])
             if recent_pnl and len(recent_pnl) > 1:
-                self._create_sparkline(recent_pnl[-20:])
+                sparkline = self._create_sparkline(recent_pnl[-20:])
+                print(f"  Recent: {sparkline}")
 
         # Build the TF snapshot using union of (a) trade_log metrics and
         # (b) running bots — so zero-trade bots still appear rather than
@@ -3354,55 +3542,74 @@ class TabbedHUD:
                 _tf_keys.add((_s, f"M{_tfm}"))
         if _tf_keys:
             _scope = self._epoch_scope_label().upper()
+            print(
+                f"\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m  {_ANSI_DIM}— {_scope} closed trades from trade_log.jsonl{_ANSI_RST}"
+            )
             _sn_hdr = f"  {'Symbol':<9} {'TF':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11}"
+            print(_sn_hdr)
+            print("  " + "─" * (_visible_width(_sn_hdr) - 2))
             for _sym, _tf in sorted(_tf_keys, key=lambda kv: (kv[0], self._timeframe_sort_key(kv[1]))):
                 _sm = self.metrics_by_symbol_tf.get((_sym, _tf), {})
                 _tr = _sm.get("total_trades", 0)
                 _wr = _sm.get("win_rate", 0) * 100
                 _pnl = _sm.get("total_pnl", 0.0)
                 _pc = self._pnl_color(_pnl) if _tr > 0 else _ANSI_DIM
+                print(f"  {_sym:<9} {_tf:<6} {_tr:>7} {_wr:>6.1f}% {_pc}{_pnl:>+11.2f}{_ANSI_RST}")
 
         # Risk snapshot
+        print("\n\033[1m⚠️  RISK STATUS\033[0m")
         cb = self.risk_stats.get("circuit_breaker", "INACTIVE")
         regime = self.risk_stats.get("regime", "UNKNOWN")
-        self.risk_stats.get("regime_zeta", 1.0)
-        self.risk_stats.get("realized_vol", 0) * 100
+        zeta = self.risk_stats.get("regime_zeta", 1.0)
+        vol = self.risk_stats.get("realized_vol", 0) * 100
         feas = self.risk_stats.get("feasibility", 0.5)
 
         kurt_gate = self.risk_stats.get("kurtosis_gate_active", False)
-        if cb == "ACTIVE" or kurt_gate:
-            pass
+        if cb == "ACTIVE":
+            cb_status = f"{_ANSI_R}● ACTIVE{_ANSI_RST}"
+        elif kurt_gate:
+            cb_status = f"{_ANSI_Y}● κ-gate{_ANSI_RST}"
         else:
-            pass
-        if feas > FEASIBILITY_HIGH_THRESHOLD or feas > FEASIBILITY_MEDIUM_THRESHOLD:
-            pass
+            cb_status = f"{_ANSI_G}● OK{_ANSI_RST}"
+        if feas > FEASIBILITY_HIGH_THRESHOLD:
+            feas_color = _ANSI_G
+        elif feas > FEASIBILITY_MEDIUM_THRESHOLD:
+            feas_color = _ANSI_Y
         else:
-            pass
+            feas_color = _ANSI_R
         _regime_colors = {
             "TRENDING": _ANSI_G,
             "MEAN_REVERTING": _ANSI_Y,
             "TRANSITIONAL": _ANSI_B,
             "UNKNOWN": _ANSI_DIM,
         }
-        _regime_colors.get(regime, _ANSI_DIM)
+        regime_color = _regime_colors.get(regime, _ANSI_DIM)
 
+        print(
+            f"  Circuit: {cb_status}  |  Regime: {regime_color}{regime}\033[0m (ζ={zeta:.2f})  |  Vol: {vol:.2f}%  |  "
+            f"Feasibility: {feas_color}{feas:.2f}\033[0m"
+        )
 
         self._render_agent_status_block()
 
         # Market snapshot
         _market_scope = self._risk_scope_label(self.risk_stats)
-        self.market_stats.get("spread", 0)
-        self.market_stats.get("vpin", 0)
+        print(f"\n\033[1m🔬 MARKET [{_market_scope}]\033[0m")
+        spread = self.market_stats.get("spread", 0)
+        vpin = self.market_stats.get("vpin", 0)
         vpin_z = self.market_stats.get("vpin_z", 0)
-        self.market_stats.get("imbalance", 0)
+        imb = self.market_stats.get("imbalance", 0)
 
-        (
+        vpin_status = (
             f"{_ANSI_R}⚠️ HIGH{_ANSI_RST}" if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD else f"{_ANSI_G}✓{_ANSI_RST}"
         )
         _has_real = self.market_stats.get("has_real_sizes", False)
         _imb_label = "Imb" if _has_real else "QFI"
         _sp_bps = self._spread_bps()
         _sp_col = self._spread_color()
+        print(
+            f"  Spread: {_sp_col}{spread:.5f} ({_sp_bps:.1f}bp){_ANSI_RST}  |  VPIN: {vpin:.3f} (z={vpin_z:+.1f}) {vpin_status}  |  {_imb_label}: {imb:+.3f}"
+        )
 
         self._render_system_health_block()
 
@@ -3410,26 +3617,30 @@ class TabbedHUD:
         _pm = self.production_metrics.get("metrics", {})
         _alerts = self.production_metrics.get("alerts", [])
         if _alerts:
+            print("\n\033[1m🚨 ALERTS\033[0m")
             for _a in _alerts:
-                pass
+                print(f"  {_ANSI_Y}⚠ {_a}{_ANSI_RST}")
 
     def _render_agent_status_block(self) -> None:
         """Render the agent status (training snapshot) block."""
-        self.training_stats.get("trigger_buffer_size", 0)
-        self.training_stats.get("harvester_buffer_size", 0)
-        self.training_stats.get("trigger_training_steps", 0)
-        self.training_stats.get("harvester_training_steps", 0)
-        self.training_stats.get("trigger_epsilon", 0.0)
-        self.training_stats.get("harvester_beta", 0.4)
+        print("\n\033[1m🧠 AGENT STATUS\033[0m")
+        trig_buf = self.training_stats.get("trigger_buffer_size", 0)
+        harv_buf = self.training_stats.get("harvester_buffer_size", 0)
+        trig_steps = self.training_stats.get("trigger_training_steps", 0)
+        harv_steps = self.training_stats.get("harvester_training_steps", 0)
+        trig_eps = self.training_stats.get("trigger_epsilon", 0.0)
+        harv_beta = self.training_stats.get("harvester_beta", 0.4)
         total_agents = self.training_stats.get("total_agents", 0)
         if total_agents > 0:
-            pass
+            print(f"  Arena: {total_agents} agents  |  Trigger: {trig_buf:,} exp  |  Harvester: {harv_buf:,} exp")
         else:
-            pass
+            print(f"  Trigger:   {trig_buf:,} exp  |  {trig_steps:,} steps  |  ε={trig_eps:.4f}")
+            print(f"  Harvester: {harv_buf:,} exp  |  {harv_steps:,} steps  |  β={harv_beta:.4f}")
 
     def _render_system_health_block(self) -> None:
         """Render the expanded system health rows and startup self-test."""
         _scope = self._risk_scope_label(self.risk_stats)
+        print(f"\n\033[1m🏥 SYSTEM HEALTH [{_scope}]\033[0m")
         self._render_health_connectivity()
         self._render_health_risk()
         self._render_health_buffers()
@@ -3495,6 +3706,7 @@ class TabbedHUD:
             _feas_col = _ANSI_R
         _feas_item = f"Feas: {_feas_col}{_feas:.2f}{_ANSI_RST}"
 
+        print(f"  {_data_item}  │  {_cb_item}  │  {_gate_item}  │  {_feas_item}")
 
     def _render_health_risk(self) -> None:
         """Render VaR/vol/budget/efficiency row."""
@@ -3534,6 +3746,7 @@ class TabbedHUD:
             _eff_col = _ANSI_R
         _eff_item = f"Eff: {_eff_col}{_eff:.2f}{_ANSI_RST}"
 
+        print(f"  {_vol_item}  │  {_var_item}  │  {_budget_item}  │  {_eff_item}")
 
     def _render_health_buffers(self) -> None:
         """Render replay buffer occupancy row."""
@@ -3559,6 +3772,10 @@ class TabbedHUD:
         def _rdy_icon(r: bool) -> str:
             return f"{_ANSI_G}✓{_ANSI_RST}" if r else f"{_ANSI_Y}…{_ANSI_RST}"
 
+        print(
+            f"  Trig buf: {_trig_col}{_trig_buf:,}/{_RT_TRIG_CAP:,} ({_trig_pct:.0f}%){_ANSI_RST} {_rdy_icon(_trig_rdy)}  │  "
+            f"Harv buf: {_harv_col}{_harv_buf:,}/{_RT_HARV_CAP:,} ({_harv_pct:.0f}%){_ANSI_RST} {_rdy_icon(_harv_rdy)}"
+        )
 
     def _render_health_model(self) -> None:
         """Render epsilon/beta/steps/loss row."""
@@ -3592,6 +3809,14 @@ class TabbedHUD:
             _beta_col = _ANSI_R
             _beta_lbl = "COLD"
 
+        print(
+            f"  ε={_eps_col}{_eps:.4f} {_eps_lbl}{_ANSI_RST}  steps={_trig_steps:,}  loss={_loss_str(_trig_loss)}"
+            f"  τ={self.training_stats.get('trigger_tau', 0.005):.5f}"
+        )
+        print(
+            f"  β={_beta_col}{_beta:.4f} {_beta_lbl}{_ANSI_RST}  steps={_harv_steps:,}  loss={_loss_str(_harv_loss)}"
+            f"  τ={self.training_stats.get('harvester_tau', 0.005):.5f}"
+        )
 
     def _spread_bps(self) -> float:
         """Return current spread in basis points relative to mid price."""
@@ -3638,6 +3863,11 @@ class TabbedHUD:
             _runway_col = _ANSI_Y
         else:
             _runway_col = _ANSI_R
+        print(
+            f"  Spread: {_spread_col}{_spread:.5f} ({_bps:.1f}bp){_ANSI_RST}  │  "
+            f"VPIN: {_vpin_col}{_vpin:.3f} (z={_vpin_z:+.1f}){_ANSI_RST}  │  "
+            f"Runway: {_runway_col}{_runway:.2f}{_ANSI_RST}"
+        )
 
     def _render_health_system_metrics(self) -> None:
         """Render memory, error count, uptime, FIX connectivity from production_metrics."""
@@ -3664,7 +3894,7 @@ class TabbedHUD:
             _fix_s = "✓" if _fix else "✗"
             _items.append(f"FIX: {_fix_c}{_fix_s}{_ANSI_RST}")
         if _items:
-            pass
+            print(f"  {'  │  '.join(_items)}")
 
     def _render_health_self_test(self) -> None:
         """Render startup self-test entries when available."""
@@ -3679,19 +3909,26 @@ class TabbedHUD:
         _sev_icon = {"PASS": "✓", "INFO": "ℹ", "WARNING": "⚠", "CRITICAL": "✗"}
         n_crit = sum(1 for r in self.self_test_results if r["sev"] == "CRITICAL")
         n_warn = sum(1 for r in self.self_test_results if r["sev"] == "WARNING")
-        if n_crit or n_warn:
-            pass
+        if n_crit:
+            status = f"{_ANSI_R}🔴 FAILED{_ANSI_RST}"
+        elif n_warn:
+            status = f"{_ANSI_Y}🟡 DEGRADED{_ANSI_RST}"
         else:
-            pass
-        sum(1 for r in self.self_test_results if r["sev"] in ("PASS", "INFO"))
+            status = f"{_ANSI_G}🟢 CLEAR{_ANSI_RST}"
+        n_pass = sum(1 for r in self.self_test_results if r["sev"] in ("PASS", "INFO"))
+        print(
+            f"\n\033[1m🔍 STARTUP SELF-TEST\033[0m  {status}  "
+            f"{_ANSI_DIM}({n_pass} OK, {n_warn} warn, {n_crit} crit){_ANSI_RST}"
+        )
         only_fails = n_crit > 0 or n_warn > 0
         for r in self.self_test_results:
             sev = r["sev"]
             if only_fails and sev in ("PASS", "INFO"):
                 continue  # show only problems when there are any
-            _sev_col.get(sev, "")
-            _sev_icon.get(sev, "?")
-            f"  {_ANSI_DIM}{r['detail']}{_ANSI_RST}" if r.get("detail") else ""
+            col = _sev_col.get(sev, "")
+            icon = _sev_icon.get(sev, "?")
+            detail = f"  {_ANSI_DIM}{r['detail']}{_ANSI_RST}" if r.get("detail") else ""
+            print(f"  {col}{icon} {r['name']}{_ANSI_RST}{detail}")
 
     def _render_performance(self) -> None:
         """Render detailed performance metrics."""
@@ -3710,10 +3947,22 @@ class TabbedHUD:
             _mode_tag = f"  {_ANSI_Y}📄 PAPER{_ANSI_RST} + {_ANSI_G}💰 LIVE{_ANSI_RST}"
         else:
             _mode_tag = ""
+        src = (
+            f"  {_ANSI_DIM}(source: trade_log.jsonl; portfolio all symbols/timeframes){_ANSI_RST}"
+            if self._metrics_from_trade_log
+            else ""
+        )
+        print(f"\n\033[1m📈 PERFORMANCE METRICS (PORTFOLIO)\033[0m{_mode_tag}{src}\n")
         if self._trade_log_unlabeled_count > 0:
-            pass
+            print(
+                f"  {_ANSI_Y}⚠ {self._trade_log_unlabeled_count} legacy trades were missing trading_mode; "
+                f"{self._trade_log_inferred_count} inferred via ticket/position heuristics.{_ANSI_RST}"
+            )
         if self._trade_log_unknown_timeframe_count > 0:
-            pass
+            print(
+                f"  {_ANSI_Y}ℹ M? = legacy trades missing timeframe metadata "
+                f"({self._trade_log_unknown_timeframe_count} trades).{_ANSI_RST}"
+            )
 
         # Stats epoch banner
         if self._stats_epoch:
@@ -3721,21 +3970,34 @@ class TabbedHUD:
             _exc_n = self._stats_epoch_excluded
             _exc_pnl = self._stats_epoch_excluded_pnl
             _pnl_c = self._pnl_color(_exc_pnl)
+            print(
+                f"  {_ANSI_DIM}📅 Stats epoch: {_epoch_str} UTC  "
+                f"({_exc_n} older trades excluded, {_pnl_c}{_exc_pnl:+.2f}{_ANSI_RST}{_ANSI_DIM} PnL)  "
+                f"[e] to change{_ANSI_RST}\n"
+            )
 
         def _render_period_rows(rows: list[tuple[str, dict]]) -> None:
             _per_hdr = f"  {'Period':<10} {'Trades':>8} {'Win%':>7} {'PnL $':>13} {'TQR':>8} {'PF':>8} {'MaxDD%':>8}"
-            for _label, metrics in rows:
-                metrics.get("total_trades", 0)
-                metrics.get("win_rate", 0) * 100
+            print(_per_hdr)
+            print("  " + "─" * (_visible_width(_per_hdr) - 2))
+            for label, metrics in rows:
+                trades = metrics.get("total_trades", 0)
+                wr = metrics.get("win_rate", 0) * 100
                 pnl = metrics.get("total_pnl", 0)
-                metrics.get("sharpe_ratio", 0)
-                metrics.get("profit_factor", 0)
+                sharpe = metrics.get("sharpe_ratio", 0)
+                pf = metrics.get("profit_factor", 0)
                 maxdd = metrics.get("max_drawdown", 0.0)
-                self._pnl_color(pnl)
-                if maxdd > DD_HIGH_PCT or maxdd > DD_WARN_PCT:
-                    pass
+                pnl_color = self._pnl_color(pnl)
+                if maxdd > DD_HIGH_PCT:
+                    dd_color = _ANSI_R
+                elif maxdd > DD_WARN_PCT:
+                    dd_color = _ANSI_Y
                 else:
-                    pass
+                    dd_color = _ANSI_G
+                print(
+                    f"  {label:<10} {trades:>8} {wr:>6.1f}% {pnl_color}{pnl:>+13.2f}{_ANSI_RST} "
+                    f"{sharpe:>8.2f} {pf:>8.2f} {dd_color}{maxdd:>7.2f}%{_ANSI_RST}"
+                )
 
         _portfolio_trades = list(self._trade_log_metrics_trades)
         _portfolio_all_trades = list(self._trade_log_all_trades)
@@ -3758,19 +4020,25 @@ class TabbedHUD:
         # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
         # This is NOT an annualised return-based Sharpe ratio.
         if _mode == "mixed":
+            print(f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
             _render_period_rows(
-                self._period_rows_for_trades(_portfolio_by_mode["paper"], _portfolio_all_by_mode["paper"]),
+                self._period_rows_for_trades(_portfolio_by_mode["paper"], _portfolio_all_by_mode["paper"])
             )
+            print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
             _render_period_rows(
-                self._period_rows_for_trades(_portfolio_by_mode["live"], _portfolio_all_by_mode["live"]),
+                self._period_rows_for_trades(_portfolio_by_mode["live"], _portfolio_all_by_mode["live"])
             )
+            print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
         _render_period_rows(self._period_rows_for_trades(_portfolio_trades, _portfolio_all_trades))
 
         self._render_current_session_performance()
 
         # Per-symbol breakdown (only when multiple symbols exist)
         if len(self.per_symbol_metrics) > 1:
+            print("\n  \033[1mPER SYMBOL\033[0m")
             _ps_hdr = f"  {'Symbol':<10} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'PF':>7} {'MaxDD%':>8}"
+            print(_ps_hdr)
+            print("  " + "─" * (_visible_width(_ps_hdr) - 2))
             for _sym in sorted(self.per_symbol_metrics):
                 _sm = self.per_symbol_metrics[_sym]
                 _tr = _sm.get("total_trades", 0)
@@ -3780,6 +4048,10 @@ class TabbedHUD:
                 _mdd = _sm.get("max_drawdown", 0)
                 _pc = self._pnl_color(_pnl)
                 _dc = _ANSI_R if _mdd > DD_HIGH_PCT else (_ANSI_Y if _mdd > DD_WARN_PCT else _ANSI_G)
+                print(
+                    f"  {_sym:<10} {_tr:>7} {_wr:>6.1f}% {_pc}{_pnl:>+11.2f}{_ANSI_RST} "
+                    f"{_pf:>7.2f} {_dc}{_mdd:>7.2f}%{_ANSI_RST}"
+                )
 
         self._render_mode_breakdown()
         self._render_timeframe_mode_breakdown()
@@ -3787,13 +4059,16 @@ class TabbedHUD:
         def _q_rows(mode_key: str | None) -> list[tuple[str, dict]]:
             if mode_key:
                 return self._period_rows_for_trades(
-                    _portfolio_by_mode.get(mode_key, []), _portfolio_all_by_mode.get(mode_key, []),
+                    _portfolio_by_mode.get(mode_key, []), _portfolio_all_by_mode.get(mode_key, [])
                 )
             return self._period_rows_for_trades(_portfolio_trades, _portfolio_all_trades)
 
         if _mode == "mixed":
+            print(f"\n  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
             self._render_trade_quality(_q_rows("paper"))
+            print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
             self._render_trade_quality(_q_rows("live"))
+            print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
             self._render_trade_quality(_q_rows(None))
         else:
             _mk = _mode if _mode in ("paper", "live") else None
@@ -3802,11 +4077,17 @@ class TabbedHUD:
         pm = self.production_metrics.get("metrics", {})
         if self._has_active_scope():
             _scope = self._active_scope_label()
+            print(
+                f"\n  \033[1mACTIVE BOT DETAIL [{_scope}]\033[0m  {_ANSI_DIM}(per-bot decision-learning scope){_ANSI_RST}"
+            )
             if _mode == "mixed":
+                print(f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
                 _render_period_rows(
-                    self._period_rows_for_trades(_active_by_mode["paper"], _active_all_by_mode["paper"]),
+                    self._period_rows_for_trades(_active_by_mode["paper"], _active_all_by_mode["paper"])
                 )
+                print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
                 _render_period_rows(self._period_rows_for_trades(_active_by_mode["live"], _active_all_by_mode["live"]))
+                print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
             _render_period_rows(self._period_rows_for_trades(_active_trades, _active_all_trades))
             _active_q = _active_trades
             if _mode == "paper":
@@ -3824,7 +4105,12 @@ class TabbedHUD:
         """Render current process-session stats from paper_stats_*.json."""
         if not self.all_bots_stats:
             return
+        print(
+            "\n  \033[1mCURRENT BOT SESSIONS\033[0m  " + _ANSI_DIM + "(runtime counters; reset on restart)" + _ANSI_RST
+        )
         _hdr = f"  {'Bot':<13} {'Mode':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>13} {'CapReward':>10}"
+        print(_hdr)
+        print("  " + "─" * (_visible_width(_hdr) - 2))
         for bot in sorted(
             self.all_bots_stats,
             key=lambda b: (str(b.get("symbol", "")).upper(), int(b.get("timeframe_minutes", 0) or 0)),
@@ -3834,11 +4120,15 @@ class TabbedHUD:
             label = f"{sym}/M{tf}"
             if len(label) > 13:
                 label = label[:12] + "…"
-            str(bot.get("trading_mode", "") or "paper").upper()[:6]
-            int(bot.get("total_trades", 0) or 0)
-            float(bot.get("win_rate", 0.0) or 0.0) * 100.0
-            float(bot.get("total_pnl", 0.0) or 0.0)
-            bot.get("reward_shaping", {}).get("components", {}).get("capture", {}).get("avg", 0.0)
+            mode = str(bot.get("trading_mode", "") or "paper").upper()[:6]
+            trades = int(bot.get("total_trades", 0) or 0)
+            win_pct = float(bot.get("win_rate", 0.0) or 0.0) * 100.0
+            pnl = float(bot.get("total_pnl", 0.0) or 0.0)
+            cap_reward = bot.get("reward_shaping", {}).get("components", {}).get("capture", {}).get("avg", 0.0)
+            print(
+                f"  {label:<13} {mode:<6} {trades:>7} {win_pct:>6.1f}% "
+                f"{self._pnl_color(pnl)}{pnl:>+13.2f}{_ANSI_RST} {float(cap_reward or 0.0):>10.3f}"
+            )
 
     def _render_mode_breakdown(self) -> None:
         """Show paper vs live trade breakdown using canonical trade-log grouping."""
@@ -3851,9 +4141,12 @@ class TabbedHUD:
         if not paper_trades and not live_trades:
             return
 
+        print("\n  \033[1mMODE BREAKDOWN (PORTFOLIO)\033[0m")
         _mb_hdr = f"  {'Mode':<8} {'Trades':>7} {'Win%':>7} {'PnL $':>11}"
         _mb_sep = "  " + "\u2500" * (_visible_width(_mb_hdr) - 2)
-        for _label, trades, _color in [
+        print(_mb_hdr)
+        print(_mb_sep)
+        for label, trades, color in [
             ("Paper", paper_trades, _ANSI_Y),
             ("Live", live_trades, _ANSI_G),
         ]:
@@ -3861,9 +4154,11 @@ class TabbedHUD:
             n = m.get("total_trades", 0)
             if n == 0:
                 continue
-            m.get("win_rate", 0.0) * 100
+            wr = m.get("win_rate", 0.0) * 100
             total_pnl = m.get("total_pnl", 0.0)
-            self._pnl_color(total_pnl)
+            pnl_c = self._pnl_color(total_pnl)
+            print(f"  {color}{label:<8}{_ANSI_RST} {n:>7} {wr:>6.1f}% {pnl_c}{total_pnl:>+11.2f}{_ANSI_RST}")
+        print(_mb_sep)
 
     def _render_timeframe_mode_breakdown(self) -> None:
         """Render canonical symbol/timeframe/mode table from metrics cube."""
@@ -3885,8 +4180,11 @@ class TabbedHUD:
         if not _keys:
             return
 
+        print("\n  \033[1mPER SYMBOL / TIMEFRAME / MODE\033[0m")
         _tfm_hdr = f"  {'Symbol':<9} {'TF':<6} {'Mode':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'PF':>7}"
         _tfm_sep = "  " + "\u2500" * (_visible_width(_tfm_hdr) - 2)
+        print(_tfm_hdr)
+        print(_tfm_sep)
         for _sym, _tf, _mode in sorted(_keys, key=lambda k: (k[0], self._timeframe_sort_key(k[1]), k[2])):
             _trades = self.metrics_cube.get((_sym, _tf, _mode), [])
             if _trades:
@@ -3899,45 +4197,83 @@ class TabbedHUD:
                 _tr, _wr, _pnl, _pf = 0, 0.0, 0.0, 0.0
             _mc = _ANSI_Y if _mode == "paper" else _ANSI_G
             _pc = self._pnl_color(_pnl) if _tr > 0 else _ANSI_DIM
+            print(
+                f"  {_sym:<9} {_tf:<6} {_mc}{_mode.upper():<6}{_ANSI_RST} {_tr:>7} {_wr:>6.1f}% "
+                f"{_pc}{_pnl:>+11.2f}{_ANSI_RST} {_pf:>7.2f}"
+            )
+        print(_tfm_sep)
 
     def _render_trade_quality(self, rows: list[tuple[str, dict]]) -> None:
         """Render trade quality & edge quality tables per period."""
         if not rows:
             return
+        print(f"\n\033[1m📊 TRADE QUALITY\033[0m  {_ANSI_DIM}(per period){_ANSI_RST}\n")
         _tq_hdr = (
             f"  {'Period':<10} {'Trades':>7} {'Payoff':>8} {'PF':>8} {'Expect':>11} "
             f"{'Sortino':>8} {'Best':>10} {'Worst':>10} {'CW':>4} {'CL':>4} {'W→L':>10}"
         )
-        for _label, lt in rows:
+        print(_tq_hdr)
+        print("  " + "─" * (_visible_width(_tq_hdr) - 2))
+        for label, lt in rows:
             total = lt.get("total_trades", 0)
             avg_win = lt.get("avg_win", 0.0)
             avg_loss = lt.get("avg_loss", 0.0)
             profit_f = lt.get("profit_factor", 0.0)
-            lt.get("expectancy", 0.0)
-            lt.get("sortino_ratio", 0.0)
-            lt.get("best_trade", 0.0)
-            lt.get("worst_trade", 0.0)
-            lt.get("max_consec_wins", 0)
-            lt.get("max_consec_losses", 0)
+            expect = lt.get("expectancy", 0.0)
+            sortino = lt.get("sortino_ratio", 0.0)
+            best = lt.get("best_trade", 0.0)
+            worst = lt.get("worst_trade", 0.0)
+            max_cw = lt.get("max_consec_wins", 0)
+            max_cl = lt.get("max_consec_losses", 0)
             w2l = lt.get("winner_to_loser_count", 0)
 
             abs_loss = abs(avg_loss)
             payoff = avg_win / abs_loss if abs_loss > _PAYOFF_FLOOR else 0.0
-            if payoff >= PAYOFF_GOOD_MIN or payoff >= 1.0:
-                pass
+            if payoff >= PAYOFF_GOOD_MIN:
+                pay_col = _ANSI_G
+            elif payoff >= 1.0:
+                pay_col = _ANSI_Y
             else:
-                pass
-            if profit_f >= PROFIT_FACTOR_GOOD_MIN or profit_f >= 1.0:
-                pass
+                pay_col = _ANSI_R
+            if profit_f >= PROFIT_FACTOR_GOOD_MIN:
+                pf_col = _ANSI_G
+            elif profit_f >= 1.0:
+                pf_col = _ANSI_Y
             else:
-                pass
-            (w2l / total * 100) if total > 0 else 0.0
+                pf_col = _ANSI_R
+            exp_col = _ANSI_G if expect > 0 else _ANSI_R
+            cw_col = _ANSI_G if max_cw >= 3 else _ANSI_Y
+            cl_col = _ANSI_R if max_cl >= 5 else (_ANSI_Y if max_cl >= 3 else _ANSI_G)
+            w2l_pct = (w2l / total * 100) if total > 0 else 0.0
+            if total > 0 and w2l > 0:
+                w2l_col = _ANSI_R if w2l_pct > 15 else (_ANSI_Y if w2l_pct > 5 else _ANSI_G)
+                w2l_str = f"{w2l} ({w2l_pct:.0f}%)"
+            else:
+                w2l_col = _ANSI_DIM
+                w2l_str = "-"
+            print(
+                f"  {label:<10} {total:>7} "
+                f"{pay_col}{payoff:>7.2f}x{_ANSI_RST} "
+                f"{pf_col}{profit_f:>8.2f}{_ANSI_RST} "
+                f"{exp_col}${expect:>+9.4f}{_ANSI_RST} "
+                f"{sortino:>8.3f} "
+                f"${best:>+9.2f} ${worst:>+9.2f} "
+                f"{cw_col}{max_cw:>4}{_ANSI_RST} {cl_col}{max_cl:>4}{_ANSI_RST} "
+                f"{w2l_col}{w2l_str:>10}{_ANSI_RST}"
+            )
+        print(
+            f"  {_ANSI_DIM}(Payoff avg_win/|avg_loss| target ≥1.5; PF gross_profit/gross_loss target ≥1.2; "
+            f"Sortino mean/downside-σ){_ANSI_RST}"
+        )
 
+        print(f"\n\033[1m🔬 EDGE QUALITY\033[0m  {_ANSI_DIM}(model tuning signals; per period){_ANSI_RST}\n")
         _eq_hdr = (
             f"  {'Period':<10} {'Capture':>8} {'AvgMFE':>10} {'AvgMAE':>10} {'Edge':>10} "
             f"{'Bars':>6} {'ConfW':>7} {'ConfL':>7} {'Gap':>8}"
         )
-        for _label, lt in rows:
+        print(_eq_hdr)
+        print("  " + "─" * (_visible_width(_eq_hdr) - 2))
+        for label, lt in rows:
             _avg_mfe = lt.get("avg_mfe", 0.0)
             _avg_mae = lt.get("avg_mae", 0.0)
             _cap_ratio = lt.get("avg_capture_ratio", 0.0)
@@ -3957,6 +4293,18 @@ class TabbedHUD:
                 _cal_col = _ANSI_G if _cal_gap > 0.05 else (_ANSI_Y if _cal_gap > 0 else _ANSI_R)
             else:
                 _cal_col = _ANSI_DIM
+            print(
+                f"  {label:<10} "
+                f"{_cap_col}{_cap_ratio:>7.1%}{_ANSI_RST} "
+                f"${_avg_mfe:>+9.2f} ${_avg_mae:>9.2f} "
+                f"{_edge_col}${_edge:>+9.2f}{_ANSI_RST} "
+                f"{_avg_bars:>6.1f} "
+                f"{_conf_w:>7.3f} {_conf_l:>7.3f} "
+                f"{_cal_col}{_cal_gap:>+8.3f}{_ANSI_RST}"
+            )
+        print(
+            f"  {_ANSI_DIM}(Capture exit_pnl/MFE target ≥60%; Edge MFE-MAE; Gap conf_win-conf_loss +ve=calibrated){_ANSI_RST}"
+        )
 
     def _compute_trade_log_convergence_metrics(self, trades: list[dict] | None = None) -> dict:
         trades = list(trades) if trades is not None else self._trade_log_metrics_trades
@@ -4081,13 +4429,17 @@ class TabbedHUD:
 
     def _render_trade_timing(self, lt: dict, pm: dict) -> None:
         """Render trade timing and prediction convergence."""
-        lt.get("avg_trade_duration_mins") or pm.get("avg_trade_duration_mins", 0.0)
-        lt.get("last_trade_mins_ago") or pm.get("last_trade_mins_ago", 0.0)
+        avg_dur = lt.get("avg_trade_duration_mins") or pm.get("avg_trade_duration_mins", 0.0)
+        last_trade = lt.get("last_trade_mins_ago") or pm.get("last_trade_mins_ago", 0.0)
         _timing_source = (
             "trade_log.jsonl"
             if lt.get("avg_trade_duration_mins") or lt.get("last_trade_mins_ago")
             else "production_metrics.json"
         )
+        print(
+            f"\n  Avg hold time:    {self._format_duration(avg_dur):>8}  {_ANSI_DIM}(source: {_timing_source}){_ANSI_RST}"
+        )
+        print(f"  Last trade:       {self._format_duration(last_trade):>8} ago")
         self._render_prediction_convergence(pm)
 
     def _format_duration(self, mins: float) -> str:
@@ -4119,29 +4471,52 @@ class TabbedHUD:
     def _render_prediction_convergence_table(self, rows: list[tuple[str, dict]]) -> None:
         """Render a per-period convergence table for the provided rows."""
         _hdr = f"  {'Period':<10} {'n':>5} {'rwΔ pts':>10} {'Accuracy':>9} {'Brier':>8} {'Util':>8} {'Err %':>8}"
-        for _label, conv in rows:
+        print(_hdr)
+        print("  " + "─" * (_visible_width(_hdr) - 2))
+        for label, conv in rows:
             rw_delta = conv["avg_runway_delta"]
             rw_acc = conv["avg_runway_accuracy"]
             cc_err = conv["avg_conf_brier"]
             rw_n = conv["runway_samples"]
             cc_n = conv["conf_samples"]
-            conv["avg_runway_utilization"]
-            conv["avg_runway_error_pct"]
+            util = conv["avg_runway_utilization"]
+            err_pct = conv["avg_runway_error_pct"]
             if rw_n == 0 and cc_n == 0:
+                print(f"  {label:<10} {_ANSI_DIM}{0:>5}      —         —        —        —        —{_ANSI_RST}")
                 continue
-            if abs(rw_delta) < RUNWAY_DELTA_OK_MAX or abs(rw_delta) < RUNWAY_DELTA_WARN_MAX:
-                pass
+            if abs(rw_delta) < RUNWAY_DELTA_OK_MAX:
+                d_col = _ANSI_G
+            elif abs(rw_delta) < RUNWAY_DELTA_WARN_MAX:
+                d_col = _ANSI_Y
             else:
-                pass
-            if rw_acc > RUNWAY_ACCURACY_GOOD or rw_acc > RUNWAY_ACCURACY_WARN:
-                pass
+                d_col = _ANSI_R
+            if rw_acc > RUNWAY_ACCURACY_GOOD:
+                a_col = _ANSI_G
+            elif rw_acc > RUNWAY_ACCURACY_WARN:
+                a_col = _ANSI_Y
             else:
-                pass
-            if cc_err < CONF_CALIB_OK_MAX or cc_err < CONF_CALIB_WARN_MAX:
-                pass
+                a_col = _ANSI_R
+            if cc_err < CONF_CALIB_OK_MAX:
+                b_col = _ANSI_G
+            elif cc_err < CONF_CALIB_WARN_MAX:
+                b_col = _ANSI_Y
             else:
-                pass
+                b_col = _ANSI_R
+            if rw_n == 0:
+                u_col = _ANSI_DIM
+                e_col = _ANSI_DIM
+            else:
+                u_col = _ANSI_G if util >= 1.0 else (_ANSI_Y if util >= 0.7 else _ANSI_R)
+                e_col = _ANSI_G if err_pct <= 25.0 else (_ANSI_Y if err_pct <= 50.0 else _ANSI_R)
             _n_cell = f"{max(rw_n, cc_n)}"
+            print(
+                f"  {label:<10} {_n_cell:>5} "
+                f"{d_col}{rw_delta:>+9.2f}{_ANSI_RST} "
+                f"{a_col}{rw_acc:>9.3f}{_ANSI_RST} "
+                f"{b_col}{cc_err:>8.3f}{_ANSI_RST} "
+                f"{u_col}{util:>7.3f}x{_ANSI_RST} "
+                f"{e_col}{err_pct:>7.1f}%{_ANSI_RST}"
+            )
 
     def _render_prediction_convergence(self, pm: dict) -> None:
         """Render prediction convergence metrics as per-period tables."""
@@ -4153,38 +4528,55 @@ class TabbedHUD:
         platt_a = pm.get("platt_a", 1.0)
         platt_b = pm.get("platt_b", 0.0)
         if abs(platt_a - 1.0) > PLATT_ADAPTED_DELTA or abs(platt_b) > PLATT_ADAPTED_DELTA:
-            pass
+            pa_col = _ANSI_B
         else:
-            pass
+            pa_col = _ANSI_DIM
 
+        print(
+            f"\n\033[1m🎯 PREDICTION CONVERGENCE"
+            f"{' [' + self._active_scope_label() + ']' if self._has_active_scope() else ''}\033[0m  "
+            f"{_ANSI_DIM}(per-period means; src=trade_log.jsonl){_ANSI_RST}\n"
+        )
 
         if _mode == "mixed":
+            print(f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}")
             self._render_prediction_convergence_table(
                 self._prediction_convergence_rows(
                     self._active_scope_trades(self._trade_log_metrics_trades_by_mode.get("paper", [])),
                     self._active_scope_trades(self._trade_log_all_trades_by_mode.get("paper", [])),
-                ),
+                )
             )
+            print(f"\n  {_ANSI_G}💰 LIVE{_ANSI_RST}")
             self._render_prediction_convergence_table(
                 self._prediction_convergence_rows(
                     self._active_scope_trades(self._trade_log_metrics_trades_by_mode.get("live", [])),
                     self._active_scope_trades(self._trade_log_all_trades_by_mode.get("live", [])),
-                ),
+                )
             )
+            print(f"\n  {_ANSI_DIM}Combined (paper+live){_ANSI_RST}")
             self._render_prediction_convergence_table(
                 self._prediction_convergence_rows(
                     self._active_scope_trades(self._trade_log_metrics_trades),
                     self._active_scope_trades(self._trade_log_all_trades),
-                ),
+                )
             )
         else:
             _mk = _mode if _mode in ("paper", "live") else None
             _scoped = self._trade_log_metrics_trades_by_mode.get(_mk, []) if _mk else self._trade_log_metrics_trades
             _all = self._trade_log_all_trades_by_mode.get(_mk, []) if _mk else self._trade_log_all_trades
             self._render_prediction_convergence_table(
-                self._prediction_convergence_rows(self._active_scope_trades(_scoped), self._active_scope_trades(_all)),
+                self._prediction_convergence_rows(self._active_scope_trades(_scoped), self._active_scope_trades(_all))
             )
 
+        print(
+            f"\n  {_ANSI_DIM}(rwΔ pred−actual pts, 0=perfect; Accuracy 1=perfect; Brier 0=perfect, "
+            f"0.25=no-skill; Util actual_MFE/predicted_runway_pts_adj; Err % mean abs pred err %){_ANSI_RST}"
+        )
+        print(
+            f"  Platt  a={pa_col}{platt_a:.4f}{_ANSI_RST}  "
+            f"b={pa_col}{platt_b:+.4f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(source: production_metrics.json; grey=default, blue=adapted){_ANSI_RST}"
+        )
 
     def _render_jsonl_decision_entries(self, entries: list, mode_filter: str = "") -> None:
         """Render the rich JSONL decision log entries.
@@ -4226,7 +4618,7 @@ class TabbedHUD:
                 collapsed.append(
                     f"  {_ANSI_DIM}   ... Harvester held {run_len} bars (TrdID:{tid[:8]})  "
                     f"MFE:{_ANSI_G}+{_mfe:.2f}{_ANSI_DIM}  MAE:{_ANSI_R}-{_mae:.2f}{_ANSI_DIM}  "
-                    f"uPnL:{_pnl_c}{_upnl:+.2f}{_ANSI_DIM}{_ANSI_RST}",
+                    f"uPnL:{_pnl_c}{_upnl:+.2f}{_ANSI_DIM}{_ANSI_RST}"
                 )
             else:
                 collapsed.append(e)
@@ -4241,13 +4633,18 @@ class TabbedHUD:
                 _counts[_d] = _counts.get(_d, 0) + 1
                 _total_entries += 1
         _dist = "  ".join(f"{k}:{v}" for k, v in sorted(_counts.items()))
+        print(f"  Decisions: {_dist}  ({len(entries) - _total_entries} held bars collapsed)\n")
 
         # ── Header ────────────────────────────────────────────────────────
+        header = f"  {'Time':<12} {'Bot':<13} {'Mode':<5} {'Agent':<10} {'Decision':<10} {'Conf':>5}  {'Detail'}"
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
 
         _seen_sessions: set[str] = set()
         for item in collapsed:
             # Collapsed CLOSE_PENDING summary line
             if isinstance(item, str):
+                print(item)
                 continue
 
             entry = item
@@ -4259,27 +4656,30 @@ class TabbedHUD:
             _sess = entry.get("session", "")
             if _sess and _sess not in _seen_sessions:
                 _seen_sessions.add(_sess)
+                print(f"  {_ANSI_DIM}── session {_sess} ──{_ANSI_RST}")
 
             # ── Timestamp ──────────────────────────────────────────────────
             ts_raw = entry.get("timestamp", "?")
             try:
-                ts_raw[5:16] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw[:11]
+                ts_str = ts_raw[5:16] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw[:11]
             except Exception:
-                str(ts_raw)[:11]
+                ts_str = str(ts_raw)[:11]
 
             # ── Mode badge ─────────────────────────────────────────────────
             # Fixed 5-cell tag (no emoji) so the column stays aligned regardless
             # of the terminal's wide-character handling.
             _mode = entry.get("trading_mode", "")
-            if _mode in {"paper", "live"}:
-                pass
+            if _mode == "paper":
+                mode_str = f"{_ANSI_Y}{'PPR':<5}{_ANSI_RST}"
+            elif _mode == "live":
+                mode_str = f"{_ANSI_G}{'LIV':<5}{_ANSI_RST}"
             else:
-                pass
+                mode_str = f"{_ANSI_DIM}{'?':<5}{_ANSI_RST}"
 
-            entry.get("agent", "?")[:9]
+            agent = entry.get("agent", "?")[:9]
             decision = entry.get("decision", "?")
-            _f(entry.get("confidence"))
-            self._decision_entry_bot_label(entry)[:13]
+            conf = _f(entry.get("confidence"))
+            bot_str = self._decision_entry_bot_label(entry)[:13]
             ctx = entry.get("context", {})
             if not isinstance(ctx, dict):
                 ctx = {}
@@ -4291,80 +4691,132 @@ class TabbedHUD:
             dec_upper = decision.upper()
             if dec_upper in ("LONG", "SHORT"):
                 # Entry: show regime, feasibility, predicted_runway, VPIN-z, Q-spread
-                (ctx.get("regime") or "?")[:5]
-                _f(reasoning.get("feasibility"))
-                _f(reasoning.get("predicted_runway"))
+                regime = (ctx.get("regime") or "?")[:5]
+                feas = _f(reasoning.get("feasibility"))
+                runway = _f(reasoning.get("predicted_runway"))
                 vpin_z = _f(ctx.get("vpin_z"))
-                _f(reasoning.get("q_spread"))
+                qs = _f(reasoning.get("q_spread"))
                 tid = entry.get("trade_id", "")[:8]
-                f"{_ANSI_R}!{_ANSI_RST}" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
+                vpin_flag = f"{_ANSI_R}!{_ANSI_RST}" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
+                feas_c = _ANSI_G if feas >= 0.6 else (_ANSI_Y if feas >= 0.3 else _ANSI_R)
+                detail = (
+                    f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} "
+                    f"rwy:{runway:.4f} vz:{vpin_z:+.1f}{vpin_flag} "
+                    f"QΔ:{qs:.3f} [{tid}]"
+                )
             elif dec_upper == "NO_ENTRY":
                 # Rejected entry: show WHY (feasibility, regime, VPIN-z)
-                (ctx.get("regime") or "?")[:5]
-                _f(reasoning.get("feasibility"))
+                regime = (ctx.get("regime") or "?")[:5]
+                feas = _f(reasoning.get("feasibility"))
                 vpin_z = _f(ctx.get("vpin_z"))
-                reasoning.get("circuit_breakers_ok", True)
+                cb_ok = reasoning.get("circuit_breakers_ok", True)
+                feas_c = _ANSI_R if feas < 0.3 else (_ANSI_Y if feas < 0.6 else _ANSI_G)
+                cb_str = f" {_ANSI_R}CB!{_ANSI_RST}" if not cb_ok else ""
+                detail = f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} vz:{vpin_z:+.1f}{cb_str}"
             elif dec_upper == "CLOSE":
                 # Exit: show capture_ratio, MFE, MAE, unrealized PnL, Q-spread
-                _f(reasoning.get("capture_ratio"))
-                _f(reasoning.get("mfe"))
-                _f(reasoning.get("mae"))
-                _f(ctx.get("unrealized_pnl"))
-                _f(reasoning.get("q_spread"))
+                cap = _f(reasoning.get("capture_ratio"))
+                mfe = _f(reasoning.get("mfe"))
+                mae = _f(reasoning.get("mae"))
+                upnl = _f(ctx.get("unrealized_pnl"))
+                qs = _f(reasoning.get("q_spread"))
                 tid = entry.get("trade_id", "")[:8]
+                cap_c = _ANSI_G if cap >= 0.6 else (_ANSI_Y if cap >= 0.3 else _ANSI_R)
+                pnl_c = _ANSI_G if upnl >= 0 else _ANSI_R
+                detail = (
+                    f"cap:{cap_c}{cap:+.2f}{_ANSI_RST} "
+                    f"MFE:{_ANSI_G}+{mfe:.2f}{_ANSI_RST} "
+                    f"MAE:{_ANSI_R}-{mae:.2f}{_ANSI_RST} "
+                    f"uPnL:{pnl_c}{upnl:+.1f}{_ANSI_RST} Q\u0394:{qs:.3f} [{tid}]"
+                )
             elif dec_upper == "HOLD":
                 # Hold: show ticks_held, capture_ratio trajectory
-                int(_f(reasoning.get("ticks_held")))
-                _f(reasoning.get("capture_ratio"))
-                _f(ctx.get("unrealized_pnl"))
+                ticks = int(_f(reasoning.get("ticks_held")))
+                cap = _f(reasoning.get("capture_ratio"))
+                upnl = _f(ctx.get("unrealized_pnl"))
+                pnl_c = _ANSI_G if upnl >= 0 else _ANSI_R
+                detail = f"bars:{ticks} cap:{cap:+.2f} uPnL:{pnl_c}{upnl:+.1f}{_ANSI_RST}"
             else:
-                _f(ctx.get("price"))
+                price = _f(ctx.get("price"))
+                detail = f"@ {price:.2f}"
 
             # ── Color by decision type ─────────────────────────────────────
-            if dec_upper in ("BUY", "LONG", "ENTER") or dec_upper in ("SELL", "SHORT", "EXIT", "CLOSE") or dec_upper in {"HOLD", "NO_ENTRY"}:
-                pass
+            if dec_upper in ("BUY", "LONG", "ENTER"):
+                color = _ANSI_G
+            elif dec_upper in ("SELL", "SHORT", "EXIT", "CLOSE"):
+                color = _ANSI_R
+            elif dec_upper == "HOLD":
+                color = _ANSI_Y
+            elif dec_upper == "NO_ENTRY":
+                color = _ANSI_DIM
             else:
-                pass
+                color = _ANSI_RST
 
+            print(
+                f"  {ts_str:<12} {bot_str:<13} {mode_str} {agent:<10} "
+                f"{color}{dec_upper:<10}{_ANSI_RST} "
+                f"{conf:>5.3f}  {detail}"
+            )
+        print("  " + "─" * (_visible_width(header) - 2))
 
     def _render_legacy_decision_entries(self, entries: list, mode_filter: str = "") -> None:
         """Render legacy JSON-format decision log entries — newest first."""
         if mode_filter in ("paper", "live"):
             entries = [e for e in entries if e.get("trading_mode") == mode_filter]
         recent = list(reversed(entries[-20:]))
+        print(f"  Showing {len(recent)} most recent decisions (legacy format):\n")
+        print("  " + "─" * 76)
         for entry in recent:
-            entry.get("timestamp", "?")
+            ts = entry.get("timestamp", "?")
             event = entry.get("event", "?")
             # Trading mode badge
             _mode = entry.get("trading_mode", "")
-            if _mode in {"paper", "live"}:
-                pass
+            if _mode == "paper":
+                mode_badge = f"{_ANSI_Y}[PAPER]{_ANSI_RST}"
+            elif _mode == "live":
+                mode_badge = f"{_ANSI_G}[LIVE]{_ANSI_RST}"
             else:
-                pass
+                mode_badge = ""
             details = entry.get("details", {})
-            self._decision_entry_bot_label(entry)
+            bot_str = self._decision_entry_bot_label(entry)
             if isinstance(details, dict):
-                details.get("cur_pos", "?")
-                details.get("action", "?")
+                pos = details.get("cur_pos", "?")
+                action = details.get("action", "?")
                 conf = details.get("confidence", "?")
                 # Real schema keys: exit_action / exit_conf — no bare "pnl" field
                 exit_conf = details.get("exit_conf")
-                details.get("exit_action")
+                exit_act = details.get("exit_action")
                 if exit_conf is not None:
-                    f"{float(conf):.3f}" if conf not in ("?", None) else "?"
+                    conf_str = f"{float(conf):.3f}" if conf not in ("?", None) else "?"
+                    exit_str = f" ExAct:{exit_act} ExConf:{exit_conf:.3f}"
                 else:
-                    str(conf)
+                    conf_str = str(conf)
+                    exit_str = ""
                 # Show broker position_ids when present (added by newer bot builds)
-                entry.get("position_ids")
+                pids = entry.get("position_ids")
+                pid_str = f" PIDs:{pids}" if pids else ""
+                details_str = f"Pos:{pos} Act:{action} Conf:{conf_str}{exit_str}{pid_str}"
             else:
-                str(details)
-            if "OPEN" in event.upper() or "entry" in event.lower() or "CLOSE" in event.upper() or "exit" in event.lower() or "HOLD" in event.upper():
-                pass
+                details_str = str(details)
+            if "OPEN" in event.upper() or "entry" in event.lower():
+                color = _ANSI_G
+            elif "CLOSE" in event.upper() or "exit" in event.lower():
+                color = _ANSI_R
+            elif "HOLD" in event.upper():
+                color = _ANSI_Y
             else:
-                pass
+                color = _ANSI_RST
+            print(f"  [{ts}] [{bot_str}] {mode_badge} {color}{event}{_ANSI_RST}: {details_str}")
+        print("  " + "─" * 76)
+        print(f"\n  Total decisions logged: {len(entries)}")
 
     def _render_decision_log(self) -> None:
         """Render the Decision Log tab (Tab 6) — newest entries first."""
+        print("\n\033[1m📝 DECISION LOG (ALL BOTS)\033[0m (last 20 entries)\n")
+        print(
+            f"  {_ANSI_DIM}(canonical source: per-bot logs/audit/decisions.jsonl; Bot column is symbol/timeframe scope){_ANSI_RST}"
+        )
+
         _mode_filter = ""
         if getattr(self, "_trade_log_mode", "") == "mixed":
             _mode_filter = getattr(self, "_perf_snapshot_mode", "") or self.bot_config.get("trading_mode", "")
@@ -4372,6 +4824,7 @@ class TabbedHUD:
                 _mode_filter = ""
             if _mode_filter:
                 _mode_lbl = "PAPER" if _mode_filter == "paper" else "LIVE"
+                print(f"  {_ANSI_DIM}Showing {_mode_lbl} entries only while trade history is mixed-mode.{_ANSI_RST}")
 
         _decision_files: list[Path] = []
         _primary = self.data_dir / "logs" / "audit" / "decisions.jsonl"
@@ -4430,6 +4883,10 @@ class TabbedHUD:
         if root_legacy.exists():
             legacy_files.append(root_legacy)
         if not legacy_files:
+            print("  ⚠️  No decision log found.")
+            print("\n  Expected files:")
+            print("    paper_<SYMBOL>_M<TF>/logs/audit/decisions.jsonl  (rich — primary)")
+            print("    paper_<SYMBOL>_M<TF>/decision_log_<SYMBOL>_M<TF>.json  (legacy — fallback)")
             return
 
         try:
@@ -4458,10 +4915,12 @@ class TabbedHUD:
                             entries.append(_obj)
                     except json.JSONDecodeError:
                         break
-        except Exception:
+        except Exception as e:
+            print(f"  ❌ Error reading decision log: {e}")
             return
 
         if not entries:
+            print("  No entries yet. Waiting for bot decisions...")
             return
 
         self._render_legacy_decision_entries(entries, _mode_filter)
@@ -4470,6 +4929,8 @@ class TabbedHUD:
         """Render risk management details."""
         rs = self.risk_stats
         _scope = self._risk_scope_label(rs)
+        print(f"\n\033[1m⚠️  RISK MANAGEMENT [{_scope}]\033[0m\n")
+        print(f"  {_ANSI_DIM}(source: scoped risk_metrics + circuit_breakers.json){_ANSI_RST}")
         self._render_risk_circuit_breaker(rs)
         self._render_risk_tail(rs)
         self._render_risk_regime(rs)
@@ -4483,15 +4944,23 @@ class TabbedHUD:
         kurt_gate = rs.get("kurtosis_gate_active", False)
         _scope = self._risk_scope_label(rs)
         if cb == "ACTIVE":
-            pass
+            print(f"  {_ANSI_R}╔════════════════════════════════════════╗")
+            print("  ║     ⚠️  CIRCUIT BREAKER ACTIVE ⚠️       ║")
+            print(f"  ╚════════════════════════════════════════╝{_ANSI_RST}")
+            print(f"  {_ANSI_Y}Press [r] to review and reset circuit breakers{_ANSI_RST}\n")
         elif kurt_gate:
             _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
             _kurt_note = "entries BLOCKED" if _is_live_mode else "bypassed in paper mode"
             _kurt_threshold = float(
-                rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD,
+                rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
+            )
+            print(
+                f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE [{_scope}] "
+                f"(κ={rs.get('kurtosis', 0):.1f} excess > {_kurt_threshold:.1f}){_ANSI_RST}  "
+                f"{_ANSI_DIM}{_kurt_note}{_ANSI_RST}\n"
             )
         else:
-            pass
+            print(f"  {_ANSI_G}✓ Circuit Breaker: INACTIVE{_ANSI_RST}\n")
 
         # Load individual breaker statuses from circuit_breakers.json
         _cb_path = self._preferred_data_file("circuit_breakers.json")
@@ -4511,12 +4980,13 @@ class TabbedHUD:
             "drawdown": "Drawdown",
             "consecutive_losses": "Consec Losses",
         }
+        print("  \033[1m🔌 INDIVIDUAL BREAKERS\033[0m")
         _kurt_gate_active = bool(rs.get("kurtosis_gate_active", False))
         _kurtosis_now = float(rs.get("kurtosis", 0.0) or 0.0)
         _kurtosis_threshold = float(
-            rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD,
+            rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
         )
-        for _key in _breaker_labels:
+        for _key, _label in _breaker_labels.items():
             _b = _cb_data.get(_key)
             if not isinstance(_b, dict):
                 _b = {}
@@ -4572,6 +5042,8 @@ class TabbedHUD:
                 _streak = _b.get("consecutive_losses", 0)
                 _s_col = _ANSI_R if _streak >= 5 else (_ANSI_Y if _streak >= 3 else _ANSI_G)
                 _extra = f"  {_s_col}streak={_streak}{_ANSI_RST}"
+            print(f"    {_label:<15} {_icon}{_detail}{_extra}")
+        print()
 
     def _risk_scope_label(self, rs: dict) -> str:
         """Return display scope for risk metrics."""
@@ -4587,29 +5059,46 @@ class TabbedHUD:
 
     def _render_risk_tail(self, rs: dict) -> None:
         """Render tail risk values."""
+        print("  \033[1m📉 TAIL RISK\033[0m")
         var = rs.get("var", 0) * 100
-        rs.get("kurtosis", 0)
-        float(
-            rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD,
+        kurtosis = rs.get("kurtosis", 0)
+        kurtosis_threshold = float(
+            rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
         )
         vol = rs.get("realized_vol", 0) * 100
 
-        if var > VAR_HIGH_PCT or var > VAR_WARN_PCT:
-            pass
+        kurt_col = _ANSI_R if kurtosis > kurtosis_threshold else _ANSI_G
+        if var > VAR_HIGH_PCT:
+            var_col = _ANSI_R
+        elif var > VAR_WARN_PCT:
+            var_col = _ANSI_Y
         else:
-            pass
-        if vol > VOL_HIGH_PCT or vol > VOL_WARN_PCT:
-            pass
+            var_col = _ANSI_G
+        if vol > VOL_HIGH_PCT:
+            vol_col = _ANSI_R
+        elif vol > VOL_WARN_PCT:
+            vol_col = _ANSI_Y
         else:
-            pass
+            vol_col = _ANSI_G
 
+        print(
+            f"    VaR 95%:           {var_col}{var:>9.3f}%{_ANSI_RST}  "
+            f"{_ANSI_DIM}(position loss at 95th pct){_ANSI_RST}"
+        )
+        print(f"    Realized vol:      {vol_col}{vol:>9.3f}%{_ANSI_RST}")
+        print(
+            f"    Kurtosis:          {kurt_col}{kurtosis:>9.2f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(excess; >0 = fat tails; gate fires at >{kurtosis_threshold:.1f}){_ANSI_RST}"
+        )
+        print()
 
     def _render_risk_regime(self, rs: dict) -> None:
         """Render regime classification with ζ gauge and update status."""
+        print("  \033[1m🌐 REGIME\033[0m")
         regime = rs.get("regime", "UNKNOWN")
         zeta = rs.get("regime_zeta", 1.0)
-        rs.get("regime_vr", 1.0)
-        rs.get("regime_updates", 0)
+        vr = rs.get("regime_vr", 1.0)
+        updates = rs.get("regime_updates", 0)
         next_in = rs.get("regime_next_in", 0)
         regime_colors = {
             "TRENDING": _ANSI_G,
@@ -4623,8 +5112,14 @@ class TabbedHUD:
             "TRANSITIONAL": "reduce size; wait for clarity",
             "UNKNOWN": "cold-start; use fallback rules",
         }
-        regime_colors.get(regime, _ANSI_DIM)
+        regime_color = regime_colors.get(regime, _ANSI_DIM)
         _next_tag = f"  next recalc in {next_in} bar{'s' if next_in != 1 else ''}" if next_in > 0 else "  recalc now"
+        print(
+            f"    Regime:            {regime_color}{regime}{_ANSI_RST}  "
+            f"{_ANSI_DIM}({_regime_tips.get(regime, '')}){_ANSI_RST}"
+        )
+        print(f"    Damping (ζ):       {zeta:>10.3f}  {_ANSI_DIM}(< 0.7 trending | > 1.3 mean-rev){_ANSI_RST}")
+        print(f"    Variance Ratio:    {vr:>10.3f}  {_ANSI_DIM}(1.0 = random walk){_ANSI_RST}")
         # ζ gauge: visual bar showing position within [0.1 .. 2.0] range
         # Markers: 0.7 (trending threshold) and 1.3 (mean-revert threshold)
         _gauge_w = 40
@@ -4637,12 +5132,17 @@ class TabbedHUD:
         _bar_chars[_m_mark] = "│"
         _bar_chars[_pos] = "●"
         _gauge = "".join(_bar_chars)
+        print(f"    ζ: [{_ANSI_G}TREND{_ANSI_RST}│{_ANSI_B}TRANS{_ANSI_RST}│{_ANSI_Y}M-REV{_ANSI_RST}]  {_gauge}")
+        print(f"       {_ANSI_DIM}0.1{'':>10}0.7{'':>15}1.3{'':>12}2.0{_ANSI_RST}")
+        print(f"    Updates:           {updates:>10d}{_ANSI_DIM}{_next_tag}{_ANSI_RST}")
+        print()
 
     def _render_risk_reward_weights(self, rs: dict) -> None:
         """Render adaptive reward component weights."""
         weights = rs.get("reward_weights", {})
         if not weights:
             return
+        print("  \033[1m🎚️  REWARD WEIGHTS\033[0m  " + f"{_ANSI_DIM}(adaptive, bounded 0.2–2.0){_ANSI_RST}")
         _gauge_w = 20
         # Pull per-bot reward-shaping telemetry (avg component rewards + total)
         # from the active bot's paper_stats entry, if available.
@@ -4650,7 +5150,7 @@ class TabbedHUD:
         try:
             for _b in getattr(self, "all_bots_stats", []) or []:
                 if _b.get("symbol") == self.active_sym and int(_b.get("timeframe_minutes", 0) or 0) == int(
-                    self.active_tf_min or 0,
+                    self.active_tf_min or 0
                 ):
                     _rshape = _b.get("reward_shaping", {}) or {}
                     break
@@ -4661,12 +5161,14 @@ class TabbedHUD:
             # Visual bar: 0.2 (min) to 2.0 (max), default 1.0
             frac = max(0.0, min(1.0, (val - 0.2) / 1.8))
             filled = int(_gauge_w * frac)
-            "█" * filled + "░" * (_gauge_w - filled)
+            bar = "█" * filled + "░" * (_gauge_w - filled)
             # Color: green near 1.0, yellow when drifted, red when at bounds
-            if 0.8 <= val <= 1.2 or 0.5 <= val <= 1.5:
-                pass
+            if 0.8 <= val <= 1.2:
+                col = _ANSI_G
+            elif 0.5 <= val <= 1.5:
+                col = _ANSI_Y
             else:
-                pass
+                col = _ANSI_R
             _c = _comps.get(name, {}) if isinstance(_comps, dict) else {}
             _cnt = int(_c.get("count", 0) or 0) if isinstance(_c, dict) else 0
             _avg = float(_c.get("avg", 0.0) or 0.0) if isinstance(_c, dict) else 0.0
@@ -4675,32 +5177,59 @@ class TabbedHUD:
                 _tail = f"  {_ANSI_DIM}avg={_ANSI_RST}{_avg_col}{_avg:+.3f}{_ANSI_RST}  {_ANSI_DIM}n={_cnt}{_ANSI_RST}"
             else:
                 _tail = f"  {_ANSI_DIM}avg= n/a   n=0{_ANSI_RST}"
+            print(f"    {name:<16s} {col}{val:>5.2f}{_ANSI_RST}  [{bar}]{_tail}")
         _total = int(_rshape.get("total_rewards_calculated", 0) or 0) if isinstance(_rshape, dict) else 0
         if _total:
-            pass
+            print(f"    {_ANSI_DIM}total rewards calculated: {_total}{_ANSI_RST}")
+        print()
 
     def _render_risk_path_geometry(self, rs: dict) -> None:
         """Render path geometry features."""
+        print(f"  \033[1m📐 PATH GEOMETRY  {_ANSI_DIM}(RL feature inputs){_ANSI_RST}")
         eff = rs.get("efficiency", 0)
-        rs.get("gamma", 0)
+        gamma = rs.get("gamma", 0)
         runway = rs.get("runway", 0.5)
         feas = rs.get("feasibility", 0.5)
 
-        if feas > FEASIBILITY_HIGH_THRESHOLD or feas > FEASIBILITY_MEDIUM_THRESHOLD:
-            pass
+        if feas > FEASIBILITY_HIGH_THRESHOLD:
+            feas_color = _ANSI_G
+        elif feas > FEASIBILITY_MEDIUM_THRESHOLD:
+            feas_color = _ANSI_Y
         else:
-            pass
-        if eff > EFF_HIGH_THRESHOLD or eff > EFF_WARN_THRESHOLD:
-            pass
+            feas_color = _ANSI_R
+        if eff > EFF_HIGH_THRESHOLD:
+            eff_col = _ANSI_G
+        elif eff > EFF_WARN_THRESHOLD:
+            eff_col = _ANSI_Y
         else:
-            pass
-        if runway > RUNWAY_OK_BARS or runway > RUNWAY_WARN_BARS:
-            pass
+            eff_col = _ANSI_R
+        gam_col = _ANSI_G if gamma > 0 else _ANSI_R
+        if runway > RUNWAY_OK_BARS:
+            rwy_col = _ANSI_G
+        elif runway > RUNWAY_WARN_BARS:
+            rwy_col = _ANSI_Y
         else:
-            pass
+            rwy_col = _ANSI_R
 
+        print(
+            f"    Efficiency:        {eff_col}{eff:>10.3f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(path directness; 1=straight trend){_ANSI_RST}"
+        )
+        print(
+            f"    Gamma (γ):         {gam_col}{gamma:>+10.3f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(price acceleration; +ve favours longs){_ANSI_RST}"
+        )
         jerk = rs.get("jerk", 0.0)
-        _ANSI_Y if abs(jerk) > 0.1 else _ANSI_DIM
+        jerk_col = _ANSI_Y if abs(jerk) > 0.1 else _ANSI_DIM
+        print(
+            f"    Jerk (dγ/dt):      {jerk_col}{jerk:>+10.4f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(rate of change of gamma){_ANSI_RST}"
+        )
+        print(
+            f"    Runway:            {rwy_col}{runway:>10.3f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(vol headwind score; 1=smooth, 0=heavy){_ANSI_RST}"
+        )
+        print(f"    Entry Feasibility: {feas_color}{feas:>10.3f}{_ANSI_RST}")
 
         # Depth metrics
         _depth_ratio = rs.get("depth_ratio", 0.0)
@@ -4709,42 +5238,66 @@ class TabbedHUD:
         _depth_gate = rs.get("depth_gate_active", False)
         _has_l2 = _depth_levels > 0
         if _has_l2 or _depth_ratio > 0:
+            print()
             _gate_str = f"  {_ANSI_R}[GATE ACTIVE]{_ANSI_RST}" if _depth_gate else ""
             if _has_l2:
                 _dr_col = _ANSI_G if _depth_ratio > 0.8 else (_ANSI_Y if _depth_ratio > 0.5 else _ANSI_R)
+                print(
+                    f"    Depth ratio:       {_dr_col}{_depth_ratio:>10.3f}{_ANSI_RST}  "
+                    f"{_ANSI_DIM}(bid_depth/ask_depth; 1=balanced){_ANSI_RST}{_gate_str}"
+                )
             else:
                 # depth_ratio defaults to 1.0 when there is no real L2 feed.
                 # Display N/A so it does not look like a balanced live order book.
-                pass
+                print(
+                    f"    Depth ratio:       {_ANSI_DIM}       N/A{_ANSI_RST}  "
+                    f"{_ANSI_DIM}(no L2 data){_ANSI_RST}{_gate_str}"
+                )
+            print(f"    Depth levels:      {_depth_levels:>10}    buffer: {_depth_buffer:.2f}")
 
         bar_len = 40
         feas_pct = max(0, min(1, feas))
         filled = int(bar_len * feas_pct)
-        "█" * filled + "░" * (bar_len - filled)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        print(f"\n    [{bar}]")
+        print("     LOW                                HIGH")
 
     def _render_risk_position_sizing(self, rs: dict) -> None:
         """Render position sizing block."""
-        rs.get("risk_budget_usd", 0.0)
+        print()
+        print("  \033[1m💰 POSITION SIZING\033[0m")
+        risk_budget = rs.get("risk_budget_usd", 0.0)
         risk_req_qty = rs.get("risk_requested_qty", 0.0)
         risk_final_qty = rs.get("risk_final_qty", 0.0)
-        rs.get("vol_cap", 0.0)
+        vol_cap = rs.get("vol_cap", 0.0)
         vol_ref = rs.get("vol_reference", 0.0)
         realized_vol = rs.get("realized_vol", 0.0)
 
+        qty_color = _ANSI_G if risk_final_qty == risk_req_qty else _ANSI_Y
 
-        (risk_final_qty / risk_req_qty * 100) if risk_req_qty > _QTY_FLOOR else 100.0
+        budget_used_pct = (risk_final_qty / risk_req_qty * 100) if risk_req_qty > _QTY_FLOOR else 100.0
         capped = risk_req_qty > _QTY_FLOOR and risk_final_qty < risk_req_qty * 0.999
 
+        print(f"    Risk budget:       {risk_budget:>10.2f} USD")
+        print(f"    Requested qty:     {risk_req_qty:>10.4f}")
+        print(
+            f"    Final qty:         {qty_color}{risk_final_qty:>10.4f}{_ANSI_RST}  ({budget_used_pct:.0f}% of request)"
+        )
         if capped:
-            pass
+            print(f"    {_ANSI_Y}⚡ Qty capped — vol or depth constraint active{_ANSI_RST}")
+        print(f"    Vol cap:           {vol_cap * 100:>9.2f}%  {_ANSI_DIM}(max position vol allowed){_ANSI_RST}")
         # vol_reference is a fixed config value used as the baseline for the
         # VaR vol multiplier (vol_mult = realized/reference).  Show the ratio
         # so it's clear how far the current market vol is from the reference.
         if vol_ref > 0 and realized_vol > 0:
             _vol_ratio = realized_vol / vol_ref
             _vr_col = _ANSI_Y if abs(_vol_ratio - 1.0) > 0.5 else _ANSI_G
+            print(
+                f"    Vol reference:     {vol_ref * 100:>9.3f}%  "
+                f"{_ANSI_DIM}(fixed baseline; {_vr_col}×{_vol_ratio:.2f} vs realized{_ANSI_DIM}){_ANSI_RST}"
+            )
         else:
-            pass
+            print(f"    Vol reference:     {vol_ref * 100:>9.3f}%  {_ANSI_DIM}(fixed baseline for vol cap){_ANSI_RST}")
 
     def _render_order_book_ladder(self, bids: list, asks: list, depth_bid: float, depth_ask: float, dec: int) -> None:
         """Render the L2 order-book price ladder (5 rows, aligned columns).
@@ -4775,6 +5328,8 @@ class TabbedHUD:
 
     def _render_signal_synthesis(self, vpin_z: float, imbalance: float) -> None:
         """Render the signal synthesis advisory block."""
+        print()
+        print("  \033[1m🧭 SIGNAL SYNTHESIS\033[0m")
         rs_regime = self.risk_stats.get("regime", "UNKNOWN")
         rs_feas = float(self.risk_stats.get("feasibility", 0.5))
         rs_runway = float(self.risk_stats.get("runway", 0.0))
@@ -4801,16 +5356,17 @@ class TabbedHUD:
             # rs_runway is the path geometry vol-headwind score (1/(1+50σ)).
             # Low value = high realized vol, not a harvester-specific runway prediction.
             signals.append(
-                f"{_ANSI_Y}⚡ Rough path conditions (runway={rs_runway:.2f}) — high vol, widen stops{_ANSI_RST}",
+                f"{_ANSI_Y}⚡ Rough path conditions (runway={rs_runway:.2f}) — high vol, widen stops{_ANSI_RST}"
             )
         if not signals:
             signals.append(f"{_ANSI_DIM}— No strong signals; model discretion applies{_ANSI_RST}")
-        for _s in signals:
-            pass
+        for s in signals:
+            print(f"    {s}")
 
     def _render_market(self) -> None:
         """Render market microstructure."""
         _scope = self._risk_scope_label(self.risk_stats)
+        print(f"\n\033[1m🔬 MARKET MICROSTRUCTURE [{_scope}]\033[0m\n")
         _market_age: float | None = None
         _sources = (
             self._preferred_data_file(_ORDER_BOOK_FILE),
@@ -4828,6 +5384,7 @@ class TabbedHUD:
             _feed = f"{_ANSI_Y}⚡ AGING ({_market_age:.0f}s){_ANSI_RST}"
         else:
             _feed = f"{_ANSI_G}✓ LIVE ({_market_age:.1f}s){_ANSI_RST}"
+        print(f"  Feed freshness: {_feed}\n")
         ms = self.market_stats
         self._render_market_spread(ms)
         self._render_market_vpin(ms)
@@ -4837,7 +5394,8 @@ class TabbedHUD:
 
     def _render_market_spread(self, ms: dict) -> None:
         """Render spread and order book ladder."""
-        ms.get("spread", 0)
+        print("  \033[1m💹 SPREAD & LIQUIDITY\033[0m")
+        spread = ms.get("spread", 0)
         depth_bid = ms.get("depth_bid", 0)
         depth_ask = ms.get("depth_ask", 0)
         bids = ms.get("order_book_bids", [])
@@ -4849,15 +5407,26 @@ class TabbedHUD:
         else:
             base_price = 0.0
         dec = self._price_decimals(base_price)
+        print(f"    Bid-Ask Spread:    {spread:>12.{dec}f}")
+        print()
         self._render_order_book_ladder(bids, asks, depth_bid, depth_ask, dec)
+        print()
 
     def _render_market_vpin(self, ms: dict) -> None:
         """Render VPIN toxicity block."""
+        print("  \033[1m☢️  ORDER FLOW TOXICITY (VPIN)\033[0m")
         vpin_z = ms.get("vpin_z", 0)
-        if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD or abs(vpin_z) > VPIN_ELEVATED_TOXICITY_THRESHOLD:
-            pass
+        if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD:
+            vpin_status = f"{_ANSI_R}⚠️  HIGH TOXICITY{_ANSI_RST}"
+        elif abs(vpin_z) > VPIN_ELEVATED_TOXICITY_THRESHOLD:
+            vpin_status = f"{_ANSI_Y}⚡ ELEVATED{_ANSI_RST}"
         else:
-            pass
+            vpin_status = f"{_ANSI_G}✓ NORMAL{_ANSI_RST}"
+        print(f"    VPIN Z-Score:      {vpin_z:>+12.2f}")
+        print(f"    Status:            {vpin_status}")
+        print(
+            f"                       {_ANSI_DIM}High +z = informed sellers active → widen stops / reduce size{_ANSI_RST}"
+        )
         bar_len = 40
         z_norm = max(0.0, min(1.0, (vpin_z + 3) / 6))
         pos = max(0, min(bar_len - 1, int(bar_len * z_norm)))
@@ -4873,21 +5442,32 @@ class TabbedHUD:
         else:
             _mk_c = _ANSI_G
         cells[pos] = f"{_mk_c}●{_ANSI_RST}"
-        "".join(cells)
+        gauge = "".join(cells)
+        print(f"\n    Z: [{gauge}]")
+        print("       -3              0              +3")
+        print()
 
     def _render_market_imbalance(self, ms: dict) -> None:
         """Render order imbalance and signal synthesis."""
+        print("  \033[1m⚖️  ORDER IMBALANCE (QFI)\033[0m")
         has_real_sizes = ms.get("has_real_sizes", False)
         qfi_updates = int(ms.get("qfi_update_count", 0))
         imbalance = ms.get("imbalance", 0.0)
-        if (has_real_sizes and qfi_updates > 0) or has_real_sizes:
-            pass
+        if has_real_sizes and qfi_updates > 0:
+            signal_source = f"{_ANSI_G}size+QFI blend{_ANSI_RST}"
+        elif has_real_sizes:
+            signal_source = f"{_ANSI_G}size-weighted{_ANSI_RST}"
         else:
-            pass
-        if imbalance > IMBALANCE_BUY_THRESHOLD or imbalance < IMBALANCE_SELL_THRESHOLD:
-            pass
+            signal_source = f"{_ANSI_Y}quote-flow (QFI){_ANSI_RST}"
+        if imbalance > IMBALANCE_BUY_THRESHOLD:
+            imb_status = f"{_ANSI_G}🔺 BUY PRESSURE{_ANSI_RST}"
+        elif imbalance < IMBALANCE_SELL_THRESHOLD:
+            imb_status = f"{_ANSI_R}🔻 SELL PRESSURE{_ANSI_RST}"
         else:
-            pass
+            imb_status = f"{_ANSI_Y}⚖️  BALANCED{_ANSI_RST}"
+        print(f"    Imbalance:         {imbalance:>+12.4f}")
+        print(f"    Signal source:     {signal_source}  (updates: {qfi_updates})")
+        print(f"    Status:            {imb_status}")
         bar_len = 40
         mid = bar_len // 2
         # Clamp imbalance to [-1, 1] for display
@@ -4904,18 +5484,26 @@ class TabbedHUD:
         else:
             _mk_c = _ANSI_Y
         cells[pos] = f"{_mk_c}●{_ANSI_RST}"
-        "".join(cells)
+        bar = "".join(cells)
+        print(f"\n    [{bar}]")
+        print("     SELL              ↕              BUY")
         self._render_signal_synthesis(ms.get("vpin_z", 0), imbalance)
 
     def _render_market_rs_vol(self, ms: dict) -> None:
         """Render Rogers-Satchell volatility regime block."""
-        float(ms.get("rs_vol_short", 0.0) or 0.0)
-        float(ms.get("rs_vol_long", 0.0) or 0.0)
+        print("  \033[1m📊 VOLATILITY REGIME (Rogers-Satchell)\033[0m")
+        rs_s = float(ms.get("rs_vol_short", 0.0) or 0.0)
+        rs_l = float(ms.get("rs_vol_long", 0.0) or 0.0)
         ratio = float(ms.get("rs_vol_ratio", 1.0) or 1.0)
-        if ratio > 1.4 or ratio < 0.7:
-            pass
+        if ratio > 1.4:
+            regime_label = f"{_ANSI_R}⚡ EXPANDING{_ANSI_RST}"
+        elif ratio < 0.7:
+            regime_label = f"{_ANSI_G}🔵 CONTRACTING{_ANSI_RST}"
         else:
-            pass
+            regime_label = f"{_ANSI_Y}⚖  NEUTRAL{_ANSI_RST}"
+        print(f"    RS Vol Short (10):  {rs_s * 100:>9.4f}%")
+        print(f"    RS Vol Long  (50):  {rs_l * 100:>9.4f}%")
+        print(f"    RS Ratio:           {ratio:>9.3f}   {regime_label}")
         bar_len = 40
         ratio_norm = max(0.0, min(1.0, (ratio - 0.4) / 1.6))
         pos = max(0, min(bar_len - 1, int(bar_len * ratio_norm)))
@@ -4925,35 +5513,54 @@ class TabbedHUD:
             cells[center] = "┼"
         _mk_c = _ANSI_R if ratio > 1.4 else (_ANSI_G if ratio < 0.7 else _ANSI_Y)
         cells[pos] = f"{_mk_c}●{_ANSI_RST}"
+        print(f"\n    [{('').join(cells)}]")
+        print("     0.4        1.0(neutral)        2.0+")
+        print()
 
     def _render_market_kurtosis(self, ms: dict) -> None:
         """Render return-distribution kurtosis, fat-tail gate, and depth gate status."""
+        print("  \033[1m📐 ENTRY GATES\033[0m")
         kurt = float(ms.get("kurtosis", 0.0) or 0.0)
-        float(ms.get("kurtosis_threshold", 3.0) or 3.0)
-        bool(ms.get("kurtosis_gate_active", False))
-        bool(ms.get("depth_gate_active", False))
-        float(ms.get("depth_floor", 0.0) or 0.0)
-        float(ms.get("depth_bid", 0.0) or 0.0)
-        float(ms.get("depth_ask", 0.0) or 0.0)
-        kurt - 3.0
+        threshold = float(ms.get("kurtosis_threshold", 3.0) or 3.0)
+        kurt_gate = bool(ms.get("kurtosis_gate_active", False))
+        depth_gate = bool(ms.get("depth_gate_active", False))
+        depth_floor = float(ms.get("depth_floor", 0.0) or 0.0)
+        depth_bid = float(ms.get("depth_bid", 0.0) or 0.0)
+        depth_ask = float(ms.get("depth_ask", 0.0) or 0.0)
+        kurt_str = (f"{_ANSI_R}⛔ BLOCKED (fat tails){_ANSI_RST}" if kurt_gate
+                    else f"{_ANSI_G}✓ clear{_ANSI_RST}")
+        depth_str = (f"{_ANSI_R}⛔ BLOCKED (thin book){_ANSI_RST}" if depth_gate
+                     else f"{_ANSI_G}✓ clear{_ANSI_RST}")
+        excess = kurt - 3.0
+        excess_color = _ANSI_R if excess > 4.0 else (_ANSI_Y if excess > 1.5 else _ANSI_G)
+        print(f"    Kurtosis:           {excess_color}{kurt:>9.3f}{_ANSI_RST}  (excess={excess:+.3f}, threshold={threshold:.2f})")
+        print(f"    Kurtosis gate:      {kurt_str}")
+        print(f"    Depth (bid/ask):    {depth_bid:>7.3f} / {depth_ask:<7.3f}  floor={depth_floor:.3f}")
+        print(f"    Depth gate:         {depth_str}")
+        print()
 
     def _render_footer(self) -> None:
         """Render footer with controls and data freshness."""
         W = self._term_width()
+        print("\n" + "─" * W)
 
         idx = self.TAB_ORDER.index(self.current_tab)
-        self.TAB_DISPLAY_SHORT[self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]]
-        self.TAB_DISPLAY_SHORT[self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)]]
-        f"Tab {idx + 1}/{len(self.TAB_ORDER)}: {self.TAB_DISPLAY_SHORT[self.current_tab]}"
+        prev_tab = self.TAB_DISPLAY_SHORT[self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]]
+        next_tab = self.TAB_DISPLAY_SHORT[self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)]]
+        tab_pos = f"Tab {idx + 1}/{len(self.TAB_ORDER)}: {self.TAB_DISPLAY_SHORT[self.current_tab]}"
+        print(f"  {_ANSI_DIM}← {prev_tab}  |  {tab_pos}  |  {next_tab} →{_ANSI_RST}")
 
         # Controls — two lines when narrow, one line when wide
         _trades_hint = "  [↑/↓ or j/k] Select  [n/p] Page  [d] Detail  [b] Back" if self.current_tab == "trades" else ""
         _scroll_hint = "" if self.current_tab == "trades" else "  [Wheel/↑↓/j/k/Pg] Scroll"
         ctrl_wide = f"  [1-7/←/→] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB  |  [e] Epoch  |  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_scroll_hint}{_trades_hint}"
+        ctrl_line1 = "  [1-7/←/→] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB"
+        ctrl_line2 = f"  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_scroll_hint}{_trades_hint}"
         if len(ctrl_wide) <= W:
-            pass
+            print(ctrl_wide)
         else:
-            pass
+            print(ctrl_line1)
+            print(ctrl_line2)
 
         # Data freshness — use freshest file across all bots so one stale file
         # cannot trigger false "Bot silent" while others are active.
@@ -4982,14 +5589,18 @@ class TabbedHUD:
         if _candidates:
             _latest_mtime = max(_p.stat().st_mtime for _p in _candidates)
             _fage = time.time() - _latest_mtime
-            if _fage > DATA_STALE_SECS or _fage > DATA_AGING_SECS:
-                pass
+            if _fage > DATA_STALE_SECS:
+                freshness = f"{_ANSI_R}⚠️  Bot silent ({_fage:.0f}s){_ANSI_RST}"
+            elif _fage > DATA_AGING_SECS:
+                freshness = f"{_ANSI_Y}⚡ Data aging ({_fage:.0f}s){_ANSI_RST}"
             else:
-                pass
+                freshness = f"{_ANSI_G}✓ Data fresh ({_fage:.1f}s){_ANSI_RST}"
         else:
-            pass
+            freshness = f"{_ANSI_DIM}⏳ Waiting for data...{_ANSI_RST}"
 
-        self._current_notification() or "Press 'h' for help and keyboard shortcuts."
+        note = self._current_notification() or "Press 'h' for help and keyboard shortcuts."
+        print(f"  {note}  |  {freshness}")
+        print("─" * W)
 
     def _load_all_trades_cached(self) -> None:
         """Load trade_log.jsonl into self._all_trades (newest first), re-read at most once per 5 s."""
@@ -5150,6 +5761,7 @@ class TabbedHUD:
         total = len(trades_view)
         if total == 0:
             _empty_label = f" ({_mode_filter})" if _mode_filter else ""
+            print(f"\n\033[1m[T] TRADE HISTORY (PORTFOLIO)\033[0m{_empty_label}  No trades recorded yet.")
             return
         self._trades_per_page = self._trade_rows_per_page()
         max_page = max(0, (total - 1) // self._trades_per_page)
@@ -5167,10 +5779,10 @@ class TabbedHUD:
         lm = _hud_period_metrics(_all_for_header, self._universe_starting_equity())
         epoch_lm = _hud_period_metrics(_epoch_for_header, self._universe_starting_equity())
         total_pnl = lm.get("total_pnl", 0.0)
-        lm.get("winning_trades", 0)
-        lm.get("losing_trades", 0)
-        lm.get("win_rate", 0.0) * 100
-        f"Pg {self._trades_page + 1}/{max_page + 1}"
+        wins = lm.get("winning_trades", 0)
+        losses = lm.get("losing_trades", 0)
+        wr = lm.get("win_rate", 0.0) * 100
+        pg_str = f"Pg {self._trades_page + 1}/{max_page + 1}"
         _tl_mode = getattr(self, "_trade_log_mode", "")
         if _tl_mode == "mixed":
             _mode_suffix = ""
@@ -5186,9 +5798,16 @@ class TabbedHUD:
         _bar = self._page_scrollbar(self._trades_page, max_page)
         _compact = self._trades_per_page <= 6
         if _compact:
-            pass
+            print(
+                f"\033[1m[T] TRADES (PORTFOLIO)\033[0m "
+                f"[{total}] {pg_str} {_ANSI_DIM}{_bar}{_ANSI_RST} "
+                f"PnL {self._pnl_color(total_pnl)}{total_pnl:+.2f}{_ANSI_RST}{_mode_hdr}"
+            )
         else:
-            pass
+            print(
+                f"\033[1m[T] TRADE HISTORY (PORTFOLIO)\033[0m  "
+                f"[{total} trades]  {pg_str}  {_ANSI_DIM}{_bar}{_ANSI_RST}{_mode_hdr}"
+            )
 
         if self._trades_detail:
             self._render_trade_detail(self._trades_detail_trade)
@@ -5198,15 +5817,31 @@ class TabbedHUD:
         if _tl_mode == "mixed":
             if _mode_filter:
                 _mode_lbl = "paper" if _mode_filter == "paper" else "live"
+                print(
+                    f"  {_ANSI_Y}⚠  MIXED MODE SOURCE — showing {_mode_lbl} trades only. "
+                    f"Use bot mode switch to view the other mode.{_ANSI_RST}"
+                )
             else:
-                pass
+                print(
+                    f"  {_ANSI_Y}⚠  MIXED MODE — paper and live trades combined. "
+                    f"Metrics span both modes. See [P] Performance tab for breakdown.{_ANSI_RST}"
+                )
 
         if not _compact:
             # Summary bar
             _pnl_c = _ANSI_G if total_pnl >= 0 else _ANSI_R
+            print(
+                f"  Lifetime PnL: {_pnl_c}{total_pnl:+.2f}{_ANSI_RST}  |  "
+                f"W/L: {_ANSI_G}{wins}{_ANSI_RST}/{_ANSI_R}{losses}{_ANSI_RST}  "
+                f"({_ANSI_G if wr >= 50 else _ANSI_R}{wr:.1f}%{_ANSI_RST} win rate)"
+            )
         if self._stats_epoch and not _compact:
             _ep_pnl = epoch_lm.get("total_pnl", 0.0)
             _ep_tr = epoch_lm.get("total_trades", 0)
+            print(
+                f"  Epoch: {self._pnl_color(_ep_pnl)}{_ep_pnl:+.2f}{_ANSI_RST} / {_ep_tr} trades"
+                f"  {_ANSI_DIM}(excluded {self._stats_epoch_excluded}; source: trade_log.jsonl){_ANSI_RST}"
+            )
 
         # Column header — M = mode badge (P=paper / L=live)
         _C_ID = 8
@@ -5231,6 +5866,8 @@ class TabbedHUD:
         # Plain-text header width (no ANSI) → matches the rendered row width.
         _hdr_plain_len = len(_hdr_row)
         _sep = "  " + "-" * max(10, min(W - 4, _hdr_plain_len - 2))
+        print(f"{_ANSI_DIM}{_hdr_row}{_ANSI_RST}")
+        print(_sep)
 
         # Trade rows
         _dec = self._price_decimals()
@@ -5298,12 +5935,12 @@ class TabbedHUD:
                 f"{_bars:>{_C_BRS}}  {_ANSI_DIM}{_rsn:<{_C_RSN}}{_ANSI_RST}"
             )
             if _row_idx == self._trades_cursor:
-                pass  # inverted highlight
+                print(f"\033[7m{_row}\033[0m")  # inverted highlight
             else:
-                pass
+                print(_row)
 
         if self._trades_per_page >= 8:
-            pass
+            print(_sep)
 
     def _render_trade_detail(self, t: dict) -> None:
         """Render full detail card for a single trade."""
@@ -5349,15 +5986,31 @@ class TabbedHUD:
         _dec = self._price_decimals(max(_entry, _exit, 0.0))
         _ratio_str = f"  (MFE/MAE: {_mfe / _mae:.2f}x)" if _mae > 0 else ""
 
+        print(_sep)
+        print(f"\n  \033[1mTRADE #{_tid}\033[0m  {_dc}{_dir}{_ANSI_RST}  {_sym}  ({_mode})")
+        print(_sep)
+        print(f"  {'Ticket:':<16} {_ANSI_DIM}{_tick}{_ANSI_RST}")
+        print(f"  {'Position ID:':<16} {_ANSI_DIM}{_pid}{_ANSI_RST}")
+        print(f"  {'Entry:':<16} {_entry:.{_dec}f}  @  {_entry_str}")
+        print(f"  {'Exit:':<16} {_exit:.{_dec}f}  @  {_exit_str}")
+        print(f"  {'Duration:':<16} {_dur_str}  ({_bars} bars)")
+        print()
         _result = f"  {_ANSI_G}[+] WIN{_ANSI_RST}" if _pnl > 0 else f"  {_ANSI_R}[-] LOSS{_ANSI_RST}"
+        print(f"  {'PnL:':<16} {_pc}{_pnl:+.4f} USD{_ANSI_RST}{_result}")
         _cap_ratio = self._capture_ratio_for_trade(t)
         if _cap_ratio is not None:
             _cap_pct = max(-999.0, min(999.0, _cap_ratio * 100.0))
             _cc = self._pnl_color(_cap_pct)
+            print(f"  {'%MFE captured:':<16} {_cc}{_cap_pct:+.1f}%{_ANSI_RST}  (normalized capture_ratio)")
         elif float(_pnl or 0.0) < 0.0:
-            pass
+            print(f"  {'%MFE captured:':<16} {_ANSI_R}n/a{_ANSI_RST}  (loss with zero MFE)")
         else:
-            pass
+            print(f"  {'%MFE captured:':<16} {_ANSI_DIM}—{_ANSI_RST}")
+        print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f} USD{_ANSI_RST}  (max favourable account-currency excursion)")
+        print(
+            f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f} USD{_ANSI_RST}  (max adverse account-currency excursion){_ratio_str}"
+        )
+        print(f"  {'Close reason:':<16} {_rsn}")
         _ts = self.training_stats if isinstance(self.training_stats, dict) else {}
         _rw_total = int(_ts.get("trigger_runway_cal_total_samples", 0) or 0)
         _rw_reliable = bool(_ts.get("trigger_runway_predictor_reliable", False))
@@ -5365,8 +6018,12 @@ class TabbedHUD:
         _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
         _cd = float(_ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
         _mw = float(_ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
+        print(f"  {'Runway model:':<16} {_rw_col}{_rw_lbl}{_ANSI_RST}  (samples={_rw_total})")
+        print(f"  {'WTL protection:':<16} capture_decay<{_cd:.2f}  micro_giveback>{_mw:.2f}×MFE")
         if _w2l:
-            pass
+            print(f"  {_ANSI_Y}[!] Winner-to-Loser: trade reversed into a loss after reaching MFE{_ANSI_RST}")
+        print()
+        print(f"  {_ANSI_DIM}[d] or [b] - return to trade list{_ANSI_RST}")
 
     def _pnl_color(self, pnl: float) -> str:
         """Return color code for PnL."""
@@ -5433,6 +6090,7 @@ def _acquire_pidfile() -> bool:
             old_pid = int(_HUD_PIDFILE.read_text().strip())
             os.kill(old_pid, 0)  # raises OSError if process is dead
             # Process is alive — refuse to start a second instance
+            print(f"HUD already running (PID {old_pid}). Use 'kill {old_pid}' to stop it first.")
             return False
         except (OSError, ValueError):
             pass  # stale pidfile — safe to overwrite
@@ -5461,6 +6119,9 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    print("Starting Tabbed HUD...")
+    print("Reading from: data/*.json")
+    print()
 
     hud = TabbedHUD(refresh_rate=1.0)
 
@@ -5476,6 +6137,7 @@ def main() -> None:
     finally:
         hud.stop()
         _release_pidfile()
+        print("\n\nHUD stopped.")
 
 
 if __name__ == "__main__":
