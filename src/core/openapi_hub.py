@@ -314,6 +314,11 @@ class TFAgent:
 
         # DualPolicy
         from src.agents.dual_policy import DualPolicy, DualPolicyConfig  # noqa: PLC0415
+        from src.constants import (  # noqa: PLC0415
+            HARVESTER_BUFFER_CAPACITY,
+            TRIGGER_BUFFER_CAPACITY,
+            get_amd_optimized_buffer_capacity,
+        )
         from src.persistence.learned_parameters import LearnedParametersManager  # noqa: PLC0415
 
         param_manager = LearnedParametersManager(
@@ -343,6 +348,8 @@ class TFAgent:
             timeframe_minutes=timeframe_minutes,
             param_manager=param_manager,
             path_geometry=self.path_geometry,
+            trigger_buffer_capacity=get_amd_optimized_buffer_capacity(TRIGGER_BUFFER_CAPACITY),
+            harvester_buffer_capacity=get_amd_optimized_buffer_capacity(HARVESTER_BUFFER_CAPACITY),
         )
         self.policy = DualPolicy(**vars(cfg))
         if online_learning and hasattr(self.policy, "load_checkpoint"):
