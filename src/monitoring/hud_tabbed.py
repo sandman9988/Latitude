@@ -2931,10 +2931,6 @@ class TabbedHUD:
             _item_pm_payload = self._load_bot_production_metrics(_sym_for_label, int(_tf_for_label or 0))
             _item_pm = _item_pm_payload.get("metrics", pm) if isinstance(_item_pm_payload, dict) else pm
             _train_label = f"{_mode_label} {_scope} TRAINING" if _scope != "BOT" else f"{_mode_label} BOT TRAINING"
-            trig_ready = _its.get("trigger_ready", False)
-            harv_ready = _its.get("harvester_ready", False)
-            trig_steps = _its.get("trigger_training_steps", 0)
-            harv_steps = _its.get("harvester_training_steps", 0)
             self._render_live_trigger_agent(_its, _item_pm)
             self._render_live_harvester_agent(_its, _item_pm)
             self._render_live_arena_and_health(_its)

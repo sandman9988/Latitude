@@ -607,10 +607,10 @@ class ExperienceBuffer:
                 exp = self.data[i]
                 if exp is None:
                     continue
-                states.append(exp.state)
+                states.append(np.asarray(exp.state, dtype=np.float32).ravel())
                 actions.append(exp.action)
                 rewards.append(exp.reward)
-                next_states.append(exp.next_state)
+                next_states.append(np.asarray(exp.next_state, dtype=np.float32).ravel())
                 dones.append(exp.done)
                 timestamps.append(exp.timestamp)
                 regimes.append(exp.regime)
@@ -715,12 +715,15 @@ class ExperienceBuffer:
             self.data = [None] * self.capacity
 
             # Re-add all experiences
+            # States may be flat (from new save) or 2D (from old save).
+            # Always reshape to float32 flat so add() normalises to the
+            # current buffer's expected shape.
             for i in range(n):
                 exp = Experience(
-                    state=states[i],
+                    state=states[i].astype(np.float32).ravel(),
                     action=int(actions[i]),
                     reward=float(rewards[i]),
-                    next_state=next_states[i],
+                    next_state=next_states[i].astype(np.float32).ravel(),
                     done=bool(dones[i]),
                     timestamp=float(timestamps[i]),
                     regime=int(regimes[i]),
