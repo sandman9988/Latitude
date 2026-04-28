@@ -2783,7 +2783,8 @@ class TabbedHUD:
             "UNTRAINED": _ANSI_DIM,
             "DEMOTED": _ANSI_R,
         }.get(stage, _ANSI_DIM)
-        if zo is not None:
+        _no_weights = not entry.get("weights_path")
+        if zo is not None and not (zo == 0.0 and _no_weights):
             zo_c = _ANSI_G if zo > 1.0 else (_ANSI_Y if zo > 0 else _ANSI_R)
             zo_str = f"{zo_c}ZΩ {zo:.4f}{_ANSI_RST}"
         else:
