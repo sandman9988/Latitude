@@ -4763,15 +4763,19 @@ class TabbedHUD:
         all_sizes = [s for _, s in bids + asks if s > 0]
         max_sz = max(all_sizes) if all_sizes else 1.0
         BAR = 12
+        print(f"    {'BID depth':<20}   {'':<{BAR * 2 + 2}}   {'ASK depth':>20}")
+        print(f"    {'─' * 20}   {'─' * (BAR * 2 + 2)}   {'─' * 20}")
         for bid_row, ask_row in zip(padded_bids, padded_asks, strict=False):
             b_px, b_sz = bid_row
             a_px, a_sz = ask_row
             b_bar = int(BAR * b_sz / max_sz) if b_sz > 0 else 0
             a_bar = int(BAR * a_sz / max_sz) if a_sz > 0 else 0
-            # Bid bar: filled part on the right (near price), empty on the left
-            f"{b_sz:>6.2f} {_ANSI_G}{'░' * (BAR - b_bar)}{'▓' * b_bar}{_ANSI_RST}" if b_px else " " * (BAR + 8)
-            # Ask bar: filled part on the left (near price), empty on the right
-            f"{_ANSI_R}{'▓' * a_bar}{'░' * (BAR - a_bar)}{_ANSI_RST} {a_sz:<6.2f}" if a_px else " " * (BAR + 8)
+            b_side = f"{b_sz:>6.2f} {_ANSI_G}{'░' * (BAR - b_bar)}{'▓' * b_bar}{_ANSI_RST}" if b_px else " " * (BAR + 8)
+            a_side = f"{_ANSI_R}{'▓' * a_bar}{'░' * (BAR - a_bar)}{_ANSI_RST} {a_sz:<6.2f}" if a_px else " " * (BAR + 8)
+            b_px_str = f"{b_px:.{dec}f}" if b_px else "—"
+            a_px_str = f"{a_px:.{dec}f}" if a_px else "—"
+            print(f"    {b_side}  {b_px_str:<10}  {a_px_str:>10}  {a_side}")
+        print(f"    Total depth — bid: {depth_bid:<8.2f}  │  ask: {depth_ask:.2f}")
 
     def _render_signal_synthesis(self, vpin_z: float, imbalance: float) -> None:
         """Render the signal synthesis advisory block."""
