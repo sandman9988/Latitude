@@ -1495,18 +1495,27 @@ def print_summary(results: list[dict]) -> None:
         f"{'Symbol':<12} {'TF':>5} {'Trades':>7} {'ValTrades':>9} "
         f"{'Steps':>7} {'ZOmega':>9} {'Guard':>9} {'Time':>8}  Status"
     )
-    "-" * len(header)
+    sep = "-" * len(header)
+    print(f"\n{sep}")
+    print(header)
+    print(sep)
     for r in sorted(results, key=lambda x: (x["symbol"], x["timeframe_minutes"])):
-        _tf_label(r["timeframe_minutes"])
-        f"ERROR: {r['error'][:40]}" if r.get("error") else "OK"
+        label = _tf_label(r["timeframe_minutes"])
+        status = f"ERROR: {r['error'][:40]}" if r.get("error") else "OK"
         zo = r.get("z_omega", 0.0)
-        f"{zo:.4f}" if zo != float("inf") else "  +inf"
+        zo_str = f"{zo:.4f}" if zo != float("inf") else "  +inf"
         inc = r.get("acceptance_guard_z_omega", r.get("incumbent_z_omega", 0.0))
-        f"{inc:.4f}" if inc != float("inf") else "  +inf"
+        inc_str = f"{inc:.4f}" if inc != float("inf") else "  +inf"
         if not r.get("error") and r.get("accepted") is False:
-            f"REJECTED: {r.get('accept_reason', 'not_better')}"
+            status = f"REJECTED: {r.get('accept_reason', 'not_better')}"
         elif not r.get("error") and r.get("accepted") is True:
-            f"ACCEPTED: {r.get('accept_reason', 'better')}"
+            status = f"ACCEPTED: {r.get('accept_reason', 'better')}"
+        print(
+            f"{r['symbol']:<12} {label:>5} {r['train_trades']:>7} "
+            f"{r['val_trades']:>9} {r['total_train_steps']:>7} "
+            f"{zo_str:>9} {inc_str:>9} {r['elapsed_s']:>7.1f}s  {status}"
+        )
+    print(sep)
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -1834,12 +1843,6 @@ def _execute_pool(
                 for entry in ot_status["results"]:
                     if entry["symbol"] == res["symbol"] and entry["timeframe_minutes"] == res["timeframe_minutes"]:
                         entry["status"] = "error" if res.get("error") else "done"
-                # Promote the first queued job to running now that a slot freed up
-                for entry in ot_status["results"]:
-                    if entry.get("status") == "queued":
-                        entry["status"] = "running"
-                        entry["candidate_id"] = candidate_id
-                        break
                         entry["candidate_id"] = res.get("candidate_id", candidate_id)
                         entry["candidate_seed"] = res.get("candidate_seed")
                         entry["z_omega"] = res.get("z_omega", 0.0)
@@ -1855,6 +1858,12 @@ def _execute_pool(
                         entry["total_train_steps"] = res.get("total_train_steps", 0)
                         entry["elapsed_s"] = res.get("elapsed_s", 0.0)
                         entry["error"] = res.get("error")
+                        break
+                # Promote the first queued job to running now that a slot freed up
+                for entry in ot_status["results"]:
+                    if entry.get("status") == "queued":
+                        entry["status"] = "running"
+                        entry["candidate_id"] = candidate_id
                         break
                 _write_status(ot_status)
 
@@ -1982,6 +1991,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.dry_run:
+        print("\n[DRY RUN] — no training executed.")
         return 0
 
     # On GPU systems, limit to 1 worker to avoid CUDA OOM from multiple
@@ -2169,10 +2179,12 @@ def main(argv: list[str] | None = None) -> int:
         best_dir = Path(args.checkpoint_dir) / "best"
         copy_best_weights(best, best_dir)
         LOG.info("Best weights written to %s/", best_dir)
+        print("\nBest weights by ZOmega:")
         for (_sym, _tf), r in sorted(best.items()):
             zo = r.get("z_omega", 0.0)
-            f"{zo:.4f}" if zo != float("inf") else "+inf"
+            zo_str = f"{zo:.4f}" if zo != float("inf") else "+inf"
             label = _tf_label(r["timeframe_minutes"])
+            print(f"  {r['symbol']:<12} {label:>5}  ZOmega={zo_str}")
 
         promoted: list[str] = []
         if args.auto_promote:
@@ -2193,7 +2205,8 @@ def main(argv: list[str] | None = None) -> int:
                 promoted.append(f"{sym} {label}")
 
         if promoted:
-            pass
+            print(f"\n[UNIVERSE] {len(promoted)} bot(s) promoted to PAPER stage: " + ", ".join(promoted))
+            print("  Launch paper bots with:  python3 run_universe.py --watch")
 
     n_ok = sum(1 for r in deduped + errored if not r.get("error"))
     n_err = len(deduped + errored) - n_ok

@@ -2835,6 +2835,8 @@ class TabbedHUD:
         trig_eps = ts.get("trigger_epsilon", 0.0)
         is_in_pos = ts.get("is_in_position")  # None = unknown (old data)
         # Prefer training_stats confidence (single source of truth); fall back to production_metrics
+        trig_ready = ts.get("trigger_ready", False)
+        trig_steps = ts.get("trigger_training_steps", 0)
         trig_conf = ts.get("trigger_confidence", pm.get("trigger_confidence_avg", 0.5))
         ready_t = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if trig_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
         # Buffer fill-status annotation: trigger only fills when bot is FLAT
@@ -2909,6 +2911,8 @@ class TabbedHUD:
         harv_beta = ts.get("harvester_beta", 0.4)
         harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
         is_in_pos = ts.get("is_in_position")
+        harv_ready = ts.get("harvester_ready", False)
+        harv_steps = ts.get("harvester_training_steps", 0)
         harv_conf = ts.get("harvester_confidence", pm.get("harvester_confidence_avg", 0.5))
         ready_h = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if harv_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
         # Buffer fill-status annotation: harvester only fills when bot is IN POSITION
@@ -2968,6 +2972,10 @@ class TabbedHUD:
         ts: dict,
     ) -> None:
         """Render Arena + Learning Health blocks."""
+        trig_ready = ts.get("trigger_ready", False)
+        harv_ready = ts.get("harvester_ready", False)
+        trig_steps = ts.get("trigger_training_steps", 0)
+        harv_steps = ts.get("harvester_training_steps", 0)
         total_agents = ts.get("total_agents", 0)
         if total_agents > 0:
             diversity = ts.get("arena_diversity", {})
