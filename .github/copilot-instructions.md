@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — cTrader DDQN Trading Bot
 
-> Last updated: 2026-04-27
+> Last updated: 2026-04-28
 > Read AGENTS.md, MASTER_HANDBOOK.md, CLAUDE.md, and docs/CURRENT_STATE.md before making structural changes.
 
 ______________________________________________________________________
@@ -8,9 +8,9 @@ ______________________________________________________________________
 ## Project Identity
 
 Dual-agent DDQN reinforcement learning trading system connected to cTrader via Open API (OpenAPI Hub) and FIX 4.4 protocol.
-Active paper trading XAUUSD on a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) against a Pepperstone demo, supervised by `run_universe.py --watch`. Python 3.12. Validation remains green with a known log/environment-dependent correlation caveat for runway diagnostics.
+Active paper trading **XAUUSD + BTCUSD** on a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) against a Pepperstone demo, supervised by `run_universe.py --watch`. Python 3.12 on AMD ROCm 6.2 (RX 7600, gfx1102).
 
-**Current topology:** OpenAPI Hub (`src/core/openapi_hub.py`) with `TFAgent` — this is the current primary bot. Legacy FIX-based `ctrader_ddqn_paper.py` still exists for reference.
+**Current topology:** OpenAPI Hub (`src/core/openapi_hub.py`) — one hub process per symbol covering all TFs. `UNIVERSE_BROKER_TOPOLOGY=openapi-hub` is the runtime default. Legacy FIX-based `ctrader_ddqn_paper.py` still exists for reference only.
 
 **GPU Support:** AMD ROCm 7.2+ (gfx1100/gfx1102/Navi 31/33) with native BF16 training, NVIDIA CUDA, and CPU fallback. AMD optimizations auto-detected at startup. Always set `HSA_OVERRIDE_GFX_VERSION=11.0.0`.
 
@@ -554,48 +554,38 @@ For BTCUSD: batch ≤2 TFs per invocation — demo server drops TCP after ~5 min
 
 ______________________________________________________________________
 
-## Current Universe State (as of 2026-04-26)
+## Current Universe State (as of 2026-04-28)
 
-| Symbol | TF | ZΩ | Status |
-| ------ | ----------- | ----- | --------------------------------------------- |
-| XAUUSD | M1 | 3.159 | Promoted, active |
-| XAUUSD | M5 | 1.663 | Promoted, active |
-| XAUUSD | M240 | 1.601 | Promoted, active |
-| XAUUSD | M15/M30/M60 | 0.0 | No weights — needs more live cache (>50 rows) |
-| BTCUSD | All TFs | 0.0 | Training in progress — no promotion yet |
+| Symbol | TF | Status |
+| ------ | ----------- | --------------------------------------------- |
+| XAUUSD | All 6 TFs | Promoted — active paper trading (all weights trained) |
+| BTCUSD | All 6 TFs | Promoted — active paper trading (weights from offline training) |
+
+Both hubs (`hub_XAUUSD.log`, `hub_BTCUSD.log`) active. Offline training runs periodically with `--workers 2 --tournament-variants 6`, typically 5-7/12 jobs done per cycle. Weights auto-promoted to `data/universe.json` when ZΩ > 1.0.
 
 History data: BTCUSD M1=1.18M, M5=237K, M15=79K, M30=39K, M60=19K, M240=5K bars.
 XAUUSD M1=816K, M5=163K, M15=54K, M30=27K, M60=13K, M240=3.5K bars (all Jan 2024–Apr 2026).
 
 ______________________________________________________________________
 
-## FIX Gateway Topology Migration
+## FIX Gateway Topology Migration — COMPLETE
 
-Current default: `isolated` (one direct-FIX process per PAPER entry).
-Target: `shared-account` (one broker gateway per account, strategy workers submit intents).
+The `openapi-hub` topology is the default (`UNIVERSE_BROKER_TOPOLOGY=openapi-hub`).
+`run_universe.py` launches one hub per symbol via `_launch_hub()` — each hub covers all
+timeframes for its symbol in a single process. Legacy FIX `isolated` mode still supported.
 
-Set via: `UNIVERSE_BROKER_TOPOLOGY=shared-account python3 run_universe.py --watch`
-Modes: `isolated`, `shared-symbol`, `shared-account`
-
-Migration plan:
-
-1. Keep `isolated` as compatibility default
-1. Use `shared-symbol` or `shared-account` during controlled restarts
-1. Extract market-data fanout and order intent submission into a shared gateway
-1. Move position ownership into a portfolio arbiter
-1. Switch universe default after strategy workers no longer need direct FIX sessions
+Modes: `isolated`, `shared-symbol`, `shared-account`, `openapi-hub` (default)
 
 ______________________________________________________________________
 
-## Current open items (as of 2026-04-27)
+## Current open items (as of 2026-04-28)
 
 | Item | Priority | Notes |
 | ----------------------------------- | -------- | -------------------------------------------------------------------- |
-| Offline training ZΩ < 1.0 | HIGH | Best ZΩ=0.867 with penalty_scale=0.5; may need more epochs or ps=0.3 |
-| L2/imbalance feed | MEDIUM | `imbalance` always 0.0; check MarketDataRequest MDEntryType=0/1 |
-| Mode breakdown missing trades | MEDIUM | ~999 trades have missing/empty `trading_mode` field; not shown |
-| Harvester Q-value convergence | LOW | Monitor `ticks_held` trending up in HUD Training tab |
-| `data/decision_log.json` non-atomic | LOW | Secondary log only; does not affect correctness |
+| Harvester train_batch shape mismatch | HIGH | `mat1 (64×1152) × mat2 (1344×128)` — model expects 18 features but gets 21. Happens ~once per bar-close batch. |
+| HUD rendering tests (16 failing) | MEDIUM | `test_hud_rendering.py` table alignment regexes need updating for new Comment column header in offline jobs table. |
+| HUD timeframe tests (6 failing) | MEDIUM | `test_hud_timeframe_metrics.py` — same Comment column root cause. |
+| Problems tab (294 remaining) | LOW | All style/convention: docstrings, type hints, line length, cognitive complexity. Zero bugs. |
 
 ______________________________________________________________________
 
@@ -633,6 +623,25 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
+## Recent Fixes (Apr 27–28, 2026)
+
+| Fix | Problem | Solution |
+| --- | ------- | -------- |
+| Buffer save crash | `np.array()` fails on mixed Trigger(18,64) + Harvester(21,64) states | `.ravel()` before `np.savez_compressed()`; load handles both flat and legacy 2D |
+| Harvester preseed | State shape mismatch (18→21 features after event dims added) | Use `_build_full_state()` instead of raw buffer slicing |
+| Paper-mode gating | Depth gate + dynamic confidence floor blocked entries before ε-greedy exploration | In paper mode: log the condition, add to `_gated`, but don't block |
+| `_write_trade_log` TypeError | `entry_time` passed as `str` instead of `datetime` | Convert with `datetime.fromisoformat()` |
+| Ruff unsafe-fix damage | `--fix --unsafe-fixes` deleted 446 `print()` calls + variable assignments from HUD | Restored all damaged methods (6 in `hud_tabbed.py`) |
+| `_render_order_book_ladder` | f-strings constructed but never printed (no-op) | Now prints bid/ask rows with correct price precision, uses all params |
+| Offline training restart | Stale progress files blocked retraining | Supervisor detects stalled jobs, clears stale metadata before relaunch |
+| `_tf_label` H4→M240 | Labels showed "H4" instead of "M240" in HUD and status files | `train_offline.py:_tf_label()` now returns M240 per project convention |
+
+### What NOT to do (continued from above)
+
+- **Never** run `ruff --unsafe-fixes` on `hud_tabbed.py` or any file with `print()`-based rendering. Ruff treats return-value-less function calls as dead code and strips them. Use `ruff check` (without `--fix`) for lint feedback, then fix manually.
+
+______________________________________________________________________
+
 ## What NOT to do
 
 - Never hardcode parameters — use `learned_parameters.py` with soft bounds
@@ -654,3 +663,5 @@ ______________________________________________________________________
 - Do not commit `data/`, `logs/`, `trades/`, `store/`, `.env`, credentials, model artifacts, or live runtime outputs
 - Do not recreate deleted modules (see `docs/archive/REMOVED_LEGACY_CODE.md`)
 - Do not aggregate across timeframes unless the UI/code path explicitly says it is a portfolio/account view
+- Never run `ruff --unsafe-fixes` on `hud_tabbed.py` or any file with `print()`-based terminal rendering — ruff treats return-value-less function calls as dead code and strips them when they're actually the rendering output.
+- Do not add hard gates in `_handle_flat()` that block entries before the trigger agent — paper mode needs ε-greedy exploration on ALL bars. Log and add to `_gated`, but let `trigger.decide_entry()` run.
