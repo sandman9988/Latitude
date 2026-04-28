@@ -2309,7 +2309,7 @@ class TFAgent:
             direction=direction,
             entry_price=entry_price,
             exit_price=fill_price,
-            entry_time=pos["entry_time"].isoformat() if pos["entry_time"] else None,
+            entry_time=pos["entry_time"],
             exit_time=_ts,
             pnl_usd=pnl_usd,
             pnl_pts=pnl_pts,
@@ -2407,6 +2407,8 @@ class TFAgent:
             self._trade_sequence += 1
             _seq = self._trade_sequence
             ticket = f"PAPER_{self._epoch_ts}_{_seq}"
+        if isinstance(entry_time, str):
+            entry_time = dt.datetime.fromisoformat(entry_time)
         hold_secs = (exit_time - entry_time).total_seconds() if entry_time else 0.0
         bars_held = round(hold_secs / max(self.timeframe_minutes * 60, 1))
         _price_ref = max(abs(entry_price), 1.0)
