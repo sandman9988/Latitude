@@ -369,6 +369,9 @@ def _truncate_visible(s: str, width: int) -> str:
 # Common data file names
 _ORDER_BOOK_FILE = "order_book.json"
 _BOT_CONFIG_FILE = "bot_config.json"
+_HUD_PRODUCTION_METRICS_FILE = "production_metrics.json"
+_HUD_HELP_PROMPT = "Press Enter to continue..."
+_HUD_HELP_RETURN_PROMPT = "\nPress Enter to return to HUD..."
 
 # Live training section layout constants
 _RT_BAR_LEN: int = 26  # fill-bar character width
@@ -1646,7 +1649,12 @@ class TabbedHUD:
         self._trade_log_unlabeled_count = _unlabeled
         self._trade_log_inferred_count = _inferred
         self._trade_log_unknown_timeframe_count = sum(1 for _t in trades if self._normalize_timeframe_label(_t) == "M?")
-        self._trade_log_mode = next(iter(_modes)) if len(_modes) == 1 else "mixed" if _modes else ""
+        if len(_modes) == 1:
+            self._trade_log_mode = next(iter(_modes))
+        elif _modes:
+            self._trade_log_mode = "mixed"
+        else:
+            self._trade_log_mode = ""
 
         self.all_time_metrics = _hud_period_metrics(trades, starting_equity)
         self.all_time_metrics_by_mode = {

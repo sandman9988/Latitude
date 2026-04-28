@@ -770,7 +770,7 @@ class TriggerAgent(AgentTrainingMixin):
         else:
             raw_logit = 1.0  # Fallback: degenerate to old behaviour
 
-        # dL/da = (p - y) * logit(raw_prob)
+        # Platt scaling gradients: dL/da = (p - y) * logit(raw_prob)
         self.platt_a -= self.platt_lr * error * raw_logit
         # dL/db = (p - y)
         self.platt_b -= self.platt_lr * error
