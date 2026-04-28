@@ -556,12 +556,21 @@ ______________________________________________________________________
 
 ## Current Universe State (as of 2026-04-28)
 
-| Symbol | TF | Status |
-| ------ | ----------- | --------------------------------------------- |
-| XAUUSD | All 6 TFs | Promoted — active paper trading (all weights trained) |
-| BTCUSD | All 6 TFs | Promoted — active paper trading (weights from offline training) |
+| Symbol | TF | ZΩ | Status |
+| ------ | ----------- | ------- | --------------------------------------------- |
+| XAUUSD | M1 | 3.159 | Promoted, active |
+| XAUUSD | M5 | 1.663 | Promoted, active |
+| XAUUSD | M60 | 1.428 | Promoted, active |
+| XAUUSD | M240 | 1.601 | Promoted, active |
+| XAUUSD | M15, M30 | — | Untrained — no weights (needs >50 live cache rows) |
+| BTCUSD | M30 | 1.103 | Promoted, active |
+| BTCUSD | M60 | 1.065 | Promoted, active |
+| BTCUSD | M240 | 1.057 | Promoted, active |
+| BTCUSD | M1, M5, M15 | — | Untrained — offline training in progress |
 
-Both hubs (`hub_XAUUSD.log`, `hub_BTCUSD.log`) active. Offline training runs periodically with `--workers 2 --tournament-variants 6`, typically 5-7/12 jobs done per cycle. Weights auto-promoted to `data/universe.json` when ZΩ > 1.0.
+Both hubs (`hub_XAUUSD.log`, `hub_BTCUSD.log`) active. 7 of 12 bots have promoted weights; 5 untrained. Offline training runs periodically with `--workers 2 --tournament-variants 6`. Weights auto-promoted to `data/universe.json` when ZΩ > 1.0.
+
+**HUD pipeline card ZΩ display**: untrained bots (`z_omega=0.0`, no `weights_path`) show `ZΩ —` (dim) not red `ZΩ 0.0000`. Check `_no_weights = not entry.get("weights_path")` before colouring.
 
 History data: BTCUSD M1=1.18M, M5=237K, M15=79K, M30=39K, M60=19K, M240=5K bars.
 XAUUSD M1=816K, M5=163K, M15=54K, M30=27K, M60=13K, M240=3.5K bars (all Jan 2024–Apr 2026).
@@ -635,6 +644,9 @@ ______________________________________________________________________
 | `_render_order_book_ladder` | f-strings constructed but never printed (no-op) | Now prints bid/ask rows with correct price precision, uses all params |
 | Offline training restart | Stale progress files blocked retraining | Supervisor detects stalled jobs, clears stale metadata before relaunch |
 | `_tf_label` H4→M240 | Labels showed "H4" instead of "M240" in HUD and status files | `train_offline.py:_tf_label()` now returns M240 per project convention |
+| HUD pipeline ZΩ display | Untrained bots (`z_omega=0.0`, no weights) shown as red `ZΩ 0.0000` | `_render_pipeline_card`: check `not entry.get("weights_path")` → show `ZΩ —` |
+| HUD trade quantity | `_excursion_usd_for_trade` read `qty` key (missing) instead of `quantity` | Fallback: `trade.get("quantity") or trade.get("qty", 0.1)` |
+| HUD offline enrichment | "done" offline entries missing ZΩ (zo=None) for bots not in current training run | `_enrich_offline_stats_from_champions()` fills ZΩ from `offline_champions.json` |
 
 ### What NOT to do (continued from above)
 

@@ -219,15 +219,19 @@ python -m pytest tests/unit/ --ignore=tests/unit/test_production_monitor_http.py
   --ignore=tests/unit/test_prometheus_metrics.py --timeout=20 -q
 ```
 
-## Current Universe State (as of 2026-04-26)
+## Current Universe State (as of 2026-04-28)
 
 | Symbol | TF | ZΩ | Status |
-| -------- | ---- | ---- | -------- |
+| -------- | ---- | ------- | -------- |
 | XAUUSD | M1 | 3.159 | Promoted, active |
 | XAUUSD | M5 | 1.663 | Promoted, active |
+| XAUUSD | M60 | 1.428 | Promoted, active |
 | XAUUSD | M240 | 1.601 | Promoted, active |
-| XAUUSD | M15/M30/M60 | 0.0 | No weights — needs more live cache (>50 rows) |
-| BTCUSD | All TFs | 0.0 | Training in progress — no promotion yet |
+| XAUUSD | M15, M30 | — | Untrained — no weights (needs >50 live cache rows) |
+| BTCUSD | M30 | 1.103 | Promoted, active |
+| BTCUSD | M60 | 1.065 | Promoted, active |
+| BTCUSD | M240 | 1.057 | Promoted, active |
+| BTCUSD | M1, M5, M15 | — | Untrained — offline training in progress |
 
 History data in `data/history/`: BTCUSD M1=1.18M, M5=237K, M15=79K, M30=39K, M60=19K, M240=5K bars.
 XAUUSD M1=816K, M5=163K, M15=54K, M30=27K, M60=13K, M240=3.5K bars (all Jan 2024–Apr 2026).
