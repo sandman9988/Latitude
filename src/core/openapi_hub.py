@@ -1188,11 +1188,18 @@ class TFAgent:
 
                 window_step = deque(bars_list[:bar_idx + 1], maxlen=2000)
                 try:
-                    harv_state = self.policy._build_state(
+                    _market = self.policy._build_state(
                         window_step,
                         imbalance=0.0, vpin_z=0.0, depth_ratio=1.0,
                         realized_vol=vol_entry, event_features=None,
                     )
+                    _harv = getattr(self.policy, "harvester", None)
+                    if _harv is None:
+                        break
+                    harv_state = _harv._build_full_state(
+                        _market, mfe=cur_mfe, mae=cur_mae,
+                        ticks_held=hold_step, entry_price=entry_price,
+                    ).copy()
                 except Exception:
                     break
 

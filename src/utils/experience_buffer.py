@@ -718,24 +718,45 @@ class ExperienceBuffer:
             # States may be flat (from new save) or 2D (from old save).
             # Always reshape to float32 flat so add() normalises to the
             # current buffer's expected shape.
+            # Guard: use the first entry's flat size as canonical; discard any
+            # entries whose state size differs (prevents mixed-shape save failures
+            # when the state dimension changed between sessions).
+            canonical_state_size: int | None = None
+            dropped = 0
+            slot = 0
             for i in range(n):
+                state_flat = states[i].astype(np.float32).ravel()
+                next_flat = next_states[i].astype(np.float32).ravel()
+                if canonical_state_size is None:
+                    canonical_state_size = state_flat.size
+                if state_flat.size != canonical_state_size or next_flat.size != canonical_state_size:
+                    dropped += 1
+                    continue
                 exp = Experience(
-                    state=states[i].astype(np.float32).ravel(),
+                    state=state_flat,
                     action=int(actions[i]),
                     reward=float(rewards[i]),
-                    next_state=next_states[i].astype(np.float32).ravel(),
+                    next_state=next_flat,
                     done=bool(dones[i]),
                     timestamp=float(timestamps[i]),
                     regime=int(regimes[i]),
                     priority=float(priorities[i]),
                 )
-                self.data[i] = exp
+                self.data[slot] = exp
 
                 # Set priority in tree
-                tree_idx = i + self.tree.capacity - 1
+                tree_idx = slot + self.tree.capacity - 1
                 self.tree.tree[tree_idx] = float(priorities[i])
-                self.tree.n_entries = i + 1
-                self.tree.write_index = (i + 1) % self.capacity
+                self.tree.n_entries = slot + 1
+                self.tree.write_index = (slot + 1) % self.capacity
+                slot += 1
+
+            if dropped:
+                LOG.warning(
+                    "[BUFFER] Dropped %d/%d experiences with mismatched state size (canonical=%s) from %s",
+                    dropped, n, canonical_state_size, filepath,
+                )
+            n = slot
 
             # Rebuild tree sums from leaves up
             for i in range(self.tree.capacity - 2, -1, -1):
