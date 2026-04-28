@@ -1855,13 +1855,67 @@ class TabbedHUD:
         self._disable_raw_mode()
         try:
             os.system("clear" if os.name != "nt" else "cls")
+            print("╔" + "═" * 78 + "╗")
+            print("║" + " " * 25 + "HUD HELP & REFERENCE" + " " * 32 + "║")
+            print("╚" + "═" * 78 + "╝\n")
 
+            print("\033[1m📋 KEYBOARD SHORTCUTS\033[0m\n")
+            print("  [1]           - Overview tab (compact summary)")
+            print("  [2]           - Performance tab (detailed metrics)")
+            print("  [3]           - Training tab (agent statistics)")
+            print("  [4]           - Risk tab (risk management)")
+            print("  [5]           - Market tab (microstructure)")
+            print("  [6]           - Decision Log tab (last 20 decisions)")
+            print("  [7]           - Trade History tab (all closed trades with drill-down)")
+            print("  [←] / [→]     - Cycle tabs without reaching for Tab")
+            print("  [Tab]         - Cycle to next tab")
+            print("  [Shift+Tab]   - Cycle to previous tab")
+            print("  [s]           - Select symbol/timeframe preset")
+            print("  [h]           - Show this help screen")
+            print("  [q] / Ctrl+Q / Ctrl+X  - Quit HUD")
+            print("  [Alt+K]       - Emergency kill switch (close all positions + halt trading)")
+            print("  [r]           - Review tripped circuit breakers and reset if OK")
+            print("  [e]           - Set/clear stats epoch (exclude old trades from metrics)")
 
+            print("\n\033[1m📋 TRADE HISTORY TAB KEYS\033[0m\n")
+            print("  [↓]/[↑], [j]/[k] - Move selection down / up")
+            print("  [n] / [p]     - Next / previous page")
+            print("  [d]           - Drill into selected trade (full detail view)")
+            print("  [b] / [d]     - Back from detail view to trade list")
 
+            print("\n\033[1m📊 TAB DESCRIPTIONS\033[0m\n")
+            print("  Overview      - Quick snapshot of position, daily stats, risk, and health")
+            print("  Performance   - Trade-log metrics for 24h/7d/month, epoch, lifetime, and current sessions")
+            print("  Training      - Agent training status, buffer sizes, loss metrics")
+            print("  Risk          - Circuit breaker (with trip reasons + reset), VaR, vol, regime")
+            print("  Market        - Spread, VPIN toxicity, order imbalance, depth")
+            print("  Decision Log  - Last 20 trading decisions with color-coded events")
+            print("  Trades        - Full trade history, paginated, with per-trade drill-down")
 
+            print("\n\033[1m🎨 COLOR CODING\033[0m\n")
+            print(f"  {_ANSI_G}✓ Green{_ANSI_RST}       - Positive values, good status, active longs")
+            print(f"  {_ANSI_R}✗ Red{_ANSI_RST}         - Negative values, alerts, active shorts")
+            print(f"  {_ANSI_Y}⚡ Yellow{_ANSI_RST}      - Neutral/warning, hold actions")
+            print(f"  {_ANSI_B}ℹ Blue{_ANSI_RST}        - Informational messages")
 
+            print("\n\033[1m📁 DATA SOURCES\033[0m\n")
+            print("  All data is read from JSON/JSONL files in the 'data/' directory:")
+            print(f"    • {_BOT_CONFIG_FILE:<27} - Bot configuration and status")
+            print("    • current_position_SYM_MTF.json - Active position (per symbol/timeframe)")
+            print("    • trade_log.jsonl           - All closed trades (primary source for performance)")
+            print("    • training_stats.json        - Agent training statistics")
+            print("    • training_stats_SYM_MTF.json- Per-bot training stats (overrides shared file)")
+            print("    • risk_metrics.json          - Risk metrics (drawdown, VaR, circuit breakers)")
+            print("    • order_book.json            - Live market data (spread, depth, VPIN, imbalance)")
+            print("    • performance_snapshot.json  - Trading mode identifier only")
+            print("    • logs/audit/decisions.jsonl - Decision history (primary, rich JSONL format)")
+            print("    • decision_log.json          - Decision history (legacy fallback only)")
 
-
+            print("\n\033[1m⚙️  SYSTEM REQUIREMENTS\033[0m\n")
+            print("  • Terminal with UTF-8 support")
+            print("  • ANSI color support")
+            print("  • Minimum 80x24 terminal size recommended")
+            print("  • Bot must be running and exporting data files")
 
             input("Press Enter to return to HUD...")
         except Exception:
@@ -2432,16 +2486,23 @@ class TabbedHUD:
                 ofs_elapsed = ofs.get("elapsed_s", 0.0)
         else:
             ofs_elapsed = ofs.get("elapsed_s", 0.0)
-        ofs_start_str[:19].replace("T", " ") if ofs_start_str else "—"
-        ofs_end_str[:19].replace("T", " ") if ofs_end_str else None
-        self._offline_status_badge(ofs_status, ofs_done, ofs_total)
-        self._offline_progress_bar(ofs_done, ofs_total)
+        ofs_start = ofs_start_str[:19].replace("T", " ") if ofs_start_str else "—"
+        ofs_end = ofs_end_str[:19].replace("T", " ") if ofs_end_str else None
+        status_badge = self._offline_status_badge(ofs_status, ofs_done, ofs_total)
+        prog_bar = self._offline_progress_bar(ofs_done, ofs_total)
         _elapsed_h = int(ofs_elapsed // 3600)
         _elapsed_m = int((ofs_elapsed % 3600) // 60)
         _elapsed_s = int(ofs_elapsed % 60)
-        _elapsed_str = f"{_elapsed_h}h {_elapsed_m}m" if _elapsed_h else f"{_elapsed_m}m {_elapsed_s}s"
+        if _elapsed_h:
+            _elapsed_str = f"{_elapsed_h}h {_elapsed_m}m"
+        else:
+            _elapsed_str = f"{_elapsed_m}m {_elapsed_s}s"
+        print(f"\n  \033[1m🏋 OFFLINE TRAINING\033[0m  {status_badge}")
+        print(f"    Progress:  {prog_bar}   Elapsed: {_elapsed_str}")
+        print(f"    Started:   {ofs_start}" + (f"   Finished: {ofs_end}" if ofs_end else ""))
         if _results:
             self._render_offline_jobs_table(_results)
+        print()
 
     def _offline_status_badge(self, status: str, done: int, total: int) -> str:
         """Build a colorized offline-training status badge."""
@@ -2468,6 +2529,9 @@ class TabbedHUD:
     def _render_offline_jobs_table(self, results: list) -> None:
         """Render the symbol/TF results table for offline training."""
         sym_w = max(6, *(len(r.get("symbol", "")) for r in results))
+        print()
+        print(f"    {'Symbol':<{sym_w}}  {'TF':>5}  {'Status':<9}  {'Detail':<38}  {'ZOmega':>8}  {'Comment':<14}")
+        print(f"    {'─' * sym_w}  {'─' * 5}  {'─' * 9}  {'─' * 38}  {'─' * 8}  {'─' * 14}")
         for r in results:
             self._render_offline_job_row(r, sym_w)
 
@@ -2483,6 +2547,7 @@ class TabbedHUD:
         row = f"    {sym:<{sym_w}}  {tf_label:>5}  {jcol}{jbadge}{_ANSI_RST}  {detail}  {zo_str}  {comment}"
         if jstatus == "error" and r.get("error"):
             row += f"  {_ANSI_R}{r['error'][:30]}{_ANSI_RST}"
+        print(row)
 
     def _offline_job_comment(self, status: str, r: dict) -> str:
         """Return the Comment column text for an offline job row.
@@ -2558,12 +2623,20 @@ class TabbedHUD:
         uni = self.universe_stats
         if not uni:
             return  # nothing to show — all entries were pruned or none exist
-        sum(1 for e in uni.values() if e.get("_pid_alive"))
-        len(uni)
+        running_count = sum(1 for e in uni.values() if e.get("_pid_alive"))
+        total_count = len(uni)
+        hdr_badge = (
+            f"{_ANSI_G}{running_count}/{total_count} running{_ANSI_RST}"
+            if running_count
+            else f"{_ANSI_R}0/{total_count} running{_ANSI_RST}"
+        )
+        print(f"  \033[1m📈 TRADING PIPELINE\033[0m  {hdr_badge}")
+        print()
         for _, entry in sorted(
             uni.items(), key=lambda kv: (str(kv[1].get("symbol", "")), int(kv[1].get("timeframe_minutes", 0) or 0)),
         ):
             self._render_pipeline_card(str(entry.get("symbol", "?")), entry)
+        print()
 
     @staticmethod
     def _pp_bar(filled_frac: float, width: int = 8) -> str:
@@ -2575,74 +2648,106 @@ class TabbedHUD:
     def _render_pipeline_card(self, sym: str, entry: dict) -> None:
         """Render one bot card with connection + training + activity stats."""
         stage = entry.get("stage", "?")
-        entry.get("timeframe_minutes", 0)
+        tf_min = entry.get("timeframe_minutes", 0)
+        tf_lbl = f"M{tf_min}" if tf_min else "?"
         zo = entry.get("z_omega")
-        entry.get("paper_pid")
-        entry.get("_pid_alive", False)
+        pid = entry.get("paper_pid")
+        alive = entry.get("_pid_alive", False)
         ps = entry.get("_bot_stats", {})  # per-bot stats JSON from bot
 
         # ── title line ────────────────────────────────────────────────────────
-        {
+        stage_col = {
             "PAPER": _ANSI_Y,
             "LIVE": _ANSI_G,
             "UNTRAINED": _ANSI_DIM,
             "DEMOTED": _ANSI_R,
         }.get(stage, _ANSI_DIM)
         if zo is not None:
-            pass
+            zo_c = _ANSI_G if zo > 1.0 else (_ANSI_Y if zo > 0 else _ANSI_R)
+            zo_str = f"{zo_c}ZΩ {zo:.4f}{_ANSI_RST}"
         else:
-            pass
+            zo_str = f"{_ANSI_DIM}ZΩ —{_ANSI_RST}"
+        pid_str = (
+            f"{_ANSI_G}▶ PID {pid}{_ANSI_RST}"
+            if alive
+            else (f"{_ANSI_R}✗ dead ({pid}){_ANSI_RST}" if pid else f"{_ANSI_DIM}not started{_ANSI_RST}")
+        )
         uptime_s = int(ps.get("uptime_seconds", 0))
         if uptime_s >= 3600:
-            f"{uptime_s // 3600}h {(uptime_s % 3600) // 60}m"
+            uptime_str = f"{uptime_s // 3600}h {(uptime_s % 3600) // 60}m"
         elif uptime_s:
-            f"{uptime_s // 60}m {uptime_s % 60}s"
+            uptime_str = f"{uptime_s // 60}m {uptime_s % 60}s"
         else:
-            pass
+            uptime_str = "—"
+        print(
+            f"  {_ANSI_B}◼ {sym} {tf_lbl}{_ANSI_RST}  "
+            f"{stage_col}{stage}{_ANSI_RST}  {zo_str}  {pid_str}  uptime {uptime_str}"
+        )
 
         if ps:
             # ── FIX connection ────────────────────────────────────────────────
-            ps.get("quote_ok", False)
-            ps.get("trade_ok", False)
-            ps.get("connection_healthy", False)
-            ps.get("total_reconnects", 0)
+            q_ok = ps.get("quote_ok", False)
+            t_ok = ps.get("trade_ok", False)
+            healthy = ps.get("connection_healthy", False)
+            recon = ps.get("total_reconnects", 0)
+            q_str = f"{_ANSI_G}QUOTE ✓{_ANSI_RST}" if q_ok else f"{_ANSI_R}QUOTE ✗{_ANSI_RST}"
+            t_str = f"{_ANSI_G}TRADE ✓{_ANSI_RST}" if t_ok else f"{_ANSI_R}TRADE ✗{_ANSI_RST}"
+            h_str = f"{_ANSI_G}healthy{_ANSI_RST}" if healthy else f"{_ANSI_Y}unhealthy{_ANSI_RST}"
+            r_col = _ANSI_G if recon == 0 else (_ANSI_Y if recon < 5 else _ANSI_R)
+            r_str = f"{r_col}R:{recon}{_ANSI_RST}"
+            print(f"    {q_str}  {t_str}  {h_str}  {r_str}")
 
             # ── activity ─────────────────────────────────────────────────────
-            ps.get("bar_count", 0)
+            bars = ps.get("bar_count", 0)
             trades = ps.get("total_trades", 0)
             pnl = ps.get("total_pnl", 0.0)
             wr = ps.get("win_rate", 0.0)
-            f"{wr * 100:.1f}%" if trades > 0 else "—"
+            pnl_c = _ANSI_G if pnl >= 0 else _ANSI_R
+            wr_str = f"{wr * 100:.1f}%" if trades > 0 else "—"
+            print(f"    Bars: {bars}  │  Trades: {trades}  │  PnL: {pnl_c}{pnl:+.2f}{_ANSI_RST}  │  Win: {wr_str}")
 
             # ── account balance (real from broker if CollateralReport arrived) ─
             _rb = ps.get("real_account_balance")
             _re = ps.get("real_account_equity")
             _rm = ps.get("real_margin_free")
             if _rb is not None:
-                _rb_pnl = pnl  # compare relative to starting point
+                _rb_pnl = pnl
                 _rb_c = _ANSI_G if _rb_pnl >= 0 else _ANSI_R
                 _re_str = f"  │  Equity: {_ANSI_B}{float(_re):,.2f}{_ANSI_RST}" if _re is not None else ""
                 _rm_str = f"  │  Free margin: {_ANSI_B}{float(_rm):,.2f}{_ANSI_RST}" if _rm is not None else ""
+                print(f"    Balance: {_rb_c}{float(_rb):,.2f}{_ANSI_RST}  {_ANSI_G}✓ live{_ANSI_RST}{_re_str}{_rm_str}")
 
             # ── training stats ────────────────────────────────────────────────
-            ps.get("trigger_steps", 0)
-            ps.get("trigger_epsilon", 0.0)
+            t_steps = ps.get("trigger_steps", 0)
+            t_eps = ps.get("trigger_epsilon", 0.0)
             t_buf = ps.get("trigger_buffer", 0)
-            ps.get("trigger_loss", 0.0)
-            ps.get("trigger_ready", False)
-            ps.get("harvester_steps", 0)
-            ps.get("harvester_beta", 0.4)
+            t_loss = ps.get("trigger_loss", 0.0)
+            t_ready = ps.get("trigger_ready", False)
+            h_steps = ps.get("harvester_steps", 0)
+            h_beta = ps.get("harvester_beta", 0.4)
             h_buf = ps.get("harvester_buffer", 0)
-            ps.get("harvester_loss", 0.0)
-            ps.get("harvester_ready", False)
+            h_loss = ps.get("harvester_loss", 0.0)
+            h_ready = ps.get("harvester_ready", False)
 
-            self._pp_bar(t_buf / _RT_TRIG_CAP if _RT_TRIG_CAP else 0)
-            self._pp_bar(h_buf / _RT_HARV_CAP if _RT_HARV_CAP else 0)
-            f"{100 * t_buf / _RT_TRIG_CAP:4.0f}%" if _RT_TRIG_CAP else ""
-            f"{100 * h_buf / _RT_HARV_CAP:4.0f}%" if _RT_HARV_CAP else ""
+            t_bar = self._pp_bar(t_buf / _RT_TRIG_CAP if _RT_TRIG_CAP else 0)
+            h_bar = self._pp_bar(h_buf / _RT_HARV_CAP if _RT_HARV_CAP else 0)
+            t_pct = f"{100 * t_buf / _RT_TRIG_CAP:4.0f}%" if _RT_TRIG_CAP else ""
+            h_pct = f"{100 * h_buf / _RT_HARV_CAP:4.0f}%" if _RT_HARV_CAP else ""
+
+            _t_ready_col = _ANSI_G if t_ready else _ANSI_DIM
+            _h_ready_col = _ANSI_G if h_ready else _ANSI_DIM
+            print(
+                f"    Trigger: {t_bar} {t_pct}  steps={t_steps}  ε={t_eps:.4f}  "
+                f"loss={t_loss:.4f}  {_t_ready_col}ready{_ANSI_RST}"
+            )
+            print(
+                f"    Harvester: {h_bar} {h_pct}  steps={h_steps}  β={h_beta:.3f}  "
+                f"loss={h_loss:.4f}  {_h_ready_col}ready{_ANSI_RST}"
+            )
         else:
             started = entry.get("paper_started_at", "")
-            started[:19].replace("T", " ") if started else "—"
+            started_str = started[:19].replace("T", " ") if started else "—"
+            print(f"    started: {started_str}  │  no stats yet")
 
     def _render_live_trigger_agent(self, ts: dict, pm: dict, trig_ready: bool, trig_steps: int) -> None:
         """Render the Trigger Agent training block."""
