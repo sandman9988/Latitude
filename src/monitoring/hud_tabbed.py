@@ -2757,7 +2757,7 @@ class TabbedHUD:
             started_str = started[:19].replace("T", " ") if started else "—"
             print(f"    started: {started_str}  │  no stats yet")
 
-    def _render_live_trigger_agent(self, ts: dict, pm: dict, trig_ready: bool, trig_steps: int) -> None:
+    def _render_live_trigger_agent(self, ts: dict, pm: dict) -> None:
         """Render the Trigger Agent training block."""
 
         def _to_float(v):
@@ -2811,7 +2811,7 @@ class TabbedHUD:
         _rw_col = _ANSI_G if _rw_reliable else _ANSI_Y
         _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
 
-    def _render_live_harvester_agent(self, ts: dict, pm: dict, harv_ready: bool, harv_steps: int) -> None:
+    def _render_live_harvester_agent(self, ts: dict, pm: dict) -> None:
         """Render the Harvester Agent training block."""
 
         def _to_float(v):
@@ -2865,10 +2865,6 @@ class TabbedHUD:
     def _render_live_arena_and_health(
         self,
         ts: dict,
-        trig_ready: bool,
-        harv_ready: bool,
-        trig_steps: int,
-        harv_steps: int,
     ) -> None:
         """Render Arena + Learning Health blocks."""
         total_agents = ts.get("total_agents", 0)
@@ -2939,9 +2935,9 @@ class TabbedHUD:
             harv_ready = _its.get("harvester_ready", False)
             trig_steps = _its.get("trigger_training_steps", 0)
             harv_steps = _its.get("harvester_training_steps", 0)
-            self._render_live_trigger_agent(_its, _item_pm, trig_ready, trig_steps)
-            self._render_live_harvester_agent(_its, _item_pm, harv_ready, harv_steps)
-            self._render_live_arena_and_health(_its, trig_ready, harv_ready, trig_steps, harv_steps)
+            self._render_live_trigger_agent(_its, _item_pm)
+            self._render_live_harvester_agent(_its, _item_pm)
+            self._render_live_arena_and_health(_its)
             if _idx < len(_training_items) - 1:
                 pass
 
