@@ -550,6 +550,19 @@ class TestPlumbing:
         )
         assert ratio == pytest.approx(-2.5)
 
+    def test_excursion_usd_uses_quantity_and_contract_size(self, hud: TabbedHUD):
+        mfe_usd = hud._excursion_usd_for_trade(
+            {
+                "mfe": 32.62,
+                "mfe_points": 32.62,
+                "quantity": 0.01,
+                "contract_size": 1.0,
+            },
+            "mfe_points",
+            "mfe",
+        )
+        assert mfe_usd == pytest.approx(0.3262)
+
     def test_training_tab_shows_dynamic_rl_confidence_floors(self, hud: TabbedHUD):
         hud.training_stats = {
             "trigger_ready": True,

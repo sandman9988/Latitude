@@ -150,10 +150,10 @@ def load_csv_bars(path: Path) -> list[list]:
                     ts = ts.replace(tzinfo=UTC)
                 o = float(row["Open"])
                 h = float(row["High"])
-                l = float(row["Low"])
+                low = float(row["Low"])
                 c = float(row["Close"])
                 v = float(row.get("Volume", 0))
-                bars.append([ts, o, h, l, c, v])
+                bars.append([ts, o, h, low, c, v])
             except (ValueError, KeyError):
                 continue
     LOG.info("Loaded %d CSV bars from %s", len(bars), path)
@@ -340,8 +340,14 @@ def reconstruct(
     csv_path = hr / f"{symbol}_{tf_label}.csv"
     cache_path = root / f"training_cache_{symbol}_{tf_label}.jsonl"
     trade_log_path = root / "trade_log.jsonl"
-    decisions_path = lr / "decisions.jsonl"
-    transactions_path = lr / "transactions.jsonl"
+    scoped_audit = root / f"paper_{symbol}_{tf_label}" / "logs" / "audit"
+    scoped_decisions = scoped_audit / "decisions.jsonl"
+    decisions_path = scoped_decisions if scoped_decisions.exists() else lr / "decisions.jsonl"
+    transactions_path = (
+        scoped_audit / "transactions.jsonl"
+        if (scoped_audit / "transactions.jsonl").exists()
+        else lr / "transactions.jsonl"
+    )
 
     csv_bars = load_csv_bars(csv_path)
     cache_records = load_cache(cache_path, month)
@@ -373,7 +379,9 @@ def reconstruct(
 
     # Decision indices
     trig_by_second: dict[int, list[dict]] = defaultdict(list)
+    trig_by_tid: dict[str, list[dict]] = defaultdict(list)
     close_by_second: dict[int, list[dict]] = defaultdict(list)
+    close_by_tid: dict[str, dict] = {}
     hold_by_tid: dict[str, list[dict]] = defaultdict(list)
 
     for d in decisions:
@@ -383,10 +391,14 @@ def reconstruct(
         tid = d.get("trade_id")
         if ag == "TriggerAgent" and dec in ("LONG", "SHORT"):
             trig_by_second[ts_k].append(d)
+            if tid:
+                trig_by_tid[str(tid)].append(d)
         elif ag == "HarvesterAgent" and dec == "CLOSE":
             close_by_second[ts_k].append(d)
+            if tid:
+                close_by_tid[str(tid)] = d
         elif ag == "HarvesterAgent" and dec == "HOLD" and tid:
-            hold_by_tid[tid].append(d)
+            hold_by_tid[str(tid)].append(d)
 
     # Transaction index by timestamp (rounded to nearest second for fast lookup)
     txn_by_second: dict[int, list[dict]] = defaultdict(list)
@@ -405,21 +417,23 @@ def reconstruct(
         xt = _ts_parse(t.get("exit_time", "") or "")
         tl_pnl = float(t.get("pnl", 0) or 0)
         dtid = t.get("decision_trade_id")
+        trade_id = str(dtid) if dtid else None
 
         # --- Step A: Find closest CLOSE decision by timestamp (bucketed) ---
-        close_decision = None
+        close_decision = close_by_tid.get(trade_id or "") if trade_id else None
         if xt:
             xt_k = round(_ts_key(xt))
-            for offset in range(-10, 11):
-                candidates = close_by_second.get(xt_k + offset, [])
-                if candidates:
-                    close_decision = candidates[0]
-                    break
+            if close_decision is None:
+                for offset in range(-10, 11):
+                    candidates = close_by_second.get(xt_k + offset, [])
+                    if candidates:
+                        close_decision = candidates[0]
+                        break
 
         # --- Step B: Find trade_id from close decision ---
-        trade_id = dtid
         if trade_id is None and close_decision:
             trade_id = close_decision.get("trade_id")
+        trade_id = str(trade_id) if trade_id else None
 
         # --- Step C: Find matching cache record by price bucket ---
         cache_record = None
@@ -440,8 +454,8 @@ def reconstruct(
                 cache_record = None
 
         # --- Step D: Find preceding trigger decisions (bucketed timestamp) ---
-        trig_entries = []
-        if et:
+        trig_entries = trig_by_tid.get(trade_id or "", [])
+        if not trig_entries and et:
             et_k = round(_ts_key(et))
             for offset in range(-120, 1):  # within 2 min before entry
                 candidates = trig_by_second.get(et_k + offset, [])
@@ -586,8 +600,16 @@ def reconstruct(
                                for d in trig_entries if d.get("context")],
             "close_decision_conf": close_decision.get("confidence") if close_decision else None,
             "close_decision_reasoning": (close_decision.get("reasoning") if close_decision else None),
+            "trigger_entries": trig_entries,
+            "hold_decisions": hold_by_tid.get(trade_id or "", []),
+            "close_decision": close_decision,
+            "trigger_data": t.get("trigger_data", {}),
+            "exit_data": t.get("exit_data", {}),
+            "reward_trigger_breakdown": t.get("reward_trigger_breakdown", {}),
+            "reward_harvester_breakdown": t.get("reward_harvester_breakdown", {}),
 
             # Transaction data
+            "transaction_event": matching_txn,
             "txn_pnl": (matching_txn.get("data", {}).get("pnl") if matching_txn else None),
             "txn_mfe": (matching_txn.get("data", {}).get("mfe") if matching_txn else None),
             "txn_mae": (matching_txn.get("data", {}).get("mae") if matching_txn else None),

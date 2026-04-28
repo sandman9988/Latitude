@@ -99,20 +99,32 @@ python3 -m py_compile run_universe.py train_offline.py
 
 ## Audit Log & Trade Log
 
-The TFAgent writes **65 top-level fields** per trade to `data/trade_log.jsonl` plus
-two nested breakdown dicts (`trigger_data` with 32 sub-fields, `reward_*_breakdown`).
+The TFAgent writes **66 top-level fields** per trade to `data/trade_log.jsonl` plus
+nested lifecycle/breakdown dicts (`trigger_data`, `exit_data`, and `reward_*_breakdown`).
 
 The complete field map is defined in `src/core/openapi_hub.py:_write_trade_log()`.
 Key groups: identity (7), timing (3), P&L (4), excursions (4), entry conditions (13),
 runway prediction (9), reward (7), calibration (7), exit conditions (3), diagnostics (4),
-risk state (2), trigger reason snapshot (1 nested dict), reward breakdown (2 nested dicts).
+risk state (2), trigger reason snapshot (1 nested dict), exit reason snapshot (1 nested dict),
+reward breakdown (2 nested dicts).
+Excursion fields are unit-specific: `mfe` and `mae` are account-currency values
+after applying `quantity * contract_size`; `mfe_points` and `mae_points` are raw
+price movement. HUD rendering must not treat price points as dollars.
 
 **Every trade is now linked to its trigger entry context.** The `trigger_data` field
 captures regime, geometry, HMM probabilities, kurtosis, volatility ratio, gap, returns,
-alignment score, bar OHLCV, training state, CB state, and drawdown at the moment of entry.
+alignment score, L2 depth bid/ask, top-10 bid/ask book snapshot, real-size availability,
+bar OHLCV, training state, CB state, and drawdown at the moment of entry.
+The `exit_data` field captures exit confidence/floor, close reason, trailing-stop,
+breakeven and capture-decay state, close-time regime/risk, spread, excursions,
+capture, L2 depth bid/ask plus top-10 book snapshot, VPIN, imbalance,
+VaR/kurtosis/volatility, and circuit-breaker state at the moment of exit.
 
 For retrospective analysis, use `scripts/reconstruct_trade_lifecycle.py` to stitch
 trade_log + decisions + cache + transactions + CSV history into a single enriched dataset.
+The reconstruction output must preserve full linked trigger, HOLD, CLOSE, transaction,
+`trigger_data`, `exit_data`, and reward-breakdown objects so top/bottom trade
+comparisons can explain exactly what differed.
 
 ## Real-Data Test Requirements
 

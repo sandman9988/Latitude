@@ -5759,7 +5759,9 @@ class TabbedHUD:
         if not pts:
             return 0.0
 
-        qty = _f(trade.get("qty"))
+        qty = _f(trade.get("quantity"))
+        if qty is None or qty <= 0.0:
+            qty = _f(trade.get("qty"))
         if qty is None or qty <= 0.0:
             direction = str(trade.get("direction", "")).upper()
             pnl = _f(trade.get("pnl"))

@@ -352,7 +352,7 @@ class TFAgent:
                 LOG.warning("[%s %s] load_checkpoint failed: %s", symbol, self.tf_label, e)
 
         # Decision audit log (HUD Tab 6 reads from logs/audit/decisions.jsonl)
-        from src.monitoring.audit_logger import DecisionLogger  # noqa: PLC0415
+        from src.monitoring.audit_logger import DecisionLogger, TransactionLogger  # noqa: PLC0415
         self.decision_log = DecisionLogger(
             log_dir=str(data_dir / "logs" / "audit"),
             filename="decisions.jsonl",
@@ -360,6 +360,10 @@ class TFAgent:
             symbol=symbol,
             timeframe=self.tf_label,
             timeframe_minutes=timeframe_minutes,
+        )
+        self.transaction_log = TransactionLogger(
+            log_dir=str(data_dir / "logs" / "audit"),
+            filename="transactions.jsonl",
         )
 
         # Training experience cache (writes training_cache_SYM_MTF.jsonl)
@@ -436,6 +440,7 @@ class TFAgent:
         self._last_depth_ask: float = 0.0
         self._vpin_z: float = 0.0
         self._has_real_sizes: bool = False
+        self._last_l2_snapshot: dict = {}
         self._bars_since_train: int = 0
 
         self._trade_sequence: int = 0  # local trade counter for trade_log ticket IDs
@@ -511,6 +516,7 @@ class TFAgent:
         # Entry trigger reasoning snapshot — populated at entry, consumed at close
         # by _write_trade_log so all trigger decision context is logged per trade.
         self._entry_trigger_data: dict = {}
+        self._exit_lifecycle_data: dict = {}
 
         # Dense harvester experience tracking — per-bar HOLD experiences while in position.
         # Mirrors the legacy ctrader_ddqn_paper.py pattern that kept the buffer full.
@@ -545,6 +551,7 @@ class TFAgent:
         depth_ask: float = 0.0,
         vpin_z: float = 0.0,
         has_real_sizes: bool = False,
+        l2_snapshot: dict | None = None,
     ) -> None:
         self.last_mid = mid
         self.last_half_spread = half_spread
@@ -554,6 +561,7 @@ class TFAgent:
         self._last_depth_ask = depth_ask
         self._vpin_z = vpin_z
         self._has_real_sizes = has_real_sizes
+        self._last_l2_snapshot = l2_snapshot or {}
         if half_spread > 0:
             self.friction_calc.update_spread(mid - half_spread, mid + half_spread)
 
@@ -960,6 +968,10 @@ class TFAgent:
                     "circuit_breakers_ok": cb_ok,
                     "gated_conditions": gated_conditions or [],
                     "depth_ratio": depth_ratio,
+                    "depth_bid": self._last_depth_bid,
+                    "depth_ask": self._last_depth_ask,
+                    "has_real_l2_sizes": self._has_real_sizes,
+                    "l2_snapshot": self._last_l2_snapshot,
                     "var_95": self._last_var_95,
                     "kurtosis": self._last_kurtosis,
                     "kurtosis_threshold": self._active_kurtosis_threshold(),
@@ -1423,13 +1435,21 @@ class TFAgent:
             LOG.info("[%s %s] Circuit breaker tripped — skip entry", self.symbol, self.tf_label)
             return
 
+        # Paper mode: soft-gate depth instead of hard-blocking so the RL agent
+        # trains on thin-book conditions and learns to avoid them naturally.
+        # Live mode keeps the hard block for execution safety.
         depth_floor = getattr(self.friction_calc, "depth_buffer", 0.0)
-        if (depth_floor > 0 and self._last_depth_bid > 0 and self._last_depth_ask > 0
-                and min(self._last_depth_bid, self._last_depth_ask) < depth_floor):
-            LOG.debug("[%s %s] Depth gate: book too thin (bid=%.3f ask=%.3f < floor=%.3f) — skip entry",
+        _depth_too_thin = (
+            depth_floor > 0 and self._last_depth_bid > 0 and self._last_depth_ask > 0
+            and min(self._last_depth_bid, self._last_depth_ask) < depth_floor
+        )
+        if _depth_too_thin:
+            LOG.debug("[%s %s] Depth gate: book too thin (bid=%.3f ask=%.3f < floor=%.3f)%s",
                       self.symbol, self.tf_label,
-                      self._last_depth_bid, self._last_depth_ask, depth_floor)
-            return
+                      self._last_depth_bid, self._last_depth_ask, depth_floor,
+                      " — skip entry" if not self.paper_mode else " — paper: allowing for RL training")
+            if not self.paper_mode:
+                return
 
         # Soft gates — paper mode: log and allow entry so RL agent trains on all conditions.
         vol = self._realized_vol()
@@ -1483,7 +1503,8 @@ class TFAgent:
         self._entry_state = _trig_state.copy() if _trig_state is not None else None
 
         # Dynamic entry floor: raises minimum confidence when calibration or runway accuracy is poor.
-        # Paper mode: block entry (don't train on structurally bad setups), but add NO_ENTRY exp.
+        # Paper mode: log the floor breach but allow entry — RL needs to train on all setups.
+        # Live mode: block entry to protect capital from poorly calibrated decisions.
         _dyn_floor = 0.0
         if action != 0:
             _base_floor = float(self._param_manager.get(
@@ -1491,12 +1512,20 @@ class TFAgent:
                 timeframe=self.tf_label, broker="default", default=0.55) or 0.55)
             _dyn_floor, _floor_dbg = self._compute_dynamic_entry_floor(_base_floor)
             if conf < _dyn_floor:
-                LOG.debug(
-                    "[%s %s] DynFloor block: conf=%.3f < floor=%.3f (base=%.3f uplift=%.3f runway=%.3f)",
-                    self.symbol, self.tf_label, conf, _dyn_floor, _base_floor,
-                    _floor_dbg["uplift"], _floor_dbg["runway_penalty"],
-                )
-                action = 0
+                if self.paper_mode:
+                    LOG.debug(
+                        "[%s %s] DynFloor LOG (paper): conf=%.3f < floor=%.3f (base=%.3f uplift=%.3f runway=%.3f) — allowing for RL training",
+                        self.symbol, self.tf_label, conf, _dyn_floor, _base_floor,
+                        _floor_dbg["uplift"], _floor_dbg["runway_penalty"],
+                    )
+                    _gated.append(f"conf={conf:.3f}<floor={_dyn_floor:.3f}")
+                else:
+                    LOG.debug(
+                        "[%s %s] DynFloor block: conf=%.3f < floor=%.3f (base=%.3f uplift=%.3f runway=%.3f)",
+                        self.symbol, self.tf_label, conf, _dyn_floor, _base_floor,
+                        _floor_dbg["uplift"], _floor_dbg["runway_penalty"],
+                    )
+                    action = 0
 
         # Snapshot entry-time trade_id and lifecycle metrics BEFORE logging the decision
         # so _log_entry_decision captures them with the correct trade_id for LONG/SHORT.
@@ -1543,6 +1572,10 @@ class TFAgent:
                 "entry_cb_ok": _cb_ok,
                 "entry_gated_conditions": _gated,
                 "entry_depth_ratio": depth_ratio,
+                "entry_depth_bid": self._last_depth_bid,
+                "entry_depth_ask": self._last_depth_ask,
+                "entry_has_real_l2_sizes": self._has_real_sizes,
+                "entry_l2_snapshot": self._last_l2_snapshot,
                 "entry_kurtosis": self._last_kurtosis,
                 "entry_kurtosis_threshold": self._active_kurtosis_threshold(),
                 "entry_rs_vol_short": _rs_vol_s,
@@ -1761,6 +1794,106 @@ class TFAgent:
 
     # ---- paper fill simulation ------------------------------------------
 
+    def _log_transaction_event(
+        self,
+        event_type: str,
+        data: dict,
+        severity: str = "INFO",
+    ) -> None:
+        """Write scoped OpenAPI paper lifecycle events for later reconstruction."""
+        tx = getattr(self, "transaction_log", None)
+        if tx is None:
+            return
+        payload = {
+            "symbol": self.symbol,
+            "timeframe": self.tf_label,
+            "timeframe_minutes": self.timeframe_minutes,
+            "trading_mode": "paper",
+            "trade_id": self._current_trade_id,
+            **data,
+        }
+        try:
+            tx.log_event(event_type, payload, severity=severity)
+        except Exception as exc:
+            LOG.debug("[%s %s] transaction_log error: %s", self.symbol, self.tf_label, exc)
+
+    def _current_exit_lifecycle_data(
+        self,
+        *,
+        entry_price: float,
+        fill_price: float,
+        pnl_pts: float,
+        pnl_usd: float,
+        mfe: float,
+        mae: float,
+        quantity: float,
+        capture_ratio: float,
+        ticks_held: int,
+        close_reason: str,
+        cb_tripped: list[str],
+        close_drawdown_pct: float,
+        close_cb_size_mult: float,
+    ) -> dict:
+        """Snapshot exit-side state that explains close quality and self-healing context."""
+        harv = getattr(getattr(self, "policy", None), "harvester", None)
+        entry_price = float(entry_price or fill_price)
+        lot_value = float(quantity or 0.0) * float(getattr(self, "contract_size", 1.0) or 1.0)
+        mfe_usd = float(mfe) * lot_value
+        mae_usd = float(mae) * lot_value
+        mfe_pct = (mfe / max(abs(entry_price), 1.0)) * 100.0
+        return {
+            "exit_confidence": float(getattr(self, "_last_harvester_conf", 0.0) or 0.0),
+            "exit_dynamic_floor": float(getattr(self, "_exit_conf_dynamic_floor", 0.0) or 0.0),
+            "exit_conf_margin": float(getattr(self, "_last_harvester_conf", 0.0) or 0.0)
+            - float(getattr(self, "_exit_conf_dynamic_floor", 0.0) or 0.0),
+            "exit_price": float(fill_price),
+            "exit_mid": float(getattr(self, "last_mid", fill_price) or fill_price),
+            "exit_half_spread": float(getattr(self, "last_half_spread", 0.0) or 0.0),
+            "exit_pnl_points": float(pnl_pts),
+            "exit_pnl_usd": float(pnl_usd),
+            "exit_mfe_usd": float(mfe_usd),
+            "exit_mae_usd": float(mae_usd),
+            "exit_mfe_points": float(mfe),
+            "exit_mae_points": float(mae),
+            "exit_mfe_pct": float(mfe_pct),
+            "exit_capture_ratio": float(capture_ratio),
+            "exit_ticks_held": int(ticks_held),
+            "exit_close_reason": close_reason,
+            "exit_regime": str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN"),
+            "exit_zeta": float(getattr(self.policy, "current_zeta", 1.0) or 1.0),
+            "exit_realized_vol": float(self._realized_vol()),
+            "exit_depth_ratio": float(self._depth_ratio()),
+            "exit_depth_bid": float(getattr(self, "_last_depth_bid", 0.0) or 0.0),
+            "exit_depth_ask": float(getattr(self, "_last_depth_ask", 0.0) or 0.0),
+            "exit_has_real_l2_sizes": bool(getattr(self, "_has_real_sizes", False)),
+            "exit_l2_snapshot": getattr(self, "_last_l2_snapshot", {}) or {},
+            "exit_imbalance": float(getattr(self, "_entry_imbalance", 0.0) or 0.0),
+            "exit_vpin_z": float(getattr(self, "_vpin_z", 0.0) or 0.0),
+            "exit_var_95": float(getattr(self, "_last_var_95", 0.0) or 0.0),
+            "exit_kurtosis": float(getattr(self, "_last_kurtosis", 0.0) or 0.0),
+            "exit_kurtosis_threshold": float(self._active_kurtosis_threshold()),
+            "exit_trailing_stop_active": bool(
+                mfe_pct >= float(getattr(harv, "trailing_stop_activation_pct", 0.25) or 0.25),
+            ),
+            "exit_trailing_stop_activation_pct": float(
+                getattr(harv, "trailing_stop_activation_pct", 0.25) or 0.25,
+            ),
+            "exit_trailing_stop_distance_pct": float(
+                getattr(harv, "trailing_stop_distance_pct", 0.12) or 0.12,
+            ),
+            "exit_breakeven_active": bool(
+                mfe_pct >= float(getattr(harv, "breakeven_trigger_pct", 0.30) or 0.30),
+            ),
+            "exit_breakeven_trigger_pct": float(getattr(harv, "breakeven_trigger_pct", 0.30) or 0.30),
+            "exit_capture_decay_armed": bool(
+                mfe_pct >= float(getattr(harv, "capture_decay_min_mfe_pct", 0.10) or 0.10),
+            ),
+            "exit_capture_decay_threshold": float(getattr(harv, "capture_decay_threshold", 0.35) or 0.35),
+            "exit_cb_tripped": list(cb_tripped or []),
+            "exit_cb_size_mult": float(close_cb_size_mult),
+            "exit_drawdown_pct": float(close_drawdown_pct),
+        }
+
     def _open_position(
         self,
         ts: dt.datetime,
@@ -1810,8 +1943,24 @@ class TFAgent:
         self._prev_harvester_state = None
         self._prev_mfe = 0.0
         self._prev_mae = 0.0
+        self._exit_lifecycle_data = {}
 
         dir_label = "LONG" if direction == 1 else "SHORT"
+        self._log_transaction_event(
+            "POSITION_OPEN",
+            {
+                "position_id": self._current_trade_id,
+                "direction": dir_label,
+                "quantity": effective_qty,
+                "entry_price": fill_price,
+                "entry_time": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
+                "entry_confidence": conf,
+                "entry_raw_confidence": raw_conf,
+                "entry_action": action,
+                "entry_trigger_data": self._entry_trigger_data,
+            },
+        )
+
         LOG.info("[%s %s] OPEN %s @ %.5f | conf=%.2f",
                  self.symbol, self.tf_label, dir_label, fill_price, conf)
 
@@ -2304,6 +2453,50 @@ class TFAgent:
         # Snapshot risk state at close for trade_log
         _close_drawdown = max(0.0, (self.starting_equity - self.equity) / max(abs(self.starting_equity), 1.0))
         _close_cb_mult = self.circuit_breakers.get_position_size_multiplier() if self.circuit_breakers is not None else 1.0
+        _close_reason = getattr(getattr(self.policy, "harvester", None), "last_close_reason", "") or ""
+        self._exit_lifecycle_data = self._current_exit_lifecycle_data(
+            entry_price=entry_price,
+            fill_price=fill_price,
+            pnl_pts=pnl_pts,
+            pnl_usd=pnl_usd,
+            mfe=mfe,
+            mae=mae,
+            quantity=qty,
+            capture_ratio=capture_ratio,
+            ticks_held=_ticks_held_at_close,
+            close_reason=_close_reason,
+            cb_tripped=_cb_tripped,
+            close_drawdown_pct=_close_drawdown,
+            close_cb_size_mult=_close_cb_mult,
+        )
+        self._log_transaction_event(
+            "POSITION_CLOSE",
+            {
+                "position_id": _closed_trade_id,
+                "direction": dir_label,
+                "quantity": qty,
+                "entry_price": entry_price,
+                "exit_price": fill_price,
+                "entry_time": pos["entry_time"].isoformat()
+                if hasattr(pos.get("entry_time"), "isoformat") else str(pos.get("entry_time")),
+                "exit_time": _ts.isoformat() if hasattr(_ts, "isoformat") else str(_ts),
+                "pnl": pnl_usd,
+                "pnl_points": pnl_pts,
+                "mfe": mfe * qty * float(getattr(self, "contract_size", 1.0) or 1.0),
+                "mae": mae * qty * float(getattr(self, "contract_size", 1.0) or 1.0),
+                "mfe_points": mfe,
+                "mae_points": mae,
+                "capture_ratio": capture_ratio,
+                "winner_to_loser": was_wtl,
+                "close_reason": _close_reason,
+                "trigger_reward": trigger_reward,
+                "capture_reward": capture_reward,
+                "reward_trigger_breakdown": _reward_breakdown,
+                "reward_harvester_breakdown": _harv_breakdown,
+                "entry_trigger_data": self._entry_trigger_data,
+                "exit_data": self._exit_lifecycle_data,
+            },
+        )
 
         self._write_trade_log(
             direction=direction,
@@ -2315,6 +2508,7 @@ class TFAgent:
             pnl_pts=pnl_pts,
             mfe=mfe,
             mae=mae,
+            quantity=qty,
             trigger_reward=trigger_reward,
             capture_reward=capture_reward,
             regime=regime,
@@ -2351,6 +2545,8 @@ class TFAgent:
             # Risk state at close
             close_drawdown_pct=_close_drawdown,
             close_cb_size_mult=_close_cb_mult,
+            # Exit-side lifecycle reasoning snapshot
+            exit_data=self._exit_lifecycle_data,
         )
 
     # ---- trade log -------------------------------------------------------
@@ -2365,6 +2561,7 @@ class TFAgent:
         pnl_usd: float,
         mfe: float,
         mae: float,
+        quantity: float | None = None,
         pnl_pts: float = 0.0,
         trigger_reward: float = 0.0,
         capture_reward: float = 0.0,
@@ -2402,6 +2599,8 @@ class TFAgent:
         # Risk state at close
         close_drawdown_pct: float = 0.0,
         close_cb_size_mult: float = 1.0,
+        # Exit-side lifecycle reasoning snapshot
+        exit_data: dict | None = None,
     ) -> None:
         with self._trade_sequence_lock:
             self._trade_sequence += 1
@@ -2416,6 +2615,11 @@ class TFAgent:
                               if predicted_runway_net > 0 and abs(pnl_pts) > SAFE_EPSILON else 0.0)
         spread_cost_pts = self.last_half_spread * 2.0
         pnl_net = pnl_pts - spread_cost_pts
+        trade_qty = float(quantity if quantity is not None else self.qty)
+        contract_size = float(getattr(self, "contract_size", 1.0) or 1.0)
+        lot_value = trade_qty * contract_size
+        mfe_usd = float(mfe) * lot_value
+        mae_usd = float(mae) * lot_value
         record = {
             "trade_id": _seq,
             "ticket": ticket,
@@ -2425,7 +2629,8 @@ class TFAgent:
             "timeframe_minutes": self.timeframe_minutes,
             "trading_mode": "paper",
             "direction": "LONG" if direction == 1 else "SHORT",
-            "quantity": self.qty,
+            "quantity": trade_qty,
+            "contract_size": contract_size,
             "entry_price": entry_price,
             "exit_price": exit_price,
             "entry_time": entry_time.isoformat() if hasattr(entry_time, "isoformat") else str(entry_time),
@@ -2433,8 +2638,8 @@ class TFAgent:
             "pnl": pnl_usd,
             "pnl_points": pnl_pts,
             "pnl_net_points": pnl_net,
-            "mfe": mfe,
-            "mae": mae,
+            "mfe": mfe_usd,
+            "mae": mae_usd,
             "mfe_points": mfe,
             "mae_points": mae,
             "close_reason": getattr(getattr(self.policy, "harvester", None), "last_close_reason", "") or "",
@@ -2489,6 +2694,7 @@ class TFAgent:
             "reward_harvester_breakdown": reward_harvester_breakdown or {},
             # Trigger entry reasoning snapshot — all context from _log_entry_decision
             "trigger_data": trigger_data or {},
+            "exit_data": exit_data or {},
             # Risk state at close
             "close_drawdown_pct": close_drawdown_pct,
             "close_cb_size_mult": close_cb_size_mult,
@@ -3617,6 +3823,18 @@ class OpenAPIHub:
         }
         base = Path("data")
         _write_json_atomic(base / "order_book.json", data)
+
+    def _l2_snapshot(self) -> dict:
+        depth_bid, depth_ask = self._order_book.depth_sum()
+        return {
+            "depth_bid": depth_bid,
+            "depth_ask": depth_ask,
+            "bids": [[p, s] for p, s in sorted(self._order_book.bids.items(), reverse=True)[:10]],
+            "asks": [[p, s] for p, s in sorted(self._order_book.asks.items())[:10]],
+            "imbalance": self._order_book.imbalance(),
+            "vpin_zscore": self._vpin_z,
+            "has_real_sizes": self._has_real_sizes,
+        }
         _write_json_atomic(base / f"order_book_{self.symbol}.json", data)
         # Write per-TF scoped files so _preferred_data_file finds fresh data
         # regardless of which TF is active in the HUD.
@@ -3715,12 +3933,14 @@ class OpenAPIHub:
         self._update_vpin(mid)
         imbalance = self._order_book.imbalance()
         depth_bid, depth_ask = self._order_book.depth_sum()
+        l2_snapshot = self._l2_snapshot()
         for agent in self.agents.values():
             try:
                 agent.on_tick(ts, mid, half_spread, imbalance=imbalance,
                               depth_bid=depth_bid, depth_ask=depth_ask,
                               vpin_z=self._vpin_z,
-                              has_real_sizes=self._has_real_sizes)
+                              has_real_sizes=self._has_real_sizes,
+                              l2_snapshot=l2_snapshot)
             except Exception as e:
                 LOG.exception("[HUB] agent %s error: %s", agent.tf_label, e)
 
