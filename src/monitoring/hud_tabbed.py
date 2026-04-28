@@ -41,6 +41,7 @@ from src.constants import (
     HARVESTER_BUFFER_CAPACITY,
     KURTOSIS_ALERT_THRESHOLD,
     TRIGGER_BUFFER_CAPACITY,
+    get_amd_optimized_buffer_capacity,
 )
 from src.persistence.trade_log_reader import CachedTradeLogReader
 from src.utils.metrics_calculator import period_metrics as _period_metrics_calc
@@ -376,8 +377,8 @@ _HUD_HELP_RETURN_PROMPT = "\nPress Enter to return to HUD..."
 
 # Live training section layout constants
 _RT_BAR_LEN: int = 26  # fill-bar character width
-_RT_TRIG_CAP: int = TRIGGER_BUFFER_CAPACITY  # trigger replay-buffer capacity
-_RT_HARV_CAP: int = HARVESTER_BUFFER_CAPACITY  # harvester replay-buffer capacity
+_RT_TRIG_CAP: int = get_amd_optimized_buffer_capacity(TRIGGER_BUFFER_CAPACITY)
+_RT_HARV_CAP: int = get_amd_optimized_buffer_capacity(HARVESTER_BUFFER_CAPACITY)
 
 
 class TabbedHUD:
