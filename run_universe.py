@@ -70,6 +70,13 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from src.constants import (
+    PAPER_EPSILON_DECAY,
+    PAPER_EPSILON_END,
+    PAPER_EPSILON_START,
+    PAPER_FORCE_EXPLORATION,
+)
+
 LOG = logging.getLogger("run_universe")
 
 # ---------------------------------------------------------------------------
@@ -84,6 +91,7 @@ _BOT_MODULE = "src.core.ctrader_ddqn_paper"
 _STAGE_ORDER = ["UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"]
 _PAPER_STAGE = "PAPER"
 _WATCH_INTERVAL = 30  # seconds between supervisor polls
+_ANALYZER_INTERVAL_CYCLES = 480  # run performance analyzer every 4 h (480 × 30 s)
 _CFG_QUOTE_TEMPLATE = Path("config/ctrader_quote.cfg")
 _CFG_TRADE_TEMPLATE = Path("config/ctrader_trade.cfg")
 _RUNTIME_ROOT = Path("data/paper_runtime")
@@ -119,12 +127,12 @@ _PAPER_ENV_DEFAULTS: dict[str, str] = {
     "PAPER_MODE": "1",
     "DISABLE_GATES": "1",
     "FEAS_THRESHOLD": "0.0",
-    "EPSILON_START": "0.30",
-    "EPSILON_END": "0.05",
-    "EPSILON_DECAY": "0.9995",
+    "EPSILON_START": str(PAPER_EPSILON_START),
+    "EPSILON_END": str(PAPER_EPSILON_END),
+    "EPSILON_DECAY": str(PAPER_EPSILON_DECAY),
     "EXPLORATION_BOOST": "0.0",
     "MAX_BARS_INACTIVE": "1000",
-    "FORCE_EXPLORATION": "0",
+    "FORCE_EXPLORATION": "1" if PAPER_FORCE_EXPLORATION else "0",
     "DDQN_ONLINE_LEARNING": "1",
 }
 
@@ -1614,6 +1622,7 @@ def main(argv: list[str] | None = None) -> int:
         "Supervisor mode active — polling every %ds.  Paper bots run in background; Ctrl+C exits supervisor only.",
         _WATCH_INTERVAL,
     )
+    _analyzer_cycle = 0
     try:
         while True:
             time.sleep(_WATCH_INTERVAL)
@@ -1624,6 +1633,22 @@ def main(argv: list[str] | None = None) -> int:
                 registry = launch_paper_bots(registry, specs, base_env)
             except Exception as exc:
                 LOG.exception("Supervisor poll error (will retry in %ds): %s", _WATCH_INTERVAL, exc)
+
+            _analyzer_cycle += 1
+            if _analyzer_cycle % _ANALYZER_INTERVAL_CYCLES == 0:
+                try:
+                    import importlib.util as _ilu  # noqa: PLC0415
+
+                    _spec = _ilu.spec_from_file_location(
+                        "performance_analyzer",
+                        _PROJECT_ROOT / "scripts" / "performance_analyzer.py",
+                    )
+                    _mod = _ilu.module_from_spec(_spec)
+                    _spec.loader.exec_module(_mod)
+                    _mod.run_analysis(hours=4.0, auto_heal=True, min_trades=3, quiet=True)
+                    LOG.info("Performance analyzer completed (cycle %d)", _analyzer_cycle)
+                except Exception as exc:
+                    LOG.warning("Performance analyzer failed: %s", exc)
     except KeyboardInterrupt:
         LOG.info(
             "Supervisor stopped.  Paper bots continue running in background.\n"
