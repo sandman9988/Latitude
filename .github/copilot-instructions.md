@@ -727,6 +727,7 @@ ______________________________________________________________________
 - Do not pass `Decimal` to functions expecting `float` — convert with `float()` first
 - Do not reintroduce `H4` runtime path — use `M240` everywhere (files, cache keys, metrics, registry entries)
 - Do not commit `data/`, `logs/`, `trades/`, `store/`, `.env`, credentials, model artifacts, or live runtime outputs
+- Before major or risky changes, create a named rollback checkpoint first (for example an annotated `checkpoint/<name>` tag or clearly named branch) and record the pre/post commit IDs for easy inspection or revert.
 - Do not recreate deleted modules (see `docs/archive/REMOVED_LEGACY_CODE.md`)
 - Do not aggregate across timeframes unless the UI/code path explicitly says it is a portfolio/account view
 - Do not change training, promotion, reward shaping, trade logging, risk, decision logging, learned parameters, runtime metrics, or self-healing telemetry without checking whether HUD source paths, labels, units, scope, periods, and render tests need updating in the same change set.

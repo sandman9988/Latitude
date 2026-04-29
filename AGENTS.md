@@ -114,6 +114,10 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 
 - Do not commit `data/`, `logs/`, `trades/`, `store/`, `.env`, credentials,
   model artifacts, or live runtime outputs.
+- Before major or risky changes, create an explicit rollback checkpoint first
+  (for example an annotated `checkpoint/<name>` tag or clearly named branch).
+  Record the pre-change and post-change commit IDs so the operator can quickly
+  inspect, revert, or reset if the change causes runtime/HUD issues.
 - Prefer targeted tests for touched subsystems before committing. For training
   and supervisor changes, run:
 
