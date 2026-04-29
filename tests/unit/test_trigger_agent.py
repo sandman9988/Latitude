@@ -28,6 +28,11 @@ from src.agents.trigger_agent import (
     Q_RUNWAY_MIN,
     TriggerAgent,
 )
+from src.constants import (
+    PAPER_EPSILON_DECAY,
+    PAPER_EPSILON_END,
+    PAPER_EPSILON_START,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -61,7 +66,10 @@ class TestTriggerInit:
     def test_init_paper_mode(self):
         ta = TriggerAgent(window=64, n_features=7)
         assert ta.paper_mode is True
-        assert ta.epsilon == pytest.approx(1.0)  # Higher epsilon in paper mode
+        assert ta.epsilon == pytest.approx(PAPER_EPSILON_START)
+        assert ta.epsilon_end == pytest.approx(PAPER_EPSILON_END)
+        assert ta.epsilon_decay == pytest.approx(PAPER_EPSILON_DECAY)
+        assert ta.force_exploration is True
 
     def test_init_symbol_params(self):
         ta = TriggerAgent(symbol="XAUUSD", timeframe="M5", broker="pepperstone")

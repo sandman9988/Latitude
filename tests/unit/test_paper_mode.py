@@ -4,6 +4,14 @@ import pytest
 
 import os
 
+from src.constants import (
+    LIVE_EPSILON_DECAY,
+    LIVE_EPSILON_END,
+    LIVE_EPSILON_START,
+    PAPER_EPSILON_DECAY,
+    PAPER_EPSILON_END,
+    PAPER_EPSILON_START,
+)
 from src.core.paper_mode import get_paper_settings, setup_live_mode, setup_paper_mode
 
 
@@ -13,8 +21,9 @@ class TestSetupPaperMode:
         assert os.environ["PAPER_MODE"] == "1"
         assert os.environ["DISABLE_GATES"] == "1"
         assert os.environ["FEAS_THRESHOLD"] == "0.0"
-        assert os.environ["EPSILON_START"] == "1.0"
-        assert os.environ["EPSILON_END"] == "0.1"
+        assert os.environ["EPSILON_START"] == str(PAPER_EPSILON_START)
+        assert os.environ["EPSILON_END"] == str(PAPER_EPSILON_END)
+        assert os.environ["EPSILON_DECAY"] == str(PAPER_EPSILON_DECAY)
         assert os.environ["FORCE_EXPLORATION"] == "1"
 
     def test_returns_config_dict(self):
@@ -22,8 +31,9 @@ class TestSetupPaperMode:
         assert result["paper_mode"] is True
         assert result["disable_gates"] is True
         assert result["feasibility_threshold"] == pytest.approx(0.0)
-        assert result["epsilon_start"] == pytest.approx(1.0)
-        assert result["epsilon_end"] == pytest.approx(0.1)
+        assert result["epsilon_start"] == pytest.approx(PAPER_EPSILON_START)
+        assert result["epsilon_end"] == pytest.approx(PAPER_EPSILON_END)
+        assert result["epsilon_decay"] == pytest.approx(PAPER_EPSILON_DECAY)
         assert result["exploration_boost"] == pytest.approx(0.5)
         assert result["force_exploration"] is True
 
@@ -33,7 +43,9 @@ class TestSetupLiveMode:
         _result = setup_live_mode()
         assert os.environ["PAPER_MODE"] == "0"
         assert os.environ["DISABLE_GATES"] == "0"
-        assert os.environ["EPSILON_START"] == "0.05"
+        assert os.environ["EPSILON_START"] == str(LIVE_EPSILON_START)
+        assert os.environ["EPSILON_END"] == str(LIVE_EPSILON_END)
+        assert os.environ["EPSILON_DECAY"] == str(LIVE_EPSILON_DECAY)
         assert os.environ["FORCE_EXPLORATION"] == "0"
 
     def test_returns_config_dict(self):
@@ -41,7 +53,9 @@ class TestSetupLiveMode:
         assert result["paper_mode"] is False
         assert result["disable_gates"] is False
         assert result["confidence_floor"] == pytest.approx(0.55)
-        assert result["epsilon_start"] == pytest.approx(0.05)
+        assert result["epsilon_start"] == pytest.approx(LIVE_EPSILON_START)
+        assert result["epsilon_end"] == pytest.approx(LIVE_EPSILON_END)
+        assert result["epsilon_decay"] == pytest.approx(LIVE_EPSILON_DECAY)
         assert result["force_exploration"] is False
 
 

@@ -14,6 +14,7 @@ Covers:
 """
 
 import datetime as dt
+import json
 import logging
 from collections import deque
 from unittest.mock import MagicMock
@@ -22,6 +23,7 @@ import numpy as np
 import pytest
 
 from src.agents.dual_policy import DualPolicy
+from src.constants import PAPER_EPSILON_DECAY, PAPER_EPSILON_END
 
 LOG = logging.getLogger(__name__)
 
@@ -91,6 +93,27 @@ class TestDualPolicyInit:
         dp = DualPolicy(symbol="XAU/USD", timeframe="M15", enable_training=False)
 
         assert dp._default_checkpoint_dir() == tmp_path / "runtime" / "checkpoints" / "XAU_USD_M15"
+
+    def test_paper_checkpoint_metadata_cannot_lower_exploration_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PAPER_MODE", "1")
+        monkeypatch.setenv("EPSILON_END", str(PAPER_EPSILON_END))
+        monkeypatch.setenv("EPSILON_DECAY", str(PAPER_EPSILON_DECAY))
+        (tmp_path / "training_metadata.json").write_text(
+            json.dumps(
+                {
+                    "trigger_training_steps": 10,
+                    "trigger_epsilon": 0.01,
+                    "trigger_epsilon_decay": 0.998,
+                    "harvester_training_steps": 5,
+                },
+            ),
+        )
+
+        dp = DualPolicy(window=64, enable_training=False)
+
+        assert dp._ckpt_load_metadata(tmp_path) is True
+        assert dp.trigger.epsilon == pytest.approx(PAPER_EPSILON_END)
+        assert dp.trigger.epsilon_decay == pytest.approx(PAPER_EPSILON_DECAY)
 
 
 # ---------------------------------------------------------------------------

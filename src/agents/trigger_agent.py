@@ -33,6 +33,13 @@ from src.constants import (
     GRAD_CLIP_NORM,
     L2_WEIGHT,
     LEARNING_RATE,
+    LIVE_EPSILON_DECAY,
+    LIVE_EPSILON_END,
+    LIVE_EPSILON_START,
+    PAPER_EPSILON_DECAY,
+    PAPER_EPSILON_END,
+    PAPER_EPSILON_START,
+    PAPER_FORCE_EXPLORATION,
     STATE_WINDOW_SIZE,
     TAU,
     TRIGGER_BUFFER_CAPACITY,
@@ -143,11 +150,18 @@ class TriggerAgent(AgentTrainingMixin):
         self.disable_gates = os.environ.get("DISABLE_GATES", "0") == "1"
 
         # Epsilon-greedy exploration for training
-        self.epsilon = float(os.environ.get("EPSILON_START", "1.0" if self.paper_mode else "0.05"))
-        self.epsilon_end = float(os.environ.get("EPSILON_END", "0.1" if self.paper_mode else "0.01"))
-        self.epsilon_decay = float(os.environ.get("EPSILON_DECAY", "0.998"))
+        self.epsilon = float(
+            os.environ.get("EPSILON_START", str(PAPER_EPSILON_START if self.paper_mode else LIVE_EPSILON_START)),
+        )
+        self.epsilon_end = float(
+            os.environ.get("EPSILON_END", str(PAPER_EPSILON_END if self.paper_mode else LIVE_EPSILON_END)),
+        )
+        self.epsilon_decay = float(
+            os.environ.get("EPSILON_DECAY", str(PAPER_EPSILON_DECAY if self.paper_mode else LIVE_EPSILON_DECAY)),
+        )
         self.exploration_boost = float(os.environ.get("EXPLORATION_BOOST", "0.5" if self.paper_mode else "0.0"))
-        self.force_exploration = os.environ.get("FORCE_EXPLORATION", "0") == "1"
+        force_default = "1" if self.paper_mode and PAPER_FORCE_EXPLORATION else "0"
+        self.force_exploration = os.environ.get("FORCE_EXPLORATION", force_default) == "1"
         self.bars_since_trade = 0
         self.max_bars_inactive = int(os.environ.get("MAX_BARS_INACTIVE", "10" if self.paper_mode else "1000"))
 
@@ -884,7 +898,8 @@ class TriggerAgent(AgentTrainingMixin):
 
         self._runway_cal_counts[bucket] += 1
         LOG.debug(
-            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe_frac=%.5f ewma=%.5f resid=%.5f abs_err=%.5f alpha=%.3f n=%d",
+            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe_frac=%.5f ewma=%.5f "
+            "resid=%.5f abs_err=%.5f alpha=%.3f n=%d",
             bucket,
             q_val,
             actual_mfe_frac,
@@ -1139,6 +1154,6 @@ if __name__ == "__main__":
 
     # Test 5: Q-to-runway mapping
     assert abs(trigger._q_to_runway(0.0) - Q_RUNWAY_MIN) < 1e-9
-    assert abs(trigger._q_to_runway(1.5) - (Q_RUNWAY_MIN + (1.5 / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN))) < 1e-9
+    expected_mid_runway = Q_RUNWAY_MIN + (1.5 / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
+    assert abs(trigger._q_to_runway(1.5) - expected_mid_runway) < 1e-9
     assert abs(trigger._q_to_runway(3.0) - Q_RUNWAY_MAX) < 1e-9
-

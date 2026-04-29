@@ -995,15 +995,15 @@ live_train_flow() {
     export PAPER_MODE=1
     export DISABLE_GATES=1
     export EPSILON_START=1.0
-    export EPSILON_END=0.1
-    export EPSILON_DECAY=0.998
+    export EPSILON_END=0.25
+    export EPSILON_DECAY=0.9998
     export EXPLORATION_BOOST=0.5
     export FORCE_EXPLORATION=1
     export MAX_BARS_INACTIVE=10
     export DDQN_ONLINE_LEARNING=1
     log ""
     log "${BLUE}=== Live Training Mode ===${NC}"
-    log "  PAPER_MODE=1 | gates OFF | epsilon 1.0 → 0.1 | full exploration"
+    log "  PAPER_MODE=1 | gates OFF | epsilon 1.0 → 0.25 | full exploration"
     log ""
     orchestrate_with_hud
 }
@@ -1156,7 +1156,7 @@ main() {
     log "  Quantity:      ${QTY}"
     log "  Timeframe:     M${TIMEFRAME_MINUTES}"
     log "  Mode:          $([ "${PAPER_MODE:-0}" == "1" ] && echo "PAPER (Training)" || echo "LIVE (Production)")"
-    log "  Epsilon:       ${EPSILON_START:-1.0} → ${EPSILON_END:-0.1}"
+    log "  Epsilon:       ${EPSILON_START:-1.0} → ${EPSILON_END:-0.25}"
     log "  Quote Config:  ${CTRADER_CFG_QUOTE}"
     log "  Trade Config:  ${CTRADER_CFG_TRADE}"
     log ""

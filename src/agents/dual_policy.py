@@ -101,7 +101,7 @@ class DualPolicy:
     - If DDQN_DUAL_AGENT=1: Uses dual-agent architecture
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         *args: int,
         config: DualPolicyConfig | None = None,
@@ -373,7 +373,8 @@ class DualPolicy:
             predicted_runway_gross_adjusted = predicted_runway_gross * regime_multiplier
 
             LOG.info(
-                "[DUAL_POLICY] TRIGGER: %s entry, conf=%.2f, runway_net=%.4f runway_gross=%.4f (base_net=%.4f base_gross=%.4f regime=%s mult=%.2fx)",
+                "[DUAL_POLICY] TRIGGER: %s entry, conf=%.2f, runway_net=%.4f runway_gross=%.4f "
+                "(base_net=%.4f base_gross=%.4f regime=%s mult=%.2fx)",
                 "LONG" if action == 1 else "SHORT",
                 confidence,
                 predicted_runway_adjusted,
@@ -1118,11 +1119,19 @@ class DualPolicy:
             self.trigger.epsilon = metadata.get("trigger_epsilon", self.trigger.epsilon)
             # Clamp epsilon to the floor configured in .env so stale checkpoints
             # cannot lock the bot below the minimum exploration rate. Default floor
-            # is 0.1 (paper mode) matching trigger_agent.py EPSILON_END default.
-            _env_floor = float(os.environ.get("EPSILON_END", "0.1"))
+            # is the configured paper floor so stale checkpoints cannot lock
+            # the bot below the minimum exploration rate.
+            _env_floor = float(os.environ.get("EPSILON_END", str(getattr(self.trigger, "epsilon_end", 0.1))))
             self.trigger.epsilon = max(_env_floor, self.trigger.epsilon)
             if "trigger_epsilon_decay" in metadata:
-                self.trigger.epsilon_decay = metadata["trigger_epsilon_decay"]
+                _metadata_decay = float(metadata["trigger_epsilon_decay"])
+                _configured_decay = float(
+                    os.environ.get("EPSILON_DECAY", str(getattr(self.trigger, "epsilon_decay", 0.998))),
+                )
+                if getattr(self.trigger, "paper_mode", False):
+                    self.trigger.epsilon_decay = max(_configured_decay, _metadata_decay)
+                else:
+                    self.trigger.epsilon_decay = _metadata_decay
             self.harvester.training_steps = metadata.get("harvester_training_steps", 0)
             if self.trigger.ddqn is not None:
                 self.trigger.ddqn.training_steps = self.trigger.training_steps
@@ -1248,4 +1257,3 @@ if __name__ == "__main__":
     policy.on_exit(exit_price=100050.0, capture_ratio=0.8, was_wtl=False)
     assert policy.current_position == 0
     assert SafeMath.is_zero(policy.mfe)
-
