@@ -118,6 +118,37 @@ Emergency reset (`_apply_capture_emergency_reset` in openapi_hub.py) applies tim
 - `capture_decay_min_mfe_pct    = CAPTURE_DECAY_MIN_MFE_PCT * tf_scale` ← no extra 0.50×
 - `capture_decay_threshold      = 0.50`
 
+## Per-Trade Risk Cap (src/constants.py)
+
+Hard cap is R-multiple-based, not fixed USD. `MAX_LOSS_PER_TRADE_USD` was removed.
+
+```python
+MAX_LOSS_MULT_PER_TRADE: float = 5.0   # cap = 5× the position's expected 1R stop-loss
+MIN_CAP_USD: float = 2.0               # absolute floor
+MAX_CAP_USD: float = 200.0             # absolute ceiling
+# cap_usd = entry_price × (STOP_LOSS_PCT_DEFAULT/100) × qty × contract_size × 5.0
+# clamped to [2.0, 200.0]
+# XAUUSD (0.01 lot, ~$3300): cap ≈ $66.  BTCUSD (0.01 lot, ~$114k): cap ≈ $23.
+```
+
+R:R profit floor: when `MFE ≥ 1R`, trailing floor = `MFE − 1R` (protects captured gain).
+
+## Reward Shaping (src/core/reward_shaper.py, as of 2026-04-29)
+
+Key constants after rebalancing — PnL signal raised 8.5×, timing penalty reduced:
+
+```python
+WEIGHT_ACTIVITY: float = 0.2            # was 0.8 — activity bonus deprioritised
+WEIGHT_PNL_ALIGNMENT: float = 1.2       # was 0.6 — PnL signal weight doubled
+PNL_ALIGNMENT_MULT_DEFAULT: float = 1.5 # was 0.35 — effective PnL weight: 0.21 → 1.80
+UNDEVELOPED_MFE_PENALTY_SCALE: float = -0.4  # was -1.0 — timing penalty softened
+```
+
+Trigger reward saturation fix (openapi_hub.py `_close_position`): the log-based runway
+shaped reward is only applied when `abs(shaped_tr) < 2.99`; otherwise falls back to the
+4-component reward (`accuracy + magnitude − false_positive − toxic_flow`). This prevents
+73%-at-rail gradient collapse when the runway predictor is uncalibrated.
+
 ## Downloading History Data
 
 Credentials in `.env.openapi` lack `export` — must load with `set -a`:

@@ -12,6 +12,8 @@ Active paper trading **XAUUSD + BTCUSD** on a **multi-timeframe fleet** (M1, M5,
 
 **Current topology:** OpenAPI Hub (`src/core/openapi_hub.py`) — one hub process per symbol covering all TFs. `UNIVERSE_BROKER_TOPOLOGY=openapi-hub` is the runtime default. Legacy FIX-based `ctrader_ddqn_paper.py` still exists for reference only.
 
+**Paper-training exploration:** keep live/paper learning deliberately exploratory: `EPSILON_START=1.0`, `EPSILON_END=0.25`, `EPSILON_DECAY=0.9998`, `FORCE_EXPLORATION=1`. Checkpoint metadata may restore current epsilon above the floor, but must not lower the configured paper floor or replace the slower paper decay with stale faster decay.
+
 **GPU Support:** AMD ROCm 7.2+ (gfx1100/gfx1102/Navi 31/33) with native BF16 training, NVIDIA CUDA, and CPU fallback. AMD optimizations auto-detected at startup. Always set `HSA_OVERRIDE_GFX_VERSION=11.0.0`.
 
 ______________________________________________________________________
@@ -123,7 +125,8 @@ ______________________________________________________________________
 
 ## Profitability safeguards
 
-- `MAX_LOSS_PER_TRADE_USD = 100.0` — hard per-trade cap checked on every tick
+- **R-multiple max-loss cap** — hard per-trade cap = `5 × 1R` (position's own expected stop), clamped to [$2, $200]. Computed from `entry_price × STOP_LOSS_PCT_DEFAULT/100 × qty × contract_size × MAX_LOSS_MULT_PER_TRADE`. XAUUSD≈$66, BTCUSD≈$23. Constants: `MAX_LOSS_MULT_PER_TRADE=5.0`, `MIN_CAP_USD=2.0`, `MAX_CAP_USD=200.0`. Replaces the old fixed `MAX_LOSS_PER_TRADE_USD=100.0`.
+- **R:R profit floor** — when `MFE ≥ 1R`, trailing floor = `MFE − 1R` (protects captured 1R below peak)
 - **Max-loss runs on EVERY tick regardless of pending-close status** (DID-1 fix — removed pending-close exemption)
 - **Bar-close max-loss check runs BEFORE pending-close early return** (DID-2 fix)
 - **Harvester ML exception escalates to max-loss fallback** (DID-3 fix)
@@ -632,7 +635,7 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## Recent Fixes (Apr 27–28, 2026)
+## Recent Fixes (Apr 27–29, 2026)
 
 | Fix | Problem | Solution |
 | --- | ------- | -------- |
@@ -647,6 +650,10 @@ ______________________________________________________________________
 | HUD pipeline ZΩ display | Untrained bots (`z_omega=0.0`, no weights) shown as red `ZΩ 0.0000` | `_render_pipeline_card`: check `not entry.get("weights_path")` → show `ZΩ —` |
 | HUD trade quantity | `_excursion_usd_for_trade` read `qty` key (missing) instead of `quantity` | Fallback: `trade.get("quantity") or trade.get("qty", 0.1)` |
 | HUD offline enrichment | "done" offline entries missing ZΩ (zo=None) for bots not in current training run | `_enrich_offline_stats_from_champions()` fills ZΩ from `offline_champions.json` |
+| AMD buffer wiring | `get_amd_optimized_buffer_capacity()` existed but was never passed to `DualPolicyConfig` — runtime used 2k/10k defaults | Hub now imports and calls `get_amd_optimized_buffer_capacity()` for both agents (50k on AMD) |
+| HUD buffer denominators | `_RT_TRIG_CAP`/`_RT_HARV_CAP` hardcoded to 2000/10000 — fill bars showed wrong scale | Module-level constants now call `get_amd_optimized_buffer_capacity()` at import time |
+| Reward gradient collapse | 73% of trigger experiences at ±3.0 rail (log-runway reward saturates when predictor uncalibrated); PnL signal at 0.21 effective weight; timing penalty ×1.0 too aggressive | Trigger: fallback to 4-component reward when shaped reward is at rail (abs ≥ 2.99). PnL alignment weight 0.6→1.2, multiplier 0.35→1.5 (effective 0.21→1.80). Activity bonus 0.8→0.2. Timing penalty -1.0→-0.4. |
+| Fixed $100 max-loss cap | Instrument-blind: 5.4×R for XAUUSD, 32.5×R for BTCUSD (practically never fired on BTC) | Replaced with 5×R dynamic cap (entry × stop% × lot). XAUUSD≈$66, BTCUSD≈$23. R:R floor at 1R MFE. |
 
 ### What NOT to do (continued from above)
 
