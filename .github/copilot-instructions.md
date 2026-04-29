@@ -12,7 +12,7 @@ Active paper trading **XAUUSD + BTCUSD** on a **multi-timeframe fleet** (M1, M5,
 
 **Current topology:** OpenAPI Hub (`src/core/openapi_hub.py`) — one hub process per symbol covering all TFs. `UNIVERSE_BROKER_TOPOLOGY=openapi-hub` is the runtime default. Legacy FIX-based `ctrader_ddqn_paper.py` still exists for reference only.
 
-**Paper-training exploration:** keep live/paper learning deliberately exploratory: `EPSILON_START=1.0`, `EPSILON_END=0.25`, `EPSILON_DECAY=0.9998`, `FORCE_EXPLORATION=1`. Checkpoint metadata may restore current epsilon above the floor, but must not lower the configured paper floor or replace the slower paper decay with stale faster decay.
+**Paper-training exploration:** keep live/paper learning deliberately exploratory: `EPSILON_START=1.0`, `EPSILON_END=0.25`, `EPSILON_DECAY=0.9998`, `FORCE_EXPLORATION=1`. All values sourced from `src/constants.py` (`PAPER_EPSILON_*`). Checkpoint metadata may restore current epsilon above the floor, but must not lower the configured paper floor or replace the slower paper decay with stale faster decay.
 
 **GPU Support:** AMD ROCm 7.2+ (gfx1100/gfx1102/Navi 31/33) with native BF16 training, NVIDIA CUDA, and CPU fallback. AMD optimizations auto-detected at startup. Always set `HSA_OVERRIDE_GFX_VERSION=11.0.0`.
 
@@ -53,6 +53,7 @@ ______________________________________________________________________
 | `src/features/event_time_features.py` | Session/rollover/week event features (6 broadcast dims) |
 | `run_universe.py` | Supervisor launching per-symbol hubs, weight sync |
 | `scripts/performance_analyzer.py` | Self-healing fleet analyzer — runs every 4h, applies corrections via `LearnedParametersManager` |
+| `scripts/optuna_then_tournament.sh` | Chains Optuna HPO search then tournament promotion for a symbol/TF |
 | `train_offline.py` | Offline tournament trainer (6 variants, auto-promote) |
 | `run.sh` | Shell launcher (sources env + ROCm config) |
 
@@ -533,6 +534,22 @@ HSA_OVERRIDE_GFX_VERSION=11.0.0 python3 train_offline.py \
 
 XAUUSD M15/M30/M60 offline training skipped when live cache < 50 rows — needs more paper-trading time.
 
+### Optuna HPO mode
+
+Replace `--tournament-variants` with `--optuna-trials N` for Bayesian HPO:
+
+```bash
+HSA_OVERRIDE_GFX_VERSION=11.0.0 python3 train_offline.py \
+  data/history/XAUUSD_M5.csv data/training_cache_XAUUSD_M5.jsonl \
+  --symbols XAUUSD --workers 2 --optuna-trials 20 \
+  --accept-if-better --auto-promote --paper-threshold 1.0
+```
+
+- Each `(symbol, timeframe)` gets an isolated SQLite study: `data/optuna/offline_SYMBOL_MTF.db` — studies resume across restarts
+- Objective: ZΩ + val PF + val net PnL with trade-shortfall penalty
+- Promotion still routes through the incumbent/champion acceptance guard unchanged
+- `scripts/optuna_then_tournament.sh` chains Optuna search + tournament promotion
+
 Offline champion acceptance order (Apr 2026 fix):
 
 1. `data/checkpoints/offline_champions.json`
@@ -665,6 +682,10 @@ ______________________________________________________________________
 | Blank `close_reason` records | `shutdown()` and `_PaperEmergencyCloser.close_all_positions()` called `_close_position()` without setting `harvester.last_close_reason` → blank field in trade log | Both paths now set `"shutdown"` / `"circuit_breaker"` on `harvester.last_close_reason` before calling `_close_position()`. |
 | Missing `trigger_data` fields | `entry_confidence` and `entry_vpin_z` existed only at top level of trade_log — absent from `trigger_data` sub-dict, so entry context was incomplete for reward shaping analysis | Added both fields to `_entry_trigger_data` dict in `_handle_flat()`; `trigger_data` grows from 32 → 34 sub-fields. |
 | Self-healing loop | No automatic detection or correction of fleet anomalies (DDQN win-rate collapse, runway miscalibration, excessive emergency stops) | Added `scripts/performance_analyzer.py` (8 anomaly codes, auto-corrections via `LearnedParametersManager`); supervisor runs it every 4 h with `--auto-heal`. |
+| HUD self-heal panel | No visibility into whether the analyzer was running or finding issues | `_render_health_analyzer()` added to Overview SYSTEM HEALTH block — shows fleet health, anomaly codes, and last corrections from `data/performance_health.json`. |
+| Epsilon hardcoding | Paper epsilon values (0.1 end, 0.9995 decay) duplicated across paper_mode.py, trigger_agent.py, dual_policy.py, run.sh — checkpoint reload could silently override paper floor | Centralised into `PAPER_EPSILON_*` / `LIVE_EPSILON_*` constants; `load_checkpoint()` preserves paper floor and never replaces paper decay with stale metadata. Paper floor raised 0.1→0.25. |
+| Optuna HPO | Offline training only supported fixed tournament variants — no hyperparameter search | `--optuna-trials N` enables Bayesian HPO per bot with persistent SQLite studies; objective scores ZΩ + val PF + net PnL; promotion guard unchanged. |
+| Reward monitor gaps | Quality guards did not suggest raising `reward_weight_pnl_alignment` when PF/PnL degraded | Two new suggestion calls added: one on PF+PnL drop, one when capture drops with flat/negative per-trade PnL. |
 
 ### What NOT to do (continued from above)
 

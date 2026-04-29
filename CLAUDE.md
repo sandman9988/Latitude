@@ -285,6 +285,23 @@ HSA_OVERRIDE_GFX_VERSION=11.0.0 python3 train_offline.py \
 
 XAUUSD M15/M30/M60 offline training skipped when live cache < 50 rows — needs more paper-trading time.
 
+### Optuna Hyperparameter Search
+
+Pass `--optuna-trials N` instead of `--tournament-variants` to run Bayesian HPO:
+
+```bash
+HSA_OVERRIDE_GFX_VERSION=11.0.0 python3 train_offline.py \
+  data/history/XAUUSD_M5.csv data/training_cache_XAUUSD_M5.jsonl \
+  --symbols XAUUSD --workers 2 --optuna-trials 20 \
+  --accept-if-better --auto-promote --paper-threshold 1.0
+```
+
+- Each `(symbol, timeframe)` gets an isolated SQLite study: `data/optuna/offline_SYMBOL_MTF.db`
+- Studies persist across restarts — Optuna resumes from completed trials
+- Objective: ZΩ + val PF + val net PnL, with trade-shortfall penalty for under-sampled runs
+- Promotion still routes through the incumbent/champion acceptance guard unchanged
+- `scripts/optuna_then_tournament.sh` runs Optuna search then tournament promotion in sequence
+
 ## ExperienceBuffer Save Robustness (src/utils/experience_buffer.py)
 
 `save()` now filters to a canonical state size (determined by the first non-None entry)
@@ -320,6 +337,37 @@ Analyzes `data/trade_log.jsonl` and applies corrective parameter adjustments whe
 
 Writes `data/performance_health.json` with `overall_health`, per-bot metrics, anomalies, and
 corrections applied. Run manually: `python3 scripts/performance_analyzer.py --auto-heal --hours 24`.
+
+## Paper Exploration Constants (src/constants.py)
+
+All epsilon/exploration values are sourced from `constants.py` — never hardcode them:
+
+```python
+PAPER_EPSILON_START: float = 1.0    # 100% random at start of paper training
+PAPER_EPSILON_END:   float = 0.25   # Floor: keep 25% exploration throughout (was 0.1)
+PAPER_EPSILON_DECAY: float = 0.9998 # Slower decay than before (was 0.9995)
+PAPER_FORCE_EXPLORATION: bool = True
+
+LIVE_EPSILON_START: float = 0.05
+LIVE_EPSILON_END:   float = 0.01
+LIVE_EPSILON_DECAY: float = 0.9995
+```
+
+`DualPolicy.load_checkpoint()` clamps restored epsilon to the configured floor and **does not
+override paper epsilon_decay with stale checkpoint metadata** — the paper decay is always the
+slower configured rate, not whatever a stale checkpoint recorded.
+
+## HUD Self-Healing Panel (src/monitoring/hud_tabbed.py)
+
+The Overview tab's **🏥 SYSTEM HEALTH** block now includes a **🔄 SELF-HEAL** row reading
+`data/performance_health.json`. Shows:
+
+- Overall fleet health (`HEALTHY` / `DEGRADED` / `CRITICAL`) and report age
+- Fleet win rate, profit factor, emergency rate (color-coded)
+- Active anomaly codes per bot (up to 4)
+- Last parameter corrections applied with `old→new` values
+
+When the file does not exist yet: `no report yet — runs every 4 h`.
 
 ## Code Style
 
