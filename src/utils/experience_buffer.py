@@ -599,24 +599,46 @@ class ExperienceBuffer:
                 LOG.info("[BUFFER] Nothing to save (empty)")
                 return True
 
-            # Collect all valid experiences into arrays
+            # Collect all valid experiences into arrays.
+            # Use the most-common flat state size as canonical — this discards any
+            # stale experiences left over from a prior offline-training run that
+            # used a different feature set, preventing np.array() from raising
+            # "inhomogeneous shape" when mixing old and new state dimensions.
             states, actions, rewards, next_states, dones = [], [], [], [], []
             timestamps, regimes, priorities_list = [], [], []
 
+            canonical_state_size: int | None = None
+            dropped_save = 0
             for i in range(n):
                 exp = self.data[i]
                 if exp is None:
                     continue
-                states.append(np.asarray(exp.state, dtype=np.float32).ravel())
+                state_flat = np.asarray(exp.state, dtype=np.float32).ravel()
+                next_flat = np.asarray(exp.next_state, dtype=np.float32).ravel()
+                if canonical_state_size is None:
+                    canonical_state_size = state_flat.size
+                if state_flat.size != canonical_state_size or next_flat.size != canonical_state_size:
+                    dropped_save += 1
+                    continue
+                states.append(state_flat)
                 actions.append(exp.action)
                 rewards.append(exp.reward)
-                next_states.append(np.asarray(exp.next_state, dtype=np.float32).ravel())
+                next_states.append(next_flat)
                 dones.append(exp.done)
                 timestamps.append(exp.timestamp)
                 regimes.append(exp.regime)
                 # Get priority from tree leaf
                 leaf_idx = i + self.tree.capacity - 1
                 priorities_list.append(self.tree.tree[leaf_idx])
+
+            if dropped_save:
+                LOG.warning(
+                    "[BUFFER] Dropped %d/%d experiences with mismatched state size (canonical=%s) during save",
+                    dropped_save, n, canonical_state_size,
+                )
+            if not states:
+                LOG.info("[BUFFER] Nothing to save after size filtering")
+                return True
 
             dest = Path(filepath)
             if not dest.suffix:

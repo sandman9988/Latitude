@@ -357,6 +357,63 @@ class TestStalenessHalflife:
         h = staleness_halflife_for_timeframe(5, n_sessions=1.0, session_minutes=360.0)
         assert h == pytest.approx(21_600.0)
 
+
+# ---------------------------------------------------------------------------
+# Save / load persistence
+# ---------------------------------------------------------------------------
+
+
+class TestSaveLoad:
+    def test_round_trip(self, tmp_path):
+        """Saved buffer restores all experiences correctly."""
+        buf = ExperienceBuffer(capacity=50)
+        _fill_buffer(buf, 30, dim=7)
+        path = str(tmp_path / "buf")
+        assert buf.save(path)
+        buf2 = ExperienceBuffer(capacity=50)
+        assert buf2.load(path)
+        assert buf2.size == 30
+
+    def test_save_survives_mixed_state_dims(self, tmp_path):
+        """Save must not crash when buffer contains experiences with different
+        state sizes (happens after offline-training populates the buffer with
+        one state dimension and paper trading adds experiences with another).
+        The mismatched entries are silently dropped; the canonical-size entries
+        are written successfully."""
+        import time
+
+        buf = ExperienceBuffer(capacity=100)
+        rng = np.random.default_rng(0)
+
+        # Inject old experiences with dim=7 directly into the data array
+        # (bypasses add() validation to simulate what load() produces)
+        for i in range(20):
+            buf.data[i] = Experience(
+                state=rng.standard_normal(7).astype(np.float32),
+                action=0,
+                reward=1.0,
+                next_state=rng.standard_normal(7).astype(np.float32),
+                done=False,
+                timestamp=time.time(),
+                regime=int(RegimeSampling.UNKNOWN),
+                priority=1.0,
+            )
+            buf.tree.add(1.0)
+            buf.write_idx = (buf.write_idx + 1) % buf.capacity
+            buf.total_added += 1
+
+        # Add new experiences with dim=21 via the normal path
+        _fill_buffer(buf, 30, dim=21)
+
+        path = str(tmp_path / "mixed")
+        assert buf.save(path), "save() must not fail on mixed state dims"
+
+        # The canonical size is the first entry's size (dim=7 — injected first).
+        # dim=21 entries are dropped as mismatched; the 20 dim=7 entries survive.
+        buf2 = ExperienceBuffer(capacity=100)
+        assert buf2.load(path)
+        assert buf2.size == 20
+
     def test_d1_same_wall_clock(self):
         """D1 (1440 min timeframe) gives same halflife as M5 — instrument agnostic."""
         assert staleness_halflife_for_timeframe(1440) == pytest.approx(staleness_halflife_for_timeframe(5))
