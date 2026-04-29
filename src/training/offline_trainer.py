@@ -91,6 +91,9 @@ class TrainResult:
     val_trades: int
     total_train_steps: int
     elapsed_s: float
+    val_net_pnl: float = 0.0
+    val_avg_pnl: float = 0.0
+    val_profit_factor: float = 0.0
     weights_path: str = ""  # Written by OfflineTrainer.run()
     error: str = ""  # Non-empty if the job crashed
 
@@ -541,6 +544,9 @@ class OfflineTrainer:
                 val_trades=0,
                 total_train_steps=0,
                 elapsed_s=time.perf_counter() - t0,
+                val_net_pnl=0.0,
+                val_avg_pnl=0.0,
+                val_profit_factor=0.0,
                 error=str(exc),
             )
 
@@ -640,7 +646,8 @@ class OfflineTrainer:
         loaded = self._load_runtime_weights(policy, checkpoint_dir)
         if not loaded:
             return 0.0, 0, False
-        score, val_trades = self._run_validation(policy, val_bars, f"{self.symbol}_M{self.timeframe_minutes}_incumbent")
+        label = f"{self.symbol}_M{self.timeframe_minutes}_incumbent"
+        score, val_trades, *_ = self._run_validation(policy, val_bars, label)
         return score, val_trades, True
 
     def _run_inner(self, label: str, t0: float) -> TrainResult:
@@ -710,7 +717,7 @@ class OfflineTrainer:
         # CRITICAL: reset stale position state from training. If the last epoch
         # ended with an open trade, policy.current_position stays non-zero,
         # causing trigger.decide_entry to return 0 for every val bar → val=0.
-        score, val_trades = self._run_validation(policy, val_bars, label)
+        score, val_trades, val_net_pnl, val_avg_pnl, val_profit_factor = self._run_validation(policy, val_bars, label)
 
         # ── Save weights ───────────────────────────────────────────────────────
         weights_path = self._save_weights(policy, label)
@@ -726,6 +733,9 @@ class OfflineTrainer:
             val_trades=val_trades,
             total_train_steps=total_train_steps,
             elapsed_s=elapsed,
+            val_net_pnl=val_net_pnl,
+            val_avg_pnl=val_avg_pnl,
+            val_profit_factor=val_profit_factor,
             weights_path=weights_path,
         )
 
@@ -918,8 +928,8 @@ class OfflineTrainer:
         if hasattr(policy, "harvester") and hasattr(policy.harvester, "epsilon"):
             policy.harvester.epsilon = self.epsilon_end
 
-    def _run_validation(self, policy, val_bars: list, label: str) -> tuple[float, int]:
-        """Run validation pass and return (score, trade_count)."""
+    def _run_validation(self, policy, val_bars: list, label: str) -> tuple[float, int, float, float, float]:
+        """Run validation pass and return score plus PnL quality metrics."""
         self._prepare_validation_policy(policy)
         val_sim = _Simulator(
             policy,
@@ -937,13 +947,26 @@ class OfflineTrainer:
             val_sim.step(bar, i)
         val_pnl = [t.pnl_pts for t in val_sim.trades]
         score = z_omega(val_pnl)
+        net_pnl = float(sum(val_pnl))
+        avg_pnl = float(net_pnl / len(val_pnl)) if val_pnl else 0.0
+        gross_profit = float(sum(p for p in val_pnl if p > 0.0))
+        gross_loss = float(abs(sum(p for p in val_pnl if p < 0.0)))
+        if gross_loss > 0.0:
+            profit_factor = gross_profit / gross_loss
+        elif gross_profit > 0.0:
+            profit_factor = float("inf")
+        else:
+            profit_factor = 0.0
         LOG.info(
-            "[OFFLINE] %s val: %d trades, ZOmega=%.4f",
+            "[OFFLINE] %s val: %d trades, ZOmega=%.4f, net=%.4f, avg=%.4f, PF=%.4f",
             label,
             len(val_sim.trades),
             score,
+            net_pnl,
+            avg_pnl,
+            profit_factor,
         )
-        return score, len(val_sim.trades)
+        return score, len(val_sim.trades), net_pnl, avg_pnl, profit_factor
 
     def _save_weights(self, policy, label: str) -> str:
         """Save DDQN weights for both agents; return a summary path string."""

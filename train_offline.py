@@ -68,6 +68,7 @@ LOG = logging.getLogger("train_offline")
 # monitored live in the Training tab without parsing the log file.
 _STATUS_PATH = Path("data/offline_training_status.json")
 _OFFLINE_CHAMPIONS_NAME = "offline_champions.json"
+_OPTUNA_STORAGE_DIR = Path("data/optuna")
 _CAPTURE_RATIO_FLOOR = 1e-9
 _OFFLINE_RESUME_ENV = "CTRADER_OFFLINE_RESUME_STATUS"
 _OFFLINE_RESTART_COUNT_ENV = "CTRADER_OFFLINE_RESTART_COUNT"
@@ -390,6 +391,14 @@ class TrainingVariant:
     focused_cap_passes: int
     warm_start: bool
     seed_offset: int
+
+
+@dataclass(frozen=True)
+class OptunaSearchConfig:
+    trials: int
+    timeout_s: int | None
+    min_val_trades: int
+    storage_dir: str
 
 
 @dataclass(frozen=True)
@@ -802,6 +811,91 @@ def _variant_args(args, variant: TrainingVariant, defer_candidate_deploy: bool):
     return variant_args
 
 
+def _optuna_storage_path(storage_dir: str | Path, symbol: str, timeframe_minutes: int) -> Path:
+    """Per-bot Optuna SQLite store so searches resume independently."""
+    root = Path(storage_dir)
+    return root / f"offline_{_safe_path_token(symbol).upper()}_M{int(timeframe_minutes)}.db"
+
+
+def _trial_float(trial, name: str, low: float, high: float, *, step: float | None = None) -> float:
+    """Small wrapper so tests can use a fake trial without importing Optuna."""
+    try:
+        return float(trial.suggest_float(name, low, high, step=step))
+    except TypeError:
+        return float(trial.suggest_float(name, low, high))
+
+
+def _build_optuna_trial_spec(trial, args, job: Job, trial_number: int) -> dict[str, Any]:
+    """Convert one Optuna trial into the existing serialisable candidate spec."""
+    base_epochs = _clamp_int(args.n_epochs, 1)
+    base_every = _clamp_int(args.train_every, 1)
+    base_focus = _clamp_int(args.focused_cap_passes, 0)
+    base_seed = int(getattr(args, "tournament_seed", 8675309) or 8675309)
+
+    epsilon_start = _trial_float(trial, "epsilon_start", 0.20, 1.00, step=0.05)
+    epsilon_end_hi = min(0.30, max(0.02, epsilon_start - 0.05))
+    epsilon_end = _trial_float(trial, "epsilon_end", 0.01, epsilon_end_hi, step=0.01)
+    candidate_id = f"optuna_t{int(trial_number):04d}"
+    token = f"{candidate_id}:{job.symbol}:{job.timeframe_minutes}:{base_seed}".encode()
+
+    return {
+        "n_epochs": int(trial.suggest_int("n_epochs", base_epochs, max(base_epochs + 4, base_epochs))),
+        "train_every": int(trial.suggest_int("train_every", 1, max(base_every * 2, 1))),
+        "warm_start": bool(trial.suggest_categorical("warm_start", [True, False])),
+        "epsilon_start": epsilon_start,
+        "epsilon_end": epsilon_end,
+        "penalty_scale": _trial_float(trial, "penalty_scale", 0.50, 1.80, step=0.05),
+        "focused_cap_passes": int(trial.suggest_int("focused_cap_passes", 0, max(base_focus + 4, 1))),
+        "candidate_id": candidate_id,
+        "candidate_seed": (base_seed + zlib.crc32(token)) % 2_147_483_647,
+        "deploy_candidate": False,
+    }
+
+
+def _bounded_score(value: Any, *, neutral: float = 0.0, cap: float = 3.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return neutral
+    if math.isnan(parsed):
+        return neutral
+    if math.isinf(parsed):
+        return cap if parsed > 0 else -cap
+    return max(-cap, min(cap, parsed))
+
+
+def _optuna_objective_score(result: dict[str, Any], min_val_trades: int) -> float:
+    """Rank candidates by ZOmega plus validation PnL quality, with low-trade penalties."""
+    if result.get("error"):
+        return -1_000.0
+
+    z_score = _bounded_score(result.get("z_omega"), cap=5.0)
+    pf = _bounded_score(result.get("val_profit_factor"), cap=3.0)
+    net_pnl = _bounded_score(result.get("val_net_pnl"), cap=5.0)
+    avg_pnl = _bounded_score(result.get("val_avg_pnl"), cap=3.0)
+    val_trades = max(0, int(result.get("val_trades", 0) or 0))
+    trade_shortfall = max(0, int(min_val_trades) - val_trades)
+
+    return z_score + (0.25 * pf) + (0.20 * net_pnl) + (0.10 * avg_pnl) - (0.30 * trade_shortfall)
+
+
+def _prefer_optuna_result(candidate: dict[str, Any], incumbent: dict[str, Any] | None) -> bool:
+    """Prefer accepted Optuna trials first, then the highest objective score."""
+    if incumbent is None:
+        return True
+    if candidate.get("error") and not incumbent.get("error"):
+        return False
+    if incumbent.get("error") and not candidate.get("error"):
+        return True
+    candidate_accepted = candidate.get("accepted") is not False
+    incumbent_accepted = incumbent.get("accepted") is not False
+    if candidate_accepted != incumbent_accepted:
+        return candidate_accepted
+    return float(candidate.get("optuna_objective", -float("inf"))) > float(
+        incumbent.get("optuna_objective", -float("inf")),
+    )
+
+
 def _candidate_seed(base_seed: int | None, candidate_id: str, job: Job) -> int | None:
     if base_seed is None:
         return None
@@ -1073,6 +1167,9 @@ def _run_job(
         "candidate_seed": candidate_seed,
         "candidate_deploy_deferred": bool(accepted and not deploy_candidate),
         "z_omega": result.z_omega,
+        "val_net_pnl": result.val_net_pnl,
+        "val_avg_pnl": result.val_avg_pnl,
+        "val_profit_factor": result.val_profit_factor,
         "incumbent_z_omega": incumbent_z_omega,
         "incumbent_val_trades": incumbent_val_trades,
         "incumbent_loaded": incumbent_loaded,
@@ -1190,6 +1287,169 @@ def _run_job_tournament(
             "candidate_id": variant_specs[0].get("candidate_id", "tournament") if variant_specs else "tournament",
             "candidate_seed": None,
         }
+    return best
+
+
+def _run_job_optuna(
+    symbol: str,
+    timeframe_minutes: int,
+    bars_file: str,
+    file_format: str,
+    checkpoint_dir: str,
+    train_split: float,
+    max_bars: int | None,
+    accept_if_better: bool,
+    acceptance_margin: float,
+    source_files: list[str] | None,
+    focused_cap_replay: bool,
+    focused_cap_per_side: int,
+    focused_cap_lookback_days: float,
+    symbol_digits: int,
+    base_args: dict[str, Any],
+    search_config: OptunaSearchConfig,
+) -> dict[str, Any]:
+    """Run Optuna-generated candidates for one symbol/timeframe job."""
+    import logging as _log  # noqa: PLC0415
+
+    _log.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s][%(process)d] %(name)s: %(message)s")
+    logger = _log.getLogger("train_offline.optuna_worker")
+
+    try:
+        import optuna  # noqa: PLC0415
+    except Exception as exc:
+        return {
+            "symbol": symbol,
+            "timeframe_minutes": timeframe_minutes,
+            "z_omega": 0.0,
+            "train_trades": 0,
+            "val_trades": 0,
+            "total_train_steps": 0,
+            "elapsed_s": 0.0,
+            "weights_path": "",
+            "error": f"Optuna unavailable: {exc}",
+            "candidate_id": "optuna",
+            "candidate_seed": None,
+        }
+
+    label = f"{symbol}_M{timeframe_minutes}"
+    storage_path = _optuna_storage_path(search_config.storage_dir, symbol, timeframe_minutes)
+    storage_path.parent.mkdir(parents=True, exist_ok=True)
+    study_name = f"offline_{_safe_path_token(symbol).upper()}_M{int(timeframe_minutes)}"
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=study_name,
+        storage=f"sqlite:///{storage_path}",
+        load_if_exists=True,
+    )
+
+    args = argparse.Namespace(**base_args)
+    job = Job(symbol, timeframe_minutes, Path(bars_file), file_format)
+    best: dict[str, Any] | None = None
+
+    def objective(trial) -> float:
+        nonlocal best
+        spec = _build_optuna_trial_spec(trial, args, job, trial.number)
+        logger.info(
+            "[OPTUNA] %s trial=%d candidate=%s epochs=%d train_every=%d eps=%.3f->%.3f penalty=%.3f focused=%d",
+            label,
+            trial.number,
+            spec["candidate_id"],
+            spec["n_epochs"],
+            spec["train_every"],
+            spec["epsilon_start"],
+            spec["epsilon_end"],
+            spec["penalty_scale"],
+            spec["focused_cap_passes"],
+        )
+        result = _run_job(
+            symbol=symbol,
+            timeframe_minutes=timeframe_minutes,
+            bars_file=bars_file,
+            file_format=file_format,
+            checkpoint_dir=checkpoint_dir,
+            train_split=train_split,
+            train_every=spec["train_every"],
+            max_bars=max_bars,
+            n_epochs=spec["n_epochs"],
+            warm_start=spec["warm_start"],
+            epsilon_start=spec["epsilon_start"],
+            epsilon_end=spec["epsilon_end"],
+            symbol_digits=symbol_digits,
+            penalty_scale=spec["penalty_scale"],
+            accept_if_better=accept_if_better,
+            acceptance_margin=acceptance_margin,
+            source_files=source_files,
+            focused_cap_replay=focused_cap_replay,
+            focused_cap_per_side=focused_cap_per_side,
+            focused_cap_lookback_days=focused_cap_lookback_days,
+            focused_cap_passes=spec["focused_cap_passes"],
+            candidate_id=spec["candidate_id"],
+            candidate_seed=spec["candidate_seed"],
+            deploy_candidate=False,
+        )
+        score = _optuna_objective_score(result, search_config.min_val_trades)
+        result["optuna_objective"] = score
+        result["optuna_trial_number"] = trial.number
+        result["optuna_params"] = {
+            key: spec[key]
+            for key in (
+                "n_epochs",
+                "train_every",
+                "warm_start",
+                "epsilon_start",
+                "epsilon_end",
+                "penalty_scale",
+                "focused_cap_passes",
+            )
+        }
+        trial.set_user_attr("candidate_id", spec["candidate_id"])
+        trial.set_user_attr("z_omega", result.get("z_omega", 0.0))
+        trial.set_user_attr("val_trades", result.get("val_trades", 0))
+        trial.set_user_attr("val_net_pnl", result.get("val_net_pnl", 0.0))
+        trial.set_user_attr("val_avg_pnl", result.get("val_avg_pnl", 0.0))
+        trial.set_user_attr("val_profit_factor", result.get("val_profit_factor", 0.0))
+        trial.set_user_attr("accepted", result.get("accepted", False))
+        trial.set_user_attr("accept_reason", result.get("accept_reason", ""))
+        trial.set_user_attr("weights_path", result.get("weights_path", ""))
+
+        if not result.get("error") and _prefer_optuna_result(result, best):
+            best = result
+            logger.info(
+                "[OPTUNA] %s new best trial=%d objective=%.4f ZΩ=%.4f val_trades=%d avg_pnl=%.4f",
+                label,
+                trial.number,
+                score,
+                result.get("z_omega", 0.0),
+                result.get("val_trades", 0),
+                result.get("val_avg_pnl", 0.0),
+            )
+        return score
+
+    study.optimize(
+        objective,
+        n_trials=max(1, int(search_config.trials)),
+        timeout=search_config.timeout_s,
+        gc_after_trial=True,
+    )
+
+    if best is None:
+        return {
+            "symbol": symbol,
+            "timeframe_minutes": timeframe_minutes,
+            "z_omega": 0.0,
+            "train_trades": 0,
+            "val_trades": 0,
+            "total_train_steps": 0,
+            "elapsed_s": 0.0,
+            "weights_path": "",
+            "error": "all optuna trials failed",
+            "candidate_id": "optuna",
+            "candidate_seed": None,
+            "optuna_storage": str(storage_path),
+        }
+    best["optuna_storage"] = str(storage_path)
+    best["optuna_study_name"] = study.study_name
+    best["optuna_best_value"] = best.get("optuna_objective", 0.0)
     return best
 
 
@@ -1558,7 +1818,7 @@ def _retrain_eligible(
 def print_summary(results: list[dict]) -> None:
     header = (
         f"{'Symbol':<12} {'TF':>5} {'Trades':>7} {'ValTrades':>9} "
-        f"{'Steps':>7} {'ZOmega':>9} {'Guard':>9} {'Time':>8}  Status"
+        f"{'Steps':>7} {'ZOmega':>9} {'AvgPnL':>9} {'PF':>7} {'Guard':>9} {'Time':>8}  Status"
     )
     sep = "-" * len(header)
     print(f"\n{sep}")
@@ -1569,6 +1829,9 @@ def print_summary(results: list[dict]) -> None:
         status = f"ERROR: {r['error'][:40]}" if r.get("error") else "OK"
         zo = r.get("z_omega", 0.0)
         zo_str = f"{zo:.4f}" if zo != float("inf") else "  +inf"
+        avg_pnl = float(r.get("val_avg_pnl", 0.0) or 0.0)
+        pf = r.get("val_profit_factor", 0.0)
+        pf_str = f"{float(pf):.2f}" if pf != float("inf") else "+inf"
         inc = r.get("acceptance_guard_z_omega", r.get("incumbent_z_omega", 0.0))
         inc_str = f"{inc:.4f}" if inc != float("inf") else "  +inf"
         if not r.get("error") and r.get("accepted") is False:
@@ -1578,7 +1841,7 @@ def print_summary(results: list[dict]) -> None:
         print(
             f"{r['symbol']:<12} {label:>5} {r['train_trades']:>7} "
             f"{r['val_trades']:>9} {r['total_train_steps']:>7} "
-            f"{zo_str:>9} {inc_str:>9} {r['elapsed_s']:>7.1f}s  {status}"
+            f"{zo_str:>9} {avg_pnl:>9.4f} {pf_str:>7} {inc_str:>9} {r['elapsed_s']:>7.1f}s  {status}"
         )
     print(sep)
 
@@ -1704,6 +1967,36 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Base RNG seed for tournament candidates (default: 8675309)",
     )
+    p.add_argument(
+        "--optuna-trials",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "Run N Optuna-generated candidate trials per symbol/timeframe instead of deterministic "
+            "tournament variants (default: 0 = disabled)."
+        ),
+    )
+    p.add_argument(
+        "--optuna-timeout-secs",
+        type=int,
+        default=0,
+        metavar="SECONDS",
+        help="Optional per-job Optuna timeout in seconds (default: 0 = no timeout).",
+    )
+    p.add_argument(
+        "--optuna-min-val-trades",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Minimum validation trades before Optuna stops penalising sparse candidates (default: 5).",
+    )
+    p.add_argument(
+        "--optuna-storage-dir",
+        default=str(_OPTUNA_STORAGE_DIR),
+        metavar="PATH",
+        help="Directory for per-symbol/timeframe Optuna SQLite studies (default: data/optuna).",
+    )
     p.add_argument("--dry-run", action="store_true", help="Discover jobs and print plan without training")
     # Universe / paper-trading promotion
     p.add_argument(
@@ -1801,9 +2094,50 @@ def _execute_pool(
     candidate_id = str(getattr(args, "candidate_id", "offline_candidate") or "offline_candidate")
     base_seed = getattr(args, "candidate_seed", None)
     deploy_candidate = not bool(getattr(args, "defer_candidate_deploy", False))
+    optuna_trials = max(0, int(getattr(args, "optuna_trials", 0) or 0))
 
     with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
-        if variants is not None:
+        if optuna_trials > 0:
+            timeout_raw = int(getattr(args, "optuna_timeout_secs", 0) or 0)
+            search_config = OptunaSearchConfig(
+                trials=optuna_trials,
+                timeout_s=timeout_raw if timeout_raw > 0 else None,
+                min_val_trades=max(0, int(getattr(args, "optuna_min_val_trades", 5) or 0)),
+                storage_dir=str(getattr(args, "optuna_storage_dir", _OPTUNA_STORAGE_DIR)),
+            )
+            base_args = {
+                "n_epochs": args.n_epochs,
+                "train_every": args.train_every,
+                "epsilon_start": args.epsilon_start,
+                "epsilon_end": args.epsilon_end,
+                "penalty_scale": args.penalty_scale,
+                "focused_cap_passes": args.focused_cap_passes,
+                "tournament_seed": getattr(args, "tournament_seed", 8675309),
+            }
+            futures = {
+                pool.submit(
+                    _run_job_optuna,
+                    j.symbol,
+                    j.timeframe_minutes,
+                    str(j.bars_file),
+                    j.file_format,
+                    args.checkpoint_dir,
+                    args.train_split,
+                    args.max_bars,
+                    args.accept_if_better,
+                    args.acceptance_margin,
+                    [str(path) for path in _job_source_files(j)],
+                    args.focused_cap_replay,
+                    args.focused_cap_per_side,
+                    args.focused_cap_lookback_days,
+                    _load_symbol_digits(j.symbol),
+                    base_args,
+                    search_config,
+                ): j
+                for j in jobs
+            }
+            candidate_id = "optuna"
+        elif variants is not None:
             # Tournament mode: one future per job, all variants run inside the worker.
             futures = {
                 pool.submit(
@@ -1911,6 +2245,12 @@ def _execute_pool(
                         entry["candidate_id"] = res.get("candidate_id", candidate_id)
                         entry["candidate_seed"] = res.get("candidate_seed")
                         entry["z_omega"] = res.get("z_omega", 0.0)
+                        entry["optuna_objective"] = res.get("optuna_objective")
+                        entry["optuna_trial_number"] = res.get("optuna_trial_number")
+                        entry["optuna_storage"] = res.get("optuna_storage", "")
+                        entry["val_net_pnl"] = res.get("val_net_pnl", 0.0)
+                        entry["val_avg_pnl"] = res.get("val_avg_pnl", 0.0)
+                        entry["val_profit_factor"] = res.get("val_profit_factor", 0.0)
                         entry["train_trades"] = res.get("train_trades", 0)
                         entry["val_trades"] = res.get("val_trades", 0)
                         entry["incumbent_z_omega"] = res.get("incumbent_z_omega", 0.0)
@@ -2141,7 +2481,17 @@ def main(argv: list[str] | None = None) -> int:
     _write_status(_ot_status)
 
     training_variants = _build_training_variants(args)
-    tournament_mode = len(training_variants) > 1
+    optuna_mode = max(0, int(getattr(args, "optuna_trials", 0) or 0)) > 0
+    tournament_mode = len(training_variants) > 1 and not optuna_mode
+    search_mode = tournament_mode or optuna_mode
+    if optuna_mode:
+        timeout_raw = int(getattr(args, "optuna_timeout_secs", 0) or 0)
+        LOG.info(
+            "[OPTUNA] Running %d trial(s) per job; timeout=%s; storage=%s",
+            args.optuna_trials,
+            f"{timeout_raw}s" if timeout_raw > 0 else "none",
+            args.optuna_storage_dir,
+        )
     if tournament_mode:
         LOG.info("[TOURNAMENT] Running %d candidate recipes per job", len(training_variants))
         for variant in training_variants:
@@ -2159,7 +2509,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── Round 0 / tournament variants ─────────────────────────────────────────
     best_per_job: dict[tuple, dict] = {}
-    if tournament_mode:
+    if search_mode:
         # Each job runs all its variants internally (no per-variant pool barrier).
         # With --workers N, N jobs process their full variant sequences in parallel.
         _ot_status["status"] = "running"
@@ -2172,7 +2522,7 @@ def main(argv: list[str] | None = None) -> int:
             ot_status=_ot_status,
             t_start=t_start,
             best_per_job=best_per_job,
-            variants=training_variants,
+            variants=training_variants if tournament_mode else None,
         )
         results.extend(round_results)
     else:
@@ -2188,7 +2538,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         results.extend(round_results)
 
-    if not tournament_mode:
+    if not search_mode:
         # ── Auto-retrain rounds: warm-start re-run for below-threshold jobs ───
         # Keep best result per (symbol, timeframe) across all rounds.
         for r in results:
@@ -2197,7 +2547,7 @@ def main(argv: list[str] | None = None) -> int:
                 best_per_job[key] = r
                 _record_offline_champion(args.checkpoint_dir, r)
 
-    for retrain_round in range(1, args.retrain_rounds if not tournament_mode else 1):
+    for retrain_round in range(1, args.retrain_rounds if not search_mode else 1):
         retry_jobs = [
             j
             for j in jobs
@@ -2279,7 +2629,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # Copy best-by-ZOmega weights per symbol/timeframe.
     best = select_best_per_bot(deduped + errored)
-    if tournament_mode and best:
+    if search_mode and best:
         for result in best.values():
             _deploy_candidate_result(result, args.checkpoint_dir)
         best = select_best_per_bot(deduped + errored)

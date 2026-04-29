@@ -703,6 +703,75 @@ class TestOfflineAcceptance:
         assert seed_a == seed_b
         assert seed_a != seed_c
 
+    def test_optuna_storage_path_is_per_symbol_timeframe(self, tmp_path):
+        path = to._optuna_storage_path(tmp_path / "optuna", "XAU/USD+", 240)
+
+        assert path == tmp_path / "optuna" / "offline_XAU_USD_M240.db"
+
+    def test_optuna_objective_penalizes_cents_only_sparse_candidates(self):
+        good = {
+            "z_omega": 1.4,
+            "val_trades": 8,
+            "val_net_pnl": 12.0,
+            "val_avg_pnl": 1.5,
+            "val_profit_factor": 1.8,
+        }
+        cents = {
+            "z_omega": 1.4,
+            "val_trades": 2,
+            "val_net_pnl": 0.2,
+            "val_avg_pnl": 0.1,
+            "val_profit_factor": 1.1,
+        }
+
+        assert to._optuna_objective_score(good, min_val_trades=5) > to._optuna_objective_score(
+            cents,
+            min_val_trades=5,
+        )
+
+    def test_optuna_prefers_accepted_candidate_over_higher_rejected_objective(self):
+        accepted = {"accepted": True, "optuna_objective": 1.0}
+        rejected = {"accepted": False, "optuna_objective": 10.0}
+
+        assert to._prefer_optuna_result(accepted, rejected)
+        assert not to._prefer_optuna_result(rejected, accepted)
+
+    def test_build_optuna_trial_spec_is_bounded(self, tmp_path):
+        class FakeTrial:
+            number = 3
+
+            def suggest_float(self, _name, low, high, step=None):
+                return high if step is None else low
+
+            def suggest_int(self, _name, low, _high):
+                return low
+
+            def suggest_categorical(self, _name, choices):
+                return choices[0]
+
+        args = type(
+            "Args",
+            (),
+            {
+                "n_epochs": 2,
+                "train_every": 4,
+                "epsilon_start": 0.4,
+                "epsilon_end": 0.05,
+                "penalty_scale": 1.0,
+                "focused_cap_passes": 1,
+                "tournament_seed": 123,
+            },
+        )()
+        job = to.Job("XAUUSD", 5, tmp_path / "XAUUSD_M5.jsonl", "jsonl")
+
+        spec = to._build_optuna_trial_spec(FakeTrial(), args, job, trial_number=3)
+
+        assert spec["candidate_id"] == "optuna_t0003"
+        assert spec["n_epochs"] >= args.n_epochs
+        assert 1 <= spec["train_every"] <= args.train_every * 2
+        assert 0.01 <= spec["epsilon_end"] < spec["epsilon_start"] <= 1.0
+        assert spec["deploy_candidate"] is False
+
 
 # ── discover_jobs (from train_offline) ────────────────────────────────────────
 
