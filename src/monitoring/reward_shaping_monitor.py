@@ -829,10 +829,13 @@ class RewardShapingMonitor:
         ):
             out.append(self._suggest("entry_confidence_threshold", 0.03, "quality_guard_pf_pnl_drop"))
             out.append(self._suggest("feasibility_threshold", 0.03, "quality_guard_pf_pnl_drop"))
+            out.append(self._suggest("reward_weight_pnl_alignment", 0.08, "quality_guard_pf_pnl_drop"))
 
         if isinstance(d_cap, (int, float)) and d_cap <= _QUALITY_CAPTURE_DROP_PCT:
             out.append(self._suggest("reward_weight_capture", 0.08, "quality_guard_capture_drop"))
             out.append(self._suggest("reward_weight_opportunity", 0.05, "quality_guard_capture_drop"))
+            if isinstance(d_ppt, (int, float)) and d_ppt <= 0.0:
+                out.append(self._suggest("reward_weight_pnl_alignment", 0.05, "quality_guard_capture_drop"))
 
         if (
             isinstance(d_wr, (int, float))

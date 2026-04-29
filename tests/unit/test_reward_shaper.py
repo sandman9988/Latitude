@@ -148,6 +148,24 @@ class TestTriggerReward:
         r = shaper.calculate_trigger_reward(actual_mfe=0.0, predicted_runway=100.0, direction=1, entry_price=50000.0)
         assert r["runway_reward"] < 0  # log penalty
 
+    def test_trigger_reward_penalizes_negative_net_pnl(self, shaper):
+        neutral = shaper.calculate_trigger_reward(
+            actual_mfe=100.0,
+            predicted_runway=100.0,
+            direction=1,
+            entry_price=50000.0,
+            exit_pnl=0.0,
+        )
+        loss = shaper.calculate_trigger_reward(
+            actual_mfe=100.0,
+            predicted_runway=100.0,
+            direction=1,
+            entry_price=50000.0,
+            exit_pnl=-10.0,
+        )
+        assert loss["pnl_alignment"] < 0
+        assert loss["runway_reward"] < neutral["runway_reward"]
+
 
 # ---------------------------------------------------------------------------
 # Harvester reward (dual-agent)
@@ -238,6 +256,24 @@ class TestHarvesterReward:
             _bars_held=10,
         )
         assert r["capture_efficiency"] < 0
+
+    def test_high_gross_capture_tiny_net_pnl_is_penalized(self, shaper):
+        """91% gross capture should not be rewarded when spread leaves cents of edge."""
+        r = shaper.calculate_harvester_reward(
+            exit_pnl=0.91,
+            net_exit_pnl=0.02,
+            mfe=1.0,
+            mae=0.1,
+            was_wtl=False,
+        )
+        assert r["capture_ratio"] == pytest.approx(0.02)
+        assert r["quality"] == "POOR"
+        assert r["harvester_reward"] < 0
+
+    def test_pnl_alignment_rewards_meaningful_net_pnl_more_than_cents(self, shaper):
+        cents = shaper.calculate_pnl_alignment_reward(exit_pnl=0.02, mfe=1.0)
+        useful = shaper.calculate_pnl_alignment_reward(exit_pnl=5.0, mfe=1.0)
+        assert useful > cents
 
 
 # ---------------------------------------------------------------------------
