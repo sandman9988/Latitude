@@ -19,6 +19,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))
 
 import run_universe as ru
+from src.constants import PAPER_EPSILON_DECAY, PAPER_EPSILON_END, PAPER_EPSILON_START
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -354,6 +355,32 @@ class TestRuntimeIsolation:
         assert captured["env"]["CTRADER_CFG_QUOTE"] == "x/quote.cfg"
         assert captured["env"]["CTRADER_CFG_TRADE"] == "x/trade.cfg"
         assert captured["env"]["CTRADER_DATA_DIR"] == "data/paper_XAUUSD_M240"
+        assert captured["env"]["EPSILON_START"] == str(PAPER_EPSILON_START)
+        assert captured["env"]["EPSILON_END"] == str(PAPER_EPSILON_END)
+        assert captured["env"]["EPSILON_DECAY"] == str(PAPER_EPSILON_DECAY)
+        assert captured["env"]["FORCE_EXPLORATION"] == "1"
+
+    def test_launch_hub_includes_paper_exploration_env(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        captured = {}
+
+        def _fake_popen(*args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            proc = MagicMock()
+            proc.pid = 6789
+            return proc
+
+        monkeypatch.setattr(ru.subprocess, "Popen", _fake_popen)
+
+        pid = ru._launch_hub("XAUUSD", 41, [1, 5, 240], 0.01, {"BASE": "1"}, None)
+
+        assert pid == 6789
+        assert captured["env"]["OPENAPI_TIMEFRAMES"] == "1,5,240"
+        assert captured["env"]["EPSILON_START"] == str(PAPER_EPSILON_START)
+        assert captured["env"]["EPSILON_END"] == str(PAPER_EPSILON_END)
+        assert captured["env"]["EPSILON_DECAY"] == str(PAPER_EPSILON_DECAY)
+        assert captured["env"]["FORCE_EXPLORATION"] == "1"
 
 
 # ---------------------------------------------------------------------------

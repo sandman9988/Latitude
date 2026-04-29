@@ -56,6 +56,10 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
   should always write explicit restart metadata.
 - Tournament variants are evaluated per symbol/timeframe. Promote only the best
   accepted candidate for that exact pair.
+- Optional Optuna search is an offline candidate generator only. It must run per
+  `(symbol, timeframe_minutes)`, store studies under scoped files such as
+  `data/optuna/offline_XAUUSD_M5.db`, and still route promotion through the
+  incumbent/champion acceptance guard.
 - Acceptance must beat the evaluated runtime incumbent and the registered
   champion/live universe guard, with the configured acceptance margin.
 - If a candidate does not beat both guards, leave the current champion in place
@@ -75,6 +79,10 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 - Circuit breaker thresholds come from the learned per-symbol/timeframe path.
   The kurtosis action threshold is the learned/runtime action threshold, not a
   universal legacy `3.0` alert threshold.
+- Paper-training exploration should stay deliberately high: default
+  `EPSILON_START=1.0`, `EPSILON_END=0.25`, `EPSILON_DECAY=0.9998`, and
+  `FORCE_EXPLORATION=1`. Stale checkpoint metadata must not lower the paper
+  exploration floor or speed up paper epsilon decay.
 - Multiple simultaneously running bots need a portfolio/account view before
   making account-level exposure decisions. Per-timeframe bots may learn
   independently, but order ownership and exposure should be reconciled through

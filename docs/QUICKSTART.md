@@ -135,6 +135,17 @@ python -m pytest tests/ -q
 
 See [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) for the full champion acceptance workflow.
 
+Optional Optuna search for one scoped bot:
+
+```bash
+python train_offline.py data/ \
+  --symbols XAUUSD --timeframes M5 \
+  --optuna-trials 12 --accept-if-better
+```
+
+Optuna studies are stored per symbol/timeframe under `data/optuna/` and winners
+still pass through the normal incumbent/champion guard.
+
 ---
 
 ## Key paths

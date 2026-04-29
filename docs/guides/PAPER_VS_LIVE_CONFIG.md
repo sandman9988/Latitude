@@ -144,7 +144,8 @@ export EPSILON_DECAY=0.9998
 export DDQN_ONLINE_LEARNING=1
 export TRAINING_MODE=1           # Custom: no live connection
 export EPSILON_START=1.0         # High initial exploration
-export EPSILON_END=0.1
+export EPSILON_END=0.25          # Keep exploration active
+export EPSILON_DECAY=0.9998      # Slow paper-training decay
 export TRAINING_EPISODES=10000
 ```
 

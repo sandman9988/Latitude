@@ -662,8 +662,8 @@ QTY=0.01
 PAPER_MODE=1
 DISABLE_GATES=1
 EPSILON_START=1.0
-EPSILON_END=0.1
-EPSILON_DECAY=0.9995
+EPSILON_END=0.25
+EPSILON_DECAY=0.9998
 FORCE_EXPLORATION=1
 MAX_BARS_INACTIVE=10
 DDQN_ONLINE_LEARNING=1
@@ -730,9 +730,9 @@ ______________________________________________________________________
 
 - Start: 1.0 (100% exploration)
 - Current: 0.8534 (85% exploration)
-- End: 0.1 (10% exploration)
-- Decay: 0.9995 per step
-- Steps to ε=0.1: ~3,769 more steps needed
+- End: 0.25 (25% exploration)
+- Decay: 0.9998 per step
+- Stale checkpoint metadata is clamped so paper mode cannot restore below the configured floor or revert to faster decay
 
 **Forced Exploration:**
 
@@ -1061,7 +1061,7 @@ ______________________________________________________________________
 
 ### Medium-Term (Next 30 Days)
 
-1. **Reduce exploration** (epsilon → 0.1 after ~3,800 steps)
+1. **Maintain exploration** (paper epsilon floor 0.25 with slow 0.9998 decay while reward data improves)
 1. **Enable confidence gates** (once epsilon < 0.3)
 1. **Prepare for production** (see INDEX.md → reports/PRE_LAUNCH_CHECKLIST.md)
 

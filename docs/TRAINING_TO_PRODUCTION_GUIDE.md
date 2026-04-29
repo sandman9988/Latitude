@@ -87,7 +87,8 @@ metadata path.
 
 For every `(symbol, timeframe_minutes)` pair:
 
-1. Train deterministic tournament variants.
+1. Train deterministic tournament variants, or optional Optuna-generated
+   candidates when `--optuna-trials N` is set.
 2. Evaluate the current runtime incumbent.
 3. Load the registered champion from `data/checkpoints/offline_champions.json`.
 4. Fall back to the live `data/universe.json` score only when no registered
@@ -99,6 +100,29 @@ For every `(symbol, timeframe_minutes)` pair:
 
 Historical logs such as `logs/train_offline.log` are diagnostics only and must
 not be used as champion or acceptance sources.
+
+### Optional Optuna Search
+
+Optuna is available as an offline candidate generator for faster initial DDQN
+convergence:
+
+```bash
+python3 train_offline.py data/ \
+  --symbols XAUUSD --timeframes M5 \
+  --optuna-trials 12 \
+  --optuna-min-val-trades 5 \
+  --accept-if-better --auto-promote
+```
+
+Each study is scoped per bot, for example
+`data/optuna/offline_XAUUSD_M5.db`. Trials tune the same candidate fields used
+by the tournament path: epochs, update cadence, epsilon schedule, penalty scale,
+warm start, and focused capture replay passes. The Optuna objective combines
+`ZOmega`, validation net PnL, average PnL, profit factor, and a low-validation
+trade penalty so high capture with cents-only edge does not dominate.
+
+Optuna does not promote weights directly. The selected trial still has to beat
+the evaluated runtime incumbent and the registered offline champion.
 
 ### Focused Capture Replay
 
