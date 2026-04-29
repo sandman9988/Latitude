@@ -616,7 +616,7 @@ def _record_replay_bars(record: dict[str, Any], parse_bar) -> list:
     return sorted(seen.values(), key=lambda bar: bar[0])
 
 
-def _load_focused_cap_replay_windows(
+def _load_focused_cap_replay_windows(  # noqa: PLR0912
     source_files: list[str],
     symbol: str,
     timeframe_minutes: int,
@@ -928,7 +928,7 @@ def _seed_worker_rng(seed: int | None) -> None:
 # ── Worker function (runs in child process) ────────────────────────────────────
 
 
-def _run_job(
+def _run_job(  # noqa: PLR0912, PLR0915
     symbol: str,
     timeframe_minutes: int,
     bars_file: str,
@@ -1509,7 +1509,7 @@ def _detect_symbol(filename: str) -> str | None:
     return m2.group(1) if m2 else None
 
 
-def discover_jobs(
+def discover_jobs(  # noqa: PLR0912
     paths: list[str],
     symbol_filter: list[str] | None = None,
     tf_filter: list[str] | None = None,
@@ -1648,7 +1648,7 @@ def _combine_duplicate_jobs(candidates: list[Job]) -> Job:
 # ── Pre-flight data integrity check ───────────────────────────────────────────
 
 
-def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], list[str]]:
+def preflight_check(jobs: list[Job], min_rows: int = 50) -> tuple[list[Job], list[str]]:  # noqa: PLR0912
     """Validate each job's data file before spawning any workers.
 
     Checks performed:
@@ -2069,7 +2069,7 @@ def _build_variant_specs(
     return specs
 
 
-def _execute_pool(
+def _execute_pool(  # noqa: PLR0912, PLR0915
     jobs: list,
     n_workers: int,
     args,
@@ -2337,7 +2337,7 @@ def _execute_pool(
     return round_results
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
     args = parser.parse_args(argv)
