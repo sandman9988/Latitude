@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions — cTrader DDQN Trading Bot
 
-> Last updated: 2026-04-28
+> Last updated: 2026-04-29
 > Read AGENTS.md, MASTER_HANDBOOK.md, CLAUDE.md, and docs/CURRENT_STATE.md before making structural changes.
 
 ______________________________________________________________________
@@ -52,6 +52,7 @@ ______________________________________________________________________
 | `src/risk/path_geometry.py` | 5 entry-quality features (efficiency, gamma, jerk, runway, feasibility) |
 | `src/features/event_time_features.py` | Session/rollover/week event features (6 broadcast dims) |
 | `run_universe.py` | Supervisor launching per-symbol hubs, weight sync |
+| `scripts/performance_analyzer.py` | Self-healing fleet analyzer — runs every 4h, applies corrections via `LearnedParametersManager` |
 | `train_offline.py` | Offline tournament trainer (6 variants, auto-promote) |
 | `run.sh` | Shell launcher (sources env + ROCm config) |
 
@@ -238,6 +239,7 @@ Watcher semantics:
 - Runs bots with `start_new_session=True` so HUD/terminal signals do not propagate.
 - Syncs promoted weights from `data/universe.json` into isolated runtime checkpoint directories.
 - Restarts a running bot if its runtime weights are stale.
+- Runs `scripts/performance_analyzer.py` every **480 cycles (4 h)** with `--auto-heal`, writing `data/performance_health.json`.
 
 Agent caveats:
 
@@ -304,7 +306,7 @@ ______________________________________________________________________
 ## Audit Log & Trade Log (Apr 2026 expansion)
 
 The TFAgent writes **65 top-level fields** per trade to `data/trade_log.jsonl` plus
-two nested breakdown dicts (`trigger_data` with 32 sub-fields, `reward_*_breakdown`).
+two nested breakdown dicts (`trigger_data` with 34 sub-fields, `reward_*_breakdown`).
 
 The complete field map is defined in `src/core/openapi_hub.py:_write_trade_log()`.
 Key groups: identity (7), timing (3), P&L (4), excursions (4), entry conditions (13),
@@ -313,7 +315,12 @@ risk state (2), trigger reason snapshot (1 nested dict), reward breakdown (2 nes
 
 **Every trade is now linked to its trigger entry context.** The `trigger_data` field
 captures regime, geometry, HMM probabilities, kurtosis, volatility ratio, gap, returns,
-alignment score, bar OHLCV, training state, CB state, and drawdown at the moment of entry.
+alignment score, bar OHLCV, training state, CB state, drawdown, `entry_confidence`, and
+`entry_vpin_z` at the moment of entry.
+
+**`close_reason` is always populated.** `shutdown()` sets `"shutdown"` and
+`_PaperEmergencyCloser.close_all_positions()` sets `"circuit_breaker"` before calling
+`_close_position()`. No more blank close_reason records.
 
 For retrospective analysis, use `scripts/reconstruct_trade_lifecycle.py` to stitch
 trade_log + decisions + cache + transactions + CSV history into a single enriched dataset.
@@ -557,7 +564,7 @@ For BTCUSD: batch ≤2 TFs per invocation — demo server drops TCP after ~5 min
 
 ______________________________________________________________________
 
-## Current Universe State (as of 2026-04-28)
+## Current Universe State (as of 2026-04-29)
 
 | Symbol | TF | ZΩ | Status |
 | ------ | ----------- | ------- | --------------------------------------------- |
@@ -590,7 +597,7 @@ Modes: `isolated`, `shared-symbol`, `shared-account`, `openapi-hub` (default)
 
 ______________________________________________________________________
 
-## Current open items (as of 2026-04-28)
+## Current open items (as of 2026-04-29)
 
 | Item | Priority | Notes |
 | ----------------------------------- | -------- | -------------------------------------------------------------------- |
@@ -635,7 +642,7 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## Recent Fixes (Apr 27–29, 2026)
+## Recent Fixes (Apr 27–29, 2026, continued)
 
 | Fix | Problem | Solution |
 | --- | ------- | -------- |
@@ -654,6 +661,10 @@ ______________________________________________________________________
 | HUD buffer denominators | `_RT_TRIG_CAP`/`_RT_HARV_CAP` hardcoded to 2000/10000 — fill bars showed wrong scale | Module-level constants now call `get_amd_optimized_buffer_capacity()` at import time |
 | Reward gradient collapse | 73% of trigger experiences at ±3.0 rail (log-runway reward saturates when predictor uncalibrated); PnL signal at 0.21 effective weight; timing penalty ×1.0 too aggressive | Trigger: fallback to 4-component reward when shaped reward is at rail (abs ≥ 2.99). PnL alignment weight 0.6→1.2, multiplier 0.35→1.5 (effective 0.21→1.80). Activity bonus 0.8→0.2. Timing penalty -1.0→-0.4. |
 | Fixed $100 max-loss cap | Instrument-blind: 5.4×R for XAUUSD, 32.5×R for BTCUSD (practically never fired on BTC) | Replaced with 5×R dynamic cap (entry × stop% × lot). XAUUSD≈$66, BTCUSD≈$23. R:R floor at 1R MFE. |
+| Buffer save mixed-dim crash | `np.array()` raised inhomogeneous shape when circular buffer mixed offline-training (old dim) + paper-trading (new dim) experiences — save failed silently every checkpoint | `save()` now filters to canonical state size (first entry's flat size) before stacking, matching the filter `load()` already had. Regression tests: `TestSaveLoad::test_save_survives_mixed_state_dims`. |
+| Blank `close_reason` records | `shutdown()` and `_PaperEmergencyCloser.close_all_positions()` called `_close_position()` without setting `harvester.last_close_reason` → blank field in trade log | Both paths now set `"shutdown"` / `"circuit_breaker"` on `harvester.last_close_reason` before calling `_close_position()`. |
+| Missing `trigger_data` fields | `entry_confidence` and `entry_vpin_z` existed only at top level of trade_log — absent from `trigger_data` sub-dict, so entry context was incomplete for reward shaping analysis | Added both fields to `_entry_trigger_data` dict in `_handle_flat()`; `trigger_data` grows from 32 → 34 sub-fields. |
+| Self-healing loop | No automatic detection or correction of fleet anomalies (DDQN win-rate collapse, runway miscalibration, excessive emergency stops) | Added `scripts/performance_analyzer.py` (8 anomaly codes, auto-corrections via `LearnedParametersManager`); supervisor runs it every 4 h with `--auto-heal`. |
 
 ### What NOT to do (continued from above)
 

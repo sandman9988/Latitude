@@ -17,7 +17,7 @@ cTrader SpotEvent bid/ask are ALWAYS at 10^5 precision. `_scale = 100000` is fix
 ## Audit Log & Trade Log
 
 The TFAgent writes **65 top-level fields** per trade to `data/trade_log.jsonl` plus
-two nested breakdown dicts (`trigger_data` with 32 sub-fields, `reward_*_breakdown`).
+two nested breakdown dicts (`trigger_data` with 34 sub-fields, `reward_*_breakdown`).
 
 The complete field map is defined in `src/core/openapi_hub.py:_write_trade_log()`.
 Key groups: identity (7), timing (3), P&L (4), excursions (4), entry conditions (13),
@@ -26,7 +26,12 @@ risk state (2), trigger reason snapshot (1 nested dict), reward breakdown (2 nes
 
 **Every trade is now linked to its trigger entry context.** The `trigger_data` field
 captures regime, geometry, HMM probabilities, kurtosis, volatility ratio, gap, returns,
-alignment score, bar OHLCV, training state, CB state, and drawdown at the moment of entry.
+alignment score, bar OHLCV, training state, CB state, drawdown, `entry_confidence`, and
+`entry_vpin_z` at the moment of entry.
+
+**`close_reason` is always populated.** `shutdown()` sets `last_close_reason = "shutdown"`
+and `_PaperEmergencyCloser.close_all_positions()` sets `"circuit_breaker"` before calling
+`_close_position()`. No more blank close_reason records.
 
 For retrospective analysis, use `scripts/reconstruct_trade_lifecycle.py` to stitch
 trade_log + decisions + cache + transactions + CSV history into a single enriched dataset.
@@ -90,6 +95,7 @@ When diagnosing failures across the whole suite, run one directory at a time:
 | `/home/renierdejager/Projects/Kinetra/.env.openapi` | OAuth credentials |
 | `data/history/` | Downloaded OHLCV CSVs for offline training |
 | `train_offline.py` | Offline tournament trainer (6 variants, auto-promote) |
+| `scripts/performance_analyzer.py` | Self-healing fleet analyzer — detects anomalies, applies corrections via `LearnedParametersManager`, writes `data/performance_health.json` |
 
 ## Architecture Rules
 
@@ -278,6 +284,42 @@ HSA_OVERRIDE_GFX_VERSION=11.0.0 python3 train_offline.py \
 ```
 
 XAUUSD M15/M30/M60 offline training skipped when live cache < 50 rows — needs more paper-trading time.
+
+## ExperienceBuffer Save Robustness (src/utils/experience_buffer.py)
+
+`save()` now filters to a canonical state size (determined by the first non-None entry)
+before calling `np.array()`. This prevents `"inhomogeneous shape"` crashes when the circular
+buffer contains a mix of offline-training experiences (old feature dim) and paper-trading
+experiences (new feature dim). Mismatched entries are dropped with a `LOG.warning`; an empty
+post-filter result returns `True` (no-op save) rather than crashing.
+
+The matching filter already existed in `load()` — `save()` is now symmetric.
+
+Regression tests: `tests/unit/test_experience_buffer.py::TestSaveLoad`
+
+- `test_round_trip` — canonical round-trip (30 experiences, dim=7)
+- `test_save_survives_mixed_state_dims` — 20 dim=7 injected + 30 dim=21 via `add()`; save succeeds, reload recovers 20 canonical entries
+
+## Self-Healing Performance Analyzer (scripts/performance_analyzer.py)
+
+Runs automatically every **4 hours** (480 supervisor cycles) via `run_universe.py --watch`.
+Analyzes `data/trade_log.jsonl` and applies corrective parameter adjustments when `--auto-heal`.
+
+**8 anomaly codes with automatic corrections:**
+
+| Code | Threshold | Correction |
+| ---- | --------- | ---------- |
+| `TRIGGER_SATURATION` | >15% at ±3.0 rail | Code fix flag only |
+| `EMERGENCY_RATE_HIGH` | emergency% >5% | raise `confidence_floor` +0.02 |
+| `DDQN_WIN_RATE_LOW` | WR <30%, n≥5 | raise `exit_confidence_threshold` +0.04 |
+| `BAD_RISK_REWARD` | loser/winner >2.8× | raise `confidence_floor` +0.02 |
+| `CAPTURE_EFFICIENCY_LOW` | capture <0.25, n≥8 | raise `exit_confidence_threshold` +0.03 |
+| `WTL_PENALTY_EXCESSIVE` | mean WTL <-1.5 | reduce `wtl_penalty_multiplier` -0.20 |
+| `RUNWAY_ACCURACY_LOW` | accuracy <0.35 | raise `runway_cal_alpha` +0.04 |
+| `PNL_ALIGNMENT_WEAK` | PnL align <0.08, n≥8 | raise `pnl_alignment_multiplier` +0.10 |
+
+Writes `data/performance_health.json` with `overall_health`, per-bot metrics, anomalies, and
+corrections applied. Run manually: `python3 scripts/performance_analyzer.py --auto-heal --hours 24`.
 
 ## Code Style
 
