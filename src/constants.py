@@ -78,6 +78,18 @@ TRAINING_LOG_INTERVAL_EARLY: int = 10
 TRAINING_LOG_INTERVAL_LATE: int = 100
 TRAINING_STEPS_EARLY: int = 100
 
+# Paper-training exploration defaults. Keep these deliberately high so paper
+# fleet learning keeps collecting varied reward data across all timeframes.
+PAPER_EPSILON_START: float = 1.0
+PAPER_EPSILON_END: float = 0.25
+PAPER_EPSILON_DECAY: float = 0.9998
+PAPER_FORCE_EXPLORATION: bool = True
+
+# Live/production exploration defaults.
+LIVE_EPSILON_START: float = 0.05
+LIVE_EPSILON_END: float = 0.01
+LIVE_EPSILON_DECAY: float = 0.9995
+
 # ── AMD GPU DETECTION ────────────────────────────────────────────────────────
 # Auto-detect AMD GPU and apply optimizations
 # This is done at import time in ddqn_network.py via AMD_OPTS
@@ -171,10 +183,18 @@ CAPTURE_DECAY_MIN_MFE_PCT: float = 0.10  # Apply capture-decay only above this M
 MICRO_WINNER_MFE_THRESHOLD_PCT: float = 0.10  # Min MFE to activate micro-winner protection
 MICRO_WINNER_GIVEBACK_PCT: float = 0.40  # Exit if giving back > this fraction of MFE
 
-# Hard per-trade max-loss-USD cap — defense-in-depth against tail risk.
-# Data shows 45 trades with loss > $100 account for -$11,760 in total losses.
-# With this cap the system goes from -$4,140 to +$3,119 at $100 cap.
-MAX_LOSS_PER_TRADE_USD: float = 100.0  # Absolute dollar cap per trade
+# Hard per-trade max-loss cap expressed as a multiple of 1R (the position's
+# own expected stop-loss in USD).  Instrument- and size-agnostic: scales
+# automatically with qty, contract_size, and entry price.
+# cap_usd = entry_price × (STOP_LOSS_PCT_DEFAULT/100) × qty × contract_size × MAX_LOSS_MULT_PER_TRADE
+# Clamped to [MIN_CAP_USD, MAX_CAP_USD] so edge-case tiny or huge positions
+# don't produce absurd thresholds.
+#
+# XAUUSD (qty=0.01, cs=100, ep≈3300): 1R≈$13.2  → cap≈$66  (was fixed $100)
+# BTCUSD (qty=0.01, cs=1,   ep≈114k): 1R≈$4.6   → cap≈$23  (was fixed $100, never fired)
+MAX_LOSS_MULT_PER_TRADE: float = 5.0   # Hard cap = 5× the position's expected stop loss
+MIN_CAP_USD: float = 2.0               # Absolute minimum cap (prevents near-zero on tiny lots)
+MAX_CAP_USD: float = 200.0             # Absolute maximum cap (prevents runaway on large lots)
 GHOST_RECONCILE_COOLDOWN_BARS: int = 3  # Bars to skip entry after ghost reconcile
 
 # ── CAPTURE HEALTH MONITORING ─────────────────────────────────────────────────

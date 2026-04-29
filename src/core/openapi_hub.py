@@ -1629,7 +1629,13 @@ class TFAgent:
         if self.position is None:
             return
 
-        from src.constants import MAX_LOSS_PER_TRADE_USD, MIN_HOLD_TICKS_DEFAULT  # noqa: PLC0415
+        from src.constants import (  # noqa: PLC0415
+            MAX_CAP_USD,
+            MAX_LOSS_MULT_PER_TRADE,
+            MIN_CAP_USD,
+            MIN_HOLD_TICKS_DEFAULT,
+            STOP_LOSS_PCT_DEFAULT,
+        )
         _pos = self.position
         _unrealized = (mid - _pos["entry_price"]) * _pos["direction"] * _pos["qty"] * self.contract_size
         if not math.isfinite(_unrealized):
@@ -1638,10 +1644,19 @@ class TFAgent:
             self._close_position(ts, mid - _pos["direction"] * half_spread)
             return
 
-        # ── Hard max-loss cap ─────────────────────────────────────────────────
-        if _unrealized < -MAX_LOSS_PER_TRADE_USD:
-            LOG.warning("[%s %s] Max-loss cap: unrealized=%.2f < -%.0f — force close",
-                        self.symbol, self.tf_label, _unrealized, MAX_LOSS_PER_TRADE_USD)
+        # ── R-multiple hard max-loss cap ──────────────────────────────────────
+        # Cap = 5× this position's own 1R (expected stop-loss in USD).
+        # Scales automatically with instrument, lot size, and price — unlike a
+        # fixed dollar cap which is 5×R for XAUUSD but 32×R for BTCUSD.
+        _lot_value = _pos["qty"] * self.contract_size  # $/pt
+        _rr_risk_usd = _pos["entry_price"] * (STOP_LOSS_PCT_DEFAULT / 100.0) * _lot_value
+        _max_loss_usd = max(min(_rr_risk_usd * MAX_LOSS_MULT_PER_TRADE, MAX_CAP_USD), MIN_CAP_USD)
+        if _unrealized < -_max_loss_usd:
+            LOG.warning(
+                "[%s %s] Max-loss cap: unrealized=%.2f < -%.2f (%.1fR, 1R=%.2f) — force close",
+                self.symbol, self.tf_label, _unrealized, _max_loss_usd,
+                MAX_LOSS_MULT_PER_TRADE, _rr_risk_usd,
+            )
             _harv = getattr(getattr(self, "policy", None), "harvester", None)
             if _harv is not None:
                 _harv.last_close_reason = "max_loss_cap"
@@ -1649,22 +1664,22 @@ class TFAgent:
             return
 
         # ── R:R profit floor ──────────────────────────────────────────────────
-        # Once MFE reaches the risk amount, never give back more than 1R from the
-        # peak. e.g. $700 MFE (7R) → floor = $600; $100 MFE (1R) → floor = $0.
-        # Only applies after min-hold so opening noise doesn't prematurely trigger.
+        # Once MFE reaches 1R, never give back more than 1R from the peak.
+        # e.g. MFE=$46 (10R) → floor=$43; MFE=$4.60 (1R) → floor=$0.
+        # Activates at MFE ≥ 1R so it's meaningful for all instruments.
         _ticks_held = int(getattr(self.policy, "ticks_held", 0))
         if _ticks_held > MIN_HOLD_TICKS_DEFAULT:
             _mfe_pts = getattr(self.policy, "mfe", 0.0)
-            _mfe_usd = float(_mfe_pts) * _pos["qty"] * self.contract_size
+            _mfe_usd = float(_mfe_pts) * _lot_value
             if not math.isfinite(_mfe_usd):
                 _mfe_usd = 0.0
-            if _mfe_usd >= MAX_LOSS_PER_TRADE_USD:
-                _pnl_floor = _mfe_usd - MAX_LOSS_PER_TRADE_USD  # never give back more than 1R
+            if _mfe_usd >= _rr_risk_usd:
+                _pnl_floor = _mfe_usd - _rr_risk_usd  # never give back more than 1R from peak
                 if _unrealized < _pnl_floor:
                     LOG.warning(
                         "[%s %s] R:R floor: MFE=%.2f (%.1fR) pnl=%.2f < floor=%.2f — close",
                         self.symbol, self.tf_label,
-                        _mfe_usd, _mfe_usd / MAX_LOSS_PER_TRADE_USD,
+                        _mfe_usd, _mfe_usd / max(_rr_risk_usd, 0.01),
                         _unrealized, _pnl_floor,
                     )
                     _harv = getattr(getattr(self, "policy", None), "harvester", None)
