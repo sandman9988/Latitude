@@ -294,6 +294,8 @@ class TFAgent:
         self.bars: deque = deque(maxlen=2000)
         self.bar_count = 0
 
+        self.paper_mode = os.environ.get("PAPER_MODE", "1") == "1"
+
         # Paper position state
         self.equity = starting_equity
         self.starting_equity = starting_equity
@@ -2322,9 +2324,19 @@ class TFAgent:
         self._rolling_mfe.append(mfe)
         self._rolling_mae.append(mae)
 
-        # Capture ratio: fraction of MFE captured
+        # Reward learning must use net movement after round-trip spread.  A tiny
+        # gross winner can show high capture while still having no usable edge.
+        _entry_half_spread = float(
+            (self._entry_trigger_data or {}).get("entry_half_spread", self.last_half_spread) or 0.0,
+        )
+        _reward_spread_cost_pts = _entry_half_spread + float(self.last_half_spread or 0.0)
+        reward_net_pnl_pts = pnl_pts - _reward_spread_cost_pts
+
+        # Capture ratio: fraction of MFE captured. Keep the logged/displayed
+        # capture on gross exit movement, but shape learning on net PnL below.
         capture_ratio = min(1.0, pnl_pts / mfe) if mfe > SAFE_EPSILON else 0.0
         was_wtl = (pnl_pts < 0) and (mfe > abs(mae) * 0.5)
+        reward_wtl = (reward_net_pnl_pts < 0) and (mfe > abs(mae) * 0.5)
 
         # Capture health monitoring — immediate on large deltas, rolling EMA otherwise
         try:
@@ -2343,7 +2355,7 @@ class TFAgent:
         self._runway_accuracy_ema = (1 - _alpha) * self._runway_accuracy_ema + _alpha * (
             1.0 - min(abs(_runway_delta) / _max_err, 1.0)
         )
-        _brier = (self._entry_conf - (1.0 if pnl_pts > 0 else 0.0)) ** 2
+        _brier = (self._entry_conf - (1.0 if reward_net_pnl_pts > 0 else 0.0)) ** 2
         self._conf_calib_err_ema = (1 - _alpha) * self._conf_calib_err_ema + _alpha * _brier
         # Persist EMAs so they survive restarts
         try:
@@ -2366,7 +2378,7 @@ class TFAgent:
         # Trigger reward: 4-component accuracy-based reward (ported from legacy)
         trigger_reward = self._calculate_trigger_reward(
             mfe=mfe,
-            pnl_pts=pnl_pts,
+            pnl_pts=reward_net_pnl_pts,
             entry_price=entry_price,
             predicted_runway_net=_runway_net,
             realized_vol=self._realized_vol(),
@@ -2408,12 +2420,20 @@ class TFAgent:
                 direction=direction,
                 entry_price=entry_price,
                 exit_pnl=pnl_pts,
+                net_exit_pnl=reward_net_pnl_pts,
                 mae=mae,
-                was_wtl=was_wtl,
+                was_wtl=reward_wtl,
                 bars_held=bars_held,
                 exit_time=exit_time_iso,
             )
-            trigger_reward = float(shaped.get("trigger_reward", trigger_reward))
+            _shaped_tr = float(shaped.get("trigger_reward", trigger_reward))
+            # Only override 4-component trigger reward when log-based reward is not
+            # saturated at the clamp (±3.0).  When saturated the runway predictor is
+            # uncalibrated and log(∞) gives a constant gradient — useless for learning.
+            # The 4-component reward from _calculate_trigger_reward() is always
+            # informative regardless of runway calibration.
+            if abs(_shaped_tr) < 2.99:
+                trigger_reward = _shaped_tr
             capture_reward = float(shaped.get("harvester_reward", capture_reward))
             # Capture full reward component breakdown for trade_log
             _reward_breakdown = shaped.get("trigger_breakdown", {})
@@ -2489,6 +2509,8 @@ class TFAgent:
                 "exit_time": _ts.isoformat() if hasattr(_ts, "isoformat") else str(_ts),
                 "pnl": pnl_usd,
                 "pnl_points": pnl_pts,
+                "pnl_net_points": reward_net_pnl_pts,
+                "reward_spread_cost_points": _reward_spread_cost_pts,
                 "mfe": mfe * qty * float(getattr(self, "contract_size", 1.0) or 1.0),
                 "mae": mae * qty * float(getattr(self, "contract_size", 1.0) or 1.0),
                 "mfe_points": mfe,
@@ -2620,7 +2642,8 @@ class TFAgent:
         _price_ref = max(abs(entry_price), 1.0)
         runway_utilization = (pnl_pts / (predicted_runway_net * _price_ref)
                               if predicted_runway_net > 0 and abs(pnl_pts) > SAFE_EPSILON else 0.0)
-        spread_cost_pts = self.last_half_spread * 2.0
+        entry_half_spread = float((trigger_data or {}).get("entry_half_spread", self.last_half_spread) or 0.0)
+        spread_cost_pts = entry_half_spread + float(self.last_half_spread or 0.0)
         pnl_net = pnl_pts - spread_cost_pts
         trade_qty = float(quantity if quantity is not None else self.qty)
         contract_size = float(getattr(self, "contract_size", 1.0) or 1.0)

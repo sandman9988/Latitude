@@ -36,9 +36,10 @@ OPPORTUNITY_SCALE: float = 0.3
 WEIGHT_CAPTURE: float = 1.0
 WEIGHT_WTL: float = 1.0
 WEIGHT_OPPORTUNITY: float = 0.5
-WEIGHT_ACTIVITY: float = 0.8
+WEIGHT_ACTIVITY: float = 0.2
 WEIGHT_COUNTERFACTUAL: float = 0.6
 WEIGHT_ENSEMBLE: float = 0.4
+WEIGHT_PNL_ALIGNMENT: float = 1.2
 RUNWAY_MULT_DEFAULT: float = 2.0
 RUNWAY_PENALTY_INVALID: float = -2.0
 RUNWAY_LOG_PENALTY: float = -5.0
@@ -55,11 +56,12 @@ TIMING_PENALTY_SCALE: float = -1.5  # Increased from -0.5 for stronger late-exit
 RUNWAY_EXPECTED_GAIN_MULT: float = 2.0
 RUNWAY_EXPECTED_LOSS_MULT: float = 1.0
 FRICTION_COST_MULT: float = 0.1
+PNL_ALIGNMENT_MULT_DEFAULT: float = 1.5
 
 # Undeveloped-MFE penalty: rewards based on how much of MFE was realised
 # (timeframe-agnostic — no bar counts).  Fires when MFE existed but most
 # of the move was surrendered (high MAE relative to MFE).
-UNDEVELOPED_MFE_PENALTY_SCALE: float = -1.0  # max penalty at full giveback
+UNDEVELOPED_MFE_PENALTY_SCALE: float = -0.4  # max penalty at full giveback
 ZERO_MFE_PENALTY: float = -0.3  # flat penalty when MFE ≤ 0
 ZERO_MFE_EPSILON: float = 1e-8
 ZERO_MFE_LOSS_MULT: float = 3.0
@@ -134,6 +136,7 @@ class RewardShaper:
             ("reward_weight_activity", WEIGHT_ACTIVITY),
             ("reward_weight_counterfactual", WEIGHT_COUNTERFACTUAL),
             ("reward_weight_ensemble", WEIGHT_ENSEMBLE),
+            ("reward_weight_pnl_alignment", WEIGHT_PNL_ALIGNMENT),
         ]
 
         # Session quality engine (optional — used to weight MFE value by session)
@@ -148,6 +151,7 @@ class RewardShaper:
             "activity": {"sum": 0.0, "count": 0},
             "counterfactual": {"sum": 0.0, "count": 0},
             "ensemble": {"sum": 0.0, "count": 0},  # NEW: Ensemble disagreement bonus
+            "pnl_alignment": {"sum": 0.0, "count": 0},
         }
 
     def _get_weight(self, param_name: str, default: float) -> float:
@@ -318,6 +322,27 @@ class RewardShaper:
 
         return penalty
 
+    def calculate_pnl_alignment_reward(self, exit_pnl: float, mfe: float = 0.0) -> float:
+        """Reward realized net PnL, not just high capture of a tiny move.
+
+        Capture ratio can look excellent when the move is too small to matter.
+        This bounded component pushes both agents toward trades whose realized
+        PnL is meaningful relative to this symbol/timeframe's usual MFE.
+        """
+        try:
+            pnl_mult = float(self._get_param("pnl_alignment_multiplier", PNL_ALIGNMENT_MULT_DEFAULT))
+        except (KeyError, TypeError, ValueError):
+            pnl_mult = PNL_ALIGNMENT_MULT_DEFAULT
+        try:
+            baseline_mfe = max(float(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED)), 0.01)
+        except (KeyError, TypeError, ValueError):
+            baseline_mfe = max(BASELINE_MFE_SEED, 0.01)
+        scale = max(baseline_mfe, abs(float(mfe or 0.0)) * 0.5, 0.01)
+        reward = math.tanh(float(exit_pnl or 0.0) / scale) * pnl_mult
+        self.component_stats["pnl_alignment"]["sum"] += reward
+        self.component_stats["pnl_alignment"]["count"] += 1
+        return reward
+
     def calculate_total_reward(self, trade_data: dict) -> dict[str, float]:
         """Calculate total reward from all components.
 
@@ -338,6 +363,7 @@ class RewardShaper:
         """
         # Extract trade data
         exit_pnl = trade_data.get("exit_pnl", 0.0)
+        net_exit_pnl = trade_data.get("net_exit_pnl", exit_pnl)
         mfe = trade_data.get("mfe", 0.0)
         was_wtl = trade_data.get("winner_to_loser", False)
         bars_from_mfe = trade_data.get("bars_from_mfe", 0)
@@ -354,6 +380,7 @@ class RewardShaper:
         r_capture = self.calculate_capture_efficiency_reward(exit_pnl, mfe)
         r_wtl = self.calculate_wtl_penalty(was_wtl, mfe, exit_pnl, bars_from_mfe)
         r_opportunity = self.calculate_opportunity_cost(potential_mfe, signal_strength)
+        r_pnl = self.calculate_pnl_alignment_reward(net_exit_pnl, mfe)
 
         # NEW: Activity bonus (exploration when stagnant)
         r_activity = self.activity_monitor.get_exploration_bonus()
@@ -383,6 +410,7 @@ class RewardShaper:
         weight_activity = self._get_weight("reward_weight_activity", WEIGHT_ACTIVITY)
         weight_counterfactual = self._get_weight("reward_weight_counterfactual", WEIGHT_COUNTERFACTUAL)
         weight_ensemble = self._get_weight("reward_weight_ensemble", WEIGHT_ENSEMBLE)
+        weight_pnl = self._get_weight("reward_weight_pnl_alignment", WEIGHT_PNL_ALIGNMENT)
 
         total_reward = (
             weight_capture * r_capture
@@ -391,6 +419,7 @@ class RewardShaper:
             + weight_activity * r_activity
             + weight_counterfactual * r_counterfactual
             + weight_ensemble * r_ensemble
+            + weight_pnl * r_pnl
         )
 
         self.total_rewards_calculated += 1
@@ -407,6 +436,7 @@ class RewardShaper:
             "activity_bonus": r_activity,
             "counterfactual_adjustment": r_counterfactual,
             "ensemble_bonus": r_ensemble,  # NEW: 6th component
+            "pnl_alignment": r_pnl,
             "total_reward": total_reward,
             "components_active": sum(
                 [
@@ -416,6 +446,7 @@ class RewardShaper:
                     1 if r_activity != 0 else 0,
                     1 if r_counterfactual != 0 else 0,
                     1 if r_ensemble != 0 else 0,
+                    1 if r_pnl != 0 else 0,
                 ],
             ),
         }
@@ -510,6 +541,7 @@ class RewardShaper:
                 "capture_multiplier": self._get_param("capture_multiplier"),
                 "wtl_penalty_multiplier": self._get_param("wtl_penalty_multiplier"),
                 "opportunity_multiplier": self._get_param("opportunity_multiplier"),
+                "pnl_alignment_multiplier": self._get_param("pnl_alignment_multiplier", PNL_ALIGNMENT_MULT_DEFAULT),
             },
             "weights": {
                 name.replace("reward_weight_", ""): self._get_weight(name, default)
@@ -518,7 +550,7 @@ class RewardShaper:
         }
 
         # Calculate averages
-        for component in ["capture", "wtl", "opportunity"]:
+        for component in ["capture", "wtl", "opportunity", "pnl_alignment"]:
             count = self.component_stats[component]["count"]
             if count > 0:
                 avg = self.component_stats[component]["sum"] / count
@@ -550,11 +582,13 @@ class RewardShaper:
    Capture Efficiency:       {stats["weights"]["capture"]:.1f}
    WTL Penalty:              {stats["weights"]["wtl"]:.1f}
    Opportunity Cost:         {stats["weights"]["opportunity"]:.1f}
+   PnL Alignment:            {stats["weights"]["pnl_alignment"]:.1f}
 
 📈 AVERAGE COMPONENT REWARDS
    Capture Efficiency:       {stats["avg_capture_reward"]:+.4f}
    WTL Penalty:              {stats["avg_wtl_reward"]:+.4f}
    Opportunity Cost:         {stats["avg_opportunity_reward"]:+.4f}
+   PnL Alignment:            {stats["avg_pnl_alignment_reward"]:+.4f}
 """
 
     # ========================================================================
@@ -567,6 +601,7 @@ class RewardShaper:
         predicted_runway: float,
         direction: int = 1,  # noqa: ARG002  # NOSONAR
         entry_price: float = 0.0,  # noqa: ARG002  # NOSONAR
+        exit_pnl: float | None = None,
     ) -> dict[str, float]:
         """Calculate reward for TriggerAgent (entry specialist).
 
@@ -614,6 +649,8 @@ class RewardShaper:
 
         # Clip extreme values
         runway_reward = max(min(runway_reward, RUNWAY_CLAMP_ABS), -RUNWAY_CLAMP_ABS)
+        pnl_alignment = self.calculate_pnl_alignment_reward(exit_pnl, actual_mfe) if exit_pnl is not None else 0.0
+        runway_reward = max(min(runway_reward + pnl_alignment, RUNWAY_CLAMP_ABS), -RUNWAY_CLAMP_ABS)
 
         # Calculate error percentage
         error_pct = abs(actual_mfe - predicted_runway) / predicted_runway * 100
@@ -630,6 +667,7 @@ class RewardShaper:
 
         return {
             "runway_reward": runway_reward,
+            "pnl_alignment": pnl_alignment,
             "utilization": utilization,
             "error_pct": error_pct,
             "prediction_quality": quality,
@@ -637,10 +675,11 @@ class RewardShaper:
             "predicted_runway": predicted_runway,
         }
 
-    def calculate_harvester_reward(
+    def calculate_harvester_reward(  # noqa: PLR0912, PLR0915
         self,
         exit_pnl: float,
         mfe: float,
+        net_exit_pnl: float | None = None,
         was_wtl: bool = False,
         _bars_held: int = 0,
         _bars_from_mfe_to_exit: int = 0,
@@ -672,11 +711,13 @@ class RewardShaper:
             Dict with component rewards and total
 
         """
+        reward_pnl = float(exit_pnl if net_exit_pnl is None else net_exit_pnl)
+
         # 1. Capture efficiency (with magnitude scaling)
         if mfe > 0:
             # Clamp ratio to [-5, 5] — same guard as calculate_capture_efficiency_reward.
             # Prevents explosion when mfe is tiny relative to a large adverse pnl.
-            raw_ratio = exit_pnl / mfe
+            raw_ratio = reward_pnl / mfe
             capture_ratio = max(-5.0, min(5.0, raw_ratio))
             target_capture = TARGET_CAPTURE_RATIO  # Aim for 70% of MFE
             try:
@@ -698,7 +739,7 @@ class RewardShaper:
         else:
             capture_ratio = 0.0
             zero_mfe_epsilon = max(float(self._get_param("zero_mfe_epsilon", ZERO_MFE_EPSILON)), 1e-12)
-            if mfe <= zero_mfe_epsilon and exit_pnl < 0:
+            if mfe <= zero_mfe_epsilon and reward_pnl < 0:
                 loss_mult = max(float(self._get_param("zero_mfe_loss_multiplier", ZERO_MFE_LOSS_MULT)), 1.0)
                 baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
                 baseline_scale = max(
@@ -706,7 +747,7 @@ class RewardShaper:
                     1e-6,
                 )
                 cap_mult = max(float(self._get_param("zero_mfe_loss_cap_multiplier", ZERO_MFE_LOSS_CAP_MULT)), 1.0)
-                loss_mag = abs(exit_pnl)
+                loss_mag = abs(reward_pnl)
                 loss_scale = min(loss_mag / (baseline_mfe * baseline_scale), cap_mult)
                 r_capture = ZERO_MFE_PENALTY * loss_mult * (1.0 + loss_scale)
             else:
@@ -721,12 +762,12 @@ class RewardShaper:
             # Proportional penalty: worse giveback = worse penalty
             # If MFE was $10 and exit_pnl is -$2, giveback_ratio = 1.2 (gave back 120% of MFE)
             if mfe > 0:
-                giveback_ratio = 1.0 - (exit_pnl / mfe)  # 0 = perfect capture, 2 = lost as much as gained
+                giveback_ratio = 1.0 - (reward_pnl / mfe)  # 0 = perfect capture, 2 = lost as much as gained
                 giveback_ratio = max(0.5, min(giveback_ratio, 2.0))  # Clamp [0.5, 2.0]
             else:
                 giveback_ratio = 1.0
-            negative_exit_mult = WTL_NEGATIVE_EXIT_MULT if exit_pnl < 0 else 1.0
-            reversal_severity = max(0.0, min(1.0, -exit_pnl / mfe)) if mfe > 0 and exit_pnl < 0 else 0.0
+            negative_exit_mult = WTL_NEGATIVE_EXIT_MULT if reward_pnl < 0 else 1.0
+            reversal_severity = max(0.0, min(1.0, -reward_pnl / mfe)) if mfe > 0 and reward_pnl < 0 else 0.0
             severity_mult = 1.0 + (reversal_severity * WTL_REVERSAL_SEVERITY_MULT)
             r_wtl = -wtl_mult * giveback_ratio * negative_exit_mult * severity_mult
         else:
@@ -752,7 +793,9 @@ class RewardShaper:
         session_mult = self._get_session_quality(exit_time)
 
         # Total harvester reward
-        total_reward = (r_capture + r_wtl + r_timing) * session_mult
+        r_pnl = self.calculate_pnl_alignment_reward(reward_pnl, mfe)
+
+        total_reward = (r_capture + r_wtl + r_timing + r_pnl) * session_mult
 
         # Quality assessment
         quality = self._harvest_quality(capture_ratio)
@@ -762,6 +805,7 @@ class RewardShaper:
             "capture_efficiency": r_capture,
             "wtl_penalty": r_wtl,
             "timing_penalty": r_timing,
+            "pnl_alignment": r_pnl,
             "capture_ratio": capture_ratio,
             "quality": quality,
             "was_wtl": was_wtl,
@@ -788,6 +832,7 @@ class RewardShaper:
         entry_price: float = 0.0,
         # Harvester data
         exit_pnl: float = 0.0,
+        net_exit_pnl: float | None = None,
         mae: float = 0.0,
         was_wtl: bool = False,
         bars_held: int = 0,
@@ -807,13 +852,21 @@ class RewardShaper:
 
         """
         # Calculate individual agent rewards
-        trigger_result = self.calculate_trigger_reward(actual_mfe, predicted_runway, direction, entry_price)
-        harvester_result = self.calculate_harvester_reward(
-            exit_pnl,
+        reward_pnl = float(exit_pnl if net_exit_pnl is None else net_exit_pnl)
+        trigger_result = self.calculate_trigger_reward(
             actual_mfe,
-            was_wtl,
-            bars_held,
-            bars_from_mfe_to_exit,
+            predicted_runway,
+            direction,
+            entry_price,
+            exit_pnl=reward_pnl,
+        )
+        harvester_result = self.calculate_harvester_reward(
+            exit_pnl=exit_pnl,
+            mfe=actual_mfe,
+            net_exit_pnl=net_exit_pnl,
+            was_wtl=was_wtl,
+            _bars_held=bars_held,
+            _bars_from_mfe_to_exit=bars_from_mfe_to_exit,
             mae=mae,
             exit_time=exit_time,
         )
@@ -906,4 +959,3 @@ if __name__ == "__main__":
         bars_held=20,
         bars_from_mfe_to_exit=5,
     )
-

@@ -317,6 +317,14 @@ class LearnedParametersManager:
                 "momentum": 0.9,
                 "description": "Opportunity cost multiplier",
             },
+            "pnl_alignment_multiplier": {
+                "default": 1.5,
+                "min": 0.0,
+                "max": 3.0,
+                "learning_rate": 0.01,
+                "momentum": 0.9,
+                "description": "Realized PnL alignment reward multiplier",
+            },
             # Entry/exit thresholds
             "entry_confidence_threshold": {
                 "default": 0.6,
@@ -941,6 +949,14 @@ class LearnedParametersManager:
                 "momentum": 0.9,
                 "description": "Epistemic uncertainty bonus weight",
             },
+            "reward_weight_pnl_alignment": {
+                "default": 0.6,
+                "min": 0.2,
+                "max": 2.0,
+                "learning_rate": 0.02,
+                "momentum": 0.9,
+                "description": "Realized PnL alignment reward weight",
+            },
         }
 
     def get_instrument(self, symbol: str, timeframe: str = "M1", broker: str = "default") -> InstrumentParameters:
@@ -1267,4 +1283,3 @@ if __name__ == "__main__":
     _test_path = Path(_TEST_PARAMS_FILE)
     if _test_path.exists():
         _test_path.unlink()
-
