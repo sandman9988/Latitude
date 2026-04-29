@@ -488,6 +488,26 @@ class TestOfflineJobComment:
         comment = _strip_ansi(hud._offline_job_comment("done", {"accepted": True, "accept_reason": "ZΩ>1.0"}))
         assert "ZΩ>1.0" in comment
 
+    def test_done_candidate_not_better_than_champion_is_readable(self):
+        hud = TabbedHUD()
+        comment = _strip_ansi(
+            hud._offline_job_comment(
+                "done",
+                {"accepted": False, "accept_reason": "candidate_not_better_than_champion"},
+            ),
+        )
+        assert "kept champion" in comment
+
+    def test_done_candidate_not_better_than_incumbent_is_readable(self):
+        hud = TabbedHUD()
+        comment = _strip_ansi(
+            hud._offline_job_comment(
+                "done",
+                {"accepted": False, "accept_reason": "candidate_not_better_than_incumbent"},
+            ),
+        )
+        assert "kept runtime" in comment
+
     def test_done_accepted_no_reason(self):
         hud = TabbedHUD()
         comment = _strip_ansi(hud._offline_job_comment("done", {"accepted": True}))
@@ -716,3 +736,80 @@ class TestOfflineTrainingFullRender:
         assert "XAUUSD/M15" in text or "M15" in text
         assert "XAUUSD/M30" in text or "M30" in text
         assert "queued" in text
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Self-healing analyzer HUD panel
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRenderHealthAnalyzer:
+    """_render_health_analyzer reads _health_report and prints a status row."""
+
+    def test_no_report_shows_placeholder(self):
+        hud = TabbedHUD()
+        hud._health_report = {}
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            hud._render_health_analyzer()
+        text = _strip_ansi(buf.getvalue())
+        assert "SELF-HEAL" in text
+        assert "no report yet" in text
+
+    def test_healthy_report(self):
+        hud = TabbedHUD()
+        hud._health_report = {
+            "overall_health": "HEALTHY",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "analysis_window_hours": 4,
+            "fleet": {"total_trades": 42, "win_rate": 0.55, "profit_factor": 1.35, "emergency_rate": 0.01},
+            "anomalies": [],
+            "corrections_applied": [],
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            hud._render_health_analyzer()
+        text = _strip_ansi(buf.getvalue())
+        assert "HEALTHY" in text
+        assert "42 trades" in text
+        assert "No anomalies" in text
+
+    def test_degraded_report_shows_anomalies(self):
+        hud = TabbedHUD()
+        hud._health_report = {
+            "overall_health": "DEGRADED",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "analysis_window_hours": 4,
+            "fleet": {"total_trades": 10, "win_rate": 0.20, "profit_factor": 0.8, "emergency_rate": 0.10},
+            "anomalies": [
+                {"symbol": "XAUUSD", "timeframe": "M5", "code": "DDQN_WIN_RATE_LOW"},
+                {"symbol": "BTCUSD", "timeframe": "M30", "code": "EMERGENCY_RATE_HIGH"},
+            ],
+            "corrections_applied": [
+                {"symbol": "XAUUSD", "timeframe": "M5", "parameter": "exit_confidence_threshold",
+                 "old_value": 0.50, "new_value": 0.54},
+            ],
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            hud._render_health_analyzer()
+        text = _strip_ansi(buf.getvalue())
+        assert "DEGRADED" in text
+        assert "DDQN_WIN_RATE_LOW" in text
+        assert "EMERGENCY_RATE_HIGH" in text
+        assert "exit confidence threshold" in text or "exit_confidence_threshold" in text
+
+    def test_load_health_report_reads_file(self, tmp_path: Path):
+        import json
+        hud = TabbedHUD()
+        hud.data_dir = tmp_path
+        report = {"overall_health": "HEALTHY", "fleet": {}, "anomalies": [], "corrections_applied": []}
+        (tmp_path / "performance_health.json").write_text(json.dumps(report))
+        hud._load_health_report()
+        assert hud._health_report["overall_health"] == "HEALTHY"
+
+    def test_load_health_report_missing_file(self, tmp_path: Path):
+        hud = TabbedHUD()
+        hud.data_dir = tmp_path
+        hud._load_health_report()  # no file — should not raise
+        assert hud._health_report == {}

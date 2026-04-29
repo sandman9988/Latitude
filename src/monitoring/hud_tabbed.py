@@ -448,6 +448,7 @@ class TabbedHUD:
         self.active_tf_min: int = 0
         self._active_pos_file: str = ""  # path of the file that provided self.position
         self.self_test_results: list = []
+        self._health_report: dict = {}  # data/performance_health.json — self-healing analyzer
         self._metrics_from_trade_log = False
         # Loss history for trend / sparkline (non-zero samples only)
         self._trig_loss_hist: deque = deque(maxlen=40)
@@ -878,6 +879,16 @@ class TabbedHUD:
             if not hasattr(self, "_perf_error_shown"):
                 self._set_notification(f"⚠️  Error loading performance data: {e}", ttl=10)
                 self._perf_error_shown = True
+
+    def _load_health_report(self) -> None:
+        """Load self-healing analyzer report from data/performance_health.json."""
+        _path = self.data_dir / "performance_health.json"
+        if not _path.exists():
+            return
+        try:
+            self._health_report = json.loads(_path.read_text())
+        except Exception:
+            LOG.debug("[HUD] Failed to load performance_health.json", exc_info=True)
 
     def _accumulate_loss_history(self) -> None:
         """Append current training losses/steps to rolling history deques."""
@@ -1452,6 +1463,7 @@ class TabbedHUD:
                 self.active_sym = _cfg_sym
                 self.active_tf_min = _cfg_tf
         self._load_performance_snapshot()
+        self._load_health_report()
 
         self._load_json("training_stats.json", "training_stats")
         self._accumulate_loss_history()
@@ -2675,7 +2687,7 @@ class TabbedHUD:
         """Return the Comment column text for an offline job row.
 
         - Running jobs: show "run X/Y" from progress file epoch/n_epochs.
-        - Done jobs: show accept_reason if set.
+        - Done jobs: show an operator-facing acceptance outcome.
         - Otherwise: "—".
         """
         if status == "running":
@@ -2688,10 +2700,34 @@ class TabbedHUD:
         if status == "done":
             reason = r.get("accept_reason", "")
             if reason:
-                return reason[:14]
+                return self._offline_acceptance_comment(str(reason), r)
             accepted = r.get("accepted", False)
             return f"{_ANSI_G}accepted{_ANSI_RST}" if accepted else f"{_ANSI_DIM}not accepted{_ANSI_RST}"
         return f"{'—':<14}"
+
+    @staticmethod
+    def _offline_acceptance_comment(reason: str, r: dict) -> str:
+        """Compress acceptance reasons into readable HUD comments."""
+        accepted = r.get("accepted", False)
+        if reason.startswith("candidate_not_better_than_"):
+            source = reason.removeprefix("candidate_not_better_than_")
+            if source == "champion":
+                return f"{_ANSI_DIM}kept champion{_ANSI_RST}"
+            if source == "incumbent":
+                return f"{_ANSI_DIM}kept runtime{_ANSI_RST}"
+            return f"{_ANSI_DIM}not promoted{_ANSI_RST}"
+        if "weights_missing" in reason:
+            return f"{_ANSI_R}weights miss{_ANSI_RST}"
+        if reason.startswith("candidate_better_than_"):
+            source = reason.removeprefix("candidate_better_than_").removesuffix("_deferred")
+            if source == "champion":
+                return f"{_ANSI_G}beat champion{_ANSI_RST}"
+            if source == "incumbent":
+                return f"{_ANSI_G}beat runtime{_ANSI_RST}"
+            return f"{_ANSI_G}promoted{_ANSI_RST}"
+        if accepted:
+            return f"{_ANSI_G}{reason[:14]}{_ANSI_RST}"
+        return f"{_ANSI_DIM}{reason[:14]}{_ANSI_RST}"
 
     def _offline_job_status(self, status: str) -> tuple[str, str]:
         """Return (color, badge) for offline job status."""
@@ -3703,6 +3739,7 @@ class TabbedHUD:
         self._render_health_microstructure()
         self._render_health_system_metrics()
         self._render_health_self_test()
+        self._render_health_analyzer()
 
     def _render_health_connectivity(self) -> None:
         """Render data freshness and breaker status row."""
@@ -3984,6 +4021,88 @@ class TabbedHUD:
             icon = _sev_icon.get(sev, "?")
             detail = f"  {_ANSI_DIM}{r['detail']}{_ANSI_RST}" if r.get("detail") else ""
             print(f"  {col}{icon} {r['name']}{_ANSI_RST}{detail}")
+
+    def _render_health_analyzer(self) -> None:
+        """Render self-healing performance analyzer status row."""
+        hr = self._health_report
+        if not hr:
+            print(f"\n\033[1m🔄 SELF-HEAL\033[0m  {_ANSI_DIM}no report yet — runs every 4 h{_ANSI_RST}")
+            return
+
+        overall = hr.get("overall_health", "UNKNOWN")
+        if overall == "HEALTHY":
+            _h_col, _h_icon = _ANSI_G, "🟢"
+        elif overall in ("DEGRADED", "WARNING"):
+            _h_col, _h_icon = _ANSI_Y, "🟡"
+        elif overall == "NO_DATA":
+            _h_col, _h_icon = _ANSI_DIM, "⬜"
+        else:
+            _h_col, _h_icon = _ANSI_R, "🔴"
+
+        # Age of last run
+        _gen = hr.get("generated_at", "")
+        _age_str = ""
+        if _gen:
+            try:
+                from datetime import timezone as _tz  # noqa: PLC0415
+                _dt = datetime.fromisoformat(_gen).replace(tzinfo=_tz.utc) if _gen.endswith("Z") else datetime.fromisoformat(_gen)
+                _age_s = (datetime.now(UTC) - _dt).total_seconds()
+                if _age_s < 3600:
+                    _age_str = f"{_age_s/60:.0f}m ago"
+                else:
+                    _age_str = f"{_age_s/3600:.1f}h ago"
+            except Exception:
+                _age_str = ""
+
+        _window = hr.get("analysis_window_hours", 4)
+        _header_age = f"  {_ANSI_DIM}({_window:.0f}h window{', ' + _age_str if _age_str else ''}){_ANSI_RST}"
+        print(f"\n\033[1m🔄 SELF-HEAL\033[0m  {_h_icon} {_h_col}{overall}{_ANSI_RST}{_header_age}")
+
+        anomalies: list = hr.get("anomalies", [])
+        corrections: list = hr.get("corrections_applied", [])
+        fleet: dict = hr.get("fleet", {})
+
+        # Fleet summary row
+        _n_trades = int(fleet.get("total_trades", 0))
+        _wr = float(fleet.get("win_rate", 0)) * 100
+        _pf = float(fleet.get("profit_factor", 0))
+        _emg = float(fleet.get("emergency_rate", 0)) * 100
+        _wr_col = _ANSI_G if _wr >= 50 else (_ANSI_Y if _wr >= 35 else _ANSI_R)
+        _pf_col = _ANSI_G if _pf >= 1.2 else (_ANSI_Y if _pf >= 1.0 else _ANSI_R)
+        _emg_col = _ANSI_R if _emg > 5 else (_ANSI_Y if _emg > 2 else _ANSI_G)
+        print(
+            f"  Fleet: {_n_trades} trades │ "
+            f"WR {_wr_col}{_wr:.0f}%{_ANSI_RST} │ "
+            f"PF {_pf_col}{_pf:.2f}{_ANSI_RST} │ "
+            f"Emg {_emg_col}{_emg:.1f}%{_ANSI_RST}"
+        )
+
+        # Anomalies
+        if anomalies:
+            _a_strs = []
+            for _a in anomalies[:4]:
+                _bot = f"{_a.get('symbol','?')} {_a.get('timeframe','?')}"
+                _code = _a.get("code", "?")
+                _a_strs.append(f"{_ANSI_Y}⚡ {_bot} {_code}{_ANSI_RST}")
+            print(f"  Anomalies: {'  '.join(_a_strs)}")
+            if len(anomalies) > 4:
+                print(f"  {_ANSI_DIM}  … and {len(anomalies) - 4} more{_ANSI_RST}")
+        else:
+            print(f"  {_ANSI_G}✓ No anomalies detected{_ANSI_RST}")
+
+        # Last corrections
+        if corrections:
+            _c_parts = []
+            for _c in corrections[:3]:
+                _bot = f"{_c.get('symbol','?')} {_c.get('timeframe','?')}"
+                _param = _c.get("parameter", "?").replace("_", " ")
+                _old = _c.get("old_value")
+                _new = _c.get("new_value")
+                if _old is not None and _new is not None:
+                    _c_parts.append(f"{_bot} {_param} {_old:.3f}→{_new:.3f}")
+                else:
+                    _c_parts.append(f"{_bot} {_param}")
+            print(f"  Applied: {_ANSI_G}{', '.join(_c_parts)}{_ANSI_RST}")
 
     def _render_performance(self) -> None:
         """Render detailed performance metrics."""
