@@ -1607,6 +1607,8 @@ class TFAgent:
                 "entry_bar_close": float(_c),
                 "entry_cb_size_mult": _cb_mult,
                 "entry_drawdown_pct": _drawdown_pct,
+                "entry_confidence": conf,
+                "entry_vpin_z": self._vpin_z,
             }
 
         self._log_entry_decision(action, conf, runway, _c, vol, depth_ratio, half_spread, bar, _gated)
@@ -3186,6 +3188,9 @@ class TFAgent:
         if self.position is not None and self.last_mid > 0:
             LOG.info("[%s %s] Shutdown: closing open position at %.5f",
                      self.symbol, self.tf_label, self.last_mid)
+            _harv = getattr(self.policy, "harvester", None)
+            if _harv is not None:
+                _harv.last_close_reason = "shutdown"
             direction = self.position["direction"]
             fill = self.last_mid - direction * self.last_half_spread
             ts = self.last_ts or dt.datetime.now(dt.UTC)
@@ -3216,6 +3221,9 @@ class _PaperEmergencyCloser:
             ts = dt.datetime.now(dt.UTC)
             fill = agent.last_mid - agent.position["direction"] * agent.last_half_spread
             try:
+                _harv = getattr(getattr(agent, "policy", None), "harvester", None)
+                if _harv is not None:
+                    _harv.last_close_reason = "circuit_breaker"
                 agent._close_position(ts, fill)
                 LOG.warning("[EMERGENCY] Paper position closed: %s %s reason=%s",
                             agent.symbol, agent.tf_label, reason)
