@@ -69,6 +69,17 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 
 ## Runtime And HUD Rules
 
+- The HUD is an operator insight surface, not a dump of every available metric.
+  Default views should show summaries first, then drill down to finer detail by
+  `Portfolio`, `Symbol`, and `Symbol / Timeframe`.
+- Standard performance periods are `24h`, `7d`, `Month`, `Epoch`, and
+  `Lifetime`. HUD labels must make the active period and scope explicit.
+- HUD result rows must also make mode explicit: `Paper`, `Live`, or `Offline`.
+  Offline training/backtest/champion metrics must be visually separated from
+  paper/live account performance so validation results are not confused with
+  realized trading PnL.
+- Do not mix paper, live, and offline results into one HUD metric row. Compare
+  them side by side when useful, but keep their metrics separate.
 - Decision logs must include timeframe and symbol, and HUD tabs must render
   timeframe wherever decisions, gates, circuit breakers, training status,
   reward-shaping advice, or cache freshness are shown.
@@ -87,6 +98,17 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
   making account-level exposure decisions. Per-timeframe bots may learn
   independently, but order ownership and exposure should be reconciled through
   the broker/account source of truth.
+- Any change to training, promotion, reward shaping, trade logging, risk,
+  decision logging, learned parameters, runtime metrics, or self-healing
+  telemetry must include a HUD impact check in the same change set. Update
+  `src/monitoring/hud_tabbed.py`, HUD render tests, and user-facing labels when
+  field names, units, periods, scopes, or source-of-truth paths change.
+- HUD rows must use consistent names, units, column widths, clipping, and
+  alignment. Do not leave deprecated or ambiguous metric pathways visible as
+  current operator signals.
+- See `docs/HUD_REDESIGN.md` for the target HUD information architecture and
+  drill-down model.
+
 
 ## Operational Safety
 
@@ -133,6 +155,22 @@ trade_log + decisions + cache + transactions + CSV history into a single enriche
 The reconstruction output must preserve full linked trigger, HOLD, CLOSE, transaction,
 `trigger_data`, `exit_data`, and reward-breakdown objects so top/bottom trade
 comparisons can explain exactly what differed.
+
+The audit trail is a learning substrate, not just an operator log. Entry,
+in-trade HOLD/CLOSE decisions, broker/transaction events, replay/cache records,
+and final trade-log rows must preserve the complete trade lifecycle with stable
+`trade_id` / `decision_trade_id`, `symbol`, `timeframe_minutes`, mode, timestamp,
+and sequence metadata. Capture every datapoint needed for later meta-analysis
+between individual trades: trigger context, all gate states, market microstructure,
+risk/circuit-breaker state, confidence/floor values, runway prediction fields,
+MFE/MAE in both points and account currency, reward component breakdowns, exit
+state, close reason, and learned-parameter/self-healing inputs.
+
+Append-only JSONL audit/trade writes must be serialized as one complete line,
+flushed/fsynced, and ordered by the lifecycle sequence: trigger decision before
+position open, HOLD updates while in position, CLOSE/transaction event before the
+final trade-log summary. Do not reset or reuse lifecycle IDs until the close
+record has been durably written.
 
 ## Real-Data Test Requirements
 

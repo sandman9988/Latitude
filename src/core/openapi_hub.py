@@ -86,6 +86,9 @@ _CTRL_KILL_SWITCH = "kill_switch.json"
 _CTRL_CB_RESET = "circuit_breaker_reset.json"
 _CTRL_KG_RESET = "kurtosis_gate_reset.json"
 _CTRL_EPSILON_OVERRIDE = "epsilon_override.json"
+_RUNWAY_BIAS_LIMIT_POINTS = 12.0
+_RUNWAY_ADJUST_MIN_SCALE = 0.35
+_RUNWAY_ADJUST_MAX_SCALE = 1.5
 
 # cTrader PERIOD enum → timeframe minutes
 _PERIOD_TO_TF: dict[int, int] = {
@@ -2311,7 +2314,6 @@ class TFAgent:
         qty = pos["qty"]
         self.position = None
         _closed_trade_id = self._current_trade_id
-        self._current_trade_id = None
 
         pnl_pts = (fill_price - entry_price) * direction
         if not math.isfinite(pnl_pts):
@@ -2544,7 +2546,7 @@ class TFAgent:
             },
         )
 
-        self._write_trade_log(
+        _trade_log_saved = self._write_trade_log(
             direction=direction,
             entry_price=entry_price,
             exit_price=fill_price,
@@ -2594,8 +2596,48 @@ class TFAgent:
             # Exit-side lifecycle reasoning snapshot
             exit_data=self._exit_lifecycle_data,
         )
+        if _trade_log_saved:
+            self._current_trade_id = None
+        else:
+            LOG.error("[%s %s] close lifecycle retained trade_id=%s after trade_log write failure",
+                      self.symbol, self.tf_label, _closed_trade_id)
 
     # ---- trade log -------------------------------------------------------
+
+    @staticmethod
+    def _classify_trigger_quality(predicted_runway_pts: float, actual_mfe_pts: float) -> str:
+        if predicted_runway_pts <= 0:
+            return "N/A"
+        utilization = SafeMath.safe_div(actual_mfe_pts, predicted_runway_pts, 0.0)
+        if actual_mfe_pts > 0 and 0.9 <= utilization <= 1.2:
+            return "EXCELLENT"
+        if utilization >= 1.2:
+            return "UNDERPREDICTED"
+        if utilization >= 0.7:
+            return "GOOD"
+        return "OVERPREDICTED"
+
+    @staticmethod
+    def _classify_harvester_quality(
+        pnl_usd: float,
+        mfe_usd: float,
+        winner_to_loser: bool,
+        bars_from_mfe_to_exit: int,
+    ) -> str:
+        if winner_to_loser:
+            return "POOR_WTL"
+        if pnl_usd <= 0:
+            return "STOPPED_OUT"
+        if mfe_usd <= 0:
+            return "N/A"
+        capture = SafeMath.safe_div(pnl_usd, mfe_usd, 0.0)
+        if capture >= 0.8 and bars_from_mfe_to_exit <= 2:
+            return "EXCELLENT"
+        if capture >= 0.6:
+            return "GOOD"
+        if capture >= 0.35:
+            return "FAIR"
+        return "POOR"
 
     def _write_trade_log(
         self,
@@ -2647,7 +2689,7 @@ class TFAgent:
         close_cb_size_mult: float = 1.0,
         # Exit-side lifecycle reasoning snapshot
         exit_data: dict | None = None,
-    ) -> None:
+    ) -> bool:
         with self._trade_sequence_lock:
             self._trade_sequence += 1
             _seq = self._trade_sequence
@@ -2657,8 +2699,6 @@ class TFAgent:
         hold_secs = (exit_time - entry_time).total_seconds() if entry_time else 0.0
         bars_held = round(hold_secs / max(self.timeframe_minutes * 60, 1))
         _price_ref = max(abs(entry_price), 1.0)
-        runway_utilization = (pnl_pts / (predicted_runway_net * _price_ref)
-                              if predicted_runway_net > 0 and abs(pnl_pts) > SAFE_EPSILON else 0.0)
         entry_half_spread = float((trigger_data or {}).get("entry_half_spread", self.last_half_spread) or 0.0)
         spread_cost_pts = entry_half_spread + float(self.last_half_spread or 0.0)
         pnl_net = pnl_pts - spread_cost_pts
@@ -2667,6 +2707,43 @@ class TFAgent:
         lot_value = trade_qty * contract_size
         mfe_usd = float(mfe) * lot_value
         mae_usd = float(mae) * lot_value
+        predicted_runway_net_points_raw = max(0.0, float(predicted_runway_net or 0.0)) * _price_ref
+        predicted_runway_gross_points = max(0.0, float(predicted_runway_gross or 0.0)) * _price_ref
+        runway_bias_ema_points = float(getattr(self, "_runway_delta_ema", 0.0) or 0.0)
+        tf_gain = float(np.clip(15.0 / float(max(int(self.timeframe_minutes or 1), 1)), 0.6, 2.5))
+        bias_clip = min(_RUNWAY_BIAS_LIMIT_POINTS, max(_price_ref * 0.003, 1.0))
+        clipped_bias = float(np.clip(runway_bias_ema_points * tf_gain, -bias_clip, bias_clip))
+        adjusted_runway_points = max(0.0, predicted_runway_net_points_raw - clipped_bias)
+        runway_adjustment_scale = SafeMath.safe_div(
+            adjusted_runway_points,
+            max(predicted_runway_net_points_raw, 1e-6),
+            1.0,
+        )
+        runway_adjustment_scale = float(
+            np.clip(runway_adjustment_scale, _RUNWAY_ADJUST_MIN_SCALE, _RUNWAY_ADJUST_MAX_SCALE),
+        )
+        predicted_runway_net_points = predicted_runway_net_points_raw * runway_adjustment_scale
+        runway_utilization = SafeMath.safe_div(float(mfe), predicted_runway_net_points, 0.0)
+        runway_delta_points = predicted_runway_net_points - float(mfe)
+        runway_error_pct = (
+            abs(runway_delta_points) / max(predicted_runway_net_points, 1.0) * 100.0
+            if predicted_runway_net_points > 0
+            else 0.0
+        )
+        bars_from_mfe_to_exit = int((exit_data or {}).get("bars_from_mfe_to_exit", -1) or -1)
+        mfe_bar_offset = int((exit_data or {}).get("mfe_bar_offset", -1) or -1)
+        mae_bar_offset = int((exit_data or {}).get("mae_bar_offset", -1) or -1)
+        trigger_quality = self._classify_trigger_quality(predicted_runway_net_points, float(mfe))
+        harvester_quality = self._classify_harvester_quality(
+            pnl_usd=pnl_usd,
+            mfe_usd=mfe_usd,
+            winner_to_loser=was_winner_to_loser,
+            bars_from_mfe_to_exit=bars_from_mfe_to_exit,
+        )
+        diag_zero_mfe_loss = pnl_usd < 0 and mfe_usd <= SAFE_EPSILON
+        diag_close_spread = float(self.last_half_spread or 0.0) * 2.0
+        close_mid = float((exit_data or {}).get("exit_mid", exit_price) or exit_price)
+        diag_close_spread_bps = (diag_close_spread / close_mid * 10_000.0) if close_mid > 0 else 0.0
         record = {
             "trade_id": _seq,
             "ticket": ticket,
@@ -2701,11 +2778,21 @@ class TFAgent:
             # Runway prediction accuracy
             "predicted_runway_gross": predicted_runway_gross,
             "predicted_runway_net": predicted_runway_net,
-            "predicted_runway_gross_points": predicted_runway_gross * _price_ref,
-            "predicted_runway_net_points": predicted_runway_net * _price_ref,
+            "predicted_runway_gross_points": predicted_runway_gross_points,
+            "predicted_runway_net_points": predicted_runway_net_points,
+            "predicted_runway_net_points_raw": predicted_runway_net_points_raw,
+            "runway_bias_ema_points": runway_bias_ema_points,
+            "runway_adjustment_scale": runway_adjustment_scale,
+            "runway_delta_points": runway_delta_points,
             "runway_utilization": float(np.clip(runway_utilization, -2.0, 2.0)),
+            "runway_error_pct": runway_error_pct,
             "runway_delta_ema": self._runway_delta_ema,
             "runway_accuracy_ema": self._runway_accuracy_ema,
+            "trigger_quality": trigger_quality,
+            "harvester_quality": harvester_quality,
+            "mfe_bar_offset": mfe_bar_offset,
+            "mae_bar_offset": mae_bar_offset,
+            "bars_from_mfe_to_exit": bars_from_mfe_to_exit,
             # Trade quality flags
             "winner_to_loser": was_winner_to_loser,
             "regime": regime,
@@ -2728,6 +2815,9 @@ class TFAgent:
             # Diagnostics
             "diag_circuit_breaker_active": diag_cb_active,
             "diag_circuit_breakers_tripped": diag_cb_tripped or [],
+            "diag_zero_mfe_loss": diag_zero_mfe_loss,
+            "diag_close_spread": diag_close_spread,
+            "diag_close_spread_bps": diag_close_spread_bps,
             "spread_cost_points": spread_cost_pts,
             "balance_after": self.equity,
             "decision_trade_id": trade_id,
@@ -2747,12 +2837,14 @@ class TFAgent:
             "close_cb_size_mult": close_cb_size_mult,
         }
         try:
+            from src.monitoring.audit_logger import append_jsonl_durable  # noqa: PLC0415
+
             log_path = Path("data") / "trade_log.jsonl"
-            log_path.parent.mkdir(exist_ok=True)
-            with open(log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, default=_json_default) + "\n")
+            append_jsonl_durable(log_path, record, default=_json_default)
+            return True
         except Exception as e:
             LOG.debug("[%s %s] trade_log write error: %s", self.symbol, self.tf_label, e)
+            return False
 
     # ---- telemetry -------------------------------------------------------
 
@@ -3876,6 +3968,11 @@ class OpenAPIHub:
         }
         base = Path("data")
         _write_json_atomic(base / "order_book.json", data)
+        _write_json_atomic(base / f"order_book_{self.symbol}.json", data)
+        # Write per-TF scoped files so _preferred_data_file finds fresh data
+        # regardless of which TF is active in the HUD.
+        for tf in self.agents:
+            _write_json_atomic(base / f"order_book_{self.symbol}_M{tf}.json", data)
 
     def _l2_snapshot(self) -> dict:
         depth_bid, depth_ask = self._order_book.depth_sum()
@@ -3888,11 +3985,6 @@ class OpenAPIHub:
             "vpin_zscore": self._vpin_z,
             "has_real_sizes": self._has_real_sizes,
         }
-        _write_json_atomic(base / f"order_book_{self.symbol}.json", data)
-        # Write per-TF scoped files so _preferred_data_file finds fresh data
-        # regardless of which TF is active in the HUD.
-        for tf in self.agents:
-            _write_json_atomic(base / f"order_book_{self.symbol}_M{tf}.json", data)
 
     def _handle_heartbeat(self, _message: Any) -> None:
         """Echo heartbeat back to keep the connection alive (required by cTrader protocol)."""

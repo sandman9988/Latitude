@@ -12,6 +12,7 @@ Features:
 
 import json
 import logging
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -19,6 +20,21 @@ from pathlib import Path
 from typing import Any
 
 LOG = logging.getLogger(__name__)
+
+
+def append_jsonl_durable(path: Path, entry: dict[str, Any], *, default: Any = str) -> None:
+    """Append one JSONL record as a single durable O_APPEND write."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = (json.dumps(entry, default=default, separators=(",", ":")) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        view = memoryview(line)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 class TransactionLogger:
@@ -46,6 +62,7 @@ class TransactionLogger:
         self.log_file = self.log_dir / filename
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
+        self._sequence = 0
 
         # Log session start
         self.log_event("SESSION_START", {"session_id": self.session_id})
@@ -59,19 +76,23 @@ class TransactionLogger:
             severity: Event severity (INFO, WARNING, ERROR, CRITICAL)
 
         """
-        entry = {
-            "timestamp": datetime.now(UTC).isoformat(),
-            "session": self.session_id,
-            "event_type": event_type,
-            "severity": severity,
-            "data": data,
-        }
-
         try:
-            with self.lock, open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, default=str) + "\n")
+            with self.lock:
+                entry = {
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "session": self.session_id,
+                    "sequence": self._next_sequence(),
+                    "event_type": event_type,
+                    "severity": severity,
+                    "data": data,
+                }
+                append_jsonl_durable(self.log_file, entry)
         except Exception as e:
             LOG.exception("[AUDIT] Failed to write transaction log: %s", e)
+
+    def _next_sequence(self) -> int:
+        self._sequence = int(getattr(self, "_sequence", 0)) + 1
+        return self._sequence
 
     def log_order_submit(self, order_id: str, side: str, quantity: float, price: float | None = None) -> None:
         """Log order submission."""
@@ -205,6 +226,7 @@ class DecisionLogger:
         self.symbol = symbol
         self.timeframe = timeframe
         self.timeframe_minutes = timeframe_minutes
+        self._sequence = 0
 
     def log_decision(
         self,
@@ -232,6 +254,7 @@ class DecisionLogger:
             entry = {
                 "timestamp": datetime.now(UTC).isoformat(),
                 "session": getattr(self, "session_id", None),
+                "sequence": self._next_sequence(),
                 "trading_mode": getattr(self, "trading_mode", "live"),
                 "agent": agent,
                 "decision": decision,
@@ -255,11 +278,13 @@ class DecisionLogger:
 
             # Serialize once, write once (atomic from perspective of other threads)
             try:
-                with open(self.log_file, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(entry, default=str) + "\n")
-                    f.flush()
+                append_jsonl_durable(self.log_file, entry)
             except Exception as e:
                 LOG.exception("[DECISION] Failed to write decision log: %s", e)
+
+    def _next_sequence(self) -> int:
+        self._sequence = int(getattr(self, "_sequence", 0)) + 1
+        return self._sequence
 
     def log_trigger_decision(
         self,
@@ -443,4 +468,3 @@ if __name__ == "__main__":
 
         for line in lines:
             entry = json.loads(line)
-

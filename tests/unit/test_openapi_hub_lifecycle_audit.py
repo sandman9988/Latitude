@@ -84,6 +84,16 @@ def test_trade_log_persists_exit_lifecycle_data(tmp_path, monkeypatch):
     assert record["exit_data"]["exit_capture_decay_armed"] is True
     assert record["reward_trigger_breakdown"]["accuracy"] == 0.5
     assert record["reward_harvester_breakdown"]["harvester_reward"] == 0.4
+    assert record["predicted_runway_net_points_raw"] >= 0.0
+    assert "runway_bias_ema_points" in record
+    assert "runway_adjustment_scale" in record
+    assert "runway_delta_points" in record
+    assert "runway_error_pct" in record
+    assert record["trigger_quality"] in {"N/A", "EXCELLENT", "UNDERPREDICTED", "GOOD", "OVERPREDICTED"}
+    assert record["harvester_quality"] in {"N/A", "EXCELLENT", "GOOD", "FAIR", "POOR", "POOR_WTL", "STOPPED_OUT"}
+    assert "mfe_bar_offset" in record
+    assert "mae_bar_offset" in record
+    assert "bars_from_mfe_to_exit" in record
 
 
 def test_transaction_event_is_scoped_for_trade_lifecycle():

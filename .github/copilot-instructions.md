@@ -173,6 +173,13 @@ ______________________________________________________________________
 
 ## HUD tab map
 
+The HUD target design is summary-first with drill-down by `Portfolio`,
+`Symbol`, and `Symbol / Timeframe`. Standard performance periods are `24h`,
+`7d`, `Month`, `Epoch`, and `Lifetime`; visible rows must make both scope and
+period explicit. Result rows must also distinguish `Paper`, `Live`, and
+`Offline`; never mix those modes into one metric row. Offline
+validation/champion metrics are not account PnL. See `docs/HUD_REDESIGN.md`.
+
 | Key | Tab | Key data |
 | --- | ------------- | -------------------------------------------------------------------- |
 | 1 | Overview | fleet status, position, account balance, risk status, market |
@@ -325,6 +332,14 @@ alignment score, bar OHLCV, training state, CB state, drawdown, `entry_confidenc
 
 For retrospective analysis, use `scripts/reconstruct_trade_lifecycle.py` to stitch
 trade_log + decisions + cache + transactions + CSV history into a single enriched dataset.
+
+Audit/trade logging is part of the learning loop. Every lifecycle datapoint needed for
+self-healing, replay learning, dynamic reward/guard adjustment, and individual trade
+meta-analysis must be captured with stable `trade_id` / `decision_trade_id`, symbol,
+timeframe, mode, timestamp, and sequence metadata. Append-only JSONL writes must be one
+complete durable line (flush/fsync) in lifecycle order: trigger decision, open/transaction,
+HOLD updates, CLOSE/transaction, final trade-log summary. Never reset or reuse lifecycle
+IDs before the final close record is durably written.
 
 ## Real-Data Test Requirements
 
@@ -714,5 +729,6 @@ ______________________________________________________________________
 - Do not commit `data/`, `logs/`, `trades/`, `store/`, `.env`, credentials, model artifacts, or live runtime outputs
 - Do not recreate deleted modules (see `docs/archive/REMOVED_LEGACY_CODE.md`)
 - Do not aggregate across timeframes unless the UI/code path explicitly says it is a portfolio/account view
+- Do not change training, promotion, reward shaping, trade logging, risk, decision logging, learned parameters, runtime metrics, or self-healing telemetry without checking whether HUD source paths, labels, units, scope, periods, and render tests need updating in the same change set.
 - Never run `ruff --unsafe-fixes` on `hud_tabbed.py` or any file with `print()`-based terminal rendering — ruff treats return-value-less function calls as dead code and strips them when they're actually the rendering output.
 - Do not add hard gates in `_handle_flat()` that block entries before the trigger agent — paper mode needs ε-greedy exploration on ALL bars. Log and add to `_gated`, but let `trigger.decide_entry()` run.
