@@ -780,8 +780,10 @@ class TabbedHUD:
                     self._handle_session_selector()
                 elif key.lower() == "r":
                     self._handle_cb_reset()
+                    self._force_redraw = True
                 elif key.lower() == "e":
                     self._handle_stats_epoch()
+                    self._force_redraw = True
                 elif key.lower() == "h":
                     self._show_help()
                     self._force_redraw = True
@@ -1917,12 +1919,26 @@ class TabbedHUD:
                 self.raw_mode_enabled = True
             except Exception:
                 pass
+        # Always hide cursor when re-entering HUD raw mode — menus show it.
+        sys.stdout.write("\033[?25l")
+        sys.stdout.flush()
+
+    def _menu_enter(self) -> None:
+        """Clear screen and show cursor before an interactive menu prompt.
+
+        Using direct ANSI sequences instead of os.system("clear") avoids the
+        subprocess-stdout race and ensures the sequences operate on the active
+        screen buffer (alternate or main) without spawning a shell that may
+        emit smcup/rmcup and switch buffers unexpectedly.
+        """
+        sys.stdout.write("\033[2J\033[H\033[?25h")
+        sys.stdout.flush()
 
     def _show_help(self) -> None:
         """Display help screen with keyboard shortcuts and information."""
         self._disable_raw_mode()
         try:
-            os.system("clear" if os.name != "nt" else "cls")
+            self._menu_enter()
             print("╔" + "═" * 78 + "╗")
             print("║" + " " * 25 + "HUD HELP & REFERENCE" + " " * 32 + "║")
             print("╚" + "═" * 78 + "╝\n")
@@ -2058,7 +2074,7 @@ class TabbedHUD:
         """Alt+K: confirm and write kill_switch.json — bot background thread acts within 5 seconds."""
         self._disable_raw_mode()
         try:
-            os.system("clear" if os.name != "nt" else "cls")
+            self._menu_enter()
             RED = _ANSI_R
             YLW = _ANSI_Y
             RST = _ANSI_RST
@@ -2095,7 +2111,7 @@ class TabbedHUD:
         """R key: Show tripped circuit breakers with reasons and offer reset."""
         self._disable_raw_mode()
         try:
-            os.system("clear" if os.name != "nt" else "cls")
+            self._menu_enter()
             YLW = _ANSI_Y
             GRN = _ANSI_G
             RED = _ANSI_R
@@ -2205,7 +2221,7 @@ class TabbedHUD:
         """[e] key: Set or clear the stats epoch to exclude old trades from metrics."""
         self._disable_raw_mode()
         try:
-            os.system("clear" if os.name != "nt" else "cls")
+            self._menu_enter()
             YLW = _ANSI_Y
             GRN = _ANSI_G
             DIM = _ANSI_DIM
@@ -2280,7 +2296,7 @@ class TabbedHUD:
         import subprocess
         self._disable_raw_mode()
         try:
-            os.system("clear" if os.name != "nt" else "cls")
+            self._menu_enter()
             result = subprocess.run(
                 [sys.executable, "-m", "src.monitoring.session_selector"],
                 check=False,
