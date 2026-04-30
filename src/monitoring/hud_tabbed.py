@@ -4281,6 +4281,7 @@ class TabbedHUD:
         _scope = self._risk_scope_label(self.risk_stats)
         print(f"\n\033[1m🏥 SYSTEM HEALTH [{_scope}]\033[0m")
         self._render_health_connectivity()
+        self._render_health_session_events()
         self._render_health_risk()
         self._render_health_buffers()
         self._render_health_model()
@@ -4651,6 +4652,61 @@ class TabbedHUD:
                 else:
                     _c_parts.append(f"{_bot} {_param}")
             print(f"  Applied: {_ANSI_G}{', '.join(_c_parts)}{_ANSI_RST}")
+
+    def _render_health_session_events(self) -> None:
+        """Render per-bot last session start and recent connection events from transactions.jsonl."""
+        _SESSION_TYPES = frozenset({"SESSION_START", "SESSION_EVENT", "COMPONENT_HEALTH"})
+        _events = self._load_transaction_events(event_types=_SESSION_TYPES, n=80)
+        if not _events:
+            print(f"\n\033[1m🔌 SESSION LOG\033[0m  {_ANSI_DIM}no transactions.jsonl data yet{_ANSI_RST}")
+            return
+
+        # Latest SESSION_START per source file → one row per bot
+        _last_start: dict[str, dict] = {}
+        _non_start: list[dict] = []
+        for e in _events:
+            _src = e.get("_source_path", "")
+            _et = e.get("event_type", "")
+            if _et == "SESSION_START" and _src not in _last_start:
+                _last_start[_src] = e
+            elif _et in ("SESSION_EVENT", "COMPONENT_HEALTH"):
+                _non_start.append(e)
+
+        print(f"\n\033[1m🔌 SESSION LOG\033[0m  {_ANSI_DIM}(from transactions.jsonl){_ANSI_RST}")
+
+        for _src, _e in sorted(_last_start.items()):
+            _ts = str(_e.get("timestamp") or "?")
+            try:
+                _dt = datetime.fromisoformat(_ts)
+                _age_s = (datetime.now(UTC) - _dt).total_seconds()
+                _age_str = f"{_age_s/3600:.1f}h ago" if _age_s >= 3600 else f"{_age_s/60:.0f}m ago"
+            except Exception:
+                _age_str = _ts[:16]
+            # Bot label from source path
+            import os as _os  # noqa: PLC0415
+            _bot_lbl = _os.path.basename(_os.path.dirname(_os.path.dirname(_os.path.dirname(_src))))
+            if _bot_lbl in (".", "audit", "logs"):
+                _bot_lbl = "root"
+            _sess = str((_e.get("data") or {}).get("session_id") or _e.get("session") or "?")[:20]
+            print(f"  {_ANSI_G}●{_ANSI_RST} {_bot_lbl:<22} last start {_age_str}  {_ANSI_DIM}({_sess}){_ANSI_RST}")
+
+        # Recent non-start events (last 5)
+        for _e in _non_start[:5]:
+            _et = _e.get("event_type", "")
+            _ts = str(_e.get("timestamp") or "?")[:16]
+            _d = _e.get("data") or {}
+            if _et == "COMPONENT_HEALTH":
+                _healthy = bool(_d.get("healthy", True))
+                _comp = str(_d.get("component") or "?")
+                _errs = int(_d.get("error_count") or 0)
+                _col = _ANSI_G if _healthy else _ANSI_R
+                _icon = "✓" if _healthy else "✗"
+                print(f"  {_col}{_icon} {_ts} COMPONENT_HEALTH {_comp} err={_errs}{_ANSI_RST}")
+            elif _et == "SESSION_EVENT":
+                _ev = str(_d.get("event") or "?")
+                _st = str(_d.get("session_type") or "?")
+                _col = _ANSI_R if "disconnect" in _ev.lower() or "logout" in _ev.lower() else _ANSI_Y
+                print(f"  {_col}⚡ {_ts} SESSION_EVENT {_st} {_ev}{_ANSI_RST}")
 
     def _render_perf_period_columns(
         self,
@@ -5678,6 +5734,96 @@ class TabbedHUD:
             print(f"  [{ts}] [{bot_str}] {mode_badge} {color}{event}{_ANSI_RST}: {details_str}")
         print("  " + "─" * 76)
         print(f"\n  Total decisions logged: {len(entries)}")
+
+    def _load_transaction_events(
+        self,
+        event_types: frozenset | None = None,
+        n: int = 50,
+        sym_filter: str = "",
+        tf_filter: int = 0,
+    ) -> list[dict]:
+        """Load recent transaction events from all bots' transactions.jsonl files."""
+        _tx_files: list[Path] = list(sorted(self.data_dir.glob("paper_*_M*/logs/audit/transactions.jsonl")))
+        _primary = self.data_dir / "logs" / "audit" / "transactions.jsonl"
+        if _primary.exists():
+            _tx_files.append(_primary)
+
+        entries: list[dict] = []
+        try:
+            for _jf in _tx_files:
+                try:
+                    lines = _jf.read_text(encoding="utf-8").splitlines()
+                except OSError:
+                    continue
+                for line in reversed(lines):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event_types and e.get("event_type") not in event_types:
+                        continue
+                    _d = e.get("data") or {}
+                    if sym_filter:
+                        _esym = str(_d.get("symbol") or "").upper()
+                        if _esym and _esym != sym_filter:
+                            continue
+                    if tf_filter:
+                        _etf = int(_d.get("timeframe_minutes") or 0)
+                        if _etf and _etf != tf_filter:
+                            continue
+                    e.setdefault("_source_path", str(_jf))
+                    entries.append(e)
+                    if len(entries) >= n * len(_tx_files):
+                        break
+        except Exception:
+            pass
+
+        entries.sort(key=lambda e: str(e.get("timestamp") or ""), reverse=True)
+        return entries[:n]
+
+    def _load_transactions_for_position(self, position_id: str, sym: str = "", tf_m: int = 0) -> list[dict]:
+        """Load POSITION_OPEN/CLOSE events matching a given position_id."""
+        _tx_files: list[Path] = []
+        if sym and tf_m:
+            _scoped = (
+                self.data_dir / f"paper_{sym.upper()}_M{tf_m}" / "logs" / "audit" / "transactions.jsonl"
+            )
+            if _scoped.exists():
+                _tx_files.append(_scoped)
+        if not _tx_files:
+            _tx_files.extend(sorted(self.data_dir.glob("paper_*_M*/logs/audit/transactions.jsonl")))
+            _primary = self.data_dir / "logs" / "audit" / "transactions.jsonl"
+            if _primary.exists():
+                _tx_files.append(_primary)
+
+        _target = frozenset({"POSITION_OPEN", "POSITION_CLOSE"})
+        results: list[dict] = []
+        try:
+            for _jf in _tx_files:
+                try:
+                    lines = _jf.read_text(encoding="utf-8").splitlines()
+                except OSError:
+                    continue
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if e.get("event_type") not in _target:
+                        continue
+                    _d = e.get("data") or {}
+                    if str(_d.get("position_id") or "") == position_id:
+                        results.append(e)
+        except Exception:
+            pass
+
+        return sorted(results, key=lambda e: str(e.get("timestamp") or ""))
 
     def _load_decision_entries(
         self,
@@ -7310,6 +7456,44 @@ class TabbedHUD:
         print(f"  {'WTL protection:':<16} capture_decay<{_cd:.2f}  micro_giveback>{_mw:.2f}×MFE")
         if _w2l:
             print(f"  {_ANSI_Y}[!] Winner-to-Loser: trade reversed into a loss after reaching MFE{_ANSI_RST}")
+
+        # Broker transaction events linked by position_id
+        _sym_t = str(t.get("symbol") or "")
+        _tf_t = int(t.get("timeframe_minutes") or 0)
+        _tx_events = self._load_transactions_for_position(_pid, sym=_sym_t, tf_m=_tf_t)
+        if _tx_events:
+            print(f"\n  {'BROKER EVENTS':─<68}")
+            for _tx in _tx_events:
+                _tx_ts = str(_tx.get("timestamp") or "?")[:19]
+                _tx_et = _tx.get("event_type", "?")
+                _tx_d = _tx.get("data") or {}
+                if _tx_et == "POSITION_OPEN":
+                    _ep = float(_tx_d.get("entry_price") or 0.0)
+                    _dr = str(_tx_d.get("direction") or "?").upper()
+                    _qty = float(_tx_d.get("quantity") or 0.0)
+                    _conf = float(_tx_d.get("entry_confidence") or 0.0)
+                    _dc2 = _ANSI_G if _dr == "LONG" else _ANSI_R
+                    print(
+                        f"  {_ANSI_G}OPEN {_ANSI_RST} {_tx_ts}  {_dc2}{_dr}{_ANSI_RST}"
+                        f"  {_ep:.{_dec}f}  qty={_qty}  conf={_conf:.4f}"
+                    )
+                    _eg = _tx_d.get("entry_trigger_data") or {}
+                    _eg_gates = _eg.get("entry_gated_conditions") or []
+                    if _eg_gates:
+                        for _g in _eg_gates:
+                            print(f"  {'':6}{_ANSI_R}✗ {_g}{_ANSI_RST}")
+                elif _tx_et == "POSITION_CLOSE":
+                    _xp = float(_tx_d.get("exit_price") or 0.0)
+                    _xpnl = float(_tx_d.get("pnl") or 0.0)
+                    _xrsn = str(_tx_d.get("close_reason") or "?")
+                    _xcap = _tx_d.get("capture_ratio")
+                    _xcap_str = f"  cap={_xcap:.3f}" if _xcap is not None else ""
+                    _pc2 = self._pnl_color(_xpnl)
+                    print(
+                        f"  {_ANSI_R}CLOSE{_ANSI_RST} {_tx_ts}  {_xp:.{_dec}f}"
+                        f"  {_pc2}PnL={_xpnl:+.4f}{_ANSI_RST}{_xcap_str}  [{_xrsn}]"
+                    )
+
         print()
         print(f"  {_ANSI_DIM}[d] or [b] - return to trade list{_ANSI_RST}")
 

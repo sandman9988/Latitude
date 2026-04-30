@@ -377,12 +377,13 @@ Tab 7 (Trades) remains the reference implementation.
 - Tab 6 L4: full decision card with all gates expanded (uncapped)
 - Tab 4 L3: last NO_ENTRY `gated_conditions` shown in risk detail
 
-### ⬜ PENDING — `transactions.jsonl` unused by all HUD tabs
+### ✅ FIXED — `transactions.jsonl` routed to Tab 1 and Tab 7
 
-Written per bot for SESSION_START, POSITION_OPEN, POSITION_CLOSE events.
-
-- Tab 1 should read it for session/connection health events
-- Tab 7 trade card should link POSITION_OPEN/CLOSE by `position_id`
+- Tab 1 System Health block now includes `🔌 SESSION LOG` via `_render_health_session_events()`:
+  per-bot last SESSION_START age, recent COMPONENT_HEALTH and SESSION_EVENT entries.
+- Tab 7 trade card L4 shows `BROKER EVENTS` section: POSITION_OPEN (entry price, direction,
+  quantity, confidence, entry_gated_conditions) and POSITION_CLOSE (exit price, PnL, capture
+  ratio, close reason) looked up by `position_id` via `_load_transactions_for_position()`.
 
 ---
 
@@ -449,5 +450,5 @@ learned parameters, or self-healing telemetry must include a HUD impact check:
 7. ✅ **Add level dispatch to Tab 5 (Market)** — Symbol summary vs TF detail (commit `ce9bccf`)
 8. ✅ **Tab 6 full hierarchical dispatch** — L1→L2→L3(cursor)→L4(detail card) (commit `9f33dad`)
 9. ✅ **Surface `gated_conditions`** — Tab 6 L3 inline + L4 card + Tab 4 L3 risk detail (commit `9f33dad`)
-10. ⬜ **Link `transactions.jsonl`** in Tab 1 (session health) and Tab 7 (trade card)
+10. ✅ **Link `transactions.jsonl`** — Tab 1 session health block + Tab 7 broker events (commit `HEAD`)
 11. ⬜ **Render period columns in Trades tab** — Side-by-side at L1/L2 (currently rows)

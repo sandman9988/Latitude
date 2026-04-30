@@ -96,8 +96,9 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 - `gated_conditions` (array of gate-rejection reason strings on NO_ENTRY decisions)
   is rendered in Tab 6 Level 3 (inline badge + per-gate expansion) and Level 4 detail
   card (all gates, uncapped), and in Tab 4 Level 3 risk detail. Do not remove this.
-- `transactions.jsonl` must be routed to Tab 1 (session/connection health) and
-  Tab 7 (POSITION_OPEN/CLOSE linked to trade card). It is currently unused by all tabs.
+- `transactions.jsonl` is routed to Tab 1 (`🔌 SESSION LOG` in system health block —
+  per-bot last SESSION_START age, COMPONENT_HEALTH, SESSION_EVENT entries) and to Tab 7
+  trade card L4 (`BROKER EVENTS` — POSITION_OPEN/CLOSE looked up by `position_id`).
 - Decision logs must include timeframe and symbol, and HUD tabs must render
   timeframe wherever decisions, gates, circuit breakers, training status,
   reward-shaping advice, or cache freshness are shown.
