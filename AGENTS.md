@@ -89,11 +89,13 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
   realized trading PnL.
 - Do not mix paper, live, and offline results into one HUD metric row. Compare
   them side by side when useful, but keep their metrics separate.
-- `decisions.jsonl` is ~90% CACHED startup entries. Any HUD code reading this
-  file must skip CACHED/WARMING_UP entries scanning backward, not read last-N lines.
-  See `docs/HUD_REDESIGN.md` for the `_tail_meaningful()` pattern.
+- `decisions.jsonl` is ~90% CACHED startup entries. All HUD code reading this
+  file uses `_tail_meaningful()` which scans backward skipping CACHED/WARMING_UP entries.
+  Tab 6 (Decision Log) is fully hierarchical: L1 portfolio→L2 symbol→L3 cursor list→L4 detail
+  card. Do not regress this to a flat view. See `docs/HUD_REDESIGN.md`.
 - `gated_conditions` (array of gate-rejection reason strings on NO_ENTRY decisions)
-  must be visible in Tab 6 Level 4 decision card and Tab 4 Level 3 risk detail.
+  is rendered in Tab 6 Level 3 (inline badge + per-gate expansion) and Level 4 detail
+  card (all gates, uncapped), and in Tab 4 Level 3 risk detail. Do not remove this.
 - `transactions.jsonl` must be routed to Tab 1 (session/connection health) and
   Tab 7 (POSITION_OPEN/CLOSE linked to trade card). It is currently unused by all tabs.
 - Decision logs must include timeframe and symbol, and HUD tabs must render

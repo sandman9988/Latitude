@@ -77,9 +77,9 @@ Rows are ordered: Live bots first (if any), then Paper. Within each section, alp
 by symbol. Cursor navigation crosses both sections. On `Enter`, `_ctx_symbol` AND
 `_ctx_mode` are captured from the selected row — not inferred from a global mode variable.
 
-**Implementation fix required:** `_drill_down()` at L1 must build a `list[tuple[str, str]]`
-of `(symbol, mode)` pairs in the same order they are rendered, index into that list using
-the cursor, and set both `_ctx_symbol` and `_ctx_mode` before advancing to L2.
+**Implemented:** `_l1_rows()` builds a `list[tuple[str, str]]` of `(symbol, mode)` pairs in
+render order (Live first, then Paper, alphabetical within each section). `_drill_down()` at L1
+indexes into that list to set both `_ctx_symbol` and `_ctx_mode` before advancing to L2.
 
 ---
 
@@ -242,24 +242,26 @@ No Level 4.
 
 ### Tab 6 — Decision Log
 
-Strategy reasoning and policy trace. Shows meaningful decisions only (see CACHED flood fix below).
+Strategy reasoning and policy trace. Shows meaningful decisions only (CACHED flood fixed).
+**Fully hierarchical** — level dispatch mirrors Tab 7 (Trades) reference implementation.
 
 | Level | Scope | Renders |
 |-------|-------|---------|
-| **1** | Portfolio | Newest-first across all bots: timestamp, bot (symbol/TF), decision, confidence, brief context. Skips CACHED/WARMING_UP entries. |
-| **2** | Symbol | Filtered to selected symbol+mode, newest-first |
-| **3** | Symbol/TF | Filtered to symbol+TF, newest-first with full context row |
-| **4** | Detail | Decision card: full context, reasoning, linked trade_id, position_id, and **gated_conditions** for NO_ENTRY decisions |
+| **1** | Portfolio | 15 most-recent signal decisions across all bots: timestamp, bot (symbol/TF), mode badge, agent, decision, confidence, brief context. CACHED/WARMING_UP entries skipped. |
+| **2** | Symbol | 25 entries filtered to selected symbol+mode, newest-first |
+| **3** | Symbol/TF | 40 entries filtered to symbol+TF with cursor (`↑↓`/`jk`). NO_ENTRY rows inline-expand `gated_conditions`. `Enter`/`d` → L4. |
+| **4** | Detail | Full decision card: timestamp, bot/mode badge, agent, decision, confidence, full `context` dict, full `reasoning` dict, all `gated_conditions` expanded (no cap), `trade_id`/`position_id` links. `[b]`/`Esc` back. |
 
-**CRITICAL — gated_conditions display (Level 4):**
-For NO_ENTRY decisions, the `gated_conditions` array from the reasoning field must be shown:
+**gated_conditions (Level 4 — implemented):**
+For NO_ENTRY decisions, every rejection reason from `gated_conditions` is rendered:
 ```
-GATES BLOCKED (3):
-  kurtosis=14.15 > 5.94
-  vpin_z=3.21 > 2.50
-  spread=4.2 > 3.0 max
+  ├─ GATED CONDITIONS (3) ────────────────
+  │    ✗ kurtosis=14.15 > 5.94
+  │    ✗ vpin_z=3.21 > 2.50
+  │    ✗ spread=4.2 > 3.0 max
 ```
-This is the most actionable diagnostic field in the log and is currently invisible in the HUD.
+Also shown as `[Ngates]` badge inline on L3 rows. At L3+ `gated_conditions` from NO_ENTRY
+rows are expanded inline below the row (up to all entries, uncapped in L4 card).
 
 **CRITICAL — CACHED flood fix:**
 `decisions.jsonl` is ~90% `CACHED` entries (startup cache-load events). Reading the last 200
@@ -286,7 +288,8 @@ def _tail_meaningful(path: Path, n: int = 50) -> list[dict]:
     return list(reversed(results))
 ```
 
-Apply this in `_render_jsonl_decision_entries()` replacing the current last-N-lines read.
+**Implemented** as `_tail_meaningful()` static method on `HUDRenderer`. Used by
+`_load_decision_entries()` which powers all Tab 6 level views.
 
 **Audit data source:** `decisions.jsonl` per bot (meaningful entries only via `_tail_meaningful`).
 
@@ -345,79 +348,41 @@ events to trade cards.
 
 ---
 
-## Known Bugs to Fix
+## Known Bugs / Implementation Status
 
-### 1. L1→L2 drill cursor/mode bug (`_drill_down()`)
+### ✅ FIXED — L1→L2 drill cursor/mode bug
 
-**Problem:** At L1, `_available_symbols()[cursor]` returns symbol names without mode. The cursor
-counts across both Live and Paper sections, but the symbol list has no mode. Mode is never
-captured on drill.
+`_l1_rows()` returns `list[tuple[str, str]]` of (symbol, mode) pairs in render order.
+`_drill_down()` at L1 indexes into that list and captures both `_ctx_symbol` and `_ctx_mode`.
 
-**Fix:**
-```python
-def _l1_rows(self) -> list[tuple[str, str]]:
-    """Return (symbol, mode) pairs in L1 render order."""
-    rows = []
-    live_syms = [s for s in self._sorted_symbols() if self._has_live_bot(s)]
-    paper_syms = [s for s in self._sorted_symbols() if self._has_paper_bot(s)]
-    for s in live_syms:
-        rows.append((s, "live"))
-    for s in paper_syms:
-        rows.append((s, "paper"))
-    return rows
+### ✅ FIXED — Decision log CACHED flood
 
-# In _drill_down(), at L1→L2:
-rows = self._l1_rows()
-if 0 <= self._ctx_cursor < len(rows):
-    sym, mode = rows[self._ctx_cursor]
-    self._ctx_symbol = sym
-    self._ctx_mode = mode
-    self._ctx_level = 2
-    self._ctx_cursor = 0
-```
+`_tail_meaningful()` static method scans backward, skipping `CACHED`/`WARMING_UP` entries.
+Used by `_load_decision_entries()` which powers all Tab 6 level views.
 
-### 2. Decision log CACHED flood
+### ✅ FIXED — Performance tab period columns
 
-**Problem:** 90% of `decisions.jsonl` entries are `CACHED` startup events. Last 200-line read
-window gives virtually no real trading decisions.
+`_render_perf_period_columns()` renders period columns side-by-side at L1/L2/L3.
+`_render_performance()` dispatches by `_ctx_level`.
 
-**Fix:** Replace last-N-lines read with `_tail_meaningful()` (see Tab 6 spec above).
+### ✅ FIXED — Level dispatch missing from Tabs 1–5
 
-### 3. Performance tab renders periods as rows
+All tabs (Overview, Performance, Training, Risk, Market) now dispatch by `_ctx_level`.
+Tab 6 (Decision Log) fully hierarchical as of commit `9f33dad`.
+Tab 7 (Trades) remains the reference implementation.
 
-**Problem:** `_render_performance()` shows one period at a time as rows. Spec requires period
-columns side-by-side at L1–L3.
+### ✅ FIXED — `gated_conditions` invisible in HUD
 
-**Fix:** Build a table with columns `[Symbol/TF | Lifetime | Epoch | Month | 7d | 24h]`.
+- Tab 6 L3: inline `[Ngates]` badge on NO_ENTRY rows + per-gate expansion below row
+- Tab 6 L4: full decision card with all gates expanded (uncapped)
+- Tab 4 L3: last NO_ENTRY `gated_conditions` shown in risk detail
 
-### 4. Tabs 1–5 have no level dispatch
+### ⬜ PENDING — `transactions.jsonl` unused by all HUD tabs
 
-**Problem:** Tabs 1 (Overview), 2 (Performance), 3 (Training), 4 (Risk), 5 (Market) do not
-dispatch rendering by `_ctx_level`. They render the same flat view regardless of drill depth.
+Written per bot for SESSION_START, POSITION_OPEN, POSITION_CLOSE events.
 
-**Fix:** Each tab's `_render_*()` method needs a level dispatch:
-```python
-def _render_performance(self):
-    if self._ctx_level == 1:
-        self._render_performance_portfolio()
-    elif self._ctx_level == 2:
-        self._render_performance_symbol()
-    elif self._ctx_level == 3:
-        self._render_performance_bot()
-    elif self._ctx_level == 4:
-        self._render_performance_detail()
-```
-
-Tab 7 (`_render_trades()`) is the reference implementation.
-
-### 5. `gated_conditions` invisible in HUD
-
-**Problem:** `gated_conditions` (array of rejection reason strings on NO_ENTRY decisions) is
-logged to `decisions.jsonl` but never rendered in any HUD tab. It is the most actionable
-diagnostic field.
-
-**Fix:** Render in Tab 6 Level 4 decision card and Tab 4 Level 3 risk detail (last NO_ENTRY
-gated_conditions for that bot).
+- Tab 1 should read it for session/connection health events
+- Tab 7 trade card should link POSITION_OPEN/CLOSE by `position_id`
 
 ---
 
@@ -475,13 +440,14 @@ learned parameters, or self-healing telemetry must include a HUD impact check:
 
 ## Implementation Order
 
-1. **Fix `_tail_meaningful()`** — Decision log CACHED flood (Tab 6 immediately usable)
-2. **Fix `_l1_rows()` and `_drill_down()` at L1** — Mode capture on drill
-3. **Add level dispatch to Tab 2 (Performance)** — Period columns at L1/L2/L3
-4. **Add level dispatch to Tab 4 (Risk)** — Fleet vs symbol vs bot views
-5. **Add level dispatch to Tab 3 (Training)** — Queue vs symbol vs bot views
-6. **Add level dispatch to Tab 1 (Overview)** — Dashboard vs symbol card
-7. **Add level dispatch to Tab 5 (Market)** — Symbol summary vs TF detail
-8. **Surface `gated_conditions`** in Tab 6 L4 and Tab 4 L3
-9. **Link `transactions.jsonl`** in Tab 1 (session health) and Tab 7 (trade card)
-10. **Render period columns** (not rows) in Performance and Trades tabs
+1. ✅ **Fix `_tail_meaningful()`** — Decision log CACHED flood (commit `ce9bccf`)
+2. ✅ **Fix `_l1_rows()` and `_drill_down()` at L1** — Mode capture on drill (commit `ce9bccf`)
+3. ✅ **Add level dispatch to Tab 2 (Performance)** — Period columns at L1/L2/L3 (commit `ce9bccf`)
+4. ✅ **Add level dispatch to Tab 4 (Risk)** — Fleet vs symbol vs bot views (commit `ce9bccf`)
+5. ✅ **Add level dispatch to Tab 3 (Training)** — Queue vs symbol vs bot views (commit `ce9bccf`)
+6. ✅ **Add level dispatch to Tab 1 (Overview)** — Dashboard vs symbol card (commit `ce9bccf`)
+7. ✅ **Add level dispatch to Tab 5 (Market)** — Symbol summary vs TF detail (commit `ce9bccf`)
+8. ✅ **Tab 6 full hierarchical dispatch** — L1→L2→L3(cursor)→L4(detail card) (commit `9f33dad`)
+9. ✅ **Surface `gated_conditions`** — Tab 6 L3 inline + L4 card + Tab 4 L3 risk detail (commit `9f33dad`)
+10. ⬜ **Link `transactions.jsonl`** in Tab 1 (session health) and Tab 7 (trade card)
+11. ⬜ **Render period columns in Trades tab** — Side-by-side at L1/L2 (currently rows)
