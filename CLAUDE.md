@@ -16,18 +16,28 @@ cTrader SpotEvent bid/ask are ALWAYS at 10^5 precision. `_scale = 100000` is fix
 
 ## Audit Log & Trade Log
 
-The TFAgent writes **65 top-level fields** per trade to `data/trade_log.jsonl` plus
-two nested breakdown dicts (`trigger_data` with 34 sub-fields, `reward_*_breakdown`).
+The TFAgent writes **66 top-level fields** per trade to `data/trade_log.jsonl` plus
+nested lifecycle dicts (`trigger_data`, `exit_data`, and `reward_*_breakdown`).
 
 The complete field map is defined in `src/core/openapi_hub.py:_write_trade_log()`.
 Key groups: identity (7), timing (3), P&L (4), excursions (4), entry conditions (13),
 runway prediction (9), reward (7), calibration (7), exit conditions (3), diagnostics (4),
-risk state (2), trigger reason snapshot (1 nested dict), reward breakdown (2 nested dicts).
+risk state (2), trigger reason snapshot (1 nested dict), exit reason snapshot (1 nested dict),
+reward breakdown (2 nested dicts).
+
+**Excursion unit rule:** `mfe` and `mae` are account-currency USD values
+(`quantity × contract_size` applied). `mfe_points` and `mae_points` are raw price movement.
+Never render points as dollars.
 
 **Every trade is now linked to its trigger entry context.** The `trigger_data` field
 captures regime, geometry, HMM probabilities, kurtosis, volatility ratio, gap, returns,
 alignment score, bar OHLCV, training state, CB state, drawdown, `entry_confidence`, and
 `entry_vpin_z` at the moment of entry.
+
+**Every trade captures its exit context.** The `exit_data` field captures exit
+confidence/floor, close reason, trailing-stop, breakeven and capture-decay state,
+close-time regime/risk, spread, excursions, capture, L2 depth, VPIN, imbalance,
+VaR/kurtosis/volatility, and circuit-breaker state at the moment of exit.
 
 **`close_reason` is always populated.** `shutdown()` sets `last_close_reason = "shutdown"`
 and `_PaperEmergencyCloser.close_all_positions()` sets `"circuit_breaker"` before calling
@@ -239,6 +249,29 @@ Last 500 bars persisted to `bars_cache.json` every 10 bars; warm-start preseed o
 ### Adaptive regularization TD feedback
 
 In `_maybe_train()`: if `avg_td > 0.5` → `increase_regularization()`; if `< 0.1` → `decrease_regularization()`.
+
+## RL State Vector (src/agents/dual_policy.py `_build_state()`)
+
+The DDQN agents receive **18 features** (64-bar window, float32):
+
+**Base (7):** ret1, ret5, ma_diff, vol, imbalance, vpin_z, depth_ratio
+
+**Geometry from PathGeometry (5):** efficiency (Kaufman Efficiency Ratio), gamma (2nd derivative),
+jerk (3rd derivative), runway (inverse vol pressure), feasibility (composite entry score)
+
+**Event-time from EventTimeFeatureEngine (6):** london_active, ny_active, tokyo_active,
+london_ny_overlap, rollover_proximity, week_progress
+
+**Known gap:** 35+ additional signals are computed and logged to the audit trail (hmm_probs,
+geometry_runway, kurtosis, var_95, alignment_score, rs_vol_ratio, gated_conditions, etc.) but
+not fed into the network. These are candidates for a future state expansion.
+
+## Decision Log — CACHED Flood (known issue)
+
+`logs/audit/decisions.jsonl` is ~90% `CACHED` entries written during startup cache-load.
+Reading the last 200 lines gives virtually no real decisions. Any code reading this file
+must scan backward skipping entries where `decision` is `CACHED`, `WARMING_UP`, or similar
+non-signal values. See `docs/HUD_REDESIGN.md` for the `_tail_meaningful()` fix pattern.
 
 ## Running Tests — Avoid DNS-hanging test files
 

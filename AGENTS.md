@@ -70,23 +70,32 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 ## Runtime And HUD Rules
 
 - The HUD uses a single global trading-context hierarchy shared by all seven
-  tabs: **Mode → Portfolio → Instrument → Instrument/TF → Period Detail**.
+  tabs: **Portfolio → Symbol → Symbol/TF → Detail** (Levels 1–4).
   Tabs are analytical lenses over the same context, not independent hierarchies.
-- The default start level is Portfolio (Level 1); Level 0 selects Live / Paper /
-  Offline mode. See `docs/HUD_REDESIGN.md` for the full 5-level specification.
+- The default start level is Portfolio (Level 1). There is no Level 0 mode gate.
+  Mode is per-instrument: XAUUSD can be Live while BTCUSD is Paper. Level 1 rows
+  are `(symbol, mode)` pairs. On drill, both symbol AND mode are captured from the
+  selected row. See `docs/HUD_REDESIGN.md` for the full specification.
 - Standard performance periods are `24h`, `7d`, `Month`, `Epoch`, and
-  `Lifetime`. Periods are shown as **columns side-by-side** at summary levels
+  `Lifetime`. Periods are shown as **columns side-by-side** at Levels 1–3
   so the operator can compare across periods without cycling. The `p` key
-  cycles the period focus at detail levels.
+  cycles the period focus at Level 4 only.
 - HUD navigation is consistent across ALL tabs: `Enter` drills down, `Esc`
   drills up, `↑`/`↓` or `j`/`k` moves the cursor, `d` toggles the detail pane.
   `s` jump-scopes Portfolio → Symbol → Symbol/TF → Portfolio.
-- HUD result rows must also make mode explicit: `Paper`, `Live`, or `Offline`.
-  Offline training/backtest/champion metrics must be visually separated from
+- HUD result rows must make mode explicit: `Paper` or `Live`. Offline
+  training/backtest/champion metrics must be visually separated from
   paper/live account performance so validation results are not confused with
   realized trading PnL.
 - Do not mix paper, live, and offline results into one HUD metric row. Compare
   them side by side when useful, but keep their metrics separate.
+- `decisions.jsonl` is ~90% CACHED startup entries. Any HUD code reading this
+  file must skip CACHED/WARMING_UP entries scanning backward, not read last-N lines.
+  See `docs/HUD_REDESIGN.md` for the `_tail_meaningful()` pattern.
+- `gated_conditions` (array of gate-rejection reason strings on NO_ENTRY decisions)
+  must be visible in Tab 6 Level 4 decision card and Tab 4 Level 3 risk detail.
+- `transactions.jsonl` must be routed to Tab 1 (session/connection health) and
+  Tab 7 (POSITION_OPEN/CLOSE linked to trade card). It is currently unused by all tabs.
 - Decision logs must include timeframe and symbol, and HUD tabs must render
   timeframe wherever decisions, gates, circuit breakers, training status,
   reward-shaping advice, or cache freshness are shown.
