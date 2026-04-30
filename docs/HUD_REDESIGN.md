@@ -20,8 +20,13 @@ Default view: summaries first. Detailed raw metrics behind drill-down only.
   side-by-side comparison columns for mode.
 - Offline metrics (training, backtest, tournament, champion evaluation) are visually separated
   from paper/live execution results in every tab that shows both.
-- Period columns (`Lifetime | Epoch | Month | 7d | 24h`) appear side-by-side at Levels 1–3 so the
-  operator compares periods without cycling. The `p` key cycles period focus at Level 4 only.
+- Period columns appear **left-to-right, broad to narrow**: `Lifetime | Epoch | Month | 7d | 24h`
+  at Levels 1–3 so the operator compares periods without cycling. The `p` key cycles period
+  focus at Level 4 only. `Epoch` column only shown when a stats epoch is set.
+  Column count adapts to terminal width (minimum 2; rightmost columns clipped first).
+- Period display label is always `7d`. Internal filter key `"7 days"` is a backward-compat
+  alias only inside `_filter_trades_by_period_single()`.
+- Cell format is uniform across all tabs: `#N  WR%  PnL$` (count → quality → value).
 - Tables use fixed column widths, clipped text with ellipsis, consistent units. No row wraps.
 - Old or deprecated metric pathways must not remain visible as current signals.
 
@@ -451,4 +456,6 @@ learned parameters, or self-healing telemetry must include a HUD impact check:
 8. ✅ **Tab 6 full hierarchical dispatch** — L1→L2→L3(cursor)→L4(detail card) (commit `9f33dad`)
 9. ✅ **Surface `gated_conditions`** — Tab 6 L3 inline + L4 card + Tab 4 L3 risk detail (commit `9f33dad`)
 10. ✅ **Link `transactions.jsonl`** — Tab 1 session health block + Tab 7 broker events (commit `HEAD`)
-11. ⬜ **Render period columns in Trades tab** — Side-by-side at L1/L2 (currently rows)
+11. ✅ **Standardize period columns** — Trades L1/L2 now match Performance: broad→narrow order,
+    `#N WR% PnL$` cell format, `7d` label everywhere, Epoch+Lifetime both shown when epoch set,
+    terminal-width-adaptive column count

@@ -309,7 +309,7 @@ def _filter_trades_by_period_single(period: str, trades: list) -> list:
     now = datetime.now(UTC)
     if period == "24h":
         cutoff = now - timedelta(hours=24)
-    elif period == "7 days":
+    elif period in ("7 days", "7d"):
         cutoff = now - timedelta(days=7)
     elif period == "Month":
         cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -553,7 +553,7 @@ class TabbedHUD:
         self._ctx_tf: int = 0          # active TF minutes at level ≥ 3
         self._ctx_cursor: int = 0      # highlighted row index at current level
         self._ctx_period: str = "Month"  # active period for detail views
-        self._ctx_periods: list[str] = ["24h", "7 days", "Month", "Epoch", "Lifetime"]
+        self._ctx_periods: list[str] = ["24h", "7d", "Month", "Epoch", "Lifetime"]
         self._ctx_detail: bool = False   # detail/diagnostics pane toggle (d key)
 
         # ── Legacy aliases (kept for gradual migration) ─────────────────
@@ -562,7 +562,7 @@ class TabbedHUD:
         self._drill_tf_minutes: int = 0  # mirrors _ctx_tf
         self._drill_cursor: int = 0      # mirrors _ctx_cursor
         self._drill_period: str = "Month"  # mirrors _ctx_period
-        self._drill_periods: list[str] = ["24h", "7 days", "Month", "Epoch", "Lifetime"]
+        self._drill_periods: list[str] = ["24h", "7d", "Month", "Epoch", "Lifetime"]
 
     # ── Stats epoch persistence ─────────────────────────────────────────
 
@@ -655,7 +655,7 @@ class TabbedHUD:
         _daily, _weekly, _monthly = _classify_trades_by_period(trades)
         _rows = [
             ("24h", _hud_period_metrics(_daily, _starting)),
-            ("7 days", _hud_period_metrics(_weekly, _starting)),
+            ("7d", _hud_period_metrics(_weekly, _starting)),
             ("Month", _hud_period_metrics(_monthly, _starting)),
             ("Epoch" if self._stats_epoch else "Lifetime", _hud_period_metrics(trades, _starting)),
         ]
@@ -5371,7 +5371,7 @@ class TabbedHUD:
         daily, weekly, monthly = _classify_trades_by_period(trades)
         rows: list[tuple[str, dict]] = [
             ("24h", self._compute_trade_log_convergence_metrics(daily)),
-            ("7 days", self._compute_trade_log_convergence_metrics(weekly)),
+            ("7d", self._compute_trade_log_convergence_metrics(weekly)),
             ("Month", self._compute_trade_log_convergence_metrics(monthly)),
             (
                 "Epoch" if self._stats_epoch else "Lifetime",
@@ -7006,15 +7006,21 @@ class TabbedHUD:
         """Level 1: Per-instrument summary with period COLUMNS + mode stacked vertically."""
         self._render_breadcrumb("TRADES", 7)
 
+        _COL_W = 20
+        _SYM_W = 10
         _modes: list[tuple[str, str, str]] = [
             ("paper", f"{_ANSI_Y}📄 PAPER{_ANSI_RST}", _ANSI_Y),
             ("live", f"{_ANSI_G}💰 LIVE{_ANSI_RST}", _ANSI_G),
         ]
         _symbols = self._available_symbols()
         _starting = self._universe_starting_equity()
-        _periods = ["24h", "7 days", "Month", "Epoch" if self._stats_epoch else "Lifetime", "Lifetime"]
+        _has_epoch = bool(self._stats_epoch)
+        # Broad → narrow (left → right); Epoch only when a stats epoch is set
+        _all_periods = ["Lifetime", "Epoch", "Month", "7d", "24h"] if _has_epoch else ["Lifetime", "Month", "7d", "24h"]
+        _tw = self._term_width()
+        _max_cols = max(2, (_tw - _SYM_W - 4) // (_COL_W + 2))
+        _periods = _all_periods[:_max_cols]
 
-        # Show mode context from breadcrumb
         _row_idx = 0
         for _mode, _mode_label, _mode_color in _modes:
             _mode_trades = self._trades_for_mode(_mode)
@@ -7022,51 +7028,57 @@ class TabbedHUD:
                 continue
 
             print(f"\n  {_mode_label}")
-
-            # Period column headers
-            _hdr = f"  {'Symbol':<10}"
-            for _p in _periods[:4]:  # Show 4 periods max for space
-                _hdr += f" {'Trades':>6} {'PnL':>9} {'WR':>5}"
+            _hdr = f"  {'Symbol':<{_SYM_W}}"
+            for _p in _periods:
+                _hdr += f"  {_p:^{_COL_W}}"
             print(_hdr)
-            print(f"  {'─' * 10}{'─' * 78}")
+            print("  " + "─" * (_visible_width(_hdr) - 2))
 
             for _sym in _symbols:
                 _sym_trades = [t for t in _mode_trades if str(t.get("symbol", "")).upper() == _sym]
                 _cursor = self._cursor_marker(_row_idx == self._ctx_cursor)
-                _row = f"{_cursor}{_sym:<10}"
+                _row = f"{_cursor}{_sym:<{_SYM_W}}"
                 _has_data = False
-                for _p in _periods[:4]:
+                for _p in _periods:
                     _filtered = _filter_trades_by_period_single(_p, _sym_trades)
                     if _filtered:
                         _m = _hud_period_metrics(_filtered, _starting)
-                        _n = len(_filtered)
-                        _pnl = _m.get("total_pnl", 0.0)
+                        _n = int(_m.get("total_trades", 0) or 0)
                         _wr = _m.get("win_rate", 0.0) * 100
-                        _pc = self._pnl_color(_pnl)
+                        _pnl = _m.get("total_pnl", 0.0)
+                        _pc = "\033[32m" if _pnl >= 0 else "\033[31m"
                         _wc = _ANSI_G if _wr >= 50 else _ANSI_R
-                        _row += f" {_n:>6} {_pc}{_pnl:>+9.2f}{_ANSI_RST} {_wc}{_wr:>4.0f}%{_ANSI_RST}"
+                        _cell = f"#{_n:<3} {_wc}{_wr:4.0f}%{_ANSI_RST} {_pc}{_pnl:+7.1f}{_ANSI_RST}"
+                        _row += f"  {_cell}"
                         _has_data = True
                     else:
-                        _row += f" {_ANSI_DIM}     —        —    —{_ANSI_RST}"
+                        _row += f"  {'—':^{_COL_W}}"
                 if _has_data:
                     print(_row)
                 _row_idx += 1
 
         if not _symbols:
             print(f"\n  {_ANSI_DIM}No trades loaded yet.{_ANSI_RST}")
-        print(f"\n  {_ANSI_DIM}Periods: 24h | 7d | Month | {'Epoch' if self._stats_epoch else 'Lifetime'}  —  ↑/↓ select, Enter drill{_ANSI_RST}")
+        _hint = " | ".join(_all_periods)
+        print(f"\n  {_ANSI_DIM}{_hint}  —  ↑/↓ select, Enter drill{_ANSI_RST}")
 
     def _render_trades_symbol(self) -> None:
         """Level 2: Per-TF metrics for selected symbol with period COLUMNS."""
         _sym = self._ctx_symbol.upper()
         self._render_breadcrumb("TRADES", 7)
 
+        _COL_W = 20
+        _TF_W = 6
         _modes: list[tuple[str, str, str]] = [
             ("paper", f"{_ANSI_Y}📄 PAPER{_ANSI_RST}", _ANSI_Y),
             ("live", f"{_ANSI_G}💰 LIVE{_ANSI_RST}", _ANSI_G),
         ]
         _starting = self._universe_starting_equity()
-        _periods = ["24h", "7 days", "Month", "Epoch" if self._stats_epoch else "Lifetime", "Lifetime"]
+        _has_epoch = bool(self._stats_epoch)
+        _all_periods = ["Lifetime", "Epoch", "Month", "7d", "24h"] if _has_epoch else ["Lifetime", "Month", "7d", "24h"]
+        _tw = self._term_width()
+        _max_cols = max(2, (_tw - _TF_W - 4) // (_COL_W + 2))
+        _periods = _all_periods[:_max_cols]
         _tf_order = [1, 5, 15, 30, 60, 240]
 
         _row_idx = 0
@@ -7078,32 +7090,32 @@ class TabbedHUD:
             _any_data = True
 
             print(f"\n  {_mode_label} › {_sym}")
-
-            _hdr = f"  {'TF':<6}"
-            for _p in _periods[:4]:
-                _hdr += f" {'Trd':>4} {'PnL':>9} {'WR':>5}"
+            _hdr = f"  {'TF':<{_TF_W}}"
+            for _p in _periods:
+                _hdr += f"  {_p:^{_COL_W}}"
             print(_hdr)
-            print(f"  {'─' * 6}{'─' * 76}")
+            print("  " + "─" * (_visible_width(_hdr) - 2))
 
             for _tf in _tf_order:
                 _tt = [t for t in _trades if t.get("timeframe_minutes") == _tf]
                 _tf_label = self._format_timeframe_minutes_label(_tf)
                 _cursor = self._cursor_marker(_row_idx == self._ctx_cursor)
-                _row = f"{_cursor}{_tf_label:<6}"
+                _row = f"{_cursor}{_tf_label:<{_TF_W}}"
                 _has_tf_data = False
-                for _p in _periods[:4]:
+                for _p in _periods:
                     _filtered = _filter_trades_by_period_single(_p, _tt)
                     if _filtered:
                         _m = _hud_period_metrics(_filtered, _starting)
-                        _n = len(_filtered)
-                        _pnl = _m.get("total_pnl", 0.0)
+                        _n = int(_m.get("total_trades", 0) or 0)
                         _wr = _m.get("win_rate", 0.0) * 100
-                        _pc = self._pnl_color(_pnl)
+                        _pnl = _m.get("total_pnl", 0.0)
+                        _pc = "\033[32m" if _pnl >= 0 else "\033[31m"
                         _wc = _ANSI_G if _wr >= 50 else _ANSI_R
-                        _row += f" {_n:>4} {_pc}{_pnl:>+9.2f}{_ANSI_RST} {_wc}{_wr:>4.0f}%{_ANSI_RST}"
+                        _cell = f"#{_n:<3} {_wc}{_wr:4.0f}%{_ANSI_RST} {_pc}{_pnl:+7.1f}{_ANSI_RST}"
+                        _row += f"  {_cell}"
                         _has_tf_data = True
                     else:
-                        _row += f" {_ANSI_DIM}   —        —    —{_ANSI_RST}"
+                        _row += f"  {'—':^{_COL_W}}"
                 if _has_tf_data:
                     print(_row)
                 _row_idx += 1
