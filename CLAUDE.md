@@ -405,6 +405,8 @@ Global 5-level context hierarchy across all 7 tabs: Mode → Portfolio → Instr
 | `s` | Jump-scope shortcut |
 
 Periods (Lifetime | Epoch | Month | 7d | 24h) shown as columns side-by-side at summary levels.
+Keep period summary cells fixed-width: compact large trade counts and PnL with
+suffixes instead of truncating comma groups or letting ANSI color codes disturb alignment.
 See `docs/HUD_REDESIGN.md`.
 
 ## HUD Self-Healing Panel (src/monitoring/hud_tabbed.py)

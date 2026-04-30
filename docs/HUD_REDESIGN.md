@@ -27,6 +27,9 @@ Default view: summaries first. Detailed raw metrics behind drill-down only.
 - Period display label is always `7d`. Internal filter key `"7 days"` is a backward-compat
   alias only inside `_filter_trades_by_period_single()`.
 - Cell format is uniform across all tabs: `#N  WR%  PnL$` (count → quality → value).
+- Period summary cells use fixed visible widths. Counts and PnL are compacted
+  with suffixes when needed, so ANSI color and large values do not shift or wrap
+  adjacent period columns.
 - Tables use fixed column widths, clipped text with ellipsis, consistent units. No row wraps.
 - Old or deprecated metric pathways must not remain visible as current signals.
 

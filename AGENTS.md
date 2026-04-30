@@ -125,6 +125,9 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 - HUD rows must use consistent names, units, column widths, clipping, and
   alignment. Do not leave deprecated or ambiguous metric pathways visible as
   current operator signals.
+- HUD period summary cells must keep fixed visible width. Format large trade
+  counts and PnL with compact suffixes instead of truncating commas or letting
+  colored values push adjacent period columns out of alignment.
 - See `docs/HUD_REDESIGN.md` for the target HUD information architecture and
   drill-down model.
 

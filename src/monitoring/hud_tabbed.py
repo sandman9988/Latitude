@@ -334,6 +334,50 @@ _ANSI_RST = "\033[0m"  # reset
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 
+def _fmt_compact(v: float, width: int) -> str:
+    """Format a number to fit in exactly `width` visible chars with sign.
+
+    Keeps one decimal place for values < 10 000; switches to K/M/B suffix
+    above that so the result never exceeds `width` chars.
+    Always right-justified in the returned string.
+    """
+    av = abs(v)
+    sign = "+" if v >= 0 else "-"
+    if av >= 1e9:
+        s = f"{av / 1e9:.1f}B" if av < 10e9 else f"{av / 1e9:.0f}B"
+    elif av >= 1e6:
+        s = f"{av / 1e6:.1f}M" if av < 10e6 else f"{av / 1e6:.0f}M"
+    elif av >= 10_000:
+        s = f"{av / 1e3:.0f}K"
+    else:
+        s = f"{av:.1f}"          # "+9999.9" = 7 chars — fits in width=7
+    candidate = f"{sign}{s}"
+    if len(candidate) > width:
+        candidate = candidate[:width]
+    return f"{candidate:>{width}}"
+
+
+def _fmt_compact_pos(v: float, width: int) -> str:
+    """Like _fmt_compact but treats the value as a positive magnitude (MFE/MAE)."""
+    return _fmt_compact(abs(v), width)
+
+
+def _fmt_count(n: int, width: int = 3) -> str:
+    """Format a trade count right-justified in `width` chars.
+
+    Uses K suffix for 1 000–99 999, M for 100 000+, so it never overflows.
+    """
+    if n >= 100_000:
+        s = f"{n / 1e6:.1f}M" if n < 10_000_000 else f"{n / 1e6:.0f}M"
+    elif n >= 10_000:
+        s = f"{n // 1000}K"
+    elif n >= 1_000:
+        s = f"{n / 1000:.1f}K"
+    else:
+        s = str(n)
+    return f"{s:>{width}}"
+
+
 def _strip_ansi(s: str) -> str:
     """Return *s* with all ANSI CSI escapes removed."""
     return _ANSI_RE.sub("", s)
@@ -4742,7 +4786,11 @@ class TabbedHUD:
                 wr = m.get("win_rate", 0.0) * 100
                 pnl = m.get("total_pnl", 0.0)
                 _pc = "\033[32m" if pnl >= 0 else "\033[31m"
-                return f"#{n:<3} {wr:4.0f}% {_pc}{pnl:+7.1f}{_ANSI_RST}"
+                _wc = _ANSI_G if wr >= 50 else _ANSI_R
+                _n_s = _fmt_count(n, 4)
+                _pnl_s = _fmt_compact(pnl, 7)
+                # Cell is exactly _COL_W (20) visible chars: 1 pad + content (18) + 1 pad
+                return f" #{_n_s:<4} {_wc}{wr:4.0f}%{_ANSI_RST} {_pc}{_pnl_s}{_ANSI_RST} "
 
             _cells: list[str] = []
             if _has_epoch:

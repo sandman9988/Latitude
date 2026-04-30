@@ -184,6 +184,9 @@ Standard performance periods are `24h`, `7d`, `Month`, `Epoch`, and
 (Levels 1-3) for direct comparison. Result rows must distinguish `Paper`,
 `Live`, and `Offline`; never mix modes into one metric row. Offline
 validation/champion metrics are not account PnL. See `docs/HUD_REDESIGN.md`.
+Period summary cells must preserve fixed visible width. Use compact count/PnL
+formatting for large values; never truncate comma-formatted trade counts or
+allow ANSI-colored numbers to shift adjacent period columns.
 
 | Key | Tab | Key data |
 | --- | ------------- | -------------------------------------------------------------------- |
