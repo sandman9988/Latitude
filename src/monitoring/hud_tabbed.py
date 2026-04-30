@@ -3292,8 +3292,10 @@ class TabbedHUD:
         print()
 
     def _render_training(self) -> None:
-        """Render agent training status."""
+        """Render agent training status — dispatches by drill level."""
         self._render_breadcrumb("TRAINING", 3)
+        # Level dispatch: L1 = fleet summary, L2 = symbol summary, L3+ = bot detail
+        _level_detail = self._ctx_level >= 3 or self._training_detail
         ts = self.training_stats
         print(f"  {_ANSI_DIM}(canonical source: training_stats_*.json; per-bot file preferred){_ANSI_RST}\n")
         pm = self.production_metrics.get("metrics", {})
@@ -3316,11 +3318,23 @@ class TabbedHUD:
                 with contextlib.suppress(Exception):
                     (self.data_dir / "offline_training_status.json").unlink(missing_ok=True)
             else:
-                self._render_offline_training(ofs, detail=self._training_detail)
+                self._render_offline_training(ofs, detail=_level_detail)
         _mode = self.bot_config.get("trading_mode", "paper")
         _mode_label = "PAPER" if _mode == "paper" else ("LIVE" if _mode == "live" else "OFFLINE")
 
         _training_items = [_item for _item in self.training_stats_all if isinstance(_item.get("stats"), dict)]
+        # At L2/L3, filter to the drilled symbol/TF
+        if self._ctx_level >= 2 and self._ctx_symbol:
+            _sym_f = self._ctx_symbol.upper()
+            _tf_f = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
+            _filtered = [
+                _it for _it in _training_items
+                if str(_it.get("symbol", "")).upper() == _sym_f
+                and (not _tf_f or int(_it.get("timeframe_minutes", 0) or 0) == _tf_f)
+            ]
+            if _filtered:
+                _training_items = _filtered
+
         if not _training_items:
             _ts_nonempty = any(v for v in ts.values() if v)
             if not _ts_nonempty:
@@ -3334,7 +3348,7 @@ class TabbedHUD:
                 }
             ]
 
-        if not self._training_detail:
+        if not _level_detail:
             self._render_training_summary(_training_items)
             return
 
@@ -3637,9 +3651,11 @@ class TabbedHUD:
 
         # ── Level 1 → 2: Portfolio → Instrument ───────────────────────
         if self._ctx_level == 1:
-            _syms = self._available_symbols()
-            if _syms:
-                self._ctx_symbol = _syms[min(self._ctx_cursor, len(_syms) - 1)]
+            _rows = self._l1_rows()
+            if _rows:
+                _sym, _mode = _rows[min(self._ctx_cursor, len(_rows) - 1)]
+                self._ctx_symbol = _sym
+                self._ctx_mode = _mode
                 self._ctx_level = 2
                 self._ctx_cursor = 0
                 self._sync_ctx_to_legacy()
@@ -3683,6 +3699,51 @@ class TabbedHUD:
             str(t.get("symbol", "")).upper()
             for t in self._trade_log_all_trades if t.get("symbol")
         ))
+
+    def _l1_rows(self) -> list[tuple[str, str]]:
+        """Return (symbol, mode) pairs in L1 render order: Live first, then Paper."""
+        _syms = self._available_symbols()
+        _live_syms = [s for s in _syms if any(
+            str(t.get("symbol", "")).upper() == s and t.get("trading_mode") == "live"
+            for t in self._trade_log_all_trades
+        )]
+        _paper_syms = [s for s in _syms if any(
+            str(t.get("symbol", "")).upper() == s and t.get("trading_mode") == "paper"
+            for t in self._trade_log_all_trades
+        )]
+        rows: list[tuple[str, str]] = []
+        for s in _live_syms:
+            rows.append((s, "live"))
+        for s in _paper_syms:
+            rows.append((s, "paper"))
+        return rows
+
+    @staticmethod
+    def _tail_meaningful(path: "Path", n: int = 50) -> list[dict]:
+        """Read last N meaningful (non-CACHED) JSONL entries from a decisions file.
+
+        Scans backward so 90%+ CACHED startup entries don't crowd out real decisions.
+        """
+        _SKIP = frozenset({"CACHED", "WARMING_UP", "FLAT_SKIP", "NO_ENTRY_SKIP"})
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        results: list[dict] = []
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if e.get("decision") in _SKIP:
+                continue
+            results.append(e)
+            if len(results) >= n:
+                break
+        return list(reversed(results))
 
     def _available_timeframes(self) -> list[int]:
         """Return sorted list of unique TFs for the current symbol."""
@@ -3951,8 +4012,44 @@ class TabbedHUD:
         print(f"\n  {_ANSI_DIM}↑/↓ select mode  |  Enter confirm  |  1-7 switch tabs after selection{_ANSI_RST}")
 
     def _render_overview(self) -> None:
-        """Render overview tab - compact summary."""
+        """Render overview tab — dispatches by drill level (max L2)."""
         self._render_breadcrumb("OVERVIEW", 1)
+
+        # L2: symbol-focused fleet card (all TFs for selected symbol)
+        if self._ctx_level >= 2 and self._ctx_symbol:
+            _sym_f = self._ctx_symbol.upper()
+            print(f"\n\033[1m🔍 {_sym_f} — SYMBOL OVERVIEW\033[0m  {_ANSI_DIM}[Esc] back to portfolio{_ANSI_RST}\n")
+            _sym_bots = [
+                b for b in (self.all_bots_stats or [])
+                if str(b.get("symbol", "")).upper() == _sym_f
+            ]
+            if _sym_bots:
+                _hdr = f"  {'TF':<6} {'Mode':<5} {'Pos':<6} {'ε':>6} {'Buf%':>5} {'ZΩ':>6} {'24h Trades':>10} {'24h PnL':>10}"
+                print(_hdr)
+                print("  " + "─" * (_visible_width(_hdr) - 2))
+                for _bot in sorted(_sym_bots, key=lambda b: int(b.get("timeframe_minutes", 0) or 0)):
+                    _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
+                    _tf_lbl = self._format_timeframe_minutes_label(_tfm)
+                    _mode = str(_bot.get("trading_mode", "paper") or "paper").upper()[:5]
+                    _pos_dir = str(_bot.get("position_direction", "FLAT") or "FLAT").upper()[:6]
+                    _eps = float(_bot.get("epsilon", 0.0) or 0.0)
+                    _buf_fill = float(_bot.get("buffer_fill_pct", 0.0) or 0.0)
+                    _zo = float(_bot.get("z_omega", 0.0) or 0.0)
+                    _d24 = _bot.get("daily_stats", {}) or {}
+                    _d24_tr = int(_d24.get("total_trades", 0) or 0)
+                    _d24_pnl = float(_d24.get("total_pnl", 0.0) or 0.0)
+                    _mc = _ANSI_Y if _mode == "PAPER" else _ANSI_G
+                    _pc = self._pnl_color(_d24_pnl)
+                    print(
+                        f"  {_tf_lbl:<6} {_mc}{_mode:<5}{_ANSI_RST} {_pos_dir:<6} "
+                        f"{_eps:>6.3f} {_buf_fill:>4.0f}% {_zo:>6.3f} "
+                        f"{_d24_tr:>10} {_pc}{_d24_pnl:>+10.2f}{_ANSI_RST}"
+                    )
+            else:
+                print(f"  {_ANSI_DIM}No running bots for {_sym_f}{_ANSI_RST}")
+            self._render_system_health_block()
+            return
+
         self._render_all_bots_panel()
         self._render_position_block()
         print(
@@ -4521,8 +4618,59 @@ class TabbedHUD:
                     _c_parts.append(f"{_bot} {_param}")
             print(f"  Applied: {_ANSI_G}{', '.join(_c_parts)}{_ANSI_RST}")
 
+    def _render_perf_period_columns(
+        self,
+        label_rows: list[tuple[str, str, list[dict], list[dict]]],
+    ) -> None:
+        """Render a period-column summary table.
+
+        label_rows: list of (scope_label, mode_key, epoch_trades, all_trades)
+        Columns: Lifetime | Epoch | Month | 7d | 24h
+        Each cell: #N  WR%  PnL$
+        """
+        _starting = self._universe_starting_equity()
+        _COL_W = 20
+        _has_epoch = bool(self._stats_epoch)
+        _periods_hdr = ["Lifetime", "Epoch", "Month", "7d", "24h"] if _has_epoch else ["Lifetime", "Month", "7d", "24h"]
+        _scope_w = 18
+
+        _hdr = f"  {'Scope':<{_scope_w}}"
+        for _p in _periods_hdr:
+            _hdr += f"  {_p:^{_COL_W}}"
+        print(_hdr)
+        print("  " + "─" * (_visible_width(_hdr) - 2))
+
+        for _lbl, _mode_key, _ep_trades, _all_trades in label_rows:
+            _daily, _weekly, _monthly = _classify_trades_by_period(_ep_trades)
+            _mode_c = _ANSI_Y if _mode_key == "paper" else (_ANSI_G if _mode_key == "live" else _ANSI_DIM)
+
+            def _cell(trades: list[dict]) -> str:
+                m = _hud_period_metrics(trades, _starting)
+                n = int(m.get("total_trades", 0) or 0)
+                if n == 0:
+                    return f"{'—':^{_COL_W}}"
+                wr = m.get("win_rate", 0.0) * 100
+                pnl = m.get("total_pnl", 0.0)
+                _pc = "\033[32m" if pnl >= 0 else "\033[31m"
+                return f"#{n:<3} {wr:4.0f}% {_pc}{pnl:+7.1f}{_ANSI_RST}"
+
+            _cells: list[str] = []
+            if _has_epoch:
+                _cells.append(_cell(list(_all_trades)))
+                _cells.append(_cell(list(_ep_trades)))
+            else:
+                _cells.append(_cell(list(_all_trades)))
+            _cells.append(_cell(list(_monthly)))
+            _cells.append(_cell(list(_weekly)))
+            _cells.append(_cell(list(_daily)))
+
+            _row = f"  {_mode_c}{_lbl:<{_scope_w}}{_ANSI_RST}"
+            for _c in _cells:
+                _row += f"  {_c}"
+            print(_row)
+
     def _render_performance(self) -> None:
-        """Render summary-first performance metrics."""
+        """Render summary-first performance metrics — dispatches by drill level."""
         self._render_breadcrumb("PERFORMANCE", 2)
         # Resolve trading mode: prefer trade_log-derived mode (covers all trades),
         # fall back to snapshot mode, then bot_config.
@@ -4536,7 +4684,7 @@ class TabbedHUD:
             if self._metrics_from_trade_log
             else ""
         )
-        print(f"\n\033[1m📈 PERFORMANCE COMMAND CENTER\033[0m{src}\n")
+        print(f"\n\033[1m📈 PERFORMANCE\033[0m{src}\n")
         if self._trade_log_unlabeled_count > 0:
             print(
                 f"  {_ANSI_Y}⚠ {self._trade_log_unlabeled_count} legacy trades were missing trading_mode; "
@@ -4602,6 +4750,70 @@ class TabbedHUD:
         _active_all_by_mode = {
             _mk: self._active_scope_trades(self._trade_log_all_trades_by_mode.get(_mk, [])) for _mk in ("paper", "live")
         }
+
+        # ── Period-column summary (L1: portfolio, L2: symbol, L3: symbol/TF) ──────
+        if self._ctx_level == 1:
+            # Portfolio: one row per (symbol, mode) with period columns side-by-side
+            _col_rows: list[tuple[str, str, list[dict], list[dict]]] = []
+            _l1 = self._l1_rows()
+            _all_syms = sorted(set(s for s, _ in _l1)) if _l1 else self._available_symbols()
+            for _lsym, _lmode in _l1:
+                _ep = [
+                    t for t in self._trade_log_metrics_trades
+                    if str(t.get("symbol", "")).upper() == _lsym and t.get("trading_mode") == _lmode
+                ]
+                _al = [
+                    t for t in self._trade_log_all_trades
+                    if str(t.get("symbol", "")).upper() == _lsym and t.get("trading_mode") == _lmode
+                ]
+                if not _al:
+                    continue
+                _mode_badge = "PPR" if _lmode == "paper" else "LIV"
+                _col_rows.append((f"{_lsym} {_mode_badge}", _lmode, _ep, _al))
+            if _col_rows:
+                print("  \033[1mPORTFOLIO SUMMARY\033[0m  " + _ANSI_DIM + "period columns; [Enter] to drill" + _ANSI_RST)
+                self._render_perf_period_columns(_col_rows)
+                print()
+        elif self._ctx_level >= 2:
+            # Symbol or Symbol/TF: one row per TF for this symbol
+            _sym_filter = self._ctx_symbol.upper()
+            _tf_filter = self._ctx_tf if self._ctx_level >= 3 else 0
+            _col_rows = []
+            _tfs = sorted(set(
+                int(t.get("timeframe_minutes", 0) or 0)
+                for t in self._trade_log_all_trades
+                if str(t.get("symbol", "")).upper() == _sym_filter and t.get("timeframe_minutes")
+            ))
+            for _mode_key in ("live", "paper"):
+                _mode_c = _ANSI_G if _mode_key == "live" else _ANSI_Y
+                _mode_badge = "LIV" if _mode_key == "live" else "PPR"
+                for _tfm in _tfs:
+                    if _tf_filter and _tfm != _tf_filter:
+                        continue
+                    _tf_lbl = self._format_timeframe_minutes_label(_tfm)
+                    _ep = [
+                        t for t in self._trade_log_metrics_trades
+                        if str(t.get("symbol", "")).upper() == _sym_filter
+                        and int(t.get("timeframe_minutes", 0) or 0) == _tfm
+                        and t.get("trading_mode") == _mode_key
+                    ]
+                    _al = [
+                        t for t in self._trade_log_all_trades
+                        if str(t.get("symbol", "")).upper() == _sym_filter
+                        and int(t.get("timeframe_minutes", 0) or 0) == _tfm
+                        and t.get("trading_mode") == _mode_key
+                    ]
+                    if not _al:
+                        continue
+                    _col_rows.append((f"{_sym_filter}/{_tf_lbl} {_mode_badge}", _mode_key, _ep, _al))
+            if _col_rows:
+                _scope_lbl = (
+                    f"{_sym_filter}/{self._format_timeframe_minutes_label(_tf_filter)}"
+                    if _tf_filter else _sym_filter
+                )
+                print(f"  \033[1m{_scope_lbl} SUMMARY\033[0m  " + _ANSI_DIM + "period columns" + _ANSI_RST)
+                self._render_perf_period_columns(_col_rows)
+                print()
 
         # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
         # This is NOT an annualised return-based Sharpe ratio.
@@ -5312,14 +5524,19 @@ class TabbedHUD:
                     f"QΔ:{qs:.3f} [{tid}]"
                 )
             elif dec_upper == "NO_ENTRY":
-                # Rejected entry: show WHY (feasibility, regime, VPIN-z)
+                # Rejected entry: show WHY (feasibility, regime, VPIN-z, gated_conditions)
                 regime = (ctx.get("regime") or "?")[:5]
                 feas = _f(reasoning.get("feasibility"))
                 vpin_z = _f(ctx.get("vpin_z"))
                 cb_ok = reasoning.get("circuit_breakers_ok", True)
                 feas_c = _ANSI_R if feas < 0.3 else (_ANSI_Y if feas < 0.6 else _ANSI_G)
                 cb_str = f" {_ANSI_R}CB!{_ANSI_RST}" if not cb_ok else ""
-                detail = f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} vz:{vpin_z:+.1f}{cb_str}"
+                gated = reasoning.get("gated_conditions") or []
+                if isinstance(gated, list) and gated:
+                    _gate_summary = f" [{_ANSI_R}{len(gated)}gate{'s' if len(gated) != 1 else ''}{_ANSI_RST}]"
+                else:
+                    _gate_summary = ""
+                detail = f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} vz:{vpin_z:+.1f}{cb_str}{_gate_summary}"
             elif dec_upper == "CLOSE":
                 # Exit: show capture_ratio, MFE, MAE, unrealized PnL, Q-spread
                 cap = _f(reasoning.get("capture_ratio"))
@@ -5365,6 +5582,12 @@ class TabbedHUD:
             )
             detail = _truncate_visible(detail, max(12, _target_width - _visible_width(_prefix)))
             print(f"{_prefix}{detail}")
+            # Expand gated_conditions inline for NO_ENTRY at L3+ (symbol/TF scope)
+            if dec_upper == "NO_ENTRY" and getattr(self, "_ctx_level", 1) >= 3:
+                _gated = reasoning.get("gated_conditions") or []
+                if isinstance(_gated, list) and _gated:
+                    for _g in _gated[:6]:
+                        print(f"  {'':38}{_ANSI_R}  ✗ {_g}{_ANSI_RST}")
         print("  " + "─" * (_visible_width(header) - 2))
 
     def _render_legacy_decision_entries(self, entries: list, mode_filter: str = "") -> None:
@@ -5438,37 +5661,46 @@ class TabbedHUD:
         if _decision_files:
             _seen: set[tuple[str, str, str, str, str]] = set()
             try:
+                # Scope filter: if drilled to symbol or symbol/TF, restrict per-file read
+                _ctx_sym = self._ctx_symbol.upper() if self._ctx_level >= 2 and self._ctx_symbol else ""
+                _ctx_tf = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
                 for _jf in _decision_files:
-                    with open(_jf, encoding="utf-8") as f:
-                        for raw_line in f.readlines()[-200:]:
-                            stripped = raw_line.strip()
-                            if not stripped:
+                    # Use _tail_meaningful to skip CACHED startup entries (90%+ of file)
+                    _meaningful = self._tail_meaningful(_jf, n=100)
+                    for _entry in _meaningful:
+                        _entry.setdefault("_source_path", str(_jf))
+                        if not _entry.get("trading_mode") and "/paper_" in str(_jf):
+                            _entry["trading_mode"] = "paper"
+                        # Apply scope filter when drilled
+                        if _ctx_sym:
+                            _esym = str(_entry.get("symbol") or "").upper()
+                            if _esym and _esym != _ctx_sym:
                                 continue
-                            _entry = json.loads(stripped)
-                            _entry.setdefault("_source_path", str(_jf))
-                            if not _entry.get("trading_mode") and "/paper_" in str(_jf):
-                                _entry["trading_mode"] = "paper"
-                            _tf_label = self._decision_entry_timeframe_label(_entry)
-                            if (
-                                _jf == _primary
-                                and not self._decision_entry_has_scope(_entry)
-                                and len(_decision_files) > 1
-                            ):
+                        if _ctx_tf:
+                            _etf = int(_entry.get("timeframe_minutes") or 0)
+                            if _etf and _etf != _ctx_tf:
                                 continue
-                            _ctx_for_key = _entry.get("context", {})
-                            if not isinstance(_ctx_for_key, dict):
-                                _ctx_for_key = {}
-                            _dedupe_key = (
-                                str(_entry.get("timestamp") or _entry.get("ts") or _entry.get("time") or ""),
-                                str(_entry.get("symbol") or _ctx_for_key.get("symbol") or ""),
-                                _tf_label,
-                                str(_entry.get("trade_id") or ""),
-                                str(_entry.get("event") or _entry.get("decision") or ""),
-                            )
-                            if _dedupe_key in _seen:
-                                continue
-                            _seen.add(_dedupe_key)
-                            entries_jsonl.append(_entry)
+                        _tf_label = self._decision_entry_timeframe_label(_entry)
+                        if (
+                            _jf == _primary
+                            and not self._decision_entry_has_scope(_entry)
+                            and len(_decision_files) > 1
+                        ):
+                            continue
+                        _ctx_for_key = _entry.get("context", {})
+                        if not isinstance(_ctx_for_key, dict):
+                            _ctx_for_key = {}
+                        _dedupe_key = (
+                            str(_entry.get("timestamp") or _entry.get("ts") or _entry.get("time") or ""),
+                            str(_entry.get("symbol") or _ctx_for_key.get("symbol") or ""),
+                            _tf_label,
+                            str(_entry.get("trade_id") or ""),
+                            str(_entry.get("event") or _entry.get("decision") or ""),
+                        )
+                        if _dedupe_key in _seen:
+                            continue
+                        _seen.add(_dedupe_key)
+                        entries_jsonl.append(_entry)
             except Exception:
                 entries_jsonl = []
 
@@ -5530,9 +5762,44 @@ class TabbedHUD:
         self._render_legacy_decision_entries(entries, _mode_filter)
 
     def _render_risk(self) -> None:
-        """Render risk management details."""
+        """Render risk management — dispatches by drill level."""
         self._render_breadcrumb("RISK", 4)
         rs = self.risk_stats
+
+        # L1: fleet-level circuit breaker summary across all bots
+        if self._ctx_level == 1 and self.all_bots_stats:
+            print(f"\n\033[1m⚠️  RISK — FLEET OVERVIEW\033[0m  {_ANSI_DIM}(all bots; [Enter] to drill){_ANSI_RST}\n")
+            _hdr = f"  {'Bot':<16} {'Mode':<5} {'CB':<8} {'VaR95':>7} {'Kurtosis':>9} {'DrawPct':>8} {'Position':<12}"
+            print(_hdr)
+            print("  " + "─" * (_visible_width(_hdr) - 2))
+            for _bot in sorted(
+                self.all_bots_stats,
+                key=lambda b: (str(b.get("symbol", "")).upper(), int(b.get("timeframe_minutes", 0) or 0)),
+            ):
+                _sym = str(_bot.get("symbol", "?")).upper()
+                _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
+                _lbl = f"{_sym}/M{_tfm}"[:15]
+                _mode = str(_bot.get("trading_mode", "paper") or "paper").upper()[:5]
+                _rk = _bot.get("risk", {}) or {}
+                _cb = "ACTIVE" if _rk.get("circuit_breaker_active") else "ok"
+                _cb_c = _ANSI_R if _cb == "ACTIVE" else _ANSI_G
+                _var = float(_rk.get("var_95", 0.0) or 0.0)
+                _kurt = float(_rk.get("kurtosis", 0.0) or 0.0)
+                _dd = float(_rk.get("drawdown_pct", 0.0) or 0.0)
+                _pos_dir = str(_bot.get("position_direction", "FLAT") or "FLAT").upper()[:12]
+                _mc = _ANSI_Y if _mode == "PAPER" else _ANSI_G
+                _dd_c = _ANSI_R if _dd > DD_HIGH_PCT else (_ANSI_Y if _dd > DD_WARN_PCT else _ANSI_G)
+                print(
+                    f"  {_lbl:<16} {_mc}{_mode:<5}{_ANSI_RST} "
+                    f"{_cb_c}{_cb:<8}{_ANSI_RST} {_var:>7.4f} {_kurt:>9.2f} "
+                    f"{_dd_c}{_dd:>7.2f}%{_ANSI_RST} {_pos_dir:<12}"
+                )
+            print()
+            # Also show last NO_ENTRY gated_conditions for context
+            print(f"  {_ANSI_DIM}[d] detail pane for active bot  [Enter] to drill to symbol{_ANSI_RST}")
+            if not self._ctx_detail:
+                return
+
         _scope = self._risk_scope_label(rs)
         print(f"\n\033[1m⚠️  RISK MANAGEMENT [{_scope}]\033[0m\n")
         print(f"  {_ANSI_DIM}(source: scoped risk_metrics + circuit_breakers.json){_ANSI_RST}")
@@ -5542,6 +5809,27 @@ class TabbedHUD:
         self._render_risk_reward_weights(rs)
         self._render_risk_path_geometry(rs)
         self._render_risk_position_sizing(rs)
+
+        # L3: show last gated_conditions for this bot
+        if self._ctx_level >= 3 and self._ctx_symbol and self._ctx_tf:
+            _sym_f = self._ctx_symbol.upper()
+            _tf_f = self._ctx_tf
+            _jf_candidates = list(self.data_dir.glob(
+                f"paper_{_sym_f}_M{_tf_f}/logs/audit/decisions.jsonl"
+            ))
+            for _jf in _jf_candidates:
+                _recent = self._tail_meaningful(_jf, n=20)
+                _no_entries = [e for e in _recent if e.get("decision", "").upper() == "NO_ENTRY"]
+                if _no_entries:
+                    _last_no = _no_entries[-1]
+                    _gates = (_last_no.get("reasoning") or {}).get("gated_conditions") or []
+                    if _gates:
+                        print(f"\n  \033[1mLAST NO_ENTRY GATES [{_sym_f}/M{_tf_f}]\033[0m")
+                        _ts = str(_last_no.get("timestamp", ""))[:16]
+                        print(f"  {_ANSI_DIM}{_ts}{_ANSI_RST}")
+                        for _g in _gates[:8]:
+                            print(f"  {_ANSI_R}  ✗ {_g}{_ANSI_RST}")
+                    break
 
     def _render_risk_circuit_breaker(self, rs: dict) -> None:
         """Render circuit breaker status block with individual breaker details."""
@@ -5973,8 +6261,41 @@ class TabbedHUD:
             print(f"    {s}")
 
     def _render_market(self) -> None:
-        """Render market microstructure."""
+        """Render market microstructure — dispatches by drill level."""
         self._render_breadcrumb("MARKET", 5)
+
+        # L1: compact per-symbol summary (no mode dimension — same feed regardless)
+        if self._ctx_level == 1 and self.all_bots_stats:
+            print(f"\n\033[1m🔬 MARKET SUMMARY — ALL SYMBOLS\033[0m  {_ANSI_DIM}[Enter] to drill{_ANSI_RST}\n")
+            _hdr = f"  {'Symbol':<10} {'Spread':>7} {'VPIN-z':>7} {'Depth':>7} {'Imbal':>7} {'Regime':<8} {'VaR95':>7}"
+            print(_hdr)
+            print("  " + "─" * (_visible_width(_hdr) - 2))
+            _seen_syms: set[str] = set()
+            for _bot in sorted(
+                self.all_bots_stats,
+                key=lambda b: str(b.get("symbol", "")).upper(),
+            ):
+                _sym = str(_bot.get("symbol", "?")).upper()
+                if _sym in _seen_syms:
+                    continue
+                _seen_syms.add(_sym)
+                _mk = _bot.get("market", {}) or {}
+                _rk = _bot.get("risk", {}) or {}
+                _spread = float(_mk.get("spread", 0.0) or 0.0)
+                _vpin_z = float(_mk.get("vpin_z", 0.0) or 0.0)
+                _depth = float(_mk.get("depth_ratio", 0.0) or 0.0)
+                _imbal = float(_mk.get("imbalance", 0.0) or 0.0)
+                _regime = str(_rk.get("regime", "?") or "?")[:8]
+                _var = float(_rk.get("var_95", 0.0) or 0.0)
+                _vz_c = _ANSI_R if abs(_vpin_z) > 2.5 else (_ANSI_Y if abs(_vpin_z) > 1.5 else _ANSI_G)
+                print(
+                    f"  {_sym:<10} {_spread:>7.2f} {_vz_c}{_vpin_z:>+7.2f}{_ANSI_RST} "
+                    f"{_depth:>7.3f} {_imbal:>+7.3f} {_regime:<8} {_var:>7.4f}"
+                )
+            print(f"\n  {_ANSI_DIM}[d] detail for active bot  [Enter] to drill to symbol{_ANSI_RST}")
+            if not self._ctx_detail:
+                return
+
         _scope = self._risk_scope_label(self.risk_stats)
         print(f"\n\033[1m🔬 MARKET MICROSTRUCTURE [{_scope}]\033[0m\n")
         _market_age: float | None = None
