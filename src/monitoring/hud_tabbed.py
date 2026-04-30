@@ -302,6 +302,25 @@ def _classify_trades_by_period(trades: list) -> tuple[list, list, list]:
     return daily, weekly, monthly
 
 
+def _filter_trades_by_period_single(period: str, trades: list) -> list:
+    """Return trades within a single period window: 24h / 7 days / Month / Epoch / Lifetime."""
+    if period == "Lifetime":
+        return list(trades)
+    now = datetime.now(UTC)
+    if period == "24h":
+        cutoff = now - timedelta(hours=24)
+    elif period == "7 days":
+        cutoff = now - timedelta(days=7)
+    elif period == "Month":
+        cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    elif period == "Epoch":
+        cutoff = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        return list(trades)  # Epoch filtering already done at load time
+    else:
+        cutoff = now - timedelta(days=30)
+    return [t for t in trades if _hud_parse_dt(t.get("entry_time", "")) and _hud_parse_dt(t.get("entry_time", "")) >= cutoff]
+
+
 # ANSI colour codes shared across HUD render methods
 _ANSI_G = "\033[92m"  # green
 _ANSI_Y = "\033[93m"  # yellow
@@ -515,6 +534,30 @@ class TabbedHUD:
         self._stats_epoch_excluded_pnl: float = 0.0  # PnL of excluded trades
         self._load_stats_epoch()
 
+        # ── Global trading-context hierarchy ─────────────────────────────
+        # One hierarchy, seven tabs as analytical lenses over the same context.
+        # Level 0: Mode       (Live / Paper / Offline)
+        # Level 1: Portfolio  (all instruments, all TFs)
+        # Level 2: Instrument (one symbol, all TFs)
+        # Level 3: Inst/TF    (one symbol, one TF)
+        # Level 4: Detail     (single trade / decision card)
+        self._ctx_mode: str = "paper"  # live | paper | offline
+        self._ctx_level: int = 1       # start at Portfolio (skip Mode for now)
+        self._ctx_symbol: str = ""     # active symbol at level ≥ 2
+        self._ctx_tf: int = 0          # active TF minutes at level ≥ 3
+        self._ctx_cursor: int = 0      # highlighted row index at current level
+        self._ctx_period: str = "Month"  # active period for detail views
+        self._ctx_periods: list[str] = ["24h", "7 days", "Month", "Epoch", "Lifetime"]
+        self._ctx_detail: bool = False   # detail/diagnostics pane toggle (d key)
+
+        # ── Legacy aliases (kept for gradual migration) ─────────────────
+        self._drill_level: int = 1       # mirrors _ctx_level
+        self._drill_symbol: str = ""     # mirrors _ctx_symbol
+        self._drill_tf_minutes: int = 0  # mirrors _ctx_tf
+        self._drill_cursor: int = 0      # mirrors _ctx_cursor
+        self._drill_period: str = "Month"  # mirrors _ctx_period
+        self._drill_periods: list[str] = ["24h", "7 days", "Month", "Epoch", "Lifetime"]
+
     # ── Stats epoch persistence ─────────────────────────────────────────
 
     def _load_stats_epoch(self) -> None:
@@ -643,7 +686,19 @@ class TabbedHUD:
             return
         if self.current_tab != tab_id:
             self.current_tab = tab_id
+            # Reset detail pane on tab switch; keep context hierarchy
+            self._ctx_detail = False
+            self._trades_detail = False
+            self._trades_page = 0
             self._force_redraw = True
+
+    def _sync_ctx_to_legacy(self) -> None:
+        """Keep legacy drill_* aliases in sync with ctx_* variables."""
+        self._drill_level = self._ctx_level
+        self._drill_symbol = self._ctx_symbol
+        self._drill_tf_minutes = self._ctx_tf
+        self._drill_cursor = self._ctx_cursor
+        self._drill_period = self._ctx_period
 
     def _handle_mouse_event(self, seq: str) -> None:
         """Handle SGR mouse events: clicks on tabs, wheel scroll in body."""
@@ -716,23 +771,29 @@ class TabbedHUD:
                 seq2 = self._read_raw()
                 if seq2 == "Z":  # Shift+Tab
                     idx = self.TAB_ORDER.index(self.current_tab)
-                    self.current_tab = self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]
-                    self._force_redraw = True
+                    self._activate_tab(self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)])
                 elif seq2 in {"C", "D"}:  # Right/Left arrows cycle tabs
                     idx = self.TAB_ORDER.index(self.current_tab)
                     step = 1 if seq2 == "C" else -1
-                    self.current_tab = self.TAB_ORDER[(idx + step) % len(self.TAB_ORDER)]
-                    self._force_redraw = True
-                elif seq2 in {"A", "B"} and self.current_tab == "trades" and not self._trades_detail:
-                    page_cnt = min(
-                        self._trades_per_page,
-                        len(self._trades_view) - self._trades_page * self._trades_per_page,
-                    )
-                    step = -1 if seq2 == "A" else 1
-                    self._trades_cursor = max(0, min(self._trades_cursor + step, max(0, page_cnt - 1)))
-                    self._force_redraw = True
-                elif seq2 in {"A", "B"}:
-                    self._scroll_current_body(-1 if seq2 == "A" else 1)
+                    self._activate_tab(self.TAB_ORDER[(idx + step) % len(self.TAB_ORDER)])
+                elif seq2 in {"A", "B"}:  # Up/Down arrows — move cursor
+                    if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
+                        # Trade list: move within page
+                        step = -1 if seq2 == "A" else 1
+                        page_cnt = min(
+                            self._trades_per_page,
+                            len(self._trades_view) - self._trades_page * self._trades_per_page,
+                        )
+                        self._trades_cursor = max(0, min(self._trades_cursor + step, max(0, page_cnt - 1)))
+                        self._force_redraw = True
+                    elif self._ctx_level <= 3:
+                        # Summary levels: move context cursor
+                        step = -1 if seq2 == "A" else 1
+                        self._ctx_cursor = max(0, self._ctx_cursor + step)
+                        self._sync_ctx_to_legacy()
+                        self._force_redraw = True
+                    else:
+                        self._scroll_current_body(-1 if seq2 == "A" else 1)
                 elif seq2 in {"H", "F"}:
                     self._scroll_current_body(absolute=0 if seq2 == "H" else self._body_scroll_max)
                 elif seq2 in {"5", "6"} and select.select([sys.stdin.fileno()], [], [], 0.02)[0]:
@@ -765,20 +826,23 @@ class TabbedHUD:
                 _handled = True
                 key = self._read_raw()
                 if key in self.TABS:
-                    self.current_tab = self.TABS[key]
-                    self._force_redraw = True
+                    self._activate_tab(self.TABS[key])
                 elif key == "\t":  # Tab key to cycle forward
                     idx = self.TAB_ORDER.index(self.current_tab)
-                    self.current_tab = self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)]
-                    self._force_redraw = True
-                elif key == "\x1b":  # Escape sequence: Shift+Tab or Alt+<key>
+                    self._activate_tab(self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)])
+                elif key == "\x1b":  # Escape: CSI/Alt sequence, or bare Esc
                     if select.select([sys.stdin.fileno()], [], [], 0.05)[0]:
                         seq1 = self._read_raw()
                         self._handle_escape_sequence(seq1)
+                    else:
+                        # Bare Escape — drill up one level (ALL tabs)
+                        self._drill_up()
+                elif key in ("\r", "\n"):  # Enter — drill down (ALL tabs)
+                    self._drill_down()
                 elif key.lower() == "q" or key in {"\x18", "\x11"}:  # 'q' or Ctrl+X (\x18) or Ctrl+Q (\x11)
                     self.running = False
                 elif key.lower() == "s":
-                    self._handle_session_selector()
+                    self._cycle_scope()
                 elif key.lower() == "r":
                     self._handle_cb_reset()
                     self._force_redraw = True
@@ -788,61 +852,72 @@ class TabbedHUD:
                 elif key.lower() == "h":
                     self._show_help()
                     self._force_redraw = True
+                elif key.lower() == "p":
+                    self._cycle_period()
                 elif key.lower() == "n":
-                    if self.current_tab == "trades":
+                    # Page forward (trades only)
+                    if self.current_tab == "trades" and self._ctx_level >= 3:
                         self._trades_detail = False
                         _max_pg = max(0, (len(self._trades_view) - 1) // self._trades_per_page)
                         self._trades_page = min(self._trades_page + 1, _max_pg)
                         self._trades_cursor = 0
                         self._force_redraw = True
-                elif key.lower() == "p":
-                    if self.current_tab == "trades":
-                        self._trades_detail = False
-                        self._trades_page = max(0, self._trades_page - 1)
-                        self._trades_cursor = 0
-                        self._force_redraw = True
                 elif key.lower() == "j":
-                    if self.current_tab == "trades" and not self._trades_detail:
+                    # Move cursor down
+                    if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
                         _page_cnt = min(
-                            self._trades_per_page, len(self._trades_view) - self._trades_page * self._trades_per_page
+                            self._trades_per_page,
+                            len(self._trades_view) - self._trades_page * self._trades_per_page,
                         )
                         self._trades_cursor = min(self._trades_cursor + 1, max(0, _page_cnt - 1))
+                        self._force_redraw = True
+                    elif self._ctx_level <= 3:
+                        self._ctx_cursor += 1
+                        self._sync_ctx_to_legacy()
                         self._force_redraw = True
                     else:
                         self._scroll_current_body(1)
                 elif key.lower() == "k":
-                    if self.current_tab == "trades" and not self._trades_detail:
+                    # Move cursor up
+                    if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
                         self._trades_cursor = max(0, self._trades_cursor - 1)
+                        self._force_redraw = True
+                    elif self._ctx_level <= 3:
+                        self._ctx_cursor = max(0, self._ctx_cursor - 1)
+                        self._sync_ctx_to_legacy()
                         self._force_redraw = True
                     else:
                         self._scroll_current_body(-1)
                 elif key.lower() == "d":
+                    # Toggle detail/diagnostics pane (ALL tabs, consistent meaning)
+                    self._ctx_detail = not self._ctx_detail
                     if self.current_tab == "performance":
-                        self._performance_detail = not self._performance_detail
-                        self._force_redraw = True
+                        self._performance_detail = self._ctx_detail
                     elif self.current_tab == "training":
-                        self._training_detail = not self._training_detail
-                        self._force_redraw = True
+                        self._training_detail = self._ctx_detail
                     elif self.current_tab == "trades":
-                        if self._trades_detail:
-                            self._trades_detail = False
-                            self._force_redraw = True
-                        else:
+                        if self._ctx_detail and self._ctx_level >= 3:
                             _idx = self._trades_page * self._trades_per_page + self._trades_cursor
                             if _idx < len(self._trades_view):
                                 self._trades_detail_trade = self._trades_view[_idx]
                                 self._trades_detail = True
-                                self._force_redraw = True
-
-                elif key.lower() == "b" and self.current_tab == "trades" and self._trades_detail:
-                    self._trades_detail = False
+                        else:
+                            self._trades_detail = False
                     self._force_redraw = True
-                elif key.lower() == "b" and self.current_tab == "performance" and self._performance_detail:
-                    self._performance_detail = False
-                    self._force_redraw = True
-                elif key.lower() == "b" and self.current_tab == "training" and self._training_detail:
-                    self._training_detail = False
-                    self._force_redraw = True
+                elif key.lower() == "b":
+                    # Back — close detail panes
+                    if self.current_tab == "trades" and self._trades_detail:
+                        self._trades_detail = False
+                        self._ctx_detail = False
+                        self._force_redraw = True
+                    elif self.current_tab == "performance" and self._performance_detail:
+                        self._performance_detail = False
+                        self._ctx_detail = False
+                        self._force_redraw = True
+                    elif self.current_tab == "training" and self._training_detail:
+                        self._training_detail = False
+                        self._ctx_detail = False
+                        self._force_redraw = True
         except Exception:
             pass
         return _handled
@@ -1931,6 +2006,13 @@ class TabbedHUD:
                 "depth_ask": _rm.get("depth_ask", self.market_stats.get("depth_ask", 0.0)),
                 "order_book_bids": _rm.get("order_book_bids", self.market_stats.get("order_book_bids", [])),
                 "order_book_asks": _rm.get("order_book_asks", self.market_stats.get("order_book_asks", [])),
+                "kurtosis": _rm.get("kurtosis", self.market_stats.get("kurtosis", 0.0)),
+                "kurtosis_threshold": _rm.get(
+                    "kurtosis_threshold", self.market_stats.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD)
+                ),
+                "kurtosis_gate_active": _rm.get(
+                    "kurtosis_gate_active", self.market_stats.get("kurtosis_gate_active", False)
+                ),
             }
         )
 
@@ -2440,7 +2522,9 @@ class TabbedHUD:
 
         body_buf = io.StringIO()
         with redirect_stdout(body_buf):
-            if self.current_tab == "overview":
+            if self._ctx_level == 0:
+                self._render_mode_selector()
+            elif self.current_tab == "overview":
                 self._render_overview()
             elif self.current_tab == "performance":
                 self._render_performance()
@@ -3209,6 +3293,7 @@ class TabbedHUD:
 
     def _render_training(self) -> None:
         """Render agent training status."""
+        self._render_breadcrumb("TRAINING", 3)
         ts = self.training_stats
         print(f"  {_ANSI_DIM}(canonical source: training_stats_*.json; per-bot file preferred){_ANSI_RST}\n")
         pm = self.production_metrics.get("metrics", {})
@@ -3467,6 +3552,183 @@ class TabbedHUD:
         print("".join(tabs))
         print("─" * W)
 
+    # ── Drill-down navigation ──────────────────────────────────────────
+
+    def _drill_scope_label(self) -> str:
+        """Compact scope label for breadcrumb: 'Paper' / 'XAUUSD' / 'XAUUSD/M5'."""
+        if self._ctx_level == 0:
+            return self._ctx_mode.upper()
+        if self._ctx_level == 1:
+            return "Portfolio"
+        if self._ctx_level == 2:
+            return (self._ctx_symbol or "?").upper()
+        _sym = (self._ctx_symbol or "?").upper()
+        _tf = self._format_timeframe_minutes_label(self._ctx_tf)
+        return f"{_sym}/{_tf}"
+
+    def _render_breadcrumb(self, tab_label: str, tab_num: int) -> None:
+        """Render compact breadcrumb line showing scope + period + available keys."""
+        _mode_map = {"live": "🔴 LIVE", "paper": "🟡 PAPER", "offline": "🔵 OFFLINE"}
+        _parts: list[str] = []
+        if self._ctx_level >= 0:
+            _parts.append(_mode_map.get(self._ctx_mode, self._ctx_mode.upper()))
+        if self._ctx_level >= 1:
+            _parts.append("Portfolio")
+        if self._ctx_level >= 2 and self._ctx_symbol:
+            _parts.append(self._ctx_symbol.upper())
+        if self._ctx_level >= 3 and self._ctx_tf > 0:
+            _parts.append(self._format_timeframe_minutes_label(self._ctx_tf))
+        if self._ctx_level >= 4:
+            _parts.append(self._ctx_period)
+        _path = f"[{tab_num}] {tab_label}  ›  " + " › ".join(_parts)
+
+        _keys = []
+        if self._ctx_level > 0:
+            _keys.append("Esc back")
+        if self._ctx_level < 4:
+            _keys.append("Enter drill")
+        if self._ctx_level >= 1:
+            _keys.append("s scope")
+        if self._ctx_level >= 3:
+            _keys.append("p period")
+        if self._ctx_level >= 2:
+            _keys.append("d detail")
+        _key_hints = "  ".join(f"[{k}]" for k in _keys)
+
+        W = self._term_width()
+        _left = f"{_path}"
+        _right = _key_hints
+        _pad = max(1, W - _visible_width(_left) - _visible_width(_right) - 2)
+        print(f"\n\033[1m{_left}\033[0m{_ANSI_DIM}{' ' * _pad}{_right}{_ANSI_RST}")
+
+    def _drill_up(self) -> None:
+        """Move up one drill level, clearing child scope. Works for ALL tabs."""
+        if self._ctx_level <= 0:
+            return
+        # Clear trade detail if at Level 4
+        if self._ctx_level == 4:
+            self._trades_detail = False
+            self._trades_detail_trade = {}
+        self._ctx_level -= 1
+        self._ctx_cursor = 0
+        if self._ctx_level < 3:
+            self._ctx_tf = 0
+        if self._ctx_level < 2:
+            self._ctx_symbol = ""
+        if self._ctx_level < 1:
+            self._ctx_mode = "paper"
+        self._sync_ctx_to_legacy()
+        self._force_redraw = True
+
+    def _drill_down(self) -> None:
+        """Move down one drill level. Uses cursor to select row. Works for ALL tabs."""
+        if self._ctx_level >= 4:
+            return
+
+        # ── Level 0 → 1: Mode → Portfolio ─────────────────────────────
+        if self._ctx_level == 0:
+            _modes = ["live", "paper", "offline"]
+            self._ctx_mode = _modes[min(self._ctx_cursor, len(_modes) - 1)]
+            self._ctx_level = 1
+            self._ctx_cursor = 0
+            self._sync_ctx_to_legacy()
+            self._force_redraw = True
+            return
+
+        # ── Level 1 → 2: Portfolio → Instrument ───────────────────────
+        if self._ctx_level == 1:
+            _syms = self._available_symbols()
+            if _syms:
+                self._ctx_symbol = _syms[min(self._ctx_cursor, len(_syms) - 1)]
+                self._ctx_level = 2
+                self._ctx_cursor = 0
+                self._sync_ctx_to_legacy()
+                self._force_redraw = True
+            return
+
+        # ── Level 2 → 3: Instrument → Instrument/TF ───────────────────
+        if self._ctx_level == 2:
+            _tfs = self._available_timeframes()
+            if _tfs:
+                self._ctx_tf = _tfs[min(self._ctx_cursor, len(_tfs) - 1)]
+                self._ctx_level = 3
+                self._ctx_cursor = 0
+                self._trades_page = 0
+                self._sync_ctx_to_legacy()
+                self._force_redraw = True
+            return
+
+        # ── Level 3 → 4: Instrument/TF → Period Detail ────────────────
+        if self._ctx_level == 3:
+            if self.current_tab == "trades":
+                _idx = self._trades_page * self._trades_per_page + self._trades_cursor
+                if 0 <= _idx < len(self._trades_view):
+                    self._trades_detail_trade = self._trades_view[_idx]
+                    self._trades_detail = True
+                    self._ctx_level = 4
+                    self._sync_ctx_to_legacy()
+                    self._force_redraw = True
+            else:
+                # For other tabs, drill into the selected period
+                _periods = self._ctx_periods
+                self._ctx_period = _periods[min(self._ctx_cursor, len(_periods) - 1)]
+                self._ctx_level = 4
+                self._sync_ctx_to_legacy()
+                self._force_redraw = True
+            return
+
+    def _available_symbols(self) -> list[str]:
+        """Return sorted list of unique symbols across all trade_log trades."""
+        return sorted(set(
+            str(t.get("symbol", "")).upper()
+            for t in self._trade_log_all_trades if t.get("symbol")
+        ))
+
+    def _available_timeframes(self) -> list[int]:
+        """Return sorted list of unique TFs for the current symbol."""
+        _sym = self._ctx_symbol.upper()
+        return sorted(set(
+            int(t.get("timeframe_minutes", 0))
+            for t in self._trade_log_all_trades
+            if str(t.get("symbol", "")).upper() == _sym and t.get("timeframe_minutes")
+        ))
+
+    def _cycle_scope(self) -> None:
+        """Jump-scope: Portfolio → Instrument → Instrument/TF → Portfolio."""
+        if self._ctx_level <= 1:
+            _syms = self._available_symbols()
+            if _syms:
+                self._ctx_symbol = _syms[0]
+                self._ctx_level = 2
+                self._ctx_cursor = 0
+                self._sync_ctx_to_legacy()
+                self._force_redraw = True
+        elif self._ctx_level == 2:
+            _tfs = self._available_timeframes()
+            if _tfs:
+                self._ctx_tf = _tfs[0]
+                self._ctx_level = 3
+                self._ctx_cursor = 0
+                self._sync_ctx_to_legacy()
+                self._force_redraw = True
+        else:
+            self._ctx_level = 1
+            self._ctx_symbol = ""
+            self._ctx_tf = 0
+            self._ctx_cursor = 0
+            self._sync_ctx_to_legacy()
+            self._force_redraw = True
+
+    def _cycle_period(self) -> None:
+        """Cycle through period filters: 24h → 7d → Month → Epoch → Lifetime."""
+        if self._ctx_period not in self._ctx_periods:
+            self._ctx_period = self._ctx_periods[0]
+        else:
+            _idx = self._ctx_periods.index(self._ctx_period)
+            self._ctx_period = self._ctx_periods[(_idx + 1) % len(self._ctx_periods)]
+        self._sync_ctx_to_legacy()
+        self._force_redraw = True
+
     def _render_position_block(self) -> None:
         """Render the position header block (always fixed height to avoid layout jumps)."""
         _mode = self.bot_config.get("trading_mode", "paper")
@@ -3572,13 +3834,13 @@ class TabbedHUD:
             ),
         )
         print(
-            f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}— SESSION metrics (reset on each bot restart; see SYMBOL/TF SNAPSHOT below for lifetime){_ANSI_RST}"
+            f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}session counters; runtime state, not trading mode{_ANSI_RST}"
         )
         # Column widths — keep header, row, and separator in lock-step.
-        # Widths:  Bot=13  Status=7  Bars=4  Position=22  T-buf=5  H-buf=5
+        # Widths:  Bot=13  Runtime=7  Bars=4  Position=22  T-buf=5  H-buf=5
         #          SessTrd=7  SessPnL=11  SessWin=7
         _hdr = (
-            f"  {'Bot':<13}  {'Status':<7}  {'Bars':>4}  {'Position':<22}"
+            f"  {'Bot':<13}  {'Runtime':<7}  {'Bars':>4}  {'Position':<22}"
             f"  {'T-buf':>5}  {'H-buf':>5}  {'SessTrd':>7}  {'SessPnL':>11}  {'SessWin':>7}"
         )
         print(f"\033[2m{_hdr}\033[0m")
@@ -3621,12 +3883,12 @@ class TabbedHUD:
                     _awaiting_bar = 0.0 <= _secs_to_bar <= (_tf_min * 60 + 180)
                 except Exception:
                     _awaiting_bar = False
-            # Status column — emit a fixed 7-visible-cell token regardless of
+            # Runtime column — emit a fixed 7-visible-cell token regardless of
             # colour codes so the padding below stays aligned.
             if not _pid_alive or not conn:
-                status_vis, status_col = "● STALE", _ANSI_R
+                status_vis, status_col = "● DOWN ", _ANSI_R
             elif _age <= _live_age:
-                status_vis, status_col = "● LIVE ", _ANSI_G
+                status_vis, status_col = "● RUN  ", _ANSI_G
             elif _age <= _slow_age or _awaiting_bar:
                 status_vis, status_col = "● SLOW ", _ANSI_Y
             else:
@@ -3664,12 +3926,37 @@ class TabbedHUD:
                 f"{self._pnl_color(pnl)}{pnl:>+11.2f}{_ANSI_RST}  {wr_str:>7}"
             )
 
+    def _render_mode_selector(self) -> None:
+        """Level 0: Trading mode selection screen — shown when ctx_level == 0."""
+        print(f"\n\033[1m🎯 SELECT TRADING MODE\033[0m\n")
+        print(f"  {_ANSI_DIM}Choose the trading context for all tabs. All views will filter to this mode.{_ANSI_RST}\n")
+        _modes = [
+            ("live", "🔴 LIVE TRADING", "Real-money execution. Production account.", _ANSI_G),
+            ("paper", "🟡 PAPER TRADING", "Simulated execution. Practice & validation.", _ANSI_Y),
+            ("offline", "🔵 OFFLINE", "Backtest, training & validation. NOT account PnL.", _ANSI_B),
+        ]
+        _starting = self._universe_starting_equity()
+        for _idx, (_mk, _label, _desc, _color) in enumerate(_modes):
+            _sel = "\033[7m > " if _idx == self._ctx_cursor else "   "
+            _end = "\033[0m" if _idx == self._ctx_cursor else ""
+            _trades = self._trades_for_mode(_mk) if _mk != "offline" else []
+            _n = len(_trades)
+            _pnl = sum(float(t.get("pnl", 0) or 0) for t in _trades) if _trades else 0.0
+            _pc = self._pnl_color(_pnl) if _n > 0 else _ANSI_DIM
+            print(
+                f"{_sel}{_color}{_label:<30}{_end}  "
+                f"{_ANSI_DIM}{_desc:<48}{_ANSI_RST}  "
+                f"{_n:>6} trades  {_pc}{_pnl:>+10.2f}{_ANSI_RST}"
+            )
+        print(f"\n  {_ANSI_DIM}↑/↓ select mode  |  Enter confirm  |  1-7 switch tabs after selection{_ANSI_RST}")
+
     def _render_overview(self) -> None:
         """Render overview tab - compact summary."""
+        self._render_breadcrumb("OVERVIEW", 1)
         self._render_all_bots_panel()
         self._render_position_block()
         print(
-            f"  {_ANSI_DIM}(canonical performance source: trade_log.jsonl; mode from performance_snapshot.json){_ANSI_RST}"
+            f"  {_ANSI_DIM}(performance source: trade_log.jsonl; paper/live rows stay mode-separated){_ANSI_RST}"
         )
 
         # Account balance / equity
@@ -3678,15 +3965,14 @@ class TabbedHUD:
             or getattr(self, "_perf_snapshot_mode", "")
             or self.bot_config.get("trading_mode", "paper")
         )
-        _acct_tag = (
-            f"  {_ANSI_Y}(paper){_ANSI_RST}"
-            if _mode == "paper"
-            else (
-                f"  {_ANSI_G}(live){_ANSI_RST}"
-                if _mode == "live"
-                else (f"  {_ANSI_Y}(paper){_ANSI_RST} + {_ANSI_G}(live){_ANSI_RST}" if _mode == "mixed" else "")
-            )
-        )
+        if _mode == "paper":
+            _acct_tag = f"  {_ANSI_Y}(paper){_ANSI_RST}"
+        elif _mode == "live":
+            _acct_tag = f"  {_ANSI_G}(live){_ANSI_RST}"
+        elif _mode == "mixed":
+            _acct_tag = f"  {_ANSI_Y}(mixed source; no blended estimate){_ANSI_RST}"
+        else:
+            _acct_tag = ""
         print(f"\n\033[1m💰 ACCOUNT\033[0m{_acct_tag}")
         # Prefer starting_equity from universe.json for the active symbol.
         # bot_config.json is shared across bots; the last writer may reflect a
@@ -3701,6 +3987,9 @@ class TabbedHUD:
         if _real_bal is not None:
             _balance = float(_real_bal)
             _live_tag = "  \033[32m✓ live\033[0m"
+        elif _mode == "mixed":
+            _balance = _starting
+            _live_tag = f"  {_ANSI_Y}~ est withheld: mixed modes{_ANSI_RST}"
         else:
             _balance = _starting + _lifetime_pnl
             _live_tag = "  \033[33m~ est.\033[0m"
@@ -4234,6 +4523,7 @@ class TabbedHUD:
 
     def _render_performance(self) -> None:
         """Render summary-first performance metrics."""
+        self._render_breadcrumb("PERFORMANCE", 2)
         # Resolve trading mode: prefer trade_log-derived mode (covers all trades),
         # fall back to snapshot mode, then bot_config.
         _mode = (
@@ -5130,10 +5420,8 @@ class TabbedHUD:
 
     def _render_decision_log(self) -> None:
         """Render the Decision Log tab (Tab 6) — newest entries first."""
-        print("\n\033[1m📝 DECISION LOG (ALL BOTS)\033[0m (last 20 entries)\n")
-        print(
-            f"  {_ANSI_DIM}(canonical source: per-bot logs/audit/decisions.jsonl; Bot column is symbol/timeframe scope){_ANSI_RST}"
-        )
+        self._render_breadcrumb("DECISION LOG", 6)
+        print(f"\n  {_ANSI_DIM}(canonical source: per-bot logs/audit/decisions.jsonl; Bot column is symbol/timeframe scope){_ANSI_RST}")
 
         _mode_filter = self._mixed_mode_view_filter()
         if _mode_filter:
@@ -5243,6 +5531,7 @@ class TabbedHUD:
 
     def _render_risk(self) -> None:
         """Render risk management details."""
+        self._render_breadcrumb("RISK", 4)
         rs = self.risk_stats
         _scope = self._risk_scope_label(rs)
         print(f"\n\033[1m⚠️  RISK MANAGEMENT [{_scope}]\033[0m\n")
@@ -5268,7 +5557,9 @@ class TabbedHUD:
             _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
             _kurt_note = "entries BLOCKED" if _is_live_mode else "bypassed in paper mode"
             _kurt_threshold = float(
-                rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
+                rs.get("kurtosis_threshold")
+                or self.market_stats.get("kurtosis_threshold")
+                or KURTOSIS_FAT_TAIL_THRESHOLD
             )
             print(
                 f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE [{_scope}] "
@@ -5300,7 +5591,9 @@ class TabbedHUD:
         _kurt_gate_active = bool(rs.get("kurtosis_gate_active", False))
         _kurtosis_now = float(rs.get("kurtosis", 0.0) or 0.0)
         _kurtosis_threshold = float(
-            rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
+            rs.get("kurtosis_threshold")
+            or self.market_stats.get("kurtosis_threshold")
+            or KURTOSIS_FAT_TAIL_THRESHOLD
         )
         for _key, _label in _breaker_labels.items():
             _b = _cb_data.get(_key)
@@ -5378,9 +5671,9 @@ class TabbedHUD:
         print("  \033[1m📉 TAIL RISK\033[0m")
         var = rs.get("var", 0) * 100
         kurtosis = rs.get("kurtosis", 0)
-        kurtosis_threshold = float(
-            rs.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
-        )
+        _threshold_raw = rs.get("kurtosis_threshold") or self.market_stats.get("kurtosis_threshold")
+        kurtosis_threshold = float(_threshold_raw or KURTOSIS_FAT_TAIL_THRESHOLD)
+        _threshold_label = "scoped entry gate" if _threshold_raw is not None else "fallback alert"
         vol = rs.get("realized_vol", 0) * 100
 
         kurt_col = _ANSI_R if kurtosis > kurtosis_threshold else _ANSI_G
@@ -5404,7 +5697,7 @@ class TabbedHUD:
         print(f"    Realized vol:      {vol_col}{vol:>9.3f}%{_ANSI_RST}")
         print(
             f"    Kurtosis:          {kurt_col}{kurtosis:>9.2f}{_ANSI_RST}  "
-            f"{_ANSI_DIM}(excess; >0 = fat tails; gate fires at >{kurtosis_threshold:.1f}){_ANSI_RST}"
+            f"{_ANSI_DIM}(excess; {_threshold_label} threshold >{kurtosis_threshold:.1f}){_ANSI_RST}"
         )
         print()
 
@@ -5681,6 +5974,7 @@ class TabbedHUD:
 
     def _render_market(self) -> None:
         """Render market microstructure."""
+        self._render_breadcrumb("MARKET", 5)
         _scope = self._risk_scope_label(self.risk_stats)
         print(f"\n\033[1m🔬 MARKET MICROSTRUCTURE [{_scope}]\033[0m\n")
         _market_age: float | None = None
@@ -5837,7 +6131,7 @@ class TabbedHUD:
         """Render return-distribution kurtosis, fat-tail gate, and depth gate status."""
         print("  \033[1m📐 ENTRY GATES\033[0m")
         kurt = float(ms.get("kurtosis", 0.0) or 0.0)
-        threshold = float(ms.get("kurtosis_threshold", 3.0) or 3.0)
+        threshold = float(ms.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD)
         kurt_gate = bool(ms.get("kurtosis_gate_active", False))
         depth_gate = bool(ms.get("depth_gate_active", False))
         depth_floor = float(ms.get("depth_floor", 0.0) or 0.0)
@@ -5847,9 +6141,11 @@ class TabbedHUD:
                     else f"{_ANSI_G}✓ clear{_ANSI_RST}")
         depth_str = (f"{_ANSI_R}⛔ BLOCKED (thin book){_ANSI_RST}" if depth_gate
                      else f"{_ANSI_G}✓ clear{_ANSI_RST}")
-        excess = kurt - 3.0
-        excess_color = _ANSI_R if excess > 4.0 else (_ANSI_Y if excess > 1.5 else _ANSI_G)
-        print(f"    Kurtosis:           {excess_color}{kurt:>9.3f}{_ANSI_RST}  (excess={excess:+.3f}, threshold={threshold:.2f})")
+        excess_color = _ANSI_R if kurt > threshold else (_ANSI_Y if kurt > 0 else _ANSI_G)
+        print(
+            f"    Kurtosis:           {excess_color}{kurt:>9.3f}{_ANSI_RST}  "
+            f"(excess; scoped threshold={threshold:.2f})"
+        )
         print(f"    Kurtosis gate:      {kurt_str}")
         print(f"    Depth (bid/ask):    {depth_bid:>7.3f} / {depth_ask:<7.3f}  floor={depth_floor:.3f}")
         print(f"    Depth gate:         {depth_str}")
@@ -6060,12 +6356,188 @@ class TabbedHUD:
         row_budget = available_body - chrome_rows
         return max(3, min(80, row_budget))
 
-    def _render_trades(self) -> None:
-        """Render the trade history tab with pagination and optional drill-down."""
+    # ── Trades Tab — drill-down levels ─────────────────────────────────
+
+    def _trades_for_mode(self, mode: str) -> list[dict]:
+        """Return trades filtered to a single trading mode."""
+        return [t for t in self._trade_log_all_trades if t.get("trading_mode") == mode]
+
+    def _trades_for_symbol(self, mode: str, symbol: str) -> list[dict]:
+        """Return trades for a given mode + symbol."""
+        _sym = symbol.upper()
+        return [t for t in self._trades_for_mode(mode) if str(t.get("symbol", "")).upper() == _sym]
+
+    def _trades_for_symbol_tf(self, mode: str, symbol: str, tf_minutes: int) -> list[dict]:
+        """Return trades for a given mode + symbol + timeframe."""
+        return [
+            t for t in self._trades_for_symbol(mode, symbol)
+            if t.get("timeframe_minutes") == tf_minutes
+        ]
+
+    @staticmethod
+    def _cursor_marker(is_selected: bool) -> str:
+        """Return a visible cursor marker for the currently selected row."""
+        return f"\033[7m {'>' if is_selected else ' '}\033[0m"
+
+    def _render_trades_mode(self) -> None:
+        """Level 0: Trading mode selection — Live / Paper / Offline."""
+        print(f"\n\033[1m📋 TRADES — Select Trading Mode\033[0m\n")
+        _modes = [
+            ("live", "🔴 LIVE TRADING", "Real-money execution", _ANSI_G),
+            ("paper", "🟡 PAPER TRADING", "Simulation / practice", _ANSI_Y),
+            ("offline", "🔵 OFFLINE", "Backtest / validation (not account PnL)", _ANSI_B),
+        ]
+        _starting = self._universe_starting_equity()
+        for _idx, (_mk, _label, _desc, _color) in enumerate(_modes):
+            _trades = self._trades_for_mode(_mk) if _mk != "offline" else []
+            _sel = " \033[7m" if _idx == self._ctx_cursor else "  "
+            _end = "\033[0m" if _idx == self._ctx_cursor else ""
+            _n = len(_trades)
+            _pnl = sum(float(t.get("pnl", 0) or 0) for t in _trades) if _trades else 0.0
+            _pc = self._pnl_color(_pnl) if _n > 0 else _ANSI_DIM
+            print(
+                f"{_sel}{_color}{_label:<30}{_end}  "
+                f"{_ANSI_DIM}{_desc:<40}{_ANSI_RST}  "
+                f"{_n:>6} trades  {_pc}{_pnl:>+10.2f}{_ANSI_RST}"
+            )
+        print(f"\n  {_ANSI_DIM}Use ↑/↓ to select mode, Enter to drill into portfolio{_ANSI_RST}")
+
+    def _render_trades_portfolio(self) -> None:
+        """Level 1: Per-instrument summary with period COLUMNS + mode stacked vertically."""
+        self._render_breadcrumb("TRADES", 7)
+
+        _modes: list[tuple[str, str, str]] = [
+            ("paper", f"{_ANSI_Y}📄 PAPER{_ANSI_RST}", _ANSI_Y),
+            ("live", f"{_ANSI_G}💰 LIVE{_ANSI_RST}", _ANSI_G),
+        ]
+        _symbols = self._available_symbols()
+        _starting = self._universe_starting_equity()
+        _periods = ["24h", "7 days", "Month", "Epoch" if self._stats_epoch else "Lifetime", "Lifetime"]
+
+        # Show mode context from breadcrumb
+        _row_idx = 0
+        for _mode, _mode_label, _mode_color in _modes:
+            _mode_trades = self._trades_for_mode(_mode)
+            if not _mode_trades:
+                continue
+
+            print(f"\n  {_mode_label}")
+
+            # Period column headers
+            _hdr = f"  {'Symbol':<10}"
+            for _p in _periods[:4]:  # Show 4 periods max for space
+                _hdr += f" {'Trades':>6} {'PnL':>9} {'WR':>5}"
+            print(_hdr)
+            print(f"  {'─' * 10}{'─' * 78}")
+
+            for _sym in _symbols:
+                _sym_trades = [t for t in _mode_trades if str(t.get("symbol", "")).upper() == _sym]
+                _cursor = self._cursor_marker(_row_idx == self._ctx_cursor)
+                _row = f"{_cursor}{_sym:<10}"
+                _has_data = False
+                for _p in _periods[:4]:
+                    _filtered = _filter_trades_by_period_single(_p, _sym_trades)
+                    if _filtered:
+                        _m = _hud_period_metrics(_filtered, _starting)
+                        _n = len(_filtered)
+                        _pnl = _m.get("total_pnl", 0.0)
+                        _wr = _m.get("win_rate", 0.0) * 100
+                        _pc = self._pnl_color(_pnl)
+                        _wc = _ANSI_G if _wr >= 50 else _ANSI_R
+                        _row += f" {_n:>6} {_pc}{_pnl:>+9.2f}{_ANSI_RST} {_wc}{_wr:>4.0f}%{_ANSI_RST}"
+                        _has_data = True
+                    else:
+                        _row += f" {_ANSI_DIM}     —        —    —{_ANSI_RST}"
+                if _has_data:
+                    print(_row)
+                _row_idx += 1
+
+        if not _symbols:
+            print(f"\n  {_ANSI_DIM}No trades loaded yet.{_ANSI_RST}")
+        print(f"\n  {_ANSI_DIM}Periods: 24h | 7d | Month | {'Epoch' if self._stats_epoch else 'Lifetime'}  —  ↑/↓ select, Enter drill{_ANSI_RST}")
+
+    def _render_trades_symbol(self) -> None:
+        """Level 2: Per-TF metrics for selected symbol with period COLUMNS."""
+        _sym = self._ctx_symbol.upper()
+        self._render_breadcrumb("TRADES", 7)
+
+        _modes: list[tuple[str, str, str]] = [
+            ("paper", f"{_ANSI_Y}📄 PAPER{_ANSI_RST}", _ANSI_Y),
+            ("live", f"{_ANSI_G}💰 LIVE{_ANSI_RST}", _ANSI_G),
+        ]
+        _starting = self._universe_starting_equity()
+        _periods = ["24h", "7 days", "Month", "Epoch" if self._stats_epoch else "Lifetime", "Lifetime"]
+        _tf_order = [1, 5, 15, 30, 60, 240]
+
+        _row_idx = 0
+        _any_data = False
+        for _mode, _mode_label, _mode_color in _modes:
+            _trades = self._trades_for_symbol(_mode, _sym)
+            if not _trades:
+                continue
+            _any_data = True
+
+            print(f"\n  {_mode_label} › {_sym}")
+
+            _hdr = f"  {'TF':<6}"
+            for _p in _periods[:4]:
+                _hdr += f" {'Trd':>4} {'PnL':>9} {'WR':>5}"
+            print(_hdr)
+            print(f"  {'─' * 6}{'─' * 76}")
+
+            for _tf in _tf_order:
+                _tt = [t for t in _trades if t.get("timeframe_minutes") == _tf]
+                _tf_label = self._format_timeframe_minutes_label(_tf)
+                _cursor = self._cursor_marker(_row_idx == self._ctx_cursor)
+                _row = f"{_cursor}{_tf_label:<6}"
+                _has_tf_data = False
+                for _p in _periods[:4]:
+                    _filtered = _filter_trades_by_period_single(_p, _tt)
+                    if _filtered:
+                        _m = _hud_period_metrics(_filtered, _starting)
+                        _n = len(_filtered)
+                        _pnl = _m.get("total_pnl", 0.0)
+                        _wr = _m.get("win_rate", 0.0) * 100
+                        _pc = self._pnl_color(_pnl)
+                        _wc = _ANSI_G if _wr >= 50 else _ANSI_R
+                        _row += f" {_n:>4} {_pc}{_pnl:>+9.2f}{_ANSI_RST} {_wc}{_wr:>4.0f}%{_ANSI_RST}"
+                        _has_tf_data = True
+                    else:
+                        _row += f" {_ANSI_DIM}   —        —    —{_ANSI_RST}"
+                if _has_tf_data:
+                    print(_row)
+                _row_idx += 1
+
+        if not _any_data:
+            print(f"\n  {_ANSI_DIM}No trades for {_sym}{_ANSI_RST}")
+        print(f"\n  {_ANSI_DIM}↑/↓ select timeframe, Enter drill into trade list{_ANSI_RST}")
+
+    @staticmethod
+    def _avg_capture_for_trades(trades: list[dict]) -> float | None:
+        """Average capture ratio across trades that have positive MFE."""
+        _caps = []
+        for t in trades:
+            _mfe = float(t.get("mfe", 0) or 0)
+            _pnl = float(t.get("pnl", 0) or 0)
+            if _mfe > 0:
+                _caps.append(_pnl / _mfe)
+        return sum(_caps) / len(_caps) if _caps else None
+
+    def _render_trades_list(self) -> None:
+        """Level 3: Individual trade list scoped to symbol + timeframe."""
+        _sym = self._ctx_symbol.upper()
+        _tf = self._ctx_tf
+        self._render_breadcrumb("TRADES", 7)
+
         _mode_filter = self._mixed_mode_view_filter()
         trades_view = self._all_trades
         if _mode_filter:
             trades_view = [t for t in trades_view if t.get("trading_mode") == _mode_filter]
+        # Scope to symbol + TF
+        trades_view = [
+            t for t in trades_view
+            if str(t.get("symbol", "")).upper() == _sym and t.get("timeframe_minutes") == _tf
+        ]
         self._trades_view = trades_view
         if self._trades_detail and self._trades_detail_trade not in trades_view:
             self._trades_detail = False
@@ -6073,9 +6545,10 @@ class TabbedHUD:
 
         W = self._term_width()
         total = len(trades_view)
+        _scope_label = f"{_sym}/{self._format_timeframe_minutes_label(_tf)}"
         if total == 0:
             _empty_label = f" ({_mode_filter})" if _mode_filter else ""
-            print(f"\n\033[1m[T] TRADE HISTORY (PORTFOLIO)\033[0m{_empty_label}  No trades recorded yet.")
+            print(f"\n\033[1m[T] TRADES › {_scope_label}\033[0m{_empty_label}  No trades recorded yet.")
             return
         self._trades_per_page = self._trade_rows_per_page()
         max_page = max(0, (total - 1) // self._trades_per_page)
@@ -6113,13 +6586,13 @@ class TabbedHUD:
         _compact = self._trades_per_page <= 6
         if _compact:
             print(
-                f"\033[1m[T] TRADES (PORTFOLIO)\033[0m "
+                f"\033[1m[T] TRADES › {_scope_label}\033[0m "
                 f"[{total}] {pg_str} {_ANSI_DIM}{_bar}{_ANSI_RST} "
                 f"PnL {self._pnl_color(total_pnl)}{total_pnl:+.2f}{_ANSI_RST}{_mode_hdr}"
             )
         else:
             print(
-                f"\033[1m[T] TRADE HISTORY (PORTFOLIO)\033[0m  "
+                f"\033[1m[T] TRADES › {_scope_label}\033[0m  "
                 f"[{total} trades]  {pg_str}  {_ANSI_DIM}{_bar}{_ANSI_RST}{_mode_hdr}"
             )
 
@@ -6285,6 +6758,23 @@ class TabbedHUD:
 
         if self._trades_per_page >= 8:
             print(_sep)
+
+    def _render_trades(self) -> None:
+        """Trades tab — dispatches to the correct drill-down level renderer."""
+        if self._ctx_level == 0:
+            self._render_trades_mode()
+        elif self._ctx_level == 1:
+            self._render_trades_portfolio()
+        elif self._ctx_level == 2:
+            self._render_trades_symbol()
+        elif self._ctx_level == 3:
+            self._render_trades_list()
+        elif self._ctx_level == 4:
+            if self._trades_detail and self._trades_detail_trade:
+                self._render_trade_detail(self._trades_detail_trade)
+            else:
+                self._ctx_level = 3
+                self._render_trades_list()
 
     def _render_trade_detail(self, t: dict) -> None:
         """Render full detail card for a single trade."""

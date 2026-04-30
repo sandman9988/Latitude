@@ -69,11 +69,18 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 
 ## Runtime And HUD Rules
 
-- The HUD is an operator insight surface, not a dump of every available metric.
-  Default views should show summaries first, then drill down to finer detail by
-  `Portfolio`, `Symbol`, and `Symbol / Timeframe`.
+- The HUD uses a single global trading-context hierarchy shared by all seven
+  tabs: **Mode → Portfolio → Instrument → Instrument/TF → Period Detail**.
+  Tabs are analytical lenses over the same context, not independent hierarchies.
+- The default start level is Portfolio (Level 1); Level 0 selects Live / Paper /
+  Offline mode. See `docs/HUD_REDESIGN.md` for the full 5-level specification.
 - Standard performance periods are `24h`, `7d`, `Month`, `Epoch`, and
-  `Lifetime`. HUD labels must make the active period and scope explicit.
+  `Lifetime`. Periods are shown as **columns side-by-side** at summary levels
+  so the operator can compare across periods without cycling. The `p` key
+  cycles the period focus at detail levels.
+- HUD navigation is consistent across ALL tabs: `Enter` drills down, `Esc`
+  drills up, `↑`/`↓` or `j`/`k` moves the cursor, `d` toggles the detail pane.
+  `s` jump-scopes Portfolio → Symbol → Symbol/TF → Portfolio.
 - HUD result rows must also make mode explicit: `Paper`, `Live`, or `Offline`.
   Offline training/backtest/champion metrics must be visually separated from
   paper/live account performance so validation results are not confused with

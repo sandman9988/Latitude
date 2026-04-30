@@ -61,114 +61,185 @@ be compared side by side, but each row must keep one mode. Offline should never
 be combined with paper/live account metrics; it is evidence for promotion and
 improvement, not realized execution.
 
-## Proposed Information Architecture
+## Consistent Drill-Down Hierarchy
 
-### 1. Command Center
+One global trading-context hierarchy. Seven tabs as analytical lenses over
+the same context. The HUD always knows its current `(mode, level, symbol, tf, period)`
+and renders accordingly.
 
-Default landing tab. One screen should fit in an 80x24 terminal.
+```
+Level 0 — Mode               Live / Paper / Offline trading mode selection
+    │  Enter on a row
+    ▼
+Level 1 — Portfolio          All symbols, all TFs, period columns visible
+    │  Enter on a row
+    ▼
+Level 2 — Symbol             One symbol, all TFs, period columns visible
+    │  Enter on a row
+    ▼
+Level 3 — Symbol / TF        One symbol, one timeframe, period columns + trade list
+    │  Enter on a row (where applicable)
+    ▼
+Level 4 — Detail             Single item: trade card, decision detail, period breakdown
+```
 
-Sections:
+**Period column rule:**
 
-- Fleet status: running bots, stale bots, FIX status, data freshness, open
-  positions, active circuit breakers.
-- Portfolio summary by period: `24h`, `7d`, `Month`, `Epoch`, `Lifetime`.
-  Columns: trades, PnL, Win%, PF, MaxDD, TQ, EQ, Runway Acc.
-- Improvement summary: latest offline run status, accepted/rejected champion
-  changes, and self-healing correction count.
-- Exception strip: worst 3 anomalies across health, risk, data freshness, and
-  self-healing corrections.
-- Active scope hint: selected symbol/timeframe and available drill-down keys.
+Periods (Lifetime | Epoch | Month | 7d | 24h) are shown as **columns side-by-side**
+at Levels 1–3 so the operator can compare performance across periods without
+cycling. The `p` key cycles the period focus at Level 4 only.
 
-### 2. Performance
+**Navigation contract (same keys, every tab):**
 
-Summary first, drill-down second.
+| Key | Action |
+|-----|--------|
+| `Enter` | Drill down into highlighted row |
+| `Esc` | Drill up one level |
+| `↑` / `↓` or `j`/`k` | Move row selection within current level |
+| `s` | Jump-scope shortcut: Portfolio → Symbol → Symbol/TF → Portfolio |
+| `p` | Cycle period focus: 24h → 7d → Month → Epoch → Lifetime |
+| `d` | Toggle detail/diagnostics pane (consistent across ALL tabs) |
+| `b` | Back — close detail pane |
+| `1`–`7` | Switch tab (preserves context hierarchy) |
 
-Default view:
+**Mode display rule:**
+Paper and Live are **stacked vertically** within the same scope/level — never
+side-by-side comparison columns. Paper rows appear above Live rows. Offline is
+separated visually (not account PnL). Mode is shown at the top of every breadcrumb.
 
-- Portfolio period table.
-- Mode summary table: `Paper`, `Live`, and `Offline` shown separately. Offline
-  rows should use validation/backtest fields, not account PnL fields.
-- Symbol summary table sorted by risk-adjusted degradation first.
-- Timeframe heatmap-style table with one row per `Symbol / TF`.
+**Breadcrumb:**
+Every rendered view shows a compact breadcrumb so the operator always knows
+where they are:
 
-Drill-down view for a selected `Symbol / TF`:
+```
+[2] PERFORMANCE  ›  🟡 PAPER › Portfolio            [Esc back] [Enter drill] [s scope]
+[2] PERFORMANCE  ›  🟡 PAPER › Portfolio › XAUUSD   [Esc back] [Enter drill] [s scope]
+[2] PERFORMANCE  ›  🟡 PAPER › Portfolio › XAUUSD › M5   [Esc back] [s scope] [d detail]
+[7] TRADES  ›  🟡 PAPER › Portfolio › XAUUSD › M5 › 7 days   [Esc back] [d detail]
+```
 
-- Period table for that bot only.
-- Trade quality and edge quality for the same periods.
-- Prediction convergence: runway bias, runway accuracy, confidence Brier error,
-  sample count, and source-field freshness.
-- Top/bottom recent trades by capture and expectancy contribution.
+The breadcrumb is the first line rendered after the tab header.
 
-### 3. Health
+---
 
-Operational health and telemetry freshness.
+## Per-Tab Drill-Down Specification
 
-Sections:
+### 1. Overview (Tab `1`)
 
-- Process/runtime: watcher, bot PIDs, uptime, restart counts, memory, errors.
-- Data freshness: scoped stats files, decision logs, trade log, order book,
-  performance health report.
-- Self-healing analyzer: overall health, anomaly codes, last correction, next
-  run estimate.
-- HUD data integrity: unknown timeframe count, inferred mode count, missing
-  field counts, deprecated field usage.
+The landing dashboard. Light on drill-down — mostly a status readout.
 
-### 4. Risk
+| Level | Scope | Renders |
+|-------|-------|---------|
+| **0** | Mode | Mode selection screen (Live/Paper/Offline) |
+| **1** | Portfolio | Fleet status (all bots, stale/up), account balance/equity, open positions, active circuit breakers, system health block, self-healing status, exception strip (worst 3 anomalies), improvement summary (latest offline run) |
+| **2** | Symbol | Per-symbol fleet cards: bot status, position, session PnL, buffer fill, ZΩ |
 
-Account and bot risk separated.
+No Level 3/4 for this tab — it's a dashboard, not a data explorer.
 
-Portfolio section:
+---
 
-- Account exposure, open positions, margin, drawdown, emergency close state.
+### 2. Performance (Tab `2`)
 
-Per-bot section:
+Summary-first performance tables. The primary analysis tab.
 
-- Kurtosis action threshold, current kurtosis, VaR, no-entry reason, spread,
-  VPIN, runway friction, reward-shaping guards.
+| Level | Scope | Renders |
+|-------|-------|---------|
+| **1** | Portfolio | Period columns (24h/7d/Month/Epoch/Lifetime) — Trades, PnL, Win%, PF, MaxDD. Paper rows stacked above Live rows. Offline rows in a separate block below. |
+| **2** | Symbol | Same period columns, scoped to one symbol. All TFs aggregated. Paper above Live, Offline below. |
+| **3** | Symbol/TF | Period columns for that bot + trade quality, edge quality, prediction convergence. |
+| **4** | Detail | Top/bottom 5 recent trades by capture and expectancy contribution (linked trade cards). |
 
-### 5. Training And Improvement
+Period focus cycling with `p` at Level 4 only.
 
-Continuous improvement results, not raw training noise.
+---
 
-Sections:
+### 3. Training (Tab `3`)
 
-- Offline training queue/status by `Symbol / TF`.
-- Champion/incumbent comparison: candidate ZOmega, incumbent ZOmega, accepted
-  or rejected, acceptance guard reason.
-- Optuna/tournament result summary.
-- Offline-to-runtime promotion trace: source checkpoint, promoted universe path,
-  runtime checkpoint sync status, and whether a bot restart is pending/done.
-- Runtime learning: epsilon, buffer fill, loss trend, reward trend, checkpoint
-  freshness.
-- Learned parameter changes: last changed value, direction, source, and reason.
+Offline and runtime learning.
 
-### 6. Market
+| Level | Scope | Renders |
+|-------|-------|---------|
+| **1** | Portfolio | Training queue status, fleet runtime learning summary (epsilon, buffer fill, loss trend per bot). |
+| **2** | Symbol | Per-symbol offline results: champion vs incumbent ZΩ, accepted/rejected. Optuna/tournament summary. |
+| **3** | Symbol/TF | Single-bot training detail: runtime learning (epsilon, β, buffer fill %, loss trend, reward trend), learned parameter change log. |
+| **4** | Detail | Single training run metrics, checkpoint comparison. |
 
-Market conditions for the selected bot.
+---
 
-Default view should stay scoped to the active `Symbol / TF` and show spread,
-depth, imbalance, VPIN, regime, volatility, and signal synthesis. Portfolio-wide
-market tables belong in drill-down or summary strips only.
+### 4. Risk (Tab `4`)
 
-### 7. Logs And Trades
+Account risk and per-bot risk separated. Mode-aware.
 
-Operational trace and forensic detail.
+| Level | Scope | Renders |
+|-------|-------|---------|
+| **1** | Portfolio | Account exposure, total open positions, margin used, portfolio drawdown. Paper and Live exposure stacked. |
+| **2** | Symbol | Per-symbol risk: CB state, VaR, regime ζ, reward weights, path geometry. |
+| **3** | Symbol/TF | Single-bot risk detail: kurtosis threshold vs current, VaR breakdown, no-entry reason, spread, VPIN-z. |
 
-- Decision log should be newest-first, scoped by current selection by default,
-  with an explicit `Portfolio` mode for cross-bot inspection.
-- Trades should default to recent closed trades for the active selection.
-- Trade detail should expose linked `trigger_data`, `exit_data`, and reward
-  breakdowns, but the row list should stay compact.
+No Level 4.
 
-## Navigation
+---
 
-- `1` to `7`: switch primary view.
-- `s`: select `Portfolio`, `Symbol`, or `Symbol / TF` scope.
-- `Enter`: drill into the highlighted row.
-- `Esc`: move one level up.
-- `Tab` / `Shift+Tab`: cycle focus within the current view.
-- Arrow keys: move row selection or switch tabs when no table is focused.
-- `/`: filter current table.
+### 5. Market (Tab `5`)
+
+Market microstructure and L2 order book.
+
+| Level | Scope | Renders |
+|-------|-------|---------|
+| **1** | Portfolio | Compact market summary: spread, VPIN, regime per symbol (one row per symbol). |
+| **2** | Symbol | Per-TF market table: spread, depth, VPIN-z, imbalance, regime ζ, volatility. |
+| **3** | Symbol/TF | Single-TF detail: full order book ladder, depth ratio, L2 snapshot, signal synthesis. |
+
+No Level 4.
+
+---
+
+### 6. Decision Log (Tab `6`)
+
+Strategy reasoning and policy trace.
+
+| Level | Scope | Renders |
+|-------|-------|---------|
+| **1** | Portfolio | Newest-first across all bots, compact row (timestamp, bot, decision, confidence). |
+| **2** | Symbol | Filtered to symbol, newest-first. |
+| **3** | Symbol/TF | Filtered to symbol+TF, newest-first with full context row. |
+| **4** | Detail | Decision card: full context, reasoning, linked trade_id, position_id. |
+
+---
+
+### 7. Trades (Tab `7`)
+
+Executed trades and trade lifecycle. Separate tab from Decision Log.
+
+| Level | Scope | Renders |
+|-------|-------|---------|
+| **1** | Portfolio | Per-instrument summary with **period columns** (Trades, PnL, WR per period). Paper stacked above Live. |
+| **2** | Symbol | Per-TF metrics table with period columns (Trades, PnL, WR per TF per period). Paper above Live. |
+| **3** | Symbol/TF | Individual trade list (paginated) — columns: #, mode badge, date/time, dir, entry, exit, PnL, cap%, MFE, MAE, bars, reason. |
+| **4** | Detail | **Trade card**: full detail with trigger_data, exit_data, reward breakdown. |
+
+Period cycling with `p` at Level 3 narrows trade list to that period.
+
+---
+
+## Navigation Summary
+
+| Key | Action |
+|-----|--------|
+| `1`–`7` | Switch tab (preserves context hierarchy) |
+| `Enter` | Drill down (highlighted row → next level) |
+| `Esc` | Drill up (back one level) |
+| `↑` `↓` or `j`/`k` | Move row selection |
+| `s` | Jump-scope: Portfolio → Symbol → Symbol/TF (cycles) |
+| `p` | Cycle period: 24h → 7d → Month → Epoch → Lifetime |
+| `d` | Toggle detail/diagnostics pane (ALL tabs, consistent meaning) |
+| `b` | Back — close detail pane |
+| `Tab` / `Shift+Tab` | Cycle focus region |
+| `r` | Review & reset circuit breakers |
+| `e` | Set/clear stats epoch |
+| `h` | Help overlay |
+| `Alt+K` | Emergency kill |
+| `q` | Quit HUD |
 
 ## HUD Sync Requirement For Code Changes
 

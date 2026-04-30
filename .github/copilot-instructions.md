@@ -173,22 +173,27 @@ ______________________________________________________________________
 
 ## HUD tab map
 
-The HUD target design is summary-first with drill-down by `Portfolio`,
-`Symbol`, and `Symbol / Timeframe`. Standard performance periods are `24h`,
-`7d`, `Month`, `Epoch`, and `Lifetime`; visible rows must make both scope and
-period explicit. Result rows must also distinguish `Paper`, `Live`, and
-`Offline`; never mix those modes into one metric row. Offline
+The HUD uses a single global trading-context hierarchy shared by all seven
+tabs: **Mode → Portfolio → Instrument → Instrument/TF → Period Detail**.
+Tabs are analytical lenses over the same selected context. `Enter` drills
+down, `Esc` drills up, `↑`/`↓` or `j`/`k` moves the cursor, `d` toggles
+the detail/diagnostics pane (consistent across ALL tabs).
+
+Standard performance periods are `24h`, `7d`, `Month`, `Epoch`, and
+`Lifetime`; periods are shown as **columns side-by-side** at summary levels
+(Levels 1-3) for direct comparison. Result rows must distinguish `Paper`,
+`Live`, and `Offline`; never mix modes into one metric row. Offline
 validation/champion metrics are not account PnL. See `docs/HUD_REDESIGN.md`.
 
 | Key | Tab | Key data |
 | --- | ------------- | -------------------------------------------------------------------- |
 | 1 | Overview | fleet status, position, account balance, risk status, market |
-| 2 | Performance | period metrics (24h/7d/Mo/All), edge quality, prediction convergence |
+| 2 | Performance | period columns (24h/7d/Mo/Lifetime), edge quality, prediction convergence |
 | 3 | Training | offline jobs, per-agent steps/loss/reward with trend arrows |
 | 4 | Risk | VaR, circuit breakers, regime ζ, reward weights, path geometry |
 | 5 | Market | spread, L2 ladder, VPIN-z, imbalance, signal synthesis |
 | 6 | Decision Log | `MM-DD HH:MM` timestamps, TrdID column, session-break separators |
-| 7 | Trade History | paginated list with mode badge (P/L), drill-down detail |
+| 7 | Trade History | period columns at Levels 1-2, paginated list with mode badge (P/L) at Level 3, drill-down detail at Level 4 |
 
 ## Runway-delta adaptation (point-unit contract)
 
@@ -214,7 +219,13 @@ When reading trade records for convergence, HUD should resolve runway points in 
 | `1`-`7` | Switch to tab |
 | `Tab` | Cycle forward; `Shift+Tab` backward |
 | `←`/`→` | Cycle tabs left/right |
-| `s` | Select symbol/timeframe preset |
+| `Enter` | Drill down into highlighted row |
+| `Esc` | Drill up one level |
+| `↑`/`↓` or `j`/`k` | Move row selection cursor |
+| `d` | Toggle detail/diagnostics pane (ALL tabs, consistent meaning) |
+| `b` | Close detail pane |
+| `s` | Jump-scope: Portfolio → Symbol → Symbol/TF → Portfolio |
+| `p` | Cycle period focus: 24h → 7d → Month → Epoch → Lifetime |
 | `r` | Review & reset tripped circuit breakers |
 | `e` | Set/clear stats epoch (exclude old trades from metrics) |
 | `h` | Help screen |

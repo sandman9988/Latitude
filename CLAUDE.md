@@ -357,6 +357,23 @@ LIVE_EPSILON_DECAY: float = 0.9995
 override paper epsilon_decay with stale checkpoint metadata** — the paper decay is always the
 slower configured rate, not whatever a stale checkpoint recorded.
 
+## HUD Navigation (src/monitoring/hud_tabbed.py)
+
+Global 5-level context hierarchy across all 7 tabs: Mode → Portfolio → Instrument → Instrument/TF → Period Detail.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Drill down into highlighted row |
+| `Esc` | Drill up one level |
+| `↑`/`↓` or `j`/`k` | Move row selection |
+| `d` | Toggle detail pane (ALL tabs) |
+| `b` | Close detail pane |
+| `p` | Cycle period focus |
+| `s` | Jump-scope shortcut |
+
+Periods (Lifetime | Epoch | Month | 7d | 24h) shown as columns side-by-side at summary levels.
+See `docs/HUD_REDESIGN.md`.
+
 ## HUD Self-Healing Panel (src/monitoring/hud_tabbed.py)
 
 The Overview tab's **🏥 SYSTEM HEALTH** block now includes a **🔄 SELF-HEAL** row reading
