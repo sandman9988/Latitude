@@ -528,6 +528,12 @@ class TabbedHUD:
         self._all_trades_loaded_at: float = 0.0
         self._trade_log_reader = CachedTradeLogReader(self.data_dir / "trade_log.jsonl")
 
+        # Decision log tab state (mirrors trades pattern)
+        self._dec_log_cursor: int = 0
+        self._dec_log_detail: bool = False
+        self._dec_log_detail_entry: dict = {}
+        self._dec_log_view: list[dict] = []  # entries rendered at L3
+
         # Stats epoch: trades before this timestamp are excluded from metrics
         self._stats_epoch: datetime | None = None
         self._stats_epoch_excluded: int = 0  # count of excluded trades
@@ -690,6 +696,7 @@ class TabbedHUD:
             self._ctx_detail = False
             self._trades_detail = False
             self._trades_page = 0
+            self._dec_log_detail = False
             self._force_redraw = True
 
     def _sync_ctx_to_legacy(self) -> None:
@@ -871,6 +878,9 @@ class TabbedHUD:
                         )
                         self._trades_cursor = min(self._trades_cursor + 1, max(0, _page_cnt - 1))
                         self._force_redraw = True
+                    elif self.current_tab == "log" and self._ctx_level >= 3 and not self._dec_log_detail:
+                        self._dec_log_cursor = min(self._dec_log_cursor + 1, max(0, len(self._dec_log_view) - 1))
+                        self._force_redraw = True
                     elif self._ctx_level <= 3:
                         self._ctx_cursor += 1
                         self._sync_ctx_to_legacy()
@@ -881,6 +891,9 @@ class TabbedHUD:
                     # Move cursor up
                     if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
                         self._trades_cursor = max(0, self._trades_cursor - 1)
+                        self._force_redraw = True
+                    elif self.current_tab == "log" and self._ctx_level >= 3 and not self._dec_log_detail:
+                        self._dec_log_cursor = max(0, self._dec_log_cursor - 1)
                         self._force_redraw = True
                     elif self._ctx_level <= 3:
                         self._ctx_cursor = max(0, self._ctx_cursor - 1)
@@ -903,11 +916,22 @@ class TabbedHUD:
                                 self._trades_detail = True
                         else:
                             self._trades_detail = False
+                    elif self.current_tab == "log":
+                        if self._ctx_detail and self._ctx_level >= 3 and self._dec_log_view:
+                            _idx = min(self._dec_log_cursor, len(self._dec_log_view) - 1)
+                            self._dec_log_detail_entry = self._dec_log_view[_idx]
+                            self._dec_log_detail = True
+                        else:
+                            self._dec_log_detail = False
                     self._force_redraw = True
                 elif key.lower() == "b":
                     # Back — close detail panes
                     if self.current_tab == "trades" and self._trades_detail:
                         self._trades_detail = False
+                        self._ctx_detail = False
+                        self._force_redraw = True
+                    elif self.current_tab == "log" and self._dec_log_detail:
+                        self._dec_log_detail = False
                         self._ctx_detail = False
                         self._force_redraw = True
                     elif self.current_tab == "performance" and self._performance_detail:
@@ -3619,10 +3643,12 @@ class TabbedHUD:
         """Move up one drill level, clearing child scope. Works for ALL tabs."""
         if self._ctx_level <= 0:
             return
-        # Clear trade detail if at Level 4
+        # Clear tab-detail state if at Level 4
         if self._ctx_level == 4:
             self._trades_detail = False
             self._trades_detail_trade = {}
+            self._dec_log_detail = False
+            self._dec_log_detail_entry = {}
         self._ctx_level -= 1
         self._ctx_cursor = 0
         if self._ctx_level < 3:
@@ -3681,6 +3707,14 @@ class TabbedHUD:
                 if 0 <= _idx < len(self._trades_view):
                     self._trades_detail_trade = self._trades_view[_idx]
                     self._trades_detail = True
+                    self._ctx_level = 4
+                    self._sync_ctx_to_legacy()
+                    self._force_redraw = True
+            elif self.current_tab == "log":
+                if self._dec_log_view:
+                    _idx = min(self._dec_log_cursor, len(self._dec_log_view) - 1)
+                    self._dec_log_detail_entry = self._dec_log_view[_idx]
+                    self._dec_log_detail = True
                     self._ctx_level = 4
                     self._sync_ctx_to_legacy()
                     self._force_redraw = True
@@ -5395,7 +5429,7 @@ class TabbedHUD:
             f"{_ANSI_DIM}(source: production_metrics.json; grey=default, blue=adapted){_ANSI_RST}"
         )
 
-    def _render_jsonl_decision_entries(self, entries: list, mode_filter: str = "") -> None:
+    def _render_jsonl_decision_entries(self, entries: list, mode_filter: str = "", cursor_idx: int = -1) -> None:
         """Render the rich JSONL decision log entries.
 
         Collapses consecutive CLOSE_PENDING rows into a single summary line
@@ -5460,6 +5494,7 @@ class TabbedHUD:
         print("  " + "─" * (_visible_width(header) - 2))
 
         _seen_sessions: set[str] = set()
+        _row_idx = 0  # tracks only dict entries for cursor matching
         for item in collapsed:
             # Collapsed CLOSE_PENDING summary line
             if isinstance(item, str):
@@ -5467,6 +5502,8 @@ class TabbedHUD:
                 continue
 
             entry = item
+            _is_cursor = cursor_idx >= 0 and _row_idx == cursor_idx
+            _row_idx += 1
 
             # ── Session break header ───────────────────────────────────────
             # Only emit the separator the first time we encounter a session in
@@ -5576,8 +5613,9 @@ class TabbedHUD:
             else:
                 color = _ANSI_RST
 
+            _cursor_pfx = f"{_ANSI_G}►{_ANSI_RST}" if _is_cursor else " "
             _prefix = (
-                f"  {ts_str:<12} {bot_str:<13} {mode_str} {agent:<10} "
+                f"{_cursor_pfx} {ts_str:<12} {bot_str:<13} {mode_str} {agent:<10} "
                 f"{color}{dec_upper:<10}{_ANSI_RST} {conf:>5.3f}  "
             )
             detail = _truncate_visible(detail, max(12, _target_width - _visible_width(_prefix)))
@@ -5641,125 +5679,220 @@ class TabbedHUD:
         print("  " + "─" * 76)
         print(f"\n  Total decisions logged: {len(entries)}")
 
-    def _render_decision_log(self) -> None:
-        """Render the Decision Log tab (Tab 6) — newest entries first."""
-        self._render_breadcrumb("DECISION LOG", 6)
-        print(f"\n  {_ANSI_DIM}(canonical source: per-bot logs/audit/decisions.jsonl; Bot column is symbol/timeframe scope){_ANSI_RST}")
-
-        _mode_filter = self._mixed_mode_view_filter()
-        if _mode_filter:
-            _mode_lbl = "PAPER" if _mode_filter == "paper" else "LIVE"
-            print(f"  {_ANSI_DIM}Showing {_mode_lbl} entries only while trade history is mixed-mode.{_ANSI_RST}")
-
-        _decision_files: list[Path] = []
+    def _load_decision_entries(
+        self,
+        sym_filter: str = "",
+        tf_filter: int = 0,
+        n_per_file: int = 100,
+    ) -> list[dict]:
+        """Load meaningful (non-CACHED) decision entries, optionally scoped."""
         _primary = self.data_dir / "logs" / "audit" / "decisions.jsonl"
-        _decision_files.extend(sorted(self.data_dir.glob("paper_*_M*/logs/audit/decisions.jsonl")))
+        _decision_files: list[Path] = list(sorted(self.data_dir.glob("paper_*_M*/logs/audit/decisions.jsonl")))
         if _primary.exists():
             _decision_files.append(_primary)
 
-        entries_jsonl: list[dict] = []
-        if _decision_files:
-            _seen: set[tuple[str, str, str, str, str]] = set()
-            try:
-                # Scope filter: if drilled to symbol or symbol/TF, restrict per-file read
-                _ctx_sym = self._ctx_symbol.upper() if self._ctx_level >= 2 and self._ctx_symbol else ""
-                _ctx_tf = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
-                for _jf in _decision_files:
-                    # Use _tail_meaningful to skip CACHED startup entries (90%+ of file)
-                    _meaningful = self._tail_meaningful(_jf, n=100)
-                    for _entry in _meaningful:
-                        _entry.setdefault("_source_path", str(_jf))
-                        if not _entry.get("trading_mode") and "/paper_" in str(_jf):
-                            _entry["trading_mode"] = "paper"
-                        # Apply scope filter when drilled
-                        if _ctx_sym:
-                            _esym = str(_entry.get("symbol") or "").upper()
-                            if _esym and _esym != _ctx_sym:
-                                continue
-                        if _ctx_tf:
-                            _etf = int(_entry.get("timeframe_minutes") or 0)
-                            if _etf and _etf != _ctx_tf:
-                                continue
-                        _tf_label = self._decision_entry_timeframe_label(_entry)
-                        if (
-                            _jf == _primary
-                            and not self._decision_entry_has_scope(_entry)
-                            and len(_decision_files) > 1
-                        ):
-                            continue
-                        _ctx_for_key = _entry.get("context", {})
-                        if not isinstance(_ctx_for_key, dict):
-                            _ctx_for_key = {}
-                        _dedupe_key = (
-                            str(_entry.get("timestamp") or _entry.get("ts") or _entry.get("time") or ""),
-                            str(_entry.get("symbol") or _ctx_for_key.get("symbol") or ""),
-                            _tf_label,
-                            str(_entry.get("trade_id") or ""),
-                            str(_entry.get("event") or _entry.get("decision") or ""),
-                        )
-                        if _dedupe_key in _seen:
-                            continue
-                        _seen.add(_dedupe_key)
-                        entries_jsonl.append(_entry)
-            except Exception:
-                entries_jsonl = []
-
-        if entries_jsonl:
-
-            def _ts_key(e: dict) -> str:
-                return str(e.get("timestamp") or e.get("ts") or e.get("time") or "")
-
-            entries_jsonl.sort(key=_ts_key, reverse=True)
-            self._render_jsonl_decision_entries(entries_jsonl[:20], _mode_filter)
-            return
-
-        legacy_files = sorted(self.data_dir.glob("decision_log_*_M*.json"))
-        legacy_files.extend(sorted(self.data_dir.glob("paper_*_M*/decision_log_*_M*.json")))
-        root_legacy = self.data_dir / "decision_log.json"
-        if root_legacy.exists():
-            legacy_files.append(root_legacy)
-        if not legacy_files:
-            print("  ⚠️  No decision log found.")
-            print("\n  Expected files:")
-            print("    paper_<SYMBOL>_M<TF>/logs/audit/decisions.jsonl  (rich — primary)")
-            print("    paper_<SYMBOL>_M<TF>/decision_log_<SYMBOL>_M<TF>.json  (legacy — fallback)")
-            return
-
+        entries: list[dict] = []
+        _seen: set[tuple] = set()
         try:
-            _dec = json.JSONDecoder()
-            entries: list = []
-            for log_file in legacy_files:
-                raw_text = log_file.read_text(encoding="utf-8")
-                # Legacy decision logs can end up as multiple appended JSON arrays
-                # after restarts. Walk all top-level objects/arrays.
-                _pos = 0
-                while _pos < len(raw_text):
-                    _stripped = raw_text[_pos:].lstrip()
-                    if not _stripped:
-                        break
-                    _skip = len(raw_text[_pos:]) - len(_stripped)
-                    try:
-                        _obj, _idx = _dec.raw_decode(raw_text, _pos + _skip)
-                        _pos = _pos + _skip + _idx
-                        if isinstance(_obj, list):
-                            for _entry in _obj:
-                                if isinstance(_entry, dict):
-                                    _entry.setdefault("_source_path", str(log_file))
-                                entries.append(_entry)
-                        elif isinstance(_obj, dict):
-                            _obj.setdefault("_source_path", str(log_file))
-                            entries.append(_obj)
-                    except json.JSONDecodeError:
-                        break
-        except Exception as e:
-            print(f"  ❌ Error reading decision log: {e}")
+            for _jf in _decision_files:
+                for _entry in self._tail_meaningful(_jf, n=n_per_file):
+                    _entry.setdefault("_source_path", str(_jf))
+                    if not _entry.get("trading_mode") and "/paper_" in str(_jf):
+                        _entry["trading_mode"] = "paper"
+                    if sym_filter:
+                        _esym = str(_entry.get("symbol") or "").upper()
+                        if _esym and _esym != sym_filter:
+                            continue
+                    if tf_filter:
+                        _etf = int(_entry.get("timeframe_minutes") or 0)
+                        if _etf and _etf != tf_filter:
+                            continue
+                    _tf_label = self._decision_entry_timeframe_label(_entry)
+                    if (
+                        _jf == _primary
+                        and not self._decision_entry_has_scope(_entry)
+                        and len(_decision_files) > 1
+                    ):
+                        continue
+                    _ctx_k = _entry.get("context", {}) or {}
+                    _key = (
+                        str(_entry.get("timestamp") or _entry.get("ts") or ""),
+                        str(_entry.get("symbol") or _ctx_k.get("symbol") or ""),
+                        _tf_label,
+                        str(_entry.get("trade_id") or ""),
+                        str(_entry.get("decision") or _entry.get("event") or ""),
+                    )
+                    if _key in _seen:
+                        continue
+                    _seen.add(_key)
+                    entries.append(_entry)
+        except Exception:
+            pass
+
+        entries.sort(key=lambda e: str(e.get("timestamp") or e.get("ts") or ""), reverse=True)
+        return entries
+
+    def _render_dec_log_detail(self, entry: dict) -> None:
+        """L4 decision detail card — full context, reasoning, gated_conditions."""
+        def _f(v: object, d: float = 0.0) -> float:
+            try:
+                return float(v) if v is not None else d
+            except (TypeError, ValueError):
+                return d
+
+        ctx = entry.get("context") or {}
+        reasoning = entry.get("reasoning") or {}
+        decision = str(entry.get("decision") or "?").upper()
+        agent = str(entry.get("agent") or "?")
+        confidence = _f(entry.get("confidence"))
+        ts = str(entry.get("timestamp") or "?")
+        mode = str(entry.get("trading_mode") or "?")
+        sym = str(entry.get("symbol") or "?").upper()
+        tf_m = entry.get("timeframe_minutes")
+        tf_lbl = self._format_timeframe_minutes_label(int(tf_m)) if tf_m else "?"
+        trade_id = str(entry.get("trade_id") or "—")
+        position_id = entry.get("position_id") or []
+
+        if decision in ("BUY", "LONG", "ENTER"):
+            dec_color = _ANSI_G
+        elif decision in ("SELL", "SHORT", "EXIT", "CLOSE"):
+            dec_color = _ANSI_R
+        elif decision == "HOLD":
+            dec_color = _ANSI_Y
+        elif decision == "NO_ENTRY":
+            dec_color = _ANSI_DIM
+        else:
+            dec_color = _ANSI_RST
+
+        mode_str = f"{_ANSI_Y}PAPER{_ANSI_RST}" if mode == "paper" else (f"{_ANSI_G}LIVE{_ANSI_RST}" if mode == "live" else mode)
+
+        print(f"\n  ┌─ DECISION DETAIL ──────────────────────────────────────────────────")
+        print(f"  │  {ts}")
+        print(f"  │  Bot: {_ANSI_G}{sym}/{tf_lbl}{_ANSI_RST}   Mode: {mode_str}   Agent: {agent}")
+        print(f"  │  Decision: {dec_color}{decision}{_ANSI_RST}   Confidence: {confidence:.4f}")
+        print(f"  │  TradeID:  {_ANSI_DIM}{trade_id}{_ANSI_RST}")
+        if position_id:
+            _pids = ", ".join(str(p) for p in (position_id if isinstance(position_id, list) else [position_id]))
+            print(f"  │  PositionIDs: {_ANSI_DIM}{_pids}{_ANSI_RST}")
+        print(f"  ├─ CONTEXT ─────────────────────────────────────────────────────────")
+        if ctx:
+            for _k, _v in ctx.items():
+                if isinstance(_v, float):
+                    print(f"  │    {_k:<28} {_v:.6f}")
+                else:
+                    print(f"  │    {_k:<28} {_v}")
+        else:
+            print(f"  │    {_ANSI_DIM}(no context){_ANSI_RST}")
+
+        print(f"  ├─ REASONING ───────────────────────────────────────────────────────")
+        _gated = reasoning.get("gated_conditions") or []
+        for _k, _v in reasoning.items():
+            if _k == "gated_conditions":
+                continue
+            if isinstance(_v, float):
+                print(f"  │    {_k:<28} {_v:.6f}")
+            elif isinstance(_v, bool):
+                _vc = _ANSI_G if _v else _ANSI_R
+                print(f"  │    {_k:<28} {_vc}{_v}{_ANSI_RST}")
+            else:
+                print(f"  │    {_k:<28} {_v}")
+
+        if _gated and isinstance(_gated, list):
+            print(f"  ├─ GATED CONDITIONS ({len(_gated)}) ──────────────────────────────────────")
+            for _g in _gated:
+                print(f"  │    {_ANSI_R}✗ {_g}{_ANSI_RST}")
+
+        print(f"  └───────────────────────────────────────────────────────────────────")
+        print(f"\n  {_ANSI_DIM}[b] or [Esc] back to list{_ANSI_RST}")
+
+    def _render_decision_log(self) -> None:
+        """Render the Decision Log tab (Tab 6) — hierarchical level dispatch."""
+        self._render_breadcrumb("DECISION LOG", 6)
+
+        # L4: decision detail card for selected entry
+        if self._ctx_level >= 4 and self._dec_log_detail and self._dec_log_detail_entry:
+            self._render_dec_log_detail(self._dec_log_detail_entry)
             return
+
+        _mode_filter = self._mixed_mode_view_filter()
+
+        # Determine scope from drill level
+        _sym_f = self._ctx_symbol.upper() if self._ctx_level >= 2 and self._ctx_symbol else ""
+        _tf_f = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
+
+        # Row count: more entries as we drill deeper (less noise, more context)
+        _n_rows = {1: 15, 2: 25, 3: 40}.get(self._ctx_level, 15)
+        _n_read = max(150, _n_rows * 4)
+
+        entries = self._load_decision_entries(sym_filter=_sym_f, tf_filter=_tf_f, n_per_file=_n_read)
+        if _mode_filter in ("paper", "live"):
+            entries = [e for e in entries if e.get("trading_mode") == _mode_filter]
+
+        # L3: update view list for cursor navigation + Enter → L4
+        if self._ctx_level >= 3:
+            self._dec_log_view = entries[:_n_rows]
+            self._dec_log_cursor = min(self._dec_log_cursor, max(0, len(self._dec_log_view) - 1))
 
         if not entries:
-            print("  No entries yet. Waiting for bot decisions...")
+            # Try legacy fallback
+            legacy_files = sorted(self.data_dir.glob("decision_log_*_M*.json"))
+            legacy_files.extend(sorted(self.data_dir.glob("paper_*_M*/decision_log_*_M*.json")))
+            root_legacy = self.data_dir / "decision_log.json"
+            if root_legacy.exists():
+                legacy_files.append(root_legacy)
+            if not legacy_files:
+                print("  ⚠️  No decision log found.")
+                print(f"\n  {_ANSI_DIM}Expected: paper_<SYM>_M<TF>/logs/audit/decisions.jsonl{_ANSI_RST}")
+                return
+            try:
+                _dec = json.JSONDecoder()
+                leg_entries: list = []
+                for log_file in legacy_files:
+                    raw_text = log_file.read_text(encoding="utf-8")
+                    _pos = 0
+                    while _pos < len(raw_text):
+                        _stripped = raw_text[_pos:].lstrip()
+                        if not _stripped:
+                            break
+                        _skip = len(raw_text[_pos:]) - len(_stripped)
+                        try:
+                            _obj, _idx = _dec.raw_decode(raw_text, _pos + _skip)
+                            _pos = _pos + _skip + _idx
+                            if isinstance(_obj, list):
+                                for _e in _obj:
+                                    if isinstance(_e, dict):
+                                        _e.setdefault("_source_path", str(log_file))
+                                    leg_entries.append(_e)
+                            elif isinstance(_obj, dict):
+                                _obj.setdefault("_source_path", str(log_file))
+                                leg_entries.append(_obj)
+                        except json.JSONDecodeError:
+                            break
+            except Exception as e:
+                print(f"  ❌ Error reading decision log: {e}")
+                return
+            if not leg_entries:
+                print("  No entries yet. Waiting for bot decisions...")
+                return
+            self._render_legacy_decision_entries(leg_entries, _mode_filter)
             return
 
-        self._render_legacy_decision_entries(entries, _mode_filter)
+        # ── Level-specific header ─────────────────────────────────────────
+        if self._ctx_level == 1:
+            print(f"\n  {_ANSI_DIM}Portfolio scope — all bots, {_n_rows} most recent signal decisions{_ANSI_RST}")
+        elif self._ctx_level == 2:
+            print(f"\n  {_ANSI_DIM}Symbol scope — {_sym_f} all TFs, {_n_rows} most recent decisions  [Enter] drill to TF{_ANSI_RST}")
+        elif self._ctx_level >= 3:
+            _tf_lbl = self._format_timeframe_minutes_label(_tf_f) if _tf_f else "?"
+            _nav = "[↑↓/jk] cursor  [Enter/d] detail card  [Esc] back"
+            print(f"\n  {_ANSI_DIM}Bot scope — {_sym_f}/{_tf_lbl}, {len(self._dec_log_view)} decisions  {_nav}{_ANSI_RST}")
+
+        # ── Render entries list with cursor highlight at L3 ───────────────
+        self._render_jsonl_decision_entries(
+            entries[:_n_rows],
+            _mode_filter,
+            cursor_idx=self._dec_log_cursor if self._ctx_level >= 3 else -1,
+        )
 
     def _render_risk(self) -> None:
         """Render risk management — dispatches by drill level."""
