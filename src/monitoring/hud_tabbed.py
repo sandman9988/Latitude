@@ -378,6 +378,27 @@ def _fmt_count(n: int, width: int = 3) -> str:
     return f"{s:>{width}}"
 
 
+def _ansi_cell(text: str, color: str, width: int, align: str = ">") -> str:
+    """Pad outside ANSI codes so colored cells keep fixed visible width."""
+    if align == "<":
+        padded = f"{text:<{width}}"
+    elif align == "^":
+        padded = f"{text:^{width}}"
+    else:
+        padded = f"{text:>{width}}"
+    return f"{color}{padded}{_ANSI_RST}"
+
+
+def _fmt_trade_period_cell(trade_count: int, win_rate_pct: float, pnl: float, width: int = 20) -> str:
+    """Format a Tab 7 period-summary cell with stable visible columns."""
+    pnl_color = _ANSI_G if pnl >= 0 else _ANSI_R
+    wr_color = _ANSI_G if win_rate_pct >= 50 else _ANSI_R
+    count_s = _fmt_count(trade_count, 4)
+    pnl_s = _fmt_compact(pnl, 7)
+    cell = f" #{count_s} {wr_color}{win_rate_pct:4.0f}%{_ANSI_RST} {pnl_color}{pnl_s}{_ANSI_RST} "
+    return cell if _visible_width(cell) >= width else cell + (" " * (width - _visible_width(cell)))
+
+
 def _strip_ansi(s: str) -> str:
     """Return *s* with all ANSI CSI escapes removed."""
     return _ANSI_RE.sub("", s)
@@ -4785,12 +4806,7 @@ class TabbedHUD:
                     return f"{'—':^{_COL_W}}"
                 wr = m.get("win_rate", 0.0) * 100
                 pnl = m.get("total_pnl", 0.0)
-                _pc = "\033[32m" if pnl >= 0 else "\033[31m"
-                _wc = _ANSI_G if wr >= 50 else _ANSI_R
-                _n_s = _fmt_count(n, 4)
-                _pnl_s = _fmt_compact(pnl, 7)
-                # Cell is exactly _COL_W (20) visible chars: 1 pad + content (18) + 1 pad
-                return f" #{_n_s:<4} {_wc}{wr:4.0f}%{_ANSI_RST} {_pc}{_pnl_s}{_ANSI_RST} "
+                return _fmt_trade_period_cell(n, wr, pnl, _COL_W)
 
             _cells: list[str] = []
             if _has_epoch:
@@ -7094,9 +7110,7 @@ class TabbedHUD:
                         _n = int(_m.get("total_trades", 0) or 0)
                         _wr = _m.get("win_rate", 0.0) * 100
                         _pnl = _m.get("total_pnl", 0.0)
-                        _pc = "\033[32m" if _pnl >= 0 else "\033[31m"
-                        _wc = _ANSI_G if _wr >= 50 else _ANSI_R
-                        _cell = f"#{_n:<3} {_wc}{_wr:4.0f}%{_ANSI_RST} {_pc}{_pnl:+7.1f}{_ANSI_RST}"
+                        _cell = _fmt_trade_period_cell(_n, _wr, _pnl, _COL_W)
                         _row += f"  {_cell}"
                         _has_data = True
                     else:
@@ -7157,9 +7171,7 @@ class TabbedHUD:
                         _n = int(_m.get("total_trades", 0) or 0)
                         _wr = _m.get("win_rate", 0.0) * 100
                         _pnl = _m.get("total_pnl", 0.0)
-                        _pc = "\033[32m" if _pnl >= 0 else "\033[31m"
-                        _wc = _ANSI_G if _wr >= 50 else _ANSI_R
-                        _cell = f"#{_n:<3} {_wc}{_wr:4.0f}%{_ANSI_RST} {_pc}{_pnl:+7.1f}{_ANSI_RST}"
+                        _cell = _fmt_trade_period_cell(_n, _wr, _pnl, _COL_W)
                         _row += f"  {_cell}"
                         _has_tf_data = True
                     else:
@@ -7370,14 +7382,14 @@ class TabbedHUD:
             _cap_ratio = self._capture_ratio_for_trade(_t)
             if _cap_ratio is not None:
                 _cap_val = max(-999.0, min(999.0, _cap_ratio * 100.0))
-                _cap_s = f"{_cap_val:>+{_C_CAP - 1}.0f}%"
+                _cap_s = f"{_cap_val:+.0f}%"
                 _cap_c = self._pnl_color(_cap_val)
             elif float(_pnl or 0.0) < 0.0:
                 # No positive excursion => capture is undefined; flag losses red.
-                _cap_s = f"{'n/a':>{_C_CAP}}"
+                _cap_s = "n/a"
                 _cap_c = _ANSI_R
             else:
-                _cap_s = f"{'—':>{_C_CAP}}"
+                _cap_s = "—"
                 _cap_c = _ANSI_DIM
 
             # Mode badge — single char, always renders 1 column wide
@@ -7394,10 +7406,10 @@ class TabbedHUD:
                 _row = (
                     f"  {_tid_s:<{_C_ID}} {_mb} {_date_s:<{_C_DATE}} "
                     f"{_bot_s:<{_C_BOT}} {_dc}{_dir_s:<{_C_DIR}}{_ANSI_RST} "
-                    f"{_pc}{_pnl:>+{_C_PNL}.2f}{_ANSI_RST} "
-                    f"{_cap_c}{_cap_s}{_ANSI_RST} "
-                    f"{_ANSI_G}+{abs(_mfe):>{_C_MFE - 1}.2f}{_ANSI_RST} "
-                    f"{_ANSI_R}-{abs(_mae):>{_C_MAE - 1}.2f}{_ANSI_RST} "
+                    f"{_ansi_cell(f'{_pnl:+.2f}', _pc, _C_PNL)} "
+                    f"{_ansi_cell(_cap_s, _cap_c, _C_CAP)} "
+                    f"{_ansi_cell(f'+{abs(_mfe):.2f}', _ANSI_G, _C_MFE)} "
+                    f"{_ansi_cell(f'-{abs(_mae):.2f}', _ANSI_R, _C_MAE)} "
                     f"{_bars:>{_C_BRS}}  {_ANSI_DIM}{_rsn:<{_C_RSN}}{_ANSI_RST}"
                 )
             else:
@@ -7405,10 +7417,10 @@ class TabbedHUD:
                     f"  {_tid_s:<{_C_ID}} {_mb} {_date_s:<{_C_DATE}} "
                     f"{_dc}{_dir:<{_C_DIR}}{_ANSI_RST} "
                     f"{_sym_s:<{_C_SYM}} {_tf:<{_C_TF}} {_ep_s:>{_C_ENT}} {_xp_s:>{_C_EXT}} "
-                    f"{_pc}{_pnl:>+{_C_PNL}.2f}{_ANSI_RST} "
-                    f"{_cap_c}{_cap_s}{_ANSI_RST} "
-                    f"{_ANSI_G}+{abs(_mfe):>{_C_MFE - 1}.2f}{_ANSI_RST} "
-                    f"{_ANSI_R}-{abs(_mae):>{_C_MAE - 1}.2f}{_ANSI_RST} "
+                    f"{_ansi_cell(f'{_pnl:+.2f}', _pc, _C_PNL)} "
+                    f"{_ansi_cell(_cap_s, _cap_c, _C_CAP)} "
+                    f"{_ansi_cell(f'+{abs(_mfe):.2f}', _ANSI_G, _C_MFE)} "
+                    f"{_ansi_cell(f'-{abs(_mae):.2f}', _ANSI_R, _C_MAE)} "
                     f"{_bars:>{_C_BRS}}  {_ANSI_DIM}{_rsn:<{_C_RSN}}{_ANSI_RST}"
                 )
             if _row_idx == self._trades_cursor:

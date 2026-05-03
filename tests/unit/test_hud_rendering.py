@@ -524,6 +524,41 @@ class TestPlumbing:
             assert frame, f"Trades tab did not render at level {level}"
         # _capture_ratio_for_trade is tested separately in test_capture_ratio_* tests
 
+    def test_trade_history_period_cells_keep_fixed_width(self, hud: TabbedHUD):
+        hud._term_width = lambda: 140  # type: ignore[method-assign]
+        hud._load_all_trades_cached()
+        hud.current_tab = "trades"
+        hud._ctx_level = 1
+
+        text = _strip_ansi(_render_tab(hud, "trades"))
+        lines = text.splitlines()
+        header = next(line for line in lines if "Symbol" in line and "Lifetime" in line)
+        row = next(line for line in lines if "XAUUSD" in line and "#" in line)
+        lifetime_start = header.index("Lifetime") - 6
+        month_start = header.index("Month") - 7
+
+        assert row[lifetime_start:month_start].strip().startswith("#")
+        assert len(row[lifetime_start:month_start]) == 22  # 20-char cell + 2-char separator
+        assert row[month_start:].strip().startswith(("#", "—"))
+
+    def test_trade_history_list_numeric_columns_right_align(self, hud: TabbedHUD):
+        hud._term_width = lambda: 160  # type: ignore[method-assign]
+        hud._load_all_trades_cached()
+        hud.current_tab = "trades"
+        hud._ctx_level = 3
+        hud._ctx_symbol = "XAUUSD"
+        hud._ctx_tf = 15
+
+        text = _strip_ansi(_render_tab(hud, "trades"))
+        lines = text.splitlines()
+        header = next(line for line in lines if "PnL $" in line and "MFE $" in line)
+        row = next(line for line in lines if "+12.50" in line and "+25.00" in line)
+
+        for label, value in (("PnL $", "+12.50"), ("Cap%", "+50%"), ("MFE $", "+25.00")):
+            header_right = header.index(label) + len(label)
+            value_right = row.index(value) + len(value)
+            assert value_right == header_right
+
     def test_capture_ratio_prefers_negative_derived_value_for_losses(self, hud: TabbedHUD):
         # Stored ratio can be stale/clamped at 0.0 in some historical records.
         # When pnl<0 and mfe>0, tab-7 must surface negative capture.
