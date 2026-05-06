@@ -173,8 +173,8 @@ def _load_symbol_spec(symbol: str) -> dict:
 def _probe_endpoints(primary: str, port: int, alt_raw: str = "", timeout: float = 2.0) -> str:
     """TCP-probe primary then comma-separated alt endpoints; return first that connects."""
     candidates: list[str] = [primary]
-    for h in alt_raw.split(","):
-        h = h.strip()
+    for raw_h in alt_raw.split(","):
+        h = raw_h.strip()
         if h and h not in candidates:
             candidates.append(h)
     for host in candidates:
@@ -318,13 +318,13 @@ class TFAgent:
         self.last_ts: dt.datetime | None = None
 
         # DualPolicy
-        from src.agents.dual_policy import DualPolicy, DualPolicyConfig  # noqa: PLC0415
-        from src.constants import (  # noqa: PLC0415
+        from src.agents.dual_policy import DualPolicy, DualPolicyConfig
+        from src.constants import (
             HARVESTER_BUFFER_CAPACITY,
             TRIGGER_BUFFER_CAPACITY,
             get_amd_optimized_buffer_capacity,
         )
-        from src.persistence.learned_parameters import LearnedParametersManager  # noqa: PLC0415
+        from src.persistence.learned_parameters import LearnedParametersManager
 
         param_manager = LearnedParametersManager(
             persistence_path=data_dir / "learned_parameters.json",
@@ -332,10 +332,10 @@ class TFAgent:
         param_manager.load()
         self._param_manager = param_manager
 
-        from src.risk.path_geometry import PathGeometry  # noqa: PLC0415
+        from src.risk.path_geometry import PathGeometry
         self.path_geometry = PathGeometry()
 
-        from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator  # noqa: PLC0415
+        from src.risk.var_estimator import KurtosisMonitor, RegimeType, VaREstimator
         self._regime_type = RegimeType
         self.var_estimator = VaREstimator(
             window=500,
@@ -364,7 +364,7 @@ class TFAgent:
                 LOG.warning("[%s %s] load_checkpoint failed: %s", symbol, self.tf_label, e)
 
         # Decision audit log (HUD Tab 6 reads from logs/audit/decisions.jsonl)
-        from src.monitoring.audit_logger import DecisionLogger, TransactionLogger  # noqa: PLC0415
+        from src.monitoring.audit_logger import DecisionLogger, TransactionLogger
         self.decision_log = DecisionLogger(
             log_dir=str(data_dir / "logs" / "audit"),
             filename="decisions.jsonl",
@@ -379,17 +379,17 @@ class TFAgent:
         )
 
         # Training experience cache (writes training_cache_SYM_MTF.jsonl)
-        from src.training.bar_experience_cache import BarExperienceCache  # noqa: PLC0415
+        from src.training.bar_experience_cache import BarExperienceCache
         self.bar_cache = BarExperienceCache(
             symbol=symbol,
             timeframe_minutes=timeframe_minutes,
             enabled=online_learning,
         )
 
-        from src.features.event_time_features import EventTimeFeatureEngine  # noqa: PLC0415
+        from src.features.event_time_features import EventTimeFeatureEngine
         self.event_time_engine = EventTimeFeatureEngine()
 
-        from src.risk.circuit_breakers import CircuitBreakerManager  # noqa: PLC0415
+        from src.risk.circuit_breakers import CircuitBreakerManager
         self.circuit_breakers = CircuitBreakerManager(
             symbol=symbol,
             timeframe=self.tf_label,
@@ -403,7 +403,7 @@ class TFAgent:
             with contextlib.suppress(Exception):
                 self.circuit_breakers.restore_state(str(data_dir / "circuit_breakers.json"))
 
-        from src.risk.friction_costs import FrictionCalculator  # noqa: PLC0415
+        from src.risk.friction_costs import FrictionCalculator
         self.friction_calc = FrictionCalculator(
             symbol=symbol,
             symbol_id=symbol_id,
@@ -413,7 +413,7 @@ class TFAgent:
         )
 
         # Shaped reward computation
-        from src.core.reward_shaper import RewardShaper  # noqa: PLC0415
+        from src.core.reward_shaper import RewardShaper
         self.reward_shaper = RewardShaper(
             symbol=symbol,
             timeframe=self.tf_label,
@@ -421,11 +421,11 @@ class TFAgent:
         )
 
         # Adaptive regularization for DDQN training
-        from src.core.adaptive_regularization import AdaptiveRegularization  # noqa: PLC0415
+        from src.core.adaptive_regularization import AdaptiveRegularization
         self.adaptive_reg = AdaptiveRegularization() if online_learning else None
 
         # Reward shaping monitor — runs every hour, updates learned_parameters.json
-        from src.monitoring.reward_shaping_monitor import RewardShapingMonitor  # noqa: PLC0415
+        from src.monitoring.reward_shaping_monitor import RewardShapingMonitor
         self.reward_shaping_monitor = RewardShapingMonitor(
             symbol=symbol,
             param_manager=param_manager,
@@ -434,7 +434,7 @@ class TFAgent:
             decision_log_path=str(data_dir / "logs" / "audit" / "decisions.jsonl"),
         ) if online_learning else None
 
-        from src.monitoring.production_monitor import ProductionMonitor  # noqa: PLC0415
+        from src.monitoring.production_monitor import ProductionMonitor
         self.prod_monitor = ProductionMonitor(
             metrics_file=data_dir / "production_metrics.json",
             http_enabled=False,
@@ -1640,7 +1640,7 @@ class TFAgent:
         if self.position is None:
             return
 
-        from src.constants import (  # noqa: PLC0415
+        from src.constants import (
             MAX_CAP_USD,
             MAX_LOSS_MULT_PER_TRADE,
             MIN_CAP_USD,
@@ -2042,7 +2042,7 @@ class TFAgent:
         """
         if trig_state is None:
             return
-        import random  # noqa: PLC0415
+        import random
         trig = getattr(self.policy, "trigger", None)
         if trig is None:
             return
@@ -2196,7 +2196,7 @@ class TFAgent:
         Tier 2 — rolling EMA: act after TF-adaptive minimum samples + 1-bar cooldown.
         Stable: relax slowly (3% per trade) only after 2× min samples to prevent whipsawing.
         """
-        from src.constants import (  # noqa: PLC0415
+        from src.constants import (
             CAPTURE_ALERT_THRESHOLD,
             CAPTURE_CRITICAL_THRESHOLD,
             CAPTURE_EMA_ALPHA,
@@ -2263,7 +2263,7 @@ class TFAgent:
 
     def _apply_capture_tighten(self, harv: Any, factor: float) -> None:
         """Tighten trailing activation, stop distance, and capture decay threshold."""
-        from src.constants import (  # noqa: PLC0415
+        from src.constants import (
             TRAILING_STOP_ACTIVATION_PCT,
             TRAILING_STOP_DISTANCE_PCT,
         )
@@ -2291,7 +2291,7 @@ class TFAgent:
 
     def _apply_capture_emergency_reset(self, harv: Any) -> None:
         """Emergency: reset harvester thresholds to tightest safe values (50% of default)."""
-        from src.constants import (  # noqa: PLC0415
+        from src.constants import (
             CAPTURE_DECAY_MIN_MFE_PCT,
             TRAILING_STOP_ACTIVATION_PCT,
             TRAILING_STOP_DISTANCE_PCT,
@@ -2311,7 +2311,7 @@ class TFAgent:
 
     def _apply_capture_relax(self, harv: Any, factor: float) -> None:
         """Gently relax thresholds when capture is stably healthy (prevents over-tightening)."""
-        from src.constants import (  # noqa: PLC0415
+        from src.constants import (
             CAPTURE_DECAY_THRESHOLD,
             TRAILING_STOP_ACTIVATION_PCT,
             TRAILING_STOP_DISTANCE_PCT,
@@ -2879,7 +2879,7 @@ class TFAgent:
             "close_cb_size_mult": close_cb_size_mult,
         }
         try:
-            from src.monitoring.audit_logger import append_jsonl_durable  # noqa: PLC0415
+            from src.monitoring.audit_logger import append_jsonl_durable
 
             log_path = Path("data") / "trade_log.jsonl"
             append_jsonl_durable(log_path, record, default=_json_default)
@@ -2962,10 +2962,10 @@ class TFAgent:
 
         # Derive cross-period self-healing metrics from trade_log (single source of truth)
         try:
-            from datetime import timedelta  # noqa: PLC0415
+            from datetime import timedelta
 
-            from src.persistence.trade_log_reader import read_all_trades  # noqa: PLC0415
-            from src.utils.metrics_calculator import (  # noqa: PLC0415
+            from src.persistence.trade_log_reader import read_all_trades
+            from src.utils.metrics_calculator import (
                 decision_quality,
                 period_comparison,
                 self_healing_metrics,
@@ -3402,13 +3402,13 @@ class OpenAPIHub:
         self._client: Any = None
 
         # L2 order book (shared across all TFAgents — same underlying market)
-        from src.core.order_book import OrderBook  # noqa: PLC0415
+        from src.core.order_book import OrderBook
         self._order_book = OrderBook(depth=10)
         self._quote_id_map: dict[int, tuple[str, float]] = {}  # id → (side, price)
 
         # VPIN: VPINCalculator from order_book.py, fed by mid-price direction.
         # volume proxy = 1.0 per tick; bucket_volume=20; window=50 buckets.
-        from src.core.order_book import VPINCalculator  # noqa: PLC0415
+        from src.core.order_book import VPINCalculator
         self._vpin_calc = VPINCalculator(bucket_volume=20.0, window=50)
         self._vpin_last_mid: float = 0.0
         self._vpin_stats: dict = {"vpin": 0.0, "zscore": 0.0}
@@ -3614,7 +3614,7 @@ class OpenAPIHub:
         d.addErrback(lambda _failure: None)
 
     def _send_app_auth(self) -> None:
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq  # noqa: PLC0415
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAApplicationAuthReq
         req = ProtoOAApplicationAuthReq()
         req.clientId = self.creds["client_id"]
         req.clientSecret = self.creds["client_secret"]
@@ -3629,7 +3629,7 @@ class OpenAPIHub:
         self._send_acc_auth()
 
     def _send_acc_auth(self) -> None:
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAAccountAuthReq  # noqa: PLC0415
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAAccountAuthReq
         req = ProtoOAAccountAuthReq()
         req.ctidTraderAccountId = self.account_id
         req.accessToken = self.creds["access_token"]
@@ -3646,7 +3646,7 @@ class OpenAPIHub:
 
     def _fetch_trader_info(self) -> None:
         try:
-            from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOATraderReq  # noqa: PLC0415
+            from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOATraderReq
             req = ProtoOATraderReq()
             req.ctidTraderAccountId = self.account_id
             self._send(req)
@@ -3656,7 +3656,7 @@ class OpenAPIHub:
 
     def _handle_trader_res(self, message: Any) -> None:
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             res = Protobuf.extract(message)
             trader = getattr(res, "trader", None)
             if trader is None:
@@ -3678,7 +3678,7 @@ class OpenAPIHub:
 
     def _handle_trader_updated(self, message: Any) -> None:
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             event = Protobuf.extract(message)
             trader = getattr(event, "trader", None)
             if trader is None:
@@ -3696,7 +3696,7 @@ class OpenAPIHub:
     def _handle_execution_event(self, message: Any) -> None:
         """Handle ProtoOAExecutionEvent — capture commission/swap/balance from live fills."""
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             event = Protobuf.extract(message)
             deal = getattr(event, "deal", None)
             if deal is None:
@@ -3741,7 +3741,7 @@ class OpenAPIHub:
             LOG.warning("[HUB] ProtoOAExecutionEvent parse failed: %s", e)
 
     def _fetch_symbol_info(self) -> None:
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASymbolByIdReq  # noqa: PLC0415
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASymbolByIdReq
         req = ProtoOASymbolByIdReq()
         req.ctidTraderAccountId = self.account_id
         req.symbolId.append(self.symbol_id)
@@ -3752,7 +3752,7 @@ class OpenAPIHub:
         if self._state != _S_SYM_INFO:
             return
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             res = Protobuf.extract(message)
             symbols = list(getattr(res, "symbol", []))
             if symbols:
@@ -3771,7 +3771,7 @@ class OpenAPIHub:
         self._subscribe_spots()
 
     def _subscribe_spots(self) -> None:
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASubscribeSpotsReq  # noqa: PLC0415
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASubscribeSpotsReq
         req = ProtoOASubscribeSpotsReq()
         req.ctidTraderAccountId = self.account_id
         req.symbolId.append(self.symbol_id)
@@ -3815,7 +3815,7 @@ class OpenAPIHub:
             LOG.debug("[HUB] bot_config write error: %s", e)
 
     def _subscribe_depth(self) -> None:
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASubscribeDepthQuotesReq  # noqa: PLC0415
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOASubscribeDepthQuotesReq
         req = ProtoOASubscribeDepthQuotesReq()
         req.ctidTraderAccountId = self.account_id
         req.symbolId.append(self.symbol_id)
@@ -3834,7 +3834,7 @@ class OpenAPIHub:
         gap_secs = (to_ms - from_ms) / 1000.0
         LOG.info("[HUB] Gap-fill: %.0fs gap detected — fetching missed bars for %s", gap_secs, self.symbol)
         try:
-            from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAGetTrendbarsReq  # noqa: PLC0415
+            from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAGetTrendbarsReq
         except ImportError:
             LOG.warning("[HUB] Gap-fill: ProtoOAGetTrendbarsReq unavailable — skipping")
             return
@@ -3858,7 +3858,7 @@ class OpenAPIHub:
         if not cold_tfs:
             return
         try:
-            from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAGetTrendbarsReq  # noqa: PLC0415
+            from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOAGetTrendbarsReq
         except ImportError:
             LOG.warning("[HUB] Initial backfill: ProtoOAGetTrendbarsReq unavailable — skipping")
             return
@@ -3880,7 +3880,7 @@ class OpenAPIHub:
     def _handle_trendbars_res(self, message: Any) -> None:
         """Inject gap-fill bars into the appropriate TFAgent."""
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             res = Protobuf.extract(message)
         except Exception as e:
             LOG.debug("[HUB] trendbars extract failed: %s", e)
@@ -3951,7 +3951,7 @@ class OpenAPIHub:
         if self._state != _S_READY:
             return
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             payload = Protobuf.extract(message)
         except Exception as e:
             LOG.debug("[HUB] depth extract failed: %s", e)
@@ -4032,7 +4032,7 @@ class OpenAPIHub:
         """Echo heartbeat back to keep the connection alive (required by cTrader protocol)."""
         self._last_heartbeat = time.time()
         try:
-            from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoHeartbeatEvent  # noqa: PLC0415
+            from ctrader_open_api.messages.OpenApiCommonMessages_pb2 import ProtoHeartbeatEvent
             d = self._client.send(ProtoHeartbeatEvent())
             d.addErrback(lambda _: None)
         except Exception:
@@ -4070,7 +4070,7 @@ class OpenAPIHub:
 
     def _handle_error(self, message: Any) -> None:
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             res = Protobuf.extract(message)
             LOG.error("[HUB] Error from API: code=%s desc=%s",
                       getattr(res, "errorCode", "?"), getattr(res, "description", "?"))
@@ -4106,7 +4106,7 @@ class OpenAPIHub:
         if self._state != _S_READY:
             return
         try:
-            from ctrader_open_api import Protobuf  # noqa: PLC0415
+            from ctrader_open_api import Protobuf
             payload = Protobuf.extract(message)
         except Exception as e:
             LOG.debug("[HUB] spot extract failed: %s", e)
@@ -4149,8 +4149,8 @@ class OpenAPIHub:
     def start(self) -> None:
         """Create Twisted client and run reactor (blocking)."""
         try:
-            from ctrader_open_api import Client, TcpProtocol  # noqa: PLC0415
-            from twisted.internet import reactor  # noqa: PLC0415
+            from ctrader_open_api import Client, TcpProtocol
+            from twisted.internet import reactor
         except ImportError as e:
             LOG.exception("[HUB] ctrader-open-api or Twisted not installed: %s", e)
             sys.exit(1)

@@ -107,7 +107,7 @@ def get_amd_optimized_batch_size(state_dim: int, default: int = DEFAULT_BATCH_SI
 
     """
     try:
-        from src.constants_amd import get_optimal_batch_size, is_amd_gpu  # noqa: PLC0415
+        from src.constants_amd import get_optimal_batch_size, is_amd_gpu
 
         if is_amd_gpu():
             return get_optimal_batch_size(state_dim)
@@ -127,7 +127,7 @@ def get_amd_optimized_buffer_capacity(default: int) -> int:
 
     """
     try:
-        from src.constants_amd import AMD_TRIGGER_BUFFER_CAPACITY, is_amd_gpu  # noqa: PLC0415
+        from src.constants_amd import AMD_TRIGGER_BUFFER_CAPACITY, is_amd_gpu
 
         if is_amd_gpu():
             return AMD_TRIGGER_BUFFER_CAPACITY

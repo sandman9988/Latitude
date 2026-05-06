@@ -13,17 +13,15 @@ Author: AI Trading System
 Version: 1.0.0
 """
 
-import os
-
-# Add project root to path
 import sys
+from pathlib import Path
 import threading
 import time
 
 import numpy as np
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from src.utils.safe_math import SafeMath, rolling_mean, rolling_std
 

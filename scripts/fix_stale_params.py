@@ -7,6 +7,7 @@ Fixes:
 
 Safe to run while bots are stopped. Uses atomic write + CRC32.
 """
+import contextlib
 import json
 import os
 import shutil
@@ -53,10 +54,8 @@ def _write_atomic(path: Path, data: dict) -> str:
         shutil.move(tmp, path)
         return f"OK (CRC32: {crc32:08x}, backup: {Path(bak).name})"
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 

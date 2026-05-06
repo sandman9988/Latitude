@@ -148,9 +148,9 @@ class AgentTrainingMixin:
     def _load_torch_model(self, model_path: str, n_actions: int, tag: str) -> bool:
         """Load optional PyTorch model for inference path."""
         try:
-            import torch  # noqa: PLC0415
+            import torch
 
-            from src.core.ddqn_network import Conv1dQNet  # noqa: PLC0415
+            from src.core.ddqn_network import Conv1dQNet
 
             self.torch = torch
             self.model = Conv1dQNet(n_features=self.n_features, n_actions=n_actions, temporal_pool_size=1)
@@ -168,7 +168,7 @@ class AgentTrainingMixin:
         """Lazily initialize LearnedParametersManager when required."""
         manager = getattr(self, "param_manager", None)
         if manager is None:
-            from src.persistence.learned_parameters import LearnedParametersManager  # noqa: PLC0415
+            from src.persistence.learned_parameters import LearnedParametersManager
 
             manager = LearnedParametersManager()
             manager.load()
@@ -216,8 +216,8 @@ class AgentTrainingMixin:
         l2_weight: float,
         grad_clip_norm: float,
     ) -> None:
-        from src.core.ddqn_network import DDQNNetwork  # noqa: PLC0415
-        from src.utils.experience_buffer import ExperienceBuffer  # noqa: PLC0415
+        from src.core.ddqn_network import DDQNNetwork
+        from src.utils.experience_buffer import ExperienceBuffer
 
         self.enable_training = enable_training
         self.buffer = (
@@ -265,7 +265,7 @@ class AgentTrainingMixin:
             return
 
         buf_before = self.buffer.tree.n_entries
-        from src.utils.experience_buffer import RegimeSampling  # noqa: PLC0415
+        from src.utils.experience_buffer import RegimeSampling
 
         # Convert None to UNKNOWN regime (default int value)
         regime_int = regime if regime is not None else RegimeSampling.UNKNOWN
@@ -378,7 +378,7 @@ class AgentTrainingMixin:
 
         self.training_steps += 1
         self._last_loss = float(metrics.get("loss", 0.0))
-        import datetime as _dt  # noqa: PLC0415
+        import datetime as _dt
         self._last_training_time = _dt.datetime.now(_dt.UTC).isoformat()
 
         log_interval = (

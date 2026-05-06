@@ -284,11 +284,3 @@ class TestSelfHealingEdgeCases:
         comp = period_comparison([], [])
         assert isinstance(comp, dict)
 
-    def test_regime_breakdown_non_empty(self, xau_m5_trades):
-        """_regime_breakdown must return at least one regime."""
-        from src.utils.metrics_calculator import _regime_breakdown
-        result = _regime_breakdown(xau_m5_trades[:500])
-        assert len(result) > 0, "No regimes found in real trade data"
-        for stats in result.values():
-            assert stats["trades"] > 0
-            assert isinstance(stats["pnl"], float)

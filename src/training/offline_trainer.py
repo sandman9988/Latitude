@@ -553,7 +553,7 @@ class OfflineTrainer:
     @staticmethod
     def _restore_env_vars(orig_start: str | None, orig_end: str | None, orig_gates: str | None) -> None:
         """Restore EPSILON_START, EPSILON_END, DISABLE_GATES env vars to their original values."""
-        import os  # noqa: PLC0415
+        import os
 
         for key, original in [("EPSILON_START", orig_start), ("EPSILON_END", orig_end), ("DISABLE_GATES", orig_gates)]:
             if original is None:
@@ -576,14 +576,14 @@ class OfflineTrainer:
 
     def _build_policy(self):
         """Build a DualPolicy with the same configuration used by training and validation."""
-        from src.agents.dual_policy import DualPolicy  # noqa: PLC0415
+        from src.agents.dual_policy import DualPolicy
 
         n_train = int(len(self.bars) * self.train_split)
         train_bars = self.bars[:n_train]
         # AMD GPU: larger buffer (50K) with float16 storage uses ~100MB.
         # CPU: cap at 20K to stay memory-safe on limited hosts.
         try:
-            from src.core.ddqn_network import AMD_OPTS  # noqa: PLC0415
+            from src.core.ddqn_network import AMD_OPTS
             _is_amd = AMD_OPTS.get("is_amd", False)
         except Exception:
             _is_amd = False
@@ -630,7 +630,7 @@ class OfflineTrainer:
 
     def evaluate_runtime_checkpoint(self, checkpoint_dir: str | Path) -> tuple[float, int, bool]:
         """Score the currently deployed bot checkpoint on this trainer's validation fold."""
-        import os  # noqa: PLC0415
+        import os
 
         n_total = len(self.bars)
         n_train = int(n_total * self.train_split)
@@ -652,7 +652,7 @@ class OfflineTrainer:
 
     def _run_inner(self, label: str, t0: float) -> TrainResult:
         # Lazy import to avoid circular imports and allow multiprocessing fork
-        import os  # noqa: PLC0415
+        import os
 
         n_total = len(self.bars)
         n_train = int(n_total * self.train_split)
@@ -809,7 +809,7 @@ class OfflineTrainer:
 
             total_train_trades += len(sim.trades)
             try:
-                import torch  # noqa: PLC0415
+                import torch
                 _gpu_mb = torch.cuda.memory_allocated() / 1024**2 if torch.cuda.is_available() else 0
             except Exception:
                 _gpu_mb = 0

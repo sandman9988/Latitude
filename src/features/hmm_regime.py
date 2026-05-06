@@ -139,7 +139,7 @@ class HMMRegimeDetector(RegimeDetector):
         - Minimum variance threshold - numerical stability
         """
         try:
-            from hmmlearn.hmm import GaussianHMM  # noqa: PLC0415
+            from hmmlearn.hmm import GaussianHMM
         except ImportError:
             LOG.warning("[HMM_REGIME] hmmlearn not available — using VR regime only")
             return

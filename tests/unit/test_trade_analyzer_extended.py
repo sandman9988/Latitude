@@ -7,6 +7,7 @@ _convert_types edge cases, export auto-path, and capture efficiency details.
 import json
 import os
 from datetime import datetime, timedelta
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -189,7 +190,7 @@ class TestExportAnalysis:
     def test_auto_generated_path(self, csv_path):
         ta = TradeAnalyzer(csv_path)
         result_path = ta.export_analysis()
-        assert os.path.exists(result_path)
+        assert Path(result_path).exists()
         # Clean up
         os.unlink(result_path)
 
@@ -227,7 +228,7 @@ class TestMainCli:
         with patch("sys.argv", ["trade_analyzer", csv_path, "--export", out, "--quiet"]):
             ret = main()
         assert ret == 0
-        assert os.path.exists(out)
+        assert Path(out).exists()
 
     def test_main_missing_file(self, capsys):
         with patch("sys.argv", ["trade_analyzer", "/nonexistent/path.csv"]):

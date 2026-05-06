@@ -176,13 +176,6 @@ class TestTypedLogHelpers:
         entry = journal.recent_operations[-1]
         assert entry.op == "circuit_breaker_trip"
 
-    def test_log_model_update(self, journal):
-        journal.log_model_update("trigger", 0.05, 0.01)
-        entry = journal.recent_operations[-1]
-        assert entry.op == "model_update"
-        assert entry.data["agent"] == "trigger"
-
-
 # ── Checkpoint ──────────────────────────────────────────────────────────────
 
 
@@ -299,27 +292,6 @@ class TestReplay:
         replayed = j2.replay_from_checkpoint()
         assert replayed == []
         j2.close()
-
-
-# ── get_recent_operations ──────────────────────────────────────────────────
-
-
-class TestGetRecentOperations:
-    def test_returns_recent(self, tmp_path):
-        j = Journal(str(tmp_path / "j.log"), checkpoint_interval=1000)
-        for i in range(5):
-            j.log_operation(f"op{i}", {})
-        recent = j.get_recent_operations(3)
-        assert len(recent) == 3
-        assert recent[-1].op == "op4"
-        j.close()
-
-    def test_returns_all_when_fewer_than_count(self, tmp_path):
-        j = Journal(str(tmp_path / "j.log"), checkpoint_interval=1000)
-        j.log_operation("op0", {})
-        recent = j.get_recent_operations(100)
-        assert len(recent) == 1
-        j.close()
 
 
 # ── Context manager ────────────────────────────────────────────────────────

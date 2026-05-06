@@ -82,7 +82,7 @@ def print_feature_importance(labels, importance, title):
 
     print_section_header("REMOVAL CANDIDATES (Bottom 30%)")
     cutoff = int(len(ranked) * BOTTOM_PERCENTILE_CUTOFF)
-    for _label, imp in ranked[-cutoff:]:
+    for _label, _imp in ranked[-cutoff:]:
         pass
 
     return ranked

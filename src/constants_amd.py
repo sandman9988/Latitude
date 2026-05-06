@@ -233,7 +233,7 @@ def is_amd_gpu() -> bool:
 
     """
     try:
-        import torch  # noqa: PLC0415
+        import torch
 
         if not torch.cuda.is_available():
             return False
@@ -261,7 +261,7 @@ def get_gpu_info() -> dict[str, Any]:
     }
 
     try:
-        import torch  # noqa: PLC0415
+        import torch
 
         info["available"] = torch.cuda.is_available()
 

@@ -354,8 +354,9 @@ Regression tests: `tests/unit/test_experience_buffer.py::TestSaveLoad`
 
 Runs automatically every **4 hours** (480 supervisor cycles) via `run_universe.py --watch`.
 Analyzes `data/trade_log.jsonl` and applies corrective parameter adjustments when `--auto-heal`.
+Also scans `data/paper_*/circuit_breakers.json` directly to detect zero-trade bots (CB_LOCKOUT).
 
-**8 anomaly codes with automatic corrections:**
+**9 anomaly codes:**
 
 | Code | Threshold | Correction |
 | ---- | --------- | ---------- |
@@ -367,6 +368,7 @@ Analyzes `data/trade_log.jsonl` and applies corrective parameter adjustments whe
 | `WTL_PENALTY_EXCESSIVE` | mean WTL <-1.5 | reduce `wtl_penalty_multiplier` -0.20 |
 | `RUNWAY_ACCURACY_LOW` | accuracy <0.35 | raise `runway_cal_alpha` +0.04 |
 | `PNL_ALIGNMENT_WEAK` | PnL align <0.08, n≥8 | raise `pnl_alignment_multiplier` +0.10 |
+| `CB_LOCKOUT` | CB tripped + 0 trades in ≥4h window | Flag only — run fix_cb_lockout.py then `kill -9` hub |
 
 Writes `data/performance_health.json` with `overall_health`, per-bot metrics, anomalies, and
 corrections applied. Run manually: `python3 scripts/performance_analyzer.py --auto-heal --hours 24`.
@@ -421,16 +423,19 @@ The Overview tab's **🏥 SYSTEM HEALTH** block now includes a **🔄 SELF-HEAL*
 
 When the file does not exist yet: `no report yet — runs every 4 h`.
 
-## CB Lockout & Threshold Runaway (known failure mode, 2026-05-06)
+## CB Lockout & Threshold Runaway (2026-05-06, re-trip loop fixed 2026-05-07)
 
 **Symptom:** trade rate collapses to ~0 while bots appear healthy (bar_count rises, quote_ok/trade_ok true).
 Best performers go silent first; XAUUSD M240 keeps trading because its thresholds stayed lower.
+`performance_health.json` will now show `CB_LOCKOUT` CRITICAL within 4 hours of the lockout starting.
 
-**Root cause 1 — Permanent CB re-trip loop.**
+**Root cause 1 — CB re-trip loop (FIXED in src/risk/circuit_breakers.py 2026-05-07).**
 `data/paper_{BOT}/circuit_breakers.json` persists return history. A single outlier loss (e.g.
-emergency stop -$37) holds Sortino below threshold permanently. Cooldown expires →
-`reset_if_cooldown_elapsed()` clears trip → `check_all()` re-trips on same frozen returns →
-no new trades → returns never refresh → infinite loop. Same pattern for `consecutive_losses`.
+emergency stop -$37) holds Sortino below threshold permanently. Old behaviour: cooldown expires →
+`reset_if_cooldown_elapsed()` clears trip flag only → `check_all()` re-trips on same frozen
+returns → no new trades → returns never refresh → infinite loop.
+**Fix:** `reset_if_cooldown_elapsed()` now also clears the underlying data window (sortino.returns,
+consecutive_losses counter, drawdown peak) so the very next `check_all()` finds clean state.
 
 **Root cause 2 — `entry_confidence_threshold` runaway.**
 `_update_risk_feedback_thresholds()` saves `max(_base_floor, _entry_conf_dynamic_floor)` to
@@ -438,8 +443,9 @@ no new trades → returns never refresh → infinite loop. Same pattern for `con
 but `_base_floor` is re-read from the *already-saved* value each call — so each save raises
 the next cap. Observed: 0.6 → 0.9 within one losing session. Persists across restarts.
 
-**Root cause 3 — `feasibility_threshold` at 1.0.**
-Zero-MFE step increments feasibility_threshold per loss. Can reach 1.0 — an impossible gate.
+**Root cause 3 — `feasibility_threshold` runaway.**
+Zero-MFE step increments feasibility_threshold per loss. Can silently reach 0.80–0.90+,
+blocking the majority of entries even when the CB is clear.
 
 **Quick check:**
 
@@ -454,19 +460,27 @@ for bot in ['XAUUSD_M5','XAUUSD_M1','XAUUSD_M15','XAUUSD_M30','XAUUSD_M60',
     p = lp.get('instruments',{}).get(f'{bot}_default',{}).get('params',{})
     tripped = [k for k in ('sortino','kurtosis','consecutive_losses') if cb.get(k,{}).get('is_tripped')]
     ect = p.get('entry_confidence_threshold',{}).get('value','?')
-    print(f'{bot:<20} CB={tripped or \"CLEAR\"}  entry_conf={ect}')
+    ft  = p.get('feasibility_threshold',{}).get('value','?')
+    print(f'{bot:<20} CB={str(tripped or \"CLEAR\"):<35} entry_conf={ect}  feasibility={ft}')
 "
 ```
 
-**Fix (atomic, safe while live):**
+**Fix — two-step (must use `kill -9`, not `kill`):**
 
 ```bash
+# Step 1: patch the JSON files atomically
 python3 scripts/fix_cb_lockout.py
+
+# Step 2: SIGKILL both hubs so supervisor restarts them reading the clean JSON.
+# SIGTERM triggers graceful shutdown which calls save_state(), overwriting the patch.
+kill -9 $(pgrep -f "src.core.openapi_hub")
+# supervisor (run_universe.py --watch) restarts them within 30 s
 ```
 
-Clears stale return histories and trip state; resets `entry_confidence_threshold` to 0.6
-baseline and `feasibility_threshold` to 0.5 where broken. CB thresholds and all other
-learned params are untouched — self-healing resumes from live data immediately after.
+`fix_cb_lockout.py` clears stale return histories and trip state; resets
+`entry_confidence_threshold` to 0.6 and `feasibility_threshold` to 0.5 wherever either
+exceeds its reset threshold (entry_conf ≥ 0.65, feasibility ≥ 0.75). CB thresholds and all
+other learned params are untouched — self-healing resumes from live data immediately after.
 
 ## Code Style
 

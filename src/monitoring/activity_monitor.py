@@ -63,7 +63,7 @@ class ActivityMonitor:
         activity_decay: Exponential decay for activity score.
 
         """
-        import os  # noqa: PLC0415
+        import os
 
         paper_mode = os.environ.get("PAPER_MODE") == "1"
 

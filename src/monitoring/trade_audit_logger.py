@@ -454,7 +454,7 @@ def get_trade_audit_logger() -> TradeAuditLogger:
         TradeAuditLogger: Global audit logger instance
 
     """
-    global _audit_logger_instance  # noqa: PLW0603 — singleton pattern
+    global _audit_logger_instance
 
     if _audit_logger_instance is None:
         with _audit_lock:

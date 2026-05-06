@@ -101,7 +101,7 @@ class DualPolicy:
     - If DDQN_DUAL_AGENT=1: Uses dual-agent architecture
     """
 
-    def __init__(  # noqa: PLR0915
+    def __init__(
         self,
         *args: int,
         config: DualPolicyConfig | None = None,

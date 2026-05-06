@@ -273,9 +273,8 @@ def check_invariants(entries: list[dict]) -> list[str]:
     all_opened_tids: set[str] = set()
     for evts in sessions.values():
         for e in evts:
-            if e.get("agent") == "TriggerAgent" and e.get("decision") in ("LONG", "SHORT"):
-                if tid := e.get("trade_id"):
-                    all_opened_tids.add(tid)
+            if e.get("agent") == "TriggerAgent" and e.get("decision") in ("LONG", "SHORT") and (tid := e.get("trade_id")):
+                all_opened_tids.add(tid)
 
     for sid, evts in sessions.items():
         open_trades: dict[str, dict] = {}  # trade_id -> entry event

@@ -135,13 +135,13 @@ def _edge_quality(trades: list) -> tuple[float, float, float]:
 
 def _close_reason_breakdown(trades: list) -> dict[str, int]:
     """Count close reasons across a list of trade dicts."""
-    from collections import Counter  # noqa: PLC0415
+    from collections import Counter
     return dict(Counter(t.get("close_reason", "unknown") for t in trades if isinstance(t, dict)))
 
 
 def _capture_quality(trades: list) -> dict:
     """Analyze capture quality across trades. Returns EXCELLENT/GOOD/FAIR/POOR counts."""
-    from collections import Counter  # noqa: PLC0415
+    from collections import Counter
     qual = Counter()
     for t in trades:
         if not isinstance(t, dict):
@@ -162,31 +162,6 @@ def _capture_quality(trades: list) -> dict:
         else:
             qual["POOR"] += 1
     return dict(qual)
-
-
-def _regime_breakdown(trades: list) -> dict[str, dict]:
-    """Return per-regime performance: {regime: {trades, wins, pnl, wtl, mfe, mae}}."""
-    result: dict[str, dict] = {}
-    for t in trades:
-        if not isinstance(t, dict):
-            continue
-        regime = t.get("regime") or t.get("trigger_data", {}).get("entry_regime", "UNKNOWN")
-        if regime not in result:
-            result[regime] = {"trades": 0, "wins": 0, "pnl": 0.0, "wtl": 0, "mfe": 0.0, "mae": 0.0}
-        result[regime]["trades"] += 1
-        result[regime]["pnl"] += float(t.get("pnl", 0) or 0)
-        if float(t.get("pnl", 0) or 0) > 0:
-            result[regime]["wins"] += 1
-        if t.get("winner_to_loser"):
-            result[regime]["wtl"] += 1
-        result[regime]["mfe"] += float(t.get("mfe_points", 0) or 0)
-        result[regime]["mae"] += float(t.get("mae_points", 0) or 0)
-    for stats in result.values():
-        n = stats["trades"]
-        if n > 0:
-            stats["mfe"] /= n
-            stats["mae"] /= n
-    return result
 
 
 def _confidence_split(trades: list) -> tuple[float, float]:
@@ -219,7 +194,7 @@ def _bars_held_from_trade(t: dict) -> int | None:
         et, xt = t.get("entry_time"), t.get("exit_time")
         if et and xt:
             try:
-                from datetime import datetime  # noqa: PLC0415
+                from datetime import datetime
                 dur = (datetime.fromisoformat(str(xt)) - datetime.fromisoformat(str(et))).total_seconds()
             except (ValueError, TypeError):
                 pass

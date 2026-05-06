@@ -320,7 +320,7 @@ def run_all_tests():
 
 
     if failed:
-        for name, _error in failed:
+        for _name, _error in failed:
             pass
         return 1
     return 0

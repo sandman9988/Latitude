@@ -36,7 +36,10 @@
       "Bash(python -m pytest tests/unit/test_dual_policy.py tests/unit/test_dual_policy_gaps.py tests/unit/test_harvester_agent.py tests/validation/test_decision_log_correlation.py -v)",
       "Bash(python3 -c \"import src.core.openapi_hub; import src.monitoring.hud_tabbed; print\\('OK'\\)\")",
       "Bash(python -m pytest tests/unit/test_dual_policy.py tests/unit/test_harvester_agent.py tests/validation/test_decision_log_correlation.py -q)",
-      "Bash(python -m pytest tests/unit/test_dual_policy.py tests/unit/test_harvester_agent.py tests/validation/test_decision_log_correlation.py -v)"
+      "Bash(python -m pytest tests/unit/test_dual_policy.py tests/unit/test_harvester_agent.py tests/validation/test_decision_log_correlation.py -v)",
+      "Bash(DISPLAY=:0 gnome-screenshot -f /tmp/hud_screenshot.png)",
+      "Read(//usr/bin/**)",
+      "Bash(DISPLAY=:0 import -window root /tmp/hud_screenshot.png)"
     ]
   }
 }

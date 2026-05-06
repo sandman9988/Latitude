@@ -3802,10 +3802,10 @@ class TabbedHUD:
 
     def _available_symbols(self) -> list[str]:
         """Return sorted list of unique symbols across all trade_log trades."""
-        return sorted(set(
+        return sorted({
             str(t.get("symbol", "")).upper()
             for t in self._trade_log_all_trades if t.get("symbol")
-        ))
+        })
 
     def _l1_rows(self) -> list[tuple[str, str]]:
         """Return (symbol, mode) pairs in L1 render order: Live first, then Paper."""
@@ -3837,8 +3837,8 @@ class TabbedHUD:
         except OSError:
             return []
         results: list[dict] = []
-        for line in reversed(lines):
-            line = line.strip()
+        for raw in reversed(lines):
+            line = raw.strip()
             if not line:
                 continue
             try:
@@ -3855,11 +3855,11 @@ class TabbedHUD:
     def _available_timeframes(self) -> list[int]:
         """Return sorted list of unique TFs for the current symbol."""
         _sym = self._ctx_symbol.upper()
-        return sorted(set(
+        return sorted({
             int(t.get("timeframe_minutes", 0))
             for t in self._trade_log_all_trades
             if str(t.get("symbol", "")).upper() == _sym and t.get("timeframe_minutes")
-        ))
+        })
 
     def _cycle_scope(self) -> None:
         """Jump-scope: Portfolio → Instrument → Instrument/TF → Portfolio."""
@@ -4096,7 +4096,7 @@ class TabbedHUD:
 
     def _render_mode_selector(self) -> None:
         """Level 0: Trading mode selection screen — shown when ctx_level == 0."""
-        print(f"\n\033[1m🎯 SELECT TRADING MODE\033[0m\n")
+        print("\n\033[1m🎯 SELECT TRADING MODE\033[0m\n")
         print(f"  {_ANSI_DIM}Choose the trading context for all tabs. All views will filter to this mode.{_ANSI_RST}\n")
         _modes = [
             ("live", "🔴 LIVE TRADING", "Real-money execution. Production account.", _ANSI_G),
@@ -4666,8 +4666,7 @@ class TabbedHUD:
         _age_str = ""
         if _gen:
             try:
-                from datetime import timezone as _tz  # noqa: PLC0415
-                _dt = datetime.fromisoformat(_gen).replace(tzinfo=_tz.utc) if _gen.endswith("Z") else datetime.fromisoformat(_gen)
+                _dt = datetime.fromisoformat(_gen).replace(tzinfo=UTC) if _gen.endswith("Z") else datetime.fromisoformat(_gen)
                 _age_s = (datetime.now(UTC) - _dt).total_seconds()
                 if _age_s < 3600:
                     _age_str = f"{_age_s/60:.0f}m ago"
@@ -4756,8 +4755,8 @@ class TabbedHUD:
             except Exception:
                 _age_str = _ts[:16]
             # Bot label from source path
-            import os as _os  # noqa: PLC0415
-            _bot_lbl = _os.path.basename(_os.path.dirname(_os.path.dirname(_os.path.dirname(_src))))
+            from pathlib import Path as _Path
+            _bot_lbl = _Path(_src).parent.parent.parent.name
             if _bot_lbl in (".", "audit", "logs"):
                 _bot_lbl = "root"
             _sess = str((_e.get("data") or {}).get("session_id") or _e.get("session") or "?")[:20]
@@ -4918,7 +4917,7 @@ class TabbedHUD:
             # Portfolio: one row per (symbol, mode) with period columns side-by-side
             _col_rows: list[tuple[str, str, list[dict], list[dict]]] = []
             _l1 = self._l1_rows()
-            _all_syms = sorted(set(s for s, _ in _l1)) if _l1 else self._available_symbols()
+            _all_syms = sorted({s for s, _ in _l1}) if _l1 else self._available_symbols()
             for _lsym, _lmode in _l1:
                 _ep = [
                     t for t in self._trade_log_metrics_trades
@@ -4941,11 +4940,11 @@ class TabbedHUD:
             _sym_filter = self._ctx_symbol.upper()
             _tf_filter = self._ctx_tf if self._ctx_level >= 3 else 0
             _col_rows = []
-            _tfs = sorted(set(
+            _tfs = sorted({
                 int(t.get("timeframe_minutes", 0) or 0)
                 for t in self._trade_log_all_trades
                 if str(t.get("symbol", "")).upper() == _sym_filter and t.get("timeframe_minutes")
-            ))
+            })
             for _mode_key in ("live", "paper"):
                 _mode_c = _ANSI_G if _mode_key == "live" else _ANSI_Y
                 _mode_badge = "LIV" if _mode_key == "live" else "PPR"
@@ -5815,7 +5814,7 @@ class TabbedHUD:
         tf_filter: int = 0,
     ) -> list[dict]:
         """Load recent transaction events from all bots' transactions.jsonl files."""
-        _tx_files: list[Path] = list(sorted(self.data_dir.glob("paper_*_M*/logs/audit/transactions.jsonl")))
+        _tx_files: list[Path] = sorted(self.data_dir.glob("paper_*_M*/logs/audit/transactions.jsonl"))
         _primary = self.data_dir / "logs" / "audit" / "transactions.jsonl"
         if _primary.exists():
             _tx_files.append(_primary)
@@ -5827,8 +5826,8 @@ class TabbedHUD:
                     lines = _jf.read_text(encoding="utf-8").splitlines()
                 except OSError:
                     continue
-                for line in reversed(lines):
-                    line = line.strip()
+                for raw in reversed(lines):
+                    line = raw.strip()
                     if not line:
                         continue
                     try:
@@ -5879,8 +5878,8 @@ class TabbedHUD:
                     lines = _jf.read_text(encoding="utf-8").splitlines()
                 except OSError:
                     continue
-                for line in lines:
-                    line = line.strip()
+                for raw in lines:
+                    line = raw.strip()
                     if not line:
                         continue
                     try:
@@ -5905,7 +5904,7 @@ class TabbedHUD:
     ) -> list[dict]:
         """Load meaningful (non-CACHED) decision entries, optionally scoped."""
         _primary = self.data_dir / "logs" / "audit" / "decisions.jsonl"
-        _decision_files: list[Path] = list(sorted(self.data_dir.glob("paper_*_M*/logs/audit/decisions.jsonl")))
+        _decision_files: list[Path] = sorted(self.data_dir.glob("paper_*_M*/logs/audit/decisions.jsonl"))
         if _primary.exists():
             _decision_files.append(_primary)
 
@@ -5984,7 +5983,7 @@ class TabbedHUD:
 
         mode_str = f"{_ANSI_Y}PAPER{_ANSI_RST}" if mode == "paper" else (f"{_ANSI_G}LIVE{_ANSI_RST}" if mode == "live" else mode)
 
-        print(f"\n  ┌─ DECISION DETAIL ──────────────────────────────────────────────────")
+        print("\n  ┌─ DECISION DETAIL ──────────────────────────────────────────────────")
         print(f"  │  {ts}")
         print(f"  │  Bot: {_ANSI_G}{sym}/{tf_lbl}{_ANSI_RST}   Mode: {mode_str}   Agent: {agent}")
         print(f"  │  Decision: {dec_color}{decision}{_ANSI_RST}   Confidence: {confidence:.4f}")
@@ -5992,7 +5991,7 @@ class TabbedHUD:
         if position_id:
             _pids = ", ".join(str(p) for p in (position_id if isinstance(position_id, list) else [position_id]))
             print(f"  │  PositionIDs: {_ANSI_DIM}{_pids}{_ANSI_RST}")
-        print(f"  ├─ CONTEXT ─────────────────────────────────────────────────────────")
+        print("  ├─ CONTEXT ─────────────────────────────────────────────────────────")
         if ctx:
             for _k, _v in ctx.items():
                 if isinstance(_v, float):
@@ -6002,7 +6001,7 @@ class TabbedHUD:
         else:
             print(f"  │    {_ANSI_DIM}(no context){_ANSI_RST}")
 
-        print(f"  ├─ REASONING ───────────────────────────────────────────────────────")
+        print("  ├─ REASONING ───────────────────────────────────────────────────────")
         _gated = reasoning.get("gated_conditions") or []
         for _k, _v in reasoning.items():
             if _k == "gated_conditions":
@@ -6020,7 +6019,7 @@ class TabbedHUD:
             for _g in _gated:
                 print(f"  │    {_ANSI_R}✗ {_g}{_ANSI_RST}")
 
-        print(f"  └───────────────────────────────────────────────────────────────────")
+        print("  └───────────────────────────────────────────────────────────────────")
         print(f"\n  {_ANSI_DIM}[b] or [Esc] back to list{_ANSI_RST}")
 
     def _render_decision_log(self) -> None:
@@ -7053,7 +7052,7 @@ class TabbedHUD:
 
     def _render_trades_mode(self) -> None:
         """Level 0: Trading mode selection — Live / Paper / Offline."""
-        print(f"\n\033[1m📋 TRADES — Select Trading Mode\033[0m\n")
+        print("\n\033[1m📋 TRADES — Select Trading Mode\033[0m\n")
         _modes = [
             ("live", "🔴 LIVE TRADING", "Real-money execution", _ANSI_G),
             ("paper", "🟡 PAPER TRADING", "Simulation / practice", _ANSI_Y),
@@ -7685,7 +7684,7 @@ def main() -> None:
     hud = TabbedHUD(refresh_rate=1.0)
 
     # Ignore Ctrl+C in HUD to prevent accidental termination when copying
-    import signal  # noqa: PLC0415
+    import signal
 
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 

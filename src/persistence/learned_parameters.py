@@ -1075,7 +1075,7 @@ class LearnedParametersManager:
         param = instrument.params[param_name]
         clamped = max(param.min_bound, min(param.max_bound, value))
         param.value = clamped
-        import time  # noqa: PLC0415
+        import time
 
         param.last_update_time = time.time()
         param.update_count += 1

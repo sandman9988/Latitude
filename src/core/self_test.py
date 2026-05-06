@@ -118,19 +118,6 @@ class SelfTestReport:
 # ── individual check helpers ──────────────────────────────────────────────────
 
 
-def _check(
-    report: SelfTestReport,
-    name: str,
-    fn: Callable[[], tuple[Sev, str]],
-) -> None:
-    """Run one isolated check; catch all exceptions as CRITICAL."""
-    try:
-        sev, detail = fn()
-        report.add(name, sev, detail)
-    except Exception as exc:
-        report.add(name, Sev.CRITICAL, f"unhandled exception: {exc}")
-
-
 # ── individual checks ─────────────────────────────────────────────────────────
 
 
@@ -320,7 +307,7 @@ def _chk_model_weights() -> tuple[Sev, str]:
         # Without this check the bot silently falls back to the MA/VPIN heuristic
         # while the operator believes the learned model is active.
         try:
-            import torch as _torch  # noqa: PLC0415
+            import torch as _torch
 
             _torch.load(p, map_location="cpu", weights_only=True)
         except ImportError:
@@ -391,7 +378,7 @@ def _chk_quickfix_importable() -> tuple[Sev, str]:
     sessions at all, so this is CRITICAL.
     """
     try:
-        import quickfix  # noqa: PLC0415
+        import quickfix
 
         version = getattr(quickfix, "__version__", "unknown")
         return Sev.PASS, f"quickfix {version}"

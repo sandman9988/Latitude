@@ -591,7 +591,7 @@ class ExperienceBuffer:
             True if save succeeded
 
         """
-        import tempfile  # noqa: PLC0415
+        import tempfile
 
         try:
             n = self.tree.n_entries

@@ -599,8 +599,8 @@ class RewardShaper:
         self,
         actual_mfe: float,
         predicted_runway: float,
-        direction: int = 1,  # noqa: ARG002  # NOSONAR
-        entry_price: float = 0.0,  # noqa: ARG002  # NOSONAR
+        direction: int = 1,  # NOSONAR
+        entry_price: float = 0.0,  # NOSONAR
         exit_pnl: float | None = None,
     ) -> dict[str, float]:
         """Calculate reward for TriggerAgent (entry specialist).
@@ -675,7 +675,7 @@ class RewardShaper:
             "predicted_runway": predicted_runway,
         }
 
-    def calculate_harvester_reward(  # noqa: PLR0912, PLR0915
+    def calculate_harvester_reward(
         self,
         exit_pnl: float,
         mfe: float,
@@ -888,74 +888,19 @@ if __name__ == "__main__":
 
     shaper = RewardShaper(symbol="BTCUSD", timeframe="M15")
 
-    # Test 1: Good capture efficiency
-    reward1 = shaper.calculate_total_reward({"exit_pnl": 80.0, "mfe": 100.0, "mae": 20.0, "winner_to_loser": False})
-
-    # Test 2: Winner-to-Loser scenario
-    reward2 = shaper.calculate_total_reward(
+    shaper.calculate_total_reward({"exit_pnl": 80.0, "mfe": 100.0, "mae": 20.0, "winner_to_loser": False})
+    shaper.calculate_total_reward(
         {"exit_pnl": -30.0, "mfe": 150.0, "mae": 50.0, "winner_to_loser": True, "bars_from_mfe": 20},
     )
-
-    # Test 3: Missed opportunity
-    reward3 = shaper.calculate_total_reward(
-        {
-            "exit_pnl": 0.0,
-            "mfe": 0.0,
-            "mae": 0.0,
-            "winner_to_loser": False,
-            "potential_mfe": 200.0,
-            "signal_strength": 0.8,
-        },
+    shaper.calculate_total_reward(
+        {"exit_pnl": 0.0, "mfe": 0.0, "mae": 0.0, "winner_to_loser": False, "potential_mfe": 200.0, "signal_strength": 0.8},
     )
-
-    # Show summary
-
-    # ===== Phase 3.2: Dual-Agent Reward Tests =====
-
-    # Test 4: TriggerAgent - Perfect prediction
-    trigger_result = shaper.calculate_trigger_reward(
-        actual_mfe=0.0025,  # 25 pips achieved
-        predicted_runway=0.0025,  # 25 pips predicted
-    )
-
-    # Test 5: TriggerAgent - Exceeded prediction
-    trigger_result2 = shaper.calculate_trigger_reward(
-        actual_mfe=0.0040,  # 40 pips achieved
-        predicted_runway=0.0025,  # 25 pips predicted (underpredicted)
-    )
-
-    # Test 6: TriggerAgent - Fell short
-    trigger_result3 = shaper.calculate_trigger_reward(
-        actual_mfe=0.0010,  # 10 pips achieved
-        predicted_runway=0.0025,  # 25 pips predicted (overpredicted)
-    )
-
-    # Test 7: HarvesterAgent - Excellent capture
-    harvester_result = shaper.calculate_harvester_reward(
-        exit_pnl=0.0034,
-        mfe=0.0040,
-        was_wtl=False,
-        _bars_held=15,
-        _bars_from_mfe_to_exit=3,
-    )
-
-    # Test 8: HarvesterAgent - WTL scenario
-    harvester_result2 = shaper.calculate_harvester_reward(
-        exit_pnl=-0.0010,
-        mfe=0.0040,
-        was_wtl=True,
-        _bars_held=30,
-        _bars_from_mfe_to_exit=25,
-    )
-
-    # Test 9: Full dual-agent rewards
-    dual_result = shaper.calculate_dual_agent_rewards(
-        # Trigger: predicted 25 pips, got 30 pips
-        actual_mfe=0.0030,
-        predicted_runway=0.0025,
-        # Harvester: captured 75% of MFE
-        exit_pnl=0.0022,
-        was_wtl=False,
-        bars_held=20,
-        bars_from_mfe_to_exit=5,
+    shaper.calculate_trigger_reward(actual_mfe=0.0025, predicted_runway=0.0025)
+    shaper.calculate_trigger_reward(actual_mfe=0.0040, predicted_runway=0.0025)
+    shaper.calculate_trigger_reward(actual_mfe=0.0010, predicted_runway=0.0025)
+    shaper.calculate_harvester_reward(exit_pnl=0.0034, mfe=0.0040, was_wtl=False, _bars_held=15, _bars_from_mfe_to_exit=3)
+    shaper.calculate_harvester_reward(exit_pnl=-0.0010, mfe=0.0040, was_wtl=True, _bars_held=30, _bars_from_mfe_to_exit=25)
+    shaper.calculate_dual_agent_rewards(
+        actual_mfe=0.0030, predicted_runway=0.0025,
+        exit_pnl=0.0022, was_wtl=False, bars_held=20, bars_from_mfe_to_exit=5,
     )

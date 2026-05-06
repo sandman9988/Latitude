@@ -148,17 +148,3 @@ class TestCloseErrors:
             j.log_operation("inner", {"val": 42})
         # After __exit__, file should be closed
         assert j.journal_file.closed
-
-
-# ---------------------------------------------------------------------------
-# get_recent_operations
-# ---------------------------------------------------------------------------
-class TestRecentOperations:
-    def test_count_limits_results(self, tmp_path):
-        journal_file = tmp_path / "j.log"
-        j = Journal(str(journal_file))
-        for i in range(10):
-            j.log_operation(f"op{i}", {"i": i})
-        recent = j.get_recent_operations(count=3)
-        assert len(recent) == 3
-        j.close()

@@ -1,6 +1,7 @@
 """Tests for src.risk.circuit_breakers – BreakerState, individual breakers, CircuitBreakerManager."""
 
 import json
+from datetime import UTC
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -405,6 +406,49 @@ class TestCircuitBreakerManager:
         mgr.reset_if_cooldown_elapsed()
         assert not mgr.is_any_tripped()
 
+    def test_reset_if_cooldown_elapsed_clears_data_window_no_retrip(self):
+        # Regression: after cooldown reset, check_all() must NOT immediately re-trip
+        # on the same stale data (the infinite re-trip loop).
+        mgr = CircuitBreakerManager(max_consecutive_losses=2)
+        mgr.update_trade(pnl=-10, equity=10000)
+        mgr.update_trade(pnl=-10, equity=10000)
+        mgr.check_all()
+        assert mgr.is_any_tripped()
+        assert mgr.consecutive_losses_breaker.consecutive_losses == 2
+
+        for b in mgr.breakers:
+            b.state.cooldown_minutes = 0
+        mgr.reset_if_cooldown_elapsed()
+
+        # Data window must be cleared
+        assert mgr.consecutive_losses_breaker.consecutive_losses == 0
+        # check_all() must not re-trip with the now-empty window
+        assert mgr.check_all() is False
+        assert not mgr.is_any_tripped()
+
+    def test_sortino_cooldown_reset_clears_returns_no_retrip(self):
+        # Regression: sortino re-trip loop — an outlier loss poisons the window;
+        # after cooldown the window must be cleared so Sortino can't re-trip on stale data.
+        # Uses varied loss magnitudes so downside_dev > 0 and Sortino truly goes negative
+        # (matches the real XAUUSD M5 production pattern with the -$37 emergency stop).
+        mgr = CircuitBreakerManager(sortino_threshold=0.5, max_consecutive_losses=100)
+        varied_pnls = [
+            0.01, -1.5, 0.01, -3.0, 0.01, -6.0, 0.01, -1.1, 0.01, -1.7,
+            0.01, -37.0, 0.01, -5.4, 0.01, 1.6, 0.01, 3.8, 0.01, 1.7,
+        ]
+        for pnl in varied_pnls:
+            mgr.update_trade(pnl=pnl, equity=10000)
+        mgr.check_all()
+        assert mgr.sortino_breaker.state.is_tripped
+
+        for b in mgr.breakers:
+            b.state.cooldown_minutes = 0
+        mgr.reset_if_cooldown_elapsed()
+
+        assert len(mgr.sortino_breaker.returns) == 0
+        assert mgr.check_all() is False
+        assert not mgr.sortino_breaker.state.is_tripped
+
     def test_param_manager_integration(self, tmp_path):
         from src.persistence.learned_parameters import LearnedParametersManager
 
@@ -439,3 +483,79 @@ class TestCircuitBreakerManager:
         assert mgr.kurtosis_breaker.threshold == pytest.approx(7.0)
         assert mgr.restore_state(str(state_path)) is True
         assert mgr.kurtosis_breaker.threshold == pytest.approx(7.0)
+
+
+# ---------------------------------------------------------------------------
+# detect_cb_lockouts (performance_analyzer)
+# ---------------------------------------------------------------------------
+
+class TestDetectCbLockouts:
+    """Tests for performance_analyzer.detect_cb_lockouts using real CB file layout."""
+
+    def _make_cb_file(self, tmp_path, bot_key: str, trips: dict, hours_ago: float = 8.0) -> None:
+        from datetime import datetime, timedelta
+        trip_time = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
+        state = {
+            "timestamp": 0,
+            "sortino": {"is_tripped": False, "trip_time": None, "trip_reason": "", "trip_value": 0.0,
+                        "threshold": 0.5, "cooldown_minutes": 120, "returns": []},
+            "kurtosis": {"is_tripped": False, "trip_time": None, "trip_reason": "", "trip_value": 0.0,
+                         "threshold": 5.0, "cooldown_minutes": 60, "returns": [], "readings": []},
+            "drawdown": {"is_tripped": False, "trip_time": None, "trip_reason": "", "trip_value": 0.0,
+                         "threshold": 0.2, "cooldown_minutes": 240, "current_drawdown": 0.0, "peak_equity": 10000.0},
+            "consecutive_losses": {"is_tripped": False, "trip_time": None, "trip_reason": "", "trip_value": 0.0,
+                                   "threshold": 5.0, "cooldown_minutes": 180, "consecutive_losses": 0},
+            "manual_reset_cooldown_until": None,
+        }
+        for name, val in trips.items():
+            state[name]["is_tripped"] = True
+            state[name]["trip_time"] = trip_time
+        bot_dir = tmp_path / f"paper_{bot_key}"
+        bot_dir.mkdir(parents=True, exist_ok=True)
+        (bot_dir / "circuit_breakers.json").write_text(json.dumps(state))
+
+    def test_detects_silent_locked_bot(self, tmp_path, monkeypatch):
+        import scripts.performance_analyzer as pa
+        monkeypatch.setattr(pa, "DATA_DIR", tmp_path)
+        self._make_cb_file(tmp_path, "XAUUSD_M5", {"sortino": True}, hours_ago=8.0)
+
+        anomalies = pa.detect_cb_lockouts({}, hours=168.0)
+        assert len(anomalies) == 1
+        a = anomalies[0]
+        assert a.code == "CB_LOCKOUT"
+        assert a.severity == "CRITICAL"
+        assert a.symbol == "XAUUSD"
+        assert a.timeframe == "M5"
+        assert a.metric_value >= 8.0
+
+    def test_skips_bot_with_recent_trades(self, tmp_path, monkeypatch):
+        import scripts.performance_analyzer as pa
+        from scripts.performance_analyzer import BotMetrics
+        monkeypatch.setattr(pa, "DATA_DIR", tmp_path)
+        self._make_cb_file(tmp_path, "XAUUSD_M1", {"consecutive_losses": True}, hours_ago=10.0)
+
+        bot_metrics = {"XAUUSD_M1": BotMetrics(symbol="XAUUSD", timeframe="M1", n_trades=3)}
+        anomalies = pa.detect_cb_lockouts(bot_metrics, hours=24.0)
+        assert anomalies == []
+
+    def test_skips_when_window_too_short(self, tmp_path, monkeypatch):
+        import scripts.performance_analyzer as pa
+        monkeypatch.setattr(pa, "DATA_DIR", tmp_path)
+        self._make_cb_file(tmp_path, "BTCUSD_M30", {"sortino": True}, hours_ago=1.0)
+
+        # Window of 1h is below CB_LOCKOUT_WINDOW_MIN_HOURS → no false alarm
+        anomalies = pa.detect_cb_lockouts({}, hours=1.0)
+        assert anomalies == []
+
+    def test_multiple_locked_bots(self, tmp_path, monkeypatch):
+        import scripts.performance_analyzer as pa
+        monkeypatch.setattr(pa, "DATA_DIR", tmp_path)
+        self._make_cb_file(tmp_path, "XAUUSD_M1", {"consecutive_losses": True}, hours_ago=8.0)
+        self._make_cb_file(tmp_path, "XAUUSD_M5", {"sortino": True}, hours_ago=12.0)
+        self._make_cb_file(tmp_path, "BTCUSD_M240", {}, hours_ago=8.0)  # no trip → skip
+
+        anomalies = pa.detect_cb_lockouts({}, hours=168.0)
+        keys = {(a.symbol, a.timeframe) for a in anomalies}
+        assert ("XAUUSD", "M1") in keys
+        assert ("XAUUSD", "M5") in keys
+        assert ("BTCUSD", "M240") not in keys

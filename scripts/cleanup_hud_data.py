@@ -70,9 +70,7 @@ def analyze_data_dir():
             to_delete = backup_files[KEEP_RECENT_BACKUPS:]
 
             if to_delete:
-                for f in to_delete:
-                    (now - datetime.fromtimestamp(f.stat().st_mtime, UTC)).days
-                    backups_to_delete.extend(to_delete)
+                backups_to_delete.extend(to_delete)
 
     # Summary
 

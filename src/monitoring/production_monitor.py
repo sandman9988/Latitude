@@ -311,7 +311,7 @@ class ProductionMonitor:
             "updated_at": time.time(),
         }
 
-        from src.utils.safe_utils import save_json_atomic  # noqa: PLC0415
+        from src.utils.safe_utils import save_json_atomic
 
         metrics_file = self._metrics_file_for_current_scope()
         if metrics_file is None:

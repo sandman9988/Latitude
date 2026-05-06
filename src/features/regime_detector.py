@@ -331,7 +331,7 @@ class RegimeDetector:
         each trade outcome. The RegimeDetector reads it on the next call to
         get_trigger_threshold_adjustment().
         """
-        global REGIME_ADJ_TRENDING, REGIME_ADJ_MEAN_REVERTING  # noqa: PLW0603
+        global REGIME_ADJ_TRENDING, REGIME_ADJ_MEAN_REVERTING
         scale = max(0.0, min(0.50, abs(scale)))
         REGIME_ADJ_TRENDING = -scale
         REGIME_ADJ_MEAN_REVERTING = scale

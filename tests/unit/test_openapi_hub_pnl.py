@@ -10,6 +10,10 @@ import datetime as dt
 import json
 import math
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.core.openapi_hub import BarBuilder
 
 import pytest
 
@@ -25,8 +29,8 @@ _CACHE_FILE = Path(__file__).parent.parent.parent / "data" / "training_cache_XAU
 def _load_cache_trades() -> list[dict]:
     """Load all trade records from the XAUUSD M5 cache."""
     records: list[dict] = []
-    for line in _CACHE_FILE.read_text().splitlines():
-        line = line.strip()
+    for raw in _CACHE_FILE.read_text().splitlines():
+        line = raw.strip()
         if not line:
             continue
         try:
@@ -334,10 +338,10 @@ class TestBarBuilderRealTimestamps:
         # Tick at 10:05 = new bucket → closed bar returned
         bar = builder.update(base + dt.timedelta(minutes=5), 5008.0)
         assert bar is not None, "Expected completed bar on bucket boundary"
-        _ts, o, h, l, c = bar
+        _ts, o, h, lo, c = bar
         assert o == pytest.approx(5000.0), f"Open {o} != 5000"
         assert h == pytest.approx(5010.0), f"High {h} != 5010"
-        assert l == pytest.approx(4990.0), f"Low {l} != 4990"
+        assert lo == pytest.approx(4990.0), f"Low {lo} != 4990"
         assert c == pytest.approx(5002.0), f"Close {c} != 5002"
 
     def test_bar_builder_ohlc_integrity(self) -> None:
@@ -349,10 +353,10 @@ class TestBarBuilderRealTimestamps:
             builder.update(base + dt.timedelta(minutes=offset), float(price))
         bar = builder.update(base + dt.timedelta(minutes=5), 5008.0)
         assert bar is not None
-        _, o, h, l, c = bar
+        _, o, h, lo, c = bar
         assert o < h or abs(o - h) < 1e-9, f"Open {o} > High {h}"
-        assert l <= o, f"Low {l} > Open {o}"
-        assert l <= c, f"Low {l} > Close {c}"
+        assert lo <= o, f"Low {lo} > Open {o}"
+        assert lo <= c, f"Low {lo} > Close {c}"
         assert c <= h, f"Close {c} > High {h}"
 
     def test_next_bar_close_utc(self) -> None:
@@ -367,7 +371,7 @@ class TestBarBuilderRealTimestamps:
         assert "2026-04-01T10:05:00" in close_str, f"Unexpected close time: {close_str}"
 
     @staticmethod
-    def _make_builder(tf_minutes: int):
+    def _make_builder(tf_minutes: int) -> BarBuilder:
         from src.core.openapi_hub import BarBuilder
         return BarBuilder(tf_minutes)
 

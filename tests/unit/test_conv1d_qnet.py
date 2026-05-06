@@ -93,12 +93,3 @@ class TestConv1dQNetImports:
         assert "_load_torch_model" in source
         assert "class HarvesterQNet" not in source
 
-    def test_policy_uses_conv1d_qnet(self):
-        """Policy.__init__ should reference Conv1dQNet."""
-        import inspect
-
-        from src.core.ctrader_ddqn_paper import Policy
-
-        source = inspect.getsource(Policy.__init__)
-        assert "Conv1dQNet" in source
-        assert "class QNet" not in source

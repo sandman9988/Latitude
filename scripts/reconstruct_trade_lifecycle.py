@@ -166,8 +166,8 @@ def load_trade_log(path: Path, symbol: str, timeframe_minutes: int, month: str) 
     if not path.exists():
         LOG.warning("trade_log not found: %s", path)
         return trades
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
         if not line:
             continue
         try:

@@ -383,8 +383,8 @@ class FrictionCalculator:
         SecurityDefinition from broker takes precedence when received.
         This provides reasonable defaults for trading before SecurityDef arrives.
         """
-        import json  # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
+        import json
+        from pathlib import Path
 
         config_path = Path(__file__).parent.parent.parent / "config" / "symbol_specs.json"
         if not config_path.exists():

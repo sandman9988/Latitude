@@ -25,8 +25,8 @@ def _load_bars_from_jsonl(path: Path) -> list[tuple]:
     Returns a list of (datetime, open, high, low, close) tuples sorted by time.
     """
     seen: dict[str, tuple] = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         try:
@@ -53,8 +53,8 @@ def _load_bars_from_jsonl(path: Path) -> list[tuple]:
 def _load_trades_from_jsonl(path: Path) -> list[dict]:
     """Return the raw trade records from a BarExperienceCache JSONL file."""
     trades = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         try:

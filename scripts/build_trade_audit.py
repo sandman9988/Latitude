@@ -69,8 +69,8 @@ def _load_jsonl(path: Path) -> list[dict]:
         return []
     records = []
     with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            line = raw.strip()
             if not line:
                 continue
             with contextlib.suppress(json.JSONDecodeError):
@@ -254,8 +254,8 @@ def _cache_bars(rec: dict, field: str) -> list[dict]:
     out = []
     for b in raw:
         if isinstance(b, (list, tuple)) and len(b) >= 5:
-            ts, o, h, l, c = b[0], b[1], b[2], b[3], b[4]
-            out.append({"timestamp": str(ts), "open": o, "high": h, "low": l, "close": c})
+            ts, o, h, lo, c = b[0], b[1], b[2], b[3], b[4]
+            out.append({"timestamp": str(ts), "open": o, "high": h, "low": lo, "close": c})
     return out
 
 
@@ -943,7 +943,7 @@ def _sym_tf_from_dir(name: str) -> tuple[str, int]:
     return sym, tf_minutes
 
 
-def _emit_stdout(records: list[dict], pretty: bool) -> None:
+def _emit_stdout(records: list[dict], _pretty: bool) -> None:
     for _r in records:
         pass
 

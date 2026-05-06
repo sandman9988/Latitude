@@ -141,10 +141,8 @@ def verify_pnl_recalculation() -> None:
                 unreasonable_changes.append((t, orig, curr, change_pct))
 
     if unreasonable_changes:
-        for _trade, orig, curr, _pct in unreasonable_changes[:5]:
+        for _trade, _orig, _curr, _pct in unreasonable_changes[:5]:
             pass
-    else:
-        pass
 
 
 

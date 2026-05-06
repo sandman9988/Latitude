@@ -522,7 +522,7 @@ def test_all_calculations():
 
 
     if failed_tests:
-        for class_name, method_name, _error in failed_tests:
+        for _class_name, _method_name, _error in failed_tests:
             pass
         msg = f"{len(failed_tests)} mathematical verification(s) failed"
         raise AssertionError(msg)

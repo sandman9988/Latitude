@@ -22,7 +22,7 @@ import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +48,7 @@ WTL_PENALTY_EXCESSIVE = -1.5         # mean WTL penalty below this → signal to
 RUNWAY_ACCURACY_LOW = 0.35            # runway accuracy mean below → predictor drifting
 PNL_ALIGNMENT_WEAK = 0.08             # mean pnl_alignment in harvester below → signal weak
 TRIGGER_SATURATION_PCT = 0.15         # fraction of trigger rewards at ±2.99 rail → regression
-BOT_LOSING_STREAK_MULT = 4.0          # bot total PnL < -(fleet avg_winner * mult) → flag
+CB_LOCKOUT_WINDOW_MIN_HOURS = 4.0     # analysis window must be at least this long before 0-trade bots are flagged
 
 # ── correction step sizes ─────────────────────────────────────────────────────
 # Kept small; compound slowly rather than over-correct in one cycle.
@@ -154,21 +154,21 @@ class Anomaly:
 # ── data loading ─────────────────────────────────────────────────────────────
 
 def load_recent_trades(hours: float = 24.0) -> list[dict[str, Any]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=hours)
     trades: list[dict[str, Any]] = []
     if not TRADE_LOG.exists():
         LOG.warning("trade_log.jsonl not found at %s", TRADE_LOG)
         return trades
     with TRADE_LOG.open(encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            line = raw.strip()
             if not line:
                 continue
             try:
                 t = json.loads(line)
                 ts_str = t.get("exit_time") or t.get("entry_time") or ""
                 if ts_str:
-                    ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    ts = datetime.fromisoformat(ts_str)
                     if ts >= cutoff:
                         trades.append(t)
             except Exception:
@@ -214,8 +214,8 @@ def compute_bot_metrics(trades: list[dict[str, Any]]) -> dict[str, BotMetrics]:
             else:
                 m.n_other += 1
 
-        def _mean(key_fn):
-            vals = [key_fn(t) for t in bot_trades if key_fn(t) is not None]
+        def _mean(key_fn, _trades=bot_trades):
+            vals = [key_fn(t) for t in _trades if key_fn(t) is not None]
             return sum(vals) / len(vals) if vals else 0.0
 
         m.mean_capture        = _mean(lambda t: t.get("capture_ratio"))
@@ -246,7 +246,7 @@ def compute_fleet_metrics(
     hours: float,
 ) -> FleetMetrics:
     f = FleetMetrics(n_trades=len(trades), analysis_window_hours=hours,
-                     generated_at=datetime.now(timezone.utc).isoformat())
+                     generated_at=datetime.now(UTC).isoformat())
     if not trades:
         return f
 
@@ -420,6 +420,81 @@ def detect_anomalies(
                 correction=f"Raise pnl_alignment_multiplier by {DELTA_PNL_ALIGN_MULT:+.3f}.",
                 param_name="pnl_alignment_multiplier", delta=DELTA_PNL_ALIGN_MULT,
             ))
+
+    return anomalies
+
+
+def _current_cb_trips(state: dict[str, Any], now: datetime) -> list[tuple[str, float]]:
+    """Return (breaker_name, hours_tripped) for every currently-tripped CB."""
+    result: list[tuple[str, float]] = []
+    for name in ("sortino", "kurtosis", "consecutive_losses", "drawdown"):
+        entry = state.get(name, {})
+        if not isinstance(entry, dict) or not entry.get("is_tripped"):
+            continue
+        try:
+            trip_t = datetime.fromisoformat(entry.get("trip_time") or "")
+            hours_tripped = (now - trip_t).total_seconds() / 3600
+            result.append((name, hours_tripped))
+        except (ValueError, TypeError):
+            result.append((name, 0.0))
+    return result
+
+
+def detect_cb_lockouts(
+    bot_metrics: dict[str, BotMetrics],
+    hours: float,
+) -> list[Anomaly]:
+    """Scan circuit_breakers.json files for bots locked out with 0 trades.
+
+    Trade-log analysis is blind to completely silent bots. This function reads
+    the CB state files directly and flags any bot with a currently-tripped CB
+    that recorded 0 trades over a meaningful analysis window. The window length
+    (hours) is the guard — a 0-trade 1h window is normal, a 0-trade 24h window
+    with an active CB trip is a lockout.
+    """
+    if hours < CB_LOCKOUT_WINDOW_MIN_HOURS:
+        return []
+
+    anomalies: list[Anomaly] = []
+    now = datetime.now(UTC)
+
+    for cb_path in sorted(DATA_DIR.glob("paper_*/circuit_breakers.json")):
+        bot_key = cb_path.parent.name[len("paper_"):]  # e.g. XAUUSD_M5
+        parts = bot_key.rsplit("_", 1)
+        if len(parts) != 2:
+            continue
+        symbol, tf = parts[0], parts[1]
+
+        if bot_key in bot_metrics and bot_metrics[bot_key].n_trades > 0:
+            continue
+
+        try:
+            state = json.loads(cb_path.read_text())
+        except Exception:
+            continue
+
+        trips = _current_cb_trips(state, now)
+        if not trips:
+            continue
+
+        max_hours = max(h for _, h in trips)
+        names_str = ", ".join(n for n, _ in trips)
+        anomalies.append(Anomaly(
+            code="CB_LOCKOUT",
+            severity="CRITICAL",
+            symbol=symbol,
+            timeframe=tf,
+            message=(
+                f"{bot_key}: {names_str} CB tripped ({max_hours:.1f}h), "
+                f"0 trades in last {hours:.0f}h. "
+                f"Fix: python3 scripts/fix_cb_lockout.py then restart hub."
+            ),
+            metric_value=max_hours,
+            threshold=CB_LOCKOUT_WINDOW_MIN_HOURS,
+            correction="Run fix_cb_lockout.py then kill and restart the hub process.",
+            param_name="",
+            delta=0.0,
+        ))
 
     return anomalies
 
@@ -616,7 +691,7 @@ def run_analysis(
     trades = load_recent_trades(hours)
     if not trades:
         LOG.warning("No trades found in the last %.0fh", hours)
-        report = {"generated_at": datetime.now(timezone.utc).isoformat(),
+        report = {"generated_at": datetime.now(UTC).isoformat(),
                   "analysis_window_hours": hours, "overall_health": "NO_DATA",
                   "fleet": {}, "bots": {}, "anomalies": [], "corrections_applied": []}
         _write_health_report(report)
@@ -625,6 +700,7 @@ def run_analysis(
     bot_metrics = compute_bot_metrics(trades)
     fleet       = compute_fleet_metrics(trades, bot_metrics, hours)
     anomalies   = detect_anomalies(bot_metrics, fleet, min_trades)
+    anomalies  += detect_cb_lockouts(bot_metrics, hours)
 
     # Tag bots with their anomaly codes
     for a in anomalies:

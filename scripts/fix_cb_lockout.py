@@ -16,6 +16,7 @@ What it does NOT touch:
   - exit_confidence_threshold
   - Any other learned param
 """
+import contextlib
 import json
 import os
 import shutil
@@ -38,7 +39,7 @@ ENTRY_CONF_BASELINE = 0.6
 ENTRY_CONF_RESET_IF_ABOVE = 0.65  # only reset bots that drifted well above baseline
 
 # feasibility_threshold reset only for the impossible-gate case
-FEASIBILITY_IMPOSSIBLE_THRESHOLD = 0.95  # reset if >= this
+FEASIBILITY_IMPOSSIBLE_THRESHOLD = 0.75  # reset if >= this (catches 0.75–1.0 drift range)
 FEASIBILITY_RESET_TO = 0.5
 
 _TS = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
@@ -56,10 +57,8 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         shutil.copy2(path, str(path) + f".pre_fix_{_TS}.bak")
         shutil.move(tmp, path)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
@@ -83,14 +82,12 @@ def _atomic_write_lp(path: Path, data: dict) -> None:
         shutil.copy2(path, str(path) + f".pre_fix_{_TS}.bak")
         shutil.move(tmp, path)
     except Exception:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp)
-        except OSError:
-            pass
         raise
 
 
-def fix_circuit_breakers(bot: str, bot_dir: Path) -> bool:
+def fix_circuit_breakers(bot_dir: Path) -> bool:
     path = bot_dir / "circuit_breakers.json"
     if not path.exists():
         return False
@@ -214,7 +211,7 @@ def main() -> None:
         lp_changed = False
 
         print(f"{bot}:")
-        cb_changed = fix_circuit_breakers(bot, bot_dir)
+        cb_changed = fix_circuit_breakers(bot_dir)
         lp_changed = fix_learned_params(bot, bot_dir)
 
         if not cb_changed and not lp_changed:

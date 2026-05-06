@@ -1,7 +1,7 @@
 """Tests for src.monitoring.trade_analyzer – TradeAnalyzer (CSV trade analysis)."""
 
-import os
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -213,7 +213,7 @@ class TestExportAnalysis:
         out = str(tmp_path / "report.json")
         ta = TradeAnalyzer(csv_path)
         result_path = ta.export_analysis(out)
-        assert os.path.exists(result_path)
+        assert Path(result_path).exists()
 
     def test_convert_types_handles_numpy(self, csv_path):
         ta = TradeAnalyzer(csv_path)

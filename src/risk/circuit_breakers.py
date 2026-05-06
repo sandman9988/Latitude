@@ -762,10 +762,30 @@ class CircuitBreakerManager:
         LOG.info("[CIRCUIT_BREAKER] All breakers reset (data windows cleared)")
 
     def reset_if_cooldown_elapsed(self) -> None:
-        """Auto-reset breakers after cooldown."""
+        """Auto-reset breakers after cooldown.
+
+        Clears the underlying data window alongside the trip flag so that the
+        very next check_all() call does not immediately re-trip on the same
+        stale returns / loss streak (the infinite re-trip loop).
+        """
         for breaker in self.breakers:
-            if breaker.state.is_tripped and breaker.state.can_reset():
-                breaker.state.reset()
+            if not (breaker.state.is_tripped and breaker.state.can_reset()):
+                continue
+            breaker.state.reset()
+            if breaker is self.sortino_breaker:
+                self.sortino_breaker.returns.clear()
+            elif breaker is self.kurtosis_breaker:
+                self.kurtosis_breaker.returns.clear()
+            elif breaker is self.consecutive_losses_breaker:
+                self.consecutive_losses_breaker.consecutive_losses = 0
+            elif breaker is self.drawdown_breaker:
+                if self.drawdown_breaker.current_equity > 0:
+                    self.drawdown_breaker.peak_equity = self.drawdown_breaker.current_equity
+                self.drawdown_breaker.current_drawdown = 0.0
+            LOG.info(
+                "[CIRCUIT_BREAKER] %s cooldown elapsed — reset with data window cleared",
+                breaker.state.name,
+            )
 
     def is_manual_reset_cooldown_active(self) -> bool:
         """Return True while post-manual-reset grace period is active."""

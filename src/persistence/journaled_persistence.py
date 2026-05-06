@@ -212,13 +212,6 @@ class Journal:
             {"breaker": breaker_name, "threshold": threshold, "current": current_value},
         )
 
-    def log_model_update(self, agent_name: str, loss: float, td_error: float):
-        """Log model training update."""
-        return self.log_operation(
-            "model_update",
-            {"agent": agent_name, "loss": loss, "td_error": td_error},
-        )
-
     def checkpoint(self) -> bool:
         """Create checkpoint (compact journal state).
 
@@ -295,7 +288,7 @@ class Journal:
             except OSError as reopen_err:
                 LOG.critical("[JOURNAL] Cannot reopen journal after rotation: %s", reopen_err)
                 # Last resort: open /dev/null so later writes don't raise
-                import os  # noqa: PLC0415
+                import os
 
                 self.journal_file = open(os.devnull, "a")  # noqa: SIM115
 
@@ -369,10 +362,6 @@ class Journal:
 
         return replayed
 
-    def get_recent_operations(self, count: int = 100) -> list[JournalEntry]:
-        """Get recent operations from memory."""
-        return list(self.recent_operations)[-count:]
-
     def close(self) -> None:
         """Close journal file (flush and close)."""
         try:
@@ -391,7 +380,7 @@ class Journal:
         """Context manager support."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+    def __exit__(self, _exc_type, _exc_val, _exc_tb) -> None:
         """Context manager cleanup."""
         self.close()
 
