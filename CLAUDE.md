@@ -421,6 +421,53 @@ The Overview tab's **🏥 SYSTEM HEALTH** block now includes a **🔄 SELF-HEAL*
 
 When the file does not exist yet: `no report yet — runs every 4 h`.
 
+## CB Lockout & Threshold Runaway (known failure mode, 2026-05-06)
+
+**Symptom:** trade rate collapses to ~0 while bots appear healthy (bar_count rises, quote_ok/trade_ok true).
+Best performers go silent first; XAUUSD M240 keeps trading because its thresholds stayed lower.
+
+**Root cause 1 — Permanent CB re-trip loop.**
+`data/paper_{BOT}/circuit_breakers.json` persists return history. A single outlier loss (e.g.
+emergency stop -$37) holds Sortino below threshold permanently. Cooldown expires →
+`reset_if_cooldown_elapsed()` clears trip → `check_all()` re-trips on same frozen returns →
+no new trades → returns never refresh → infinite loop. Same pattern for `consecutive_losses`.
+
+**Root cause 2 — `entry_confidence_threshold` runaway.**
+`_update_risk_feedback_thresholds()` saves `max(_base_floor, _entry_conf_dynamic_floor)` to
+`entry_confidence_threshold` (per-bot learned_parameters). The cap is `_base_floor + 0.10`
+but `_base_floor` is re-read from the *already-saved* value each call — so each save raises
+the next cap. Observed: 0.6 → 0.9 within one losing session. Persists across restarts.
+
+**Root cause 3 — `feasibility_threshold` at 1.0.**
+Zero-MFE step increments feasibility_threshold per loss. Can reach 1.0 — an impossible gate.
+
+**Quick check:**
+
+```bash
+python3 -c "
+import json, os
+for bot in ['XAUUSD_M5','XAUUSD_M1','XAUUSD_M15','XAUUSD_M30','XAUUSD_M60',
+            'BTCUSD_M1','BTCUSD_M5','BTCUSD_M30','BTCUSD_M60','BTCUSD_M240']:
+    cb = json.load(open(f'data/paper_{bot}/circuit_breakers.json'))
+    lp = json.load(open(f'data/paper_{bot}/learned_parameters.json'))
+    lp = lp.get('data', lp)
+    p = lp.get('instruments',{}).get(f'{bot}_default',{}).get('params',{})
+    tripped = [k for k in ('sortino','kurtosis','consecutive_losses') if cb.get(k,{}).get('is_tripped')]
+    ect = p.get('entry_confidence_threshold',{}).get('value','?')
+    print(f'{bot:<20} CB={tripped or \"CLEAR\"}  entry_conf={ect}')
+"
+```
+
+**Fix (atomic, safe while live):**
+
+```bash
+python3 scripts/fix_cb_lockout.py
+```
+
+Clears stale return histories and trip state; resets `entry_confidence_threshold` to 0.6
+baseline and `feasibility_threshold` to 0.5 where broken. CB thresholds and all other
+learned params are untouched — self-healing resumes from live data immediately after.
+
 ## Code Style
 
 - Complete, production-ready implementations only — no stubs, no `pass`, no `# TODO`

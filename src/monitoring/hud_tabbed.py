@@ -337,7 +337,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 def _fmt_compact(v: float, width: int) -> str:
     """Format a number to fit in exactly `width` visible chars with sign.
 
-    Keeps one decimal place for values < 10 000; switches to K/M/B suffix
+    Uses two decimal places for values < 10 000; switches to K/M/B suffix
     above that so the result never exceeds `width` chars.
     Always right-justified in the returned string.
     """
@@ -350,7 +350,7 @@ def _fmt_compact(v: float, width: int) -> str:
     elif av >= 10_000:
         s = f"{av / 1e3:.0f}K"
     else:
-        s = f"{av:.1f}"          # "+9999.9" = 7 chars — fits in width=7
+        s = f"{av:.2f}"          # "+9999.99" = 8 chars — fits in width ≥ 8
     candidate = f"{sign}{s}"
     if len(candidate) > width:
         candidate = candidate[:width]
@@ -363,9 +363,11 @@ def _fmt_compact_pos(v: float, width: int) -> str:
 
 
 def _fmt_count(n: int, width: int = 3) -> str:
-    """Format a trade count right-justified in `width` chars.
+    """Format a trade count right-justified in `width` chars; never overflows.
 
-    Uses K suffix for 1 000–99 999, M for 100 000+, so it never overflows.
+    Uses K suffix for 1 000–99 999, M for 100 000+. For 1 000–9 999 tries
+    the one-decimal form first ("3.6K") and falls back to integer K ("3K")
+    when that would exceed `width`.
     """
     if n >= 100_000:
         s = f"{n / 1e6:.1f}M" if n < 10_000_000 else f"{n / 1e6:.0f}M"
@@ -373,6 +375,8 @@ def _fmt_count(n: int, width: int = 3) -> str:
         s = f"{n // 1000}K"
     elif n >= 1_000:
         s = f"{n / 1000:.1f}K"
+        if len(s) > width:
+            s = f"{n // 1000}K"
     else:
         s = str(n)
     return f"{s:>{width}}"
@@ -390,10 +394,14 @@ def _ansi_cell(text: str, color: str, width: int, align: str = ">") -> str:
 
 
 def _fmt_trade_period_cell(trade_count: int, win_rate_pct: float, pnl: float, width: int = 20) -> str:
-    """Format a Tab 7 period-summary cell with stable visible columns."""
+    """Format a Tab 7 period-summary cell with stable visible columns.
+
+    Visible layout (20 chars): ` #NNN WR%% PnL$$$$ `
+      1 + 1 + 3 + 1 + 4 + 1 + 1 + 7 + 1 = 20
+    """
     pnl_color = _ANSI_G if pnl >= 0 else _ANSI_R
     wr_color = _ANSI_G if win_rate_pct >= 50 else _ANSI_R
-    count_s = _fmt_count(trade_count, 4)
+    count_s = _fmt_count(trade_count, 3)
     pnl_s = _fmt_compact(pnl, 7)
     cell = f" #{count_s} {wr_color}{win_rate_pct:4.0f}%{_ANSI_RST} {pnl_color}{pnl_s}{_ANSI_RST} "
     return cell if _visible_width(cell) >= width else cell + (" " * (width - _visible_width(cell)))
@@ -7325,15 +7333,15 @@ class TabbedHUD:
             _C_RSN = 12
             _hdr_row = (
                 f"  {'#':<{_C_ID}} M {'Time':<{_C_DATE}} {'Bot':<{_C_BOT}} {'D':<{_C_DIR}} "
-                f"{'PnL $':>{_C_PNL}} {'Cap':>{_C_CAP}} {'MFE':>{_C_MFE}} {'MAE':>{_C_MAE}} "
-                f"{'Tks':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
+                f"{'PnL $':>{_C_PNL}} {'Cap%':>{_C_CAP}} {'MFE $':>{_C_MFE}} {'MAE $':>{_C_MAE}} "
+                f"{'Bars':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
             )
         else:
             _hdr_row = (
                 f"  {'#':<{_C_ID}} M {'Date/Time':<{_C_DATE}} {'Dir':<{_C_DIR}} "
                 f"{'Sym':<{_C_SYM}} {'TF':<{_C_TF}} {'Entry':>{_C_ENT}} {'Exit':>{_C_EXT}} "
                 f"{'PnL $':>{_C_PNL}} {'Cap%':>{_C_CAP}} {'MFE $':>{_C_MFE}} {'MAE $':>{_C_MAE}} "
-                f"{'Tks':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
+                f"{'Bars':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
             )
         # Plain-text header width (no ANSI) → matches the rendered row width.
         _hdr_plain_len = len(_hdr_row)
@@ -7341,8 +7349,12 @@ class TabbedHUD:
         print(f"{_ANSI_DIM}{_hdr_row}{_ANSI_RST}")
         print(_sep)
 
-        # Trade rows
-        _dec = self._price_decimals()
+        # Trade rows — derive decimal places from first trade's price so we
+        # never fall back to 5dp when bot_config is empty.
+        _sample_price = 0.0
+        if page_trades:
+            _sample_price = float(page_trades[0].get("entry_price") or 0.0)
+        _dec = self._price_decimals(_sample_price)
         for _row_idx, _t in enumerate(page_trades):
             _tid = _t.get("trade_id", page_start + _row_idx + 1)
             _dir = (_t.get("direction") or "").upper()
@@ -7353,7 +7365,7 @@ class TabbedHUD:
             _pnl = float(_t.get("pnl") or 0.0)
             _mfe = self._excursion_usd_for_trade(_t, "mfe_points", "mfe")
             _mae = self._excursion_usd_for_trade(_t, "mae_points", "mae")
-            _bars = int(_t.get("ticks_held") or _t.get("bars_held") or 0)
+            _bars = int(_t.get("bars_held") or _t.get("ticks_held") or 0)
             _rsn_raw = _t.get("close_reason") or _t.get("exit_reason") or ""
             _rsn = ("-" if _rsn_raw in ("", "unknown") else _rsn_raw)[:_C_RSN]
             _tid_s = str(_tid)
@@ -7401,15 +7413,18 @@ class TabbedHUD:
             else:
                 _mb = f"{_ANSI_DIM}?{_ANSI_RST}"
 
+            _pnl_s = _fmt_compact(_pnl, _C_PNL)
+            _mfe_s = _fmt_compact(_mfe, _C_MFE)
+            _mae_s = _fmt_compact(-abs(_mae), _C_MAE)
             if _compact_table:
                 _dir_s = "L" if _dir == "LONG" else ("S" if _dir == "SHORT" else "?")
                 _row = (
                     f"  {_tid_s:<{_C_ID}} {_mb} {_date_s:<{_C_DATE}} "
                     f"{_bot_s:<{_C_BOT}} {_dc}{_dir_s:<{_C_DIR}}{_ANSI_RST} "
-                    f"{_ansi_cell(f'{_pnl:+.2f}', _pc, _C_PNL)} "
+                    f"{_ansi_cell(_pnl_s, _pc, _C_PNL)} "
                     f"{_ansi_cell(_cap_s, _cap_c, _C_CAP)} "
-                    f"{_ansi_cell(f'+{abs(_mfe):.2f}', _ANSI_G, _C_MFE)} "
-                    f"{_ansi_cell(f'-{abs(_mae):.2f}', _ANSI_R, _C_MAE)} "
+                    f"{_ansi_cell(_mfe_s, _ANSI_G, _C_MFE)} "
+                    f"{_ansi_cell(_mae_s, _ANSI_R, _C_MAE)} "
                     f"{_bars:>{_C_BRS}}  {_ANSI_DIM}{_rsn:<{_C_RSN}}{_ANSI_RST}"
                 )
             else:
@@ -7417,14 +7432,14 @@ class TabbedHUD:
                     f"  {_tid_s:<{_C_ID}} {_mb} {_date_s:<{_C_DATE}} "
                     f"{_dc}{_dir:<{_C_DIR}}{_ANSI_RST} "
                     f"{_sym_s:<{_C_SYM}} {_tf:<{_C_TF}} {_ep_s:>{_C_ENT}} {_xp_s:>{_C_EXT}} "
-                    f"{_ansi_cell(f'{_pnl:+.2f}', _pc, _C_PNL)} "
+                    f"{_ansi_cell(_pnl_s, _pc, _C_PNL)} "
                     f"{_ansi_cell(_cap_s, _cap_c, _C_CAP)} "
-                    f"{_ansi_cell(f'+{abs(_mfe):.2f}', _ANSI_G, _C_MFE)} "
-                    f"{_ansi_cell(f'-{abs(_mae):.2f}', _ANSI_R, _C_MAE)} "
+                    f"{_ansi_cell(_mfe_s, _ANSI_G, _C_MFE)} "
+                    f"{_ansi_cell(_mae_s, _ANSI_R, _C_MAE)} "
                     f"{_bars:>{_C_BRS}}  {_ANSI_DIM}{_rsn:<{_C_RSN}}{_ANSI_RST}"
                 )
             if _row_idx == self._trades_cursor:
-                print(f"\033[7m{_row}\033[0m")  # inverted highlight
+                print(f"\033[7m{_strip_ansi(_row)}\033[0m")
             else:
                 print(_row)
 
@@ -7463,7 +7478,7 @@ class TabbedHUD:
         _pnl = float(t.get("pnl") or 0.0)
         _mfe = self._excursion_usd_for_trade(t, "mfe_points", "mfe")
         _mae = self._excursion_usd_for_trade(t, "mae_points", "mae")
-        _bars = int(t.get("ticks_held") or t.get("bars_held") or 0)
+        _bars = int(t.get("bars_held") or t.get("ticks_held") or 0)
         _rsn_raw = t.get("close_reason") or t.get("exit_reason") or ""
         _rsn = "-" if _rsn_raw in ("", "unknown") else _rsn_raw
         _w2l = t.get("winner_to_loser", False)
@@ -7512,9 +7527,9 @@ class TabbedHUD:
             print(f"  {'%MFE captured:':<16} {_ANSI_R}n/a{_ANSI_RST}  (loss with zero MFE)")
         else:
             print(f"  {'%MFE captured:':<16} {_ANSI_DIM}—{_ANSI_RST}")
-        print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f} USD{_ANSI_RST}  (max favourable account-currency excursion)")
+        print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f} USD{_ANSI_RST}  (max favorable excursion, account currency)")
         print(
-            f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f} USD{_ANSI_RST}  (max adverse account-currency excursion){_ratio_str}"
+            f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f} USD{_ANSI_RST}  (max adverse excursion, account currency){_ratio_str}"
         )
         print(f"  {'Close reason:':<16} {_rsn}")
         _ts = self.training_stats if isinstance(self.training_stats, dict) else {}

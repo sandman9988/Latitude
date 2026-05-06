@@ -503,10 +503,16 @@ class TFAgent:
         # Dynamic entry confidence floor — updated by calibration and runway accuracy.
         # RL-adjusted floor converges separately and is capped relative to the base floor.
         self._entry_conf_dynamic_floor: float = 0.0
-        self._exit_conf_dynamic_floor: float = 0.0
+        # Exit floor is persisted to param_manager and loaded here so it survives restarts.
+        self._exit_conf_dynamic_floor: float = float(
+            self._param_manager.get(self.symbol, "exit_confidence_threshold",
+                                    timeframe=self.tf_label, broker="default", default=0.0) or 0.0)
         # Rolling win-rate EMA for adaptive floor nudging (simplified risk tuner)
         self._win_rate_ema: float = 0.5
         self._win_rate_ema_n: int = 0
+        # DDQN-exit-specific win-rate EMA for exit confidence floor adaptation
+        self._ddqn_exit_win_ema: float = 0.5
+        self._ddqn_exit_n: int = 0
 
         # Entry-time vol/vpin snapshot — recorded at position open for close-time reward adj.
         self._entry_var: float = 0.0
@@ -1646,6 +1652,9 @@ class TFAgent:
         if not math.isfinite(_unrealized):
             LOG.error("[%s %s] Non-finite unrealized P&L: %.4f — force close",
                       self.symbol, self.tf_label, _unrealized)
+            _harv_nf = getattr(getattr(self, "policy", None), "harvester", None)
+            if _harv_nf is not None:
+                _harv_nf.last_close_reason = "non_finite_pnl"
             self._close_position(ts, mid - _pos["direction"] * half_spread)
             return
 
@@ -2026,6 +2035,10 @@ class TFAgent:
 
         100% capture during warm-up (buffer below min_experiences), then throttled
         to _NO_ENTRY_SAMPLE_RATE (5%) once seeded. Mirrors legacy paper DDQN behaviour.
+
+        Reward is the activity monitor's inactivity penalty when the bot has been flat
+        past max_bars_inactive — a small negative signal that discourages learned
+        helplessness (the bot learning that doing nothing is optimal).
         """
         if trig_state is None:
             return
@@ -2041,11 +2054,13 @@ class TFAgent:
             return
         if random.random() >= sample_rate:
             return
+        _am = getattr(self.reward_shaper, "activity_monitor", None)
+        no_entry_reward = _am.get_inactivity_penalty() if _am is not None else 0.0
         try:
             self.policy.add_trigger_experience(
                 state=trig_state,
                 action=0,
-                reward=0.0,
+                reward=no_entry_reward,
                 next_state=trig_state,
                 done=True,
             )
@@ -2119,6 +2134,28 @@ class TFAgent:
                 self._entry_conf_dynamic_floor = max(
                     self._entry_conf_dynamic_floor - 0.01, _floor_min,
                 )
+
+            # DDQN exit floor: track win rate specifically for ddqn_model exits and
+            # adapt the exit confidence floor independently of overall trade win rate.
+            _close_reason = getattr(getattr(self.policy, "harvester", None), "last_close_reason", "") or ""
+            if _close_reason == "ddqn_model":
+                _alpha_ex = 0.15
+                self._ddqn_exit_win_ema = (1.0 - _alpha_ex) * self._ddqn_exit_win_ema + _alpha_ex * (
+                    1.0 if win else 0.0
+                )
+                self._ddqn_exit_n += 1
+                if self._ddqn_exit_n >= 5:
+                    if self._ddqn_exit_win_ema < 0.30:
+                        _old_floor = self._exit_conf_dynamic_floor
+                        self._exit_conf_dynamic_floor = min(self._exit_conf_dynamic_floor + 0.02, 0.80)
+                        if self._exit_conf_dynamic_floor != _old_floor:
+                            LOG.info(
+                                "[%s %s] ExitTuner: ddqn_exit_wr=%.1f%% < 30%% → raise exit floor %.3f → %.3f",
+                                self.symbol, self.tf_label, self._ddqn_exit_win_ema * 100,
+                                _old_floor, self._exit_conf_dynamic_floor,
+                            )
+                    elif self._ddqn_exit_win_ema > 0.55:
+                        self._exit_conf_dynamic_floor = max(self._exit_conf_dynamic_floor - 0.01, 0.0)
 
             # Persist floors periodically
             if self.total_trades % self._RISK_TUNER_SAVE_INTERVAL == 0:
@@ -2563,6 +2600,7 @@ class TFAgent:
             predicted_runway_gross=_runway_gross,
             predicted_runway_net=_runway_net,
             was_winner_to_loser=was_wtl,
+            reward_wtl_net_flag=reward_wtl,
             entry_vpin_z=self._entry_vpin_z,
             entry_var_95=self._entry_var,
             capture_ratio=capture_ratio,
@@ -2595,6 +2633,7 @@ class TFAgent:
             close_cb_size_mult=_close_cb_mult,
             # Exit-side lifecycle reasoning snapshot
             exit_data=self._exit_lifecycle_data,
+            close_reason=_close_reason,
         )
         if _trade_log_saved:
             self._current_trade_id = None
@@ -2657,6 +2696,7 @@ class TFAgent:
         predicted_runway_gross: float = 0.0,
         predicted_runway_net: float = 0.0,
         was_winner_to_loser: bool = False,
+        reward_wtl_net_flag: bool = False,
         entry_vpin_z: float = 0.0,
         entry_var_95: float = 0.0,
         capture_ratio: float = 0.0,
@@ -2689,6 +2729,7 @@ class TFAgent:
         close_cb_size_mult: float = 1.0,
         # Exit-side lifecycle reasoning snapshot
         exit_data: dict | None = None,
+        close_reason: str = "",
     ) -> bool:
         with self._trade_sequence_lock:
             self._trade_sequence += 1
@@ -2766,7 +2807,7 @@ class TFAgent:
             "mae": mae_usd,
             "mfe_points": mfe,
             "mae_points": mae,
-            "close_reason": getattr(getattr(self.policy, "harvester", None), "last_close_reason", "") or "",
+            "close_reason": close_reason or "",
             "capture_ratio": float(capture_ratio),
             "ticks_held": ticks_held,
             "bars_held": bars_held,
@@ -2795,6 +2836,7 @@ class TFAgent:
             "bars_from_mfe_to_exit": bars_from_mfe_to_exit,
             # Trade quality flags
             "winner_to_loser": was_winner_to_loser,
+            "reward_wtl_net_flag": reward_wtl_net_flag,
             "regime": regime,
             # Entry conditions at trade open
             "entry_vpin_z": entry_vpin_z,

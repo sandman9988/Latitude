@@ -131,7 +131,6 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 - See `docs/HUD_REDESIGN.md` for the target HUD information architecture and
   drill-down model.
 
-
 ## Operational Safety
 
 - Do not commit `data/`, `logs/`, `trades/`, `store/`, `.env`, credentials,
@@ -223,3 +222,71 @@ After modifying reward shaper or metrics_calculator:
 ```bash
 python3 -m pytest tests/unit/test_metrics_calculator.py tests/unit/test_reward_calculations.py -v
 ```
+
+## Known Failure Modes — CB Lockout & Threshold Runaway
+
+### Symptom
+Trade rate collapses to near-zero despite bots running (bar_count rising, quote_ok, trade_ok all true).
+Best-performing bots (XAUUSD M5, M1) go completely silent while XAUUSD M240 continues.
+
+### Root causes
+
+#### 1. Permanent CB re-trip from stale return history
+
+Each bot's `data/paper_{BOT}/circuit_breakers.json` persists the return history across restarts.
+A single large loss (e.g., emergency stop -$37 on a $10k paper account) can permanently
+hold the Sortino ratio below threshold. On cooldown expiry, `reset_if_cooldown_elapsed()`
+clears the trip but `check_all()` immediately re-trips on the same frozen returns.
+The bot takes no trades → no new returns enter the array → infinite trip/reset loop.
+
+The same pattern applies to `consecutive_losses`: 5 back-to-back losses stick in the
+history and cause permanent re-tripping if no trades clear them.
+
+#### 2. `entry_confidence_threshold` runaway feedback loop
+
+`_update_risk_feedback_thresholds()` persists the floor to `entry_confidence_threshold` via
+`param_manager.set_value()`. The cap is `_base_floor + 0.10` — but `_base_floor` is re-read
+from the *already-saved* parameter each call. Each save raises the baseline for the next cap,
+compounding with every losing trade. Observed drift: 0.6 → 0.9 within a single losing session.
+In paper mode the floor is logged not enforced at the hub level, but the trigger agent's
+`_confidence_gate_blocked` uses the persisted value and does enforce it.
+
+#### 3. `feasibility_threshold` stuck at 1.0
+
+The zero-MFE step in `trigger_agent.py` increments `feasibility_threshold` when MFE is zero.
+If this runs unchecked it can hit 1.0 — an impossible gate that blocks all model-path entries.
+
+### Diagnosis
+
+```bash
+python3 - <<'EOF'
+import json, os
+from datetime import datetime, timezone
+now = datetime.now(timezone.utc)
+for bot in ["XAUUSD_M5","XAUUSD_M1","XAUUSD_M15","XAUUSD_M30","XAUUSD_M60","XAUUSD_M240",
+            "BTCUSD_M1","BTCUSD_M5","BTCUSD_M30","BTCUSD_M60","BTCUSD_M240"]:
+    cb = json.load(open(f"data/paper_{bot}/circuit_breakers.json"))
+    lp_raw = json.load(open(f"data/paper_{bot}/learned_parameters.json"))
+    lp = lp_raw.get('data', lp_raw)
+    inst = lp.get('instruments', {}).get(f"{bot}_default", {}).get('params', {})
+    tripped = [k for k in ("sortino","kurtosis","drawdown","consecutive_losses")
+               if cb.get(k,{}).get("is_tripped")]
+    ect = inst.get('entry_confidence_threshold',{}).get('value','?')
+    feas = inst.get('feasibility_threshold',{}).get('value','?')
+    print(f"{bot:<20} CB={'TRIPPED:'+','.join(tripped) if tripped else 'CLEAR':<30} entry_conf={ect}  feas={feas}")
+EOF
+```
+
+### Fix
+
+```bash
+python3 scripts/fix_cb_lockout.py
+```
+
+Safe to run while bots are live. Atomically:
+
+- Clears return histories and trip state (CB thresholds preserved — self-healing continues)
+- Resets `entry_confidence_threshold` to 0.6 for bots where it drifted above 0.65
+- Resets `feasibility_threshold` to 0.5 for bots where it hit the impossible-gate range (≥ 0.95)
+
+Creates timestamped `.pre_fix_*.bak` backups beside each modified file.

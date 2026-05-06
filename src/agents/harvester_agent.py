@@ -250,6 +250,39 @@ class HarvesterAgent(AgentTrainingMixin):
             return True
         return False
 
+    def _check_late_adverse_exit(self, mfe_pct: float, mae_pct: float, ticks_held: int) -> bool:
+        """Exit a slow-bleeding position that has stalled past the early-adverse window.
+
+        After early_adverse_ticks, there is no mechanism to catch a position that
+        accumulates losses with negligible MFE development — it drifts until the
+        emergency stop fires at full stop_loss_pct. This guard closes it earlier.
+
+        Fires when ALL of:
+        - ticks_held > early_adverse_ticks (past the early window)
+        - mfe_pct < trailing_stop_activation_pct (no profit has developed)
+        - mae_pct >= late_adverse_min_mae_pct (loss is meaningful, not just noise)
+        - mae_pct >= late_adverse_mae_ratio × mfe_pct (losses dominate gains)
+        """
+        early_ticks = int(max(1, round(self.early_adverse_ticks)))
+        if ticks_held <= early_ticks:
+            return False
+        if mfe_pct >= self.trailing_stop_activation_pct:
+            return False
+        if mae_pct < self.late_adverse_min_mae_pct:
+            return False
+        if mfe_pct > FLOAT_EPSILON and mae_pct < self.late_adverse_mae_ratio * mfe_pct:
+            return False
+        LOG.warning(
+            "[HARVESTER] Late-adverse exit: ticks=%d>%d MFE=%.3f%%<%.3f%% MAE=%.3f%%>=%.1fx MFE → CLOSE",
+            ticks_held,
+            early_ticks,
+            mfe_pct,
+            self.trailing_stop_activation_pct,
+            mae_pct,
+            self.late_adverse_mae_ratio,
+        )
+        return True
+
     def _check_protective_stops(
         self,
         mfe: float,
@@ -304,6 +337,10 @@ class HarvesterAgent(AgentTrainingMixin):
             LOG.info("[HARVESTER] Protective micro-winner exit → CLOSE")
             self.last_close_reason = "micro_winner"
             return 1, 0.80
+        mae_pct = (mae / entry_price) * PCT_SCALE
+        if self._check_late_adverse_exit(mfe_pct, mae_pct, ticks_held):
+            self.last_close_reason = "late_adverse"
+            return 1, 0.92
         if predicted_runway > 0 and mfe_pct > 0:
             runway_capture = self._runway_capture_ratio(mfe_pct, predicted_runway)
             runway_capture_floor = self._get_param("runway_capture_floor", 0.55)
@@ -885,6 +922,15 @@ class HarvesterAgent(AgentTrainingMixin):
             "harvester_early_adverse_mfe_ceiling_pct", 0.08 * timeframe_scale,
         )
         self.early_adverse_ticks = round(self._get_param("harvester_early_adverse_ticks", 120))
+        # Late-adverse guard: catches slow-bleeding positions after early window expires.
+        # Fires when MAE >= ratio × MFE and MFE < trailing activation — position has
+        # never developed profit but is accumulating losses past the early-adverse window.
+        self.late_adverse_mae_ratio = max(
+            1.5, min(10.0, float(self._get_param("harvester_late_adverse_mae_ratio", 4.0))),
+        )
+        self.late_adverse_min_mae_pct = self._get_param(
+            "harvester_late_adverse_min_mae_pct", 0.08 * timeframe_scale,
+        )
         self.chop_soft_mult = self._get_param("harvester_chop_soft_mult", 0.80)
         self.chop_hard_mult = self._get_param("harvester_chop_hard_mult", 0.90)
         LOG.info(

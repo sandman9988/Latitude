@@ -769,7 +769,7 @@ class RewardShaper:
             negative_exit_mult = WTL_NEGATIVE_EXIT_MULT if reward_pnl < 0 else 1.0
             reversal_severity = max(0.0, min(1.0, -reward_pnl / mfe)) if mfe > 0 and reward_pnl < 0 else 0.0
             severity_mult = 1.0 + (reversal_severity * WTL_REVERSAL_SEVERITY_MULT)
-            r_wtl = -wtl_mult * giveback_ratio * negative_exit_mult * severity_mult
+            r_wtl = max(-5.0, -wtl_mult * giveback_ratio * negative_exit_mult * severity_mult)
         else:
             r_wtl = 0.0
 
