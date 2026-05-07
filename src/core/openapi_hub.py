@@ -2070,20 +2070,30 @@ class TFAgent:
     def _add_replay_experiences(self, trigger_reward: float, capture_reward: float) -> None:
         if self._entry_state is None:
             return
-        # For forced closes (max-loss cap, circuit breakers) _exit_state is None —
-        # fall back to the last known harvester state so the CLOSE experience is not lost.
-        if self._exit_state is None:
+        # Resolve harvester exit state (window, harvester_features) separately from
+        # _entry_state which is trigger-shaped (window, trigger_features).  Mixing
+        # them causes a shape mismatch in the respective DDQNNetwork linear layers.
+        harv_exit = self._exit_state
+        if harv_exit is None:
             _harv_last = getattr(getattr(self.policy, "harvester", None), "last_state", None)
-            self._exit_state = _harv_last.copy() if _harv_last is not None else self._entry_state
+            if _harv_last is not None:
+                harv_exit = _harv_last.copy()
         try:
+            # Trigger experience: both state and next_state are trigger-shaped.
+            # done=True → next_state is zeroed out in the Bellman target, but the
+            # network still forward-passes it so shapes must match state_dim.
             self.policy.add_trigger_experience(
                 state=self._entry_state, action=self._entry_action,
-                reward=trigger_reward, next_state=self._exit_state, done=True,
+                reward=trigger_reward, next_state=self._entry_state, done=True,
             )
-            self.policy.add_harvester_experience(
-                state=self._exit_state, action=1,
-                reward=capture_reward, next_state=self._exit_state, done=True,
-            )
+            # Harvester experience: skip when no harvester state exists (very short
+            # trades where the harvester never computed a state) to avoid injecting
+            # trigger-shaped (window, 18) data into a buffer that expects (window, 21).
+            if harv_exit is not None:
+                self.policy.add_harvester_experience(
+                    state=harv_exit, action=1,
+                    reward=capture_reward, next_state=harv_exit, done=True,
+                )
         except Exception as e:
             LOG.debug("[%s %s] add_experience error: %s", self.symbol, self.tf_label, e)
         self._entry_state = None
