@@ -52,6 +52,12 @@ All price-based tests should use the session-scoped fixtures from `tests/conftes
 which load real paper-trading data (`data/training_cache_XAUUSD_M5.jsonl`,
 `data/training_cache_XAUUSD_M1.jsonl`, `data/training_cache_BTCUSD_M1.jsonl`).
 
+`data/trade_log.jsonl` (4 800+ live paper trades) is available for analytics tests.
+Use a `_trade_log_to_df()` helper to map its fields to whatever schema the module
+under test expects — see `tests/unit/test_trade_analyzer_extended.py` for the pattern.
+`pd.to_datetime()` on these timestamps must use `format='ISO8601'` — the log contains
+a mix of `2026-02-09T20:30:02.315648+00:00` and `2026-04-25T22:26:00+00:00` (no µs).
+
 After modifying `openapi_hub.py` P&L or trade log paths, run:
 
 ```bash
@@ -64,9 +70,15 @@ After modifying reward shaper or metrics_calculator:
 python3 -m pytest tests/unit/test_metrics_calculator.py tests/unit/test_reward_calculations.py -v
 ```
 
+After modifying `src/monitoring/trade_analyzer.py`:
+
+```bash
+python3 -m pytest tests/unit/test_trade_analyzer.py tests/unit/test_trade_analyzer_extended.py -v
+```
+
 ## Running Tests — CRITICAL
 
-**Never run `python -m pytest` without a target.** 2440 tests across 104 files will OOM-kill (exit 137).
+**Never run `python -m pytest` without a target.** ~2420 tests across ~90 files will OOM-kill (exit 137).
 
 Always target a subset:
 
@@ -397,7 +409,7 @@ slower configured rate, not whatever a stale checkpoint recorded.
 Global 5-level context hierarchy across all 7 tabs: Mode → Portfolio → Instrument → Instrument/TF → Period Detail.
 
 | Key | Action |
-|-----|--------|
+| --- | ------ |
 | `Enter` | Drill down into highlighted row |
 | `Esc` | Drill up one level |
 | `↑`/`↓` or `j`/`k` | Move row selection |
