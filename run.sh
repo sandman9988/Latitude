@@ -14,6 +14,9 @@ NC='\033[0m' # No Color
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
+if [ -d "$SCRIPT_DIR/.venv/bin" ]; then
+    export PATH="$SCRIPT_DIR/.venv/bin:$PATH"
+fi
 
 # Logging
 mkdir -p logs 2>/dev/null || true
@@ -149,7 +152,8 @@ print('0')
         else
             log "${YELLOW}⚠ config/rocm_env.sh not found - using defaults${NC}"
             # Set essential ROCm variables
-            export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.0.2}"
+            export HSA_OVERRIDE_GFX_VERSION="${HSA_OVERRIDE_GFX_VERSION:-11.0.0}"
+            export HSA_ENABLE_SDMA="${HSA_ENABLE_SDMA:-0}"
             export MIOPEN_FIND_MODE="${MIOPEN_FIND_MODE:-1}"
             export USE_MIOPEN="${USE_MIOPEN:-1}"
             export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"

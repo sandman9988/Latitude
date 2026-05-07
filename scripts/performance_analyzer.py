@@ -33,6 +33,7 @@ sys.path.insert(0, str(_ROOT))
 DATA_DIR = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
 TRADE_LOG = DATA_DIR / "trade_log.jsonl"
 HEALTH_FILE = DATA_DIR / "performance_health.json"
+PARAM_RELOAD_FILE = "learned_parameters_reload.json"
 
 LOG = logging.getLogger("perf_analyzer")
 
@@ -178,6 +179,16 @@ def load_recent_trades(hours: float = 24.0) -> list[dict[str, Any]]:
 
 # ── metrics computation ────────────────────────────────────────────────────────
 
+def _bounded_capture_ratio(trade: dict[str, Any]) -> float | None:
+    """Return capture ratio clipped to the health-signal range [-1, 1]."""
+    raw = trade.get("capture_ratio")
+    if raw is None:
+        return None
+    try:
+        return max(-1.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return None
+
 def compute_bot_metrics(trades: list[dict[str, Any]]) -> dict[str, BotMetrics]:
     by_bot: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for t in trades:
@@ -218,7 +229,7 @@ def compute_bot_metrics(trades: list[dict[str, Any]]) -> dict[str, BotMetrics]:
             vals = [key_fn(t) for t in _trades if key_fn(t) is not None]
             return sum(vals) / len(vals) if vals else 0.0
 
-        m.mean_capture        = _mean(lambda t: t.get("capture_ratio"))
+        m.mean_capture        = _mean(_bounded_capture_ratio)
         m.mean_trigger_reward = _mean(lambda t: t.get("trigger_reward"))
         m.mean_harvest_reward = _mean(lambda t: t.get("reward_harvester_total"))
         m.mean_wtl_penalty    = _mean(lambda t: t.get("reward_wtl_penalty"))
@@ -267,7 +278,7 @@ def compute_fleet_metrics(
     f.runway_wr     = n_run_w  / n_run  if n_run  > 0 else 0.0
     f.emergency_rate = n_emerg / len(trades) if trades else 0.0
 
-    captures = [t.get("capture_ratio") for t in trades if t.get("capture_ratio") is not None]
+    captures = [c for t in trades if (c := _bounded_capture_ratio(t)) is not None]
     f.mean_capture = sum(captures) / len(captures) if captures else 0.0
 
     trigger_r = [t.get("trigger_reward", 0.0) or 0.0 for t in trades]
@@ -516,7 +527,21 @@ def apply_corrections(
         LOG.error("Cannot import LearnedParametersManager — no corrections applied")
         return applied
 
-    mgr = LearnedParametersManager(DATA_DIR / "learned_parameters.json")
+    managers: dict[Path, LearnedParametersManager] = {}
+    changed_paths: set[Path] = set()
+
+    def _manager(path: Path) -> LearnedParametersManager:
+        resolved = path.resolve()
+        if resolved not in managers:
+            managers[resolved] = LearnedParametersManager(path)
+        return managers[resolved]
+
+    def _target_paths(symbol: str, timeframe: str) -> list[Path]:
+        paths = [DATA_DIR / "learned_parameters.json"]
+        scoped = DATA_DIR / f"paper_{symbol}_{timeframe}" / "learned_parameters.json"
+        if scoped.exists():
+            paths.append(scoped)
+        return paths
 
     # De-duplicate: per (symbol, timeframe, param_name) apply only the largest delta
     dedup: dict[tuple[str, str, str], Anomaly] = {}
@@ -531,9 +556,10 @@ def apply_corrections(
         if symbol == "FLEET":
             # Apply to all active bots for fleet-wide corrections
             try:
+                mgr = _manager(DATA_DIR / "learned_parameters.json")
                 targets = [
-                    (s.split("_")[0], "_".join(s.split("_")[1:]))
-                    for s in mgr.instruments
+                    (instrument.symbol, instrument.timeframe)
+                    for instrument in mgr.instruments.values()
                 ]
             except Exception:
                 continue
@@ -541,28 +567,49 @@ def apply_corrections(
             targets = [(symbol, timeframe)]
 
         for sym, tf in targets:
-            try:
-                current = mgr.get_param(sym, param_name, tf)
-                new_val = current + a.delta
-                # get_param may not exist — use set_value which clamps to bounds
-                mgr.set_value(sym, param_name, new_val, timeframe=tf)
-                final = mgr.get_param(sym, param_name, tf)
-                msg = (f"[{a.code}] {sym} {tf}: {param_name} "
-                       f"{current:.4f} → {final:.4f} (Δ{a.delta:+.4f})")
-                applied.append(msg)
-                if verbose:
-                    LOG.info("CORRECTION: %s", msg)
-            except Exception as e:
-                LOG.warning("Could not apply correction for %s %s %s: %s", sym, tf, param_name, e)
+            for path in _target_paths(sym, tf):
+                try:
+                    mgr = _manager(path)
+                    current = mgr.get(sym, param_name, timeframe=tf)
+                    new_val = current + a.delta
+                    mgr.set_value(sym, param_name, new_val, timeframe=tf)
+                    final = mgr.get(sym, param_name, timeframe=tf)
+                    changed_paths.add(path.resolve())
+                    msg = (
+                        f"[{a.code}] {sym} {tf} {path}: {param_name} "
+                        f"{current:.4f} → {final:.4f} (Δ{a.delta:+.4f})"
+                    )
+                    applied.append(msg)
+                    if verbose:
+                        LOG.info("CORRECTION: %s", msg)
+                except Exception as e:
+                    LOG.warning("Could not apply correction for %s %s %s in %s: %s", sym, tf, param_name, path, e)
 
-    if applied:
-        try:
+    for resolved, mgr in managers.items():
+        if resolved in changed_paths:
             mgr.save()
-            LOG.info("Saved %d correction(s) to learned_parameters.json", len(applied))
-        except Exception as e:
-            LOG.error("Failed to save learned_parameters.json: %s", e)
+    if applied:
+        LOG.info("Saved %d correction(s) across %d learned-parameter file(s)", len(applied), len(changed_paths))
+        _request_runtime_param_reload()
 
     return applied
+
+
+def _request_runtime_param_reload() -> None:
+    """Ask running OpenAPI hubs to reload scoped learned-parameter files."""
+    try:
+        payload = {
+            "active": True,
+            "reason": "performance_analyzer_auto_heal",
+            "generated_at": datetime.now(UTC).isoformat(),
+        }
+        path = DATA_DIR / PARAM_RELOAD_FILE
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        LOG.info("Requested runtime learned-parameter reload via %s", path)
+    except Exception as e:
+        LOG.warning("Could not request runtime learned-parameter reload: %s", e)
 
 
 # ── report ────────────────────────────────────────────────────────────────────

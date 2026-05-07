@@ -86,6 +86,7 @@ _CTRL_KILL_SWITCH = "kill_switch.json"
 _CTRL_CB_RESET = "circuit_breaker_reset.json"
 _CTRL_KG_RESET = "kurtosis_gate_reset.json"
 _CTRL_EPSILON_OVERRIDE = "epsilon_override.json"
+_CTRL_PARAM_RELOAD = "learned_parameters_reload.json"
 _RUNWAY_BIAS_LIMIT_POINTS = 12.0
 _RUNWAY_ADJUST_MIN_SCALE = 0.35
 _RUNWAY_ADJUST_MAX_SCALE = 1.5
@@ -522,6 +523,7 @@ class TFAgent:
         self._entry_dynamic_floor_applied: float = 0.0
         self._entry_conf_margin: float = 0.0
         self._entry_win_rate_ema: float = 0.5
+
         self._entry_total_trades: int = 0
         self._entry_equity: float = 0.0
         self._entry_conf_calib_err: float = 0.0
@@ -556,6 +558,72 @@ class TFAgent:
         LOG.info("[%s %s] TFAgent initialized | qty=%.2f contract=%.0f equity=%.0f training=%s",
                  symbol, self.tf_label, qty, contract_size, starting_equity,
                  "ENABLED" if online_learning else "DISABLED")
+
+    def reload_learned_parameters(self) -> None:
+        """Reload this bot's scoped learned parameters and refresh cached thresholds."""
+        self._param_manager.load()
+        self._exit_conf_dynamic_floor = float(
+            self._param_manager.get(
+                self.symbol,
+                "exit_confidence_threshold",
+                timeframe=self.tf_label,
+                broker="default",
+                default=self._exit_conf_dynamic_floor,
+            )
+            or self._exit_conf_dynamic_floor
+        )
+        trigger = getattr(self.policy, "trigger", None)
+        if trigger is not None and not getattr(trigger, "disable_gates", False):
+            trigger.confidence_floor = float(
+                self._param_manager.get(
+                    self.symbol,
+                    "confidence_floor",
+                    timeframe=self.tf_label,
+                    broker="default",
+                    default=getattr(trigger, "confidence_floor", 0.55),
+                )
+                or getattr(trigger, "confidence_floor", 0.55)
+            )
+            if not getattr(trigger, "paper_mode", False):
+                trigger.feasibility_threshold = float(
+                    self._param_manager.get(
+                        self.symbol,
+                        "feasibility_threshold",
+                        timeframe=self.tf_label,
+                        broker="default",
+                        default=getattr(trigger, "feasibility_threshold", 0.5),
+                    )
+                    or getattr(trigger, "feasibility_threshold", 0.5)
+                )
+            for attr, param_name, default in (
+                ("entry_conf_deadzone_low", "entry_conf_deadzone_low", 0.45),
+                ("entry_conf_deadzone_high", "entry_conf_deadzone_high", 0.55),
+                ("high_conf_risk_low", "high_conf_risk_low", 0.80),
+                ("high_conf_risk_high", "high_conf_risk_high", 0.90),
+                ("high_conf_vol_z_gate", "high_conf_vol_z_gate", 1.0),
+                ("high_conf_vpin_z_gate", "high_conf_vpin_z_gate", 2.0),
+            ):
+                setattr(
+                    trigger,
+                    attr,
+                    float(
+                        self._param_manager.get(
+                            self.symbol,
+                            param_name,
+                            timeframe=self.tf_label,
+                            broker="default",
+                            default=getattr(trigger, attr, default),
+                        )
+                        or getattr(trigger, attr, default)
+                    ),
+                )
+        LOG.info(
+            "[%s %s] Reloaded learned parameters: confidence_floor=%.3f exit_floor=%.3f",
+            self.symbol,
+            self.tf_label,
+            float(getattr(trigger, "confidence_floor", 0.0) if trigger is not None else 0.0),
+            self._exit_conf_dynamic_floor,
+        )
 
     # ---- tick ingestion ---------------------------------------------------
 
@@ -3538,6 +3606,19 @@ class OpenAPIHub:
                 LOG.debug("[HUB] Epsilon override error: %s", _e)
             break
 
+    def _poll_param_reload(self) -> None:
+        for _p in self._ctrl_paths(_CTRL_PARAM_RELOAD):
+            if not _p.exists():
+                continue
+            try:
+                _p.unlink(missing_ok=True)
+                for agent in self.agents.values():
+                    agent.reload_learned_parameters()
+                LOG.info("[HUB] Learned parameters reloaded via control file (%s)", self.symbol)
+            except Exception as _e:
+                LOG.exception("[HUB] Learned-parameter reload error: %s", _e)
+            break
+
     def _poll_kg_reset(self) -> None:
         for _p in self._ctrl_paths(_CTRL_KG_RESET):
             if not _p.exists():
@@ -3561,6 +3642,7 @@ class OpenAPIHub:
                 self._poll_cb_reset()
                 self._poll_kg_reset()
                 self._poll_epsilon_override()
+                self._poll_param_reload()
             except Exception as _e:
                 LOG.exception("[HUB] Control poll error: %s", _e)
             time.sleep(5.0)

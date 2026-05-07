@@ -665,6 +665,10 @@ def _reconcile_offline_training(base_env: dict[str, str]) -> None:
         _OFFLINE_RESUME_ENV: "1",
         _OFFLINE_RESTART_COUNT_ENV: str(restart_count + 1),
         "PYTHONUNBUFFERED": "1",
+        # Disable SDMA rings for ROCm compute — avoids sdma0 timeout → MES deadlock
+        # cascade that causes GPU resets and cursor stuttering on RDNA3 (RX 7600)
+        "HSA_ENABLE_SDMA": "0",
+        "HSA_OVERRIDE_GFX_VERSION": "11.0.0",
     }
     with open(_OFFLINE_SUPERVISOR_LOG, "a") as log_fh:
         log_fh.write(
@@ -1644,6 +1648,8 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915
                         _PROJECT_ROOT / "scripts" / "performance_analyzer.py",
                     )
                     _mod = _ilu.module_from_spec(_spec)
+                    import sys as _sys  # noqa: PLC0415
+                    _sys.modules[_spec.name] = _mod
                     _spec.loader.exec_module(_mod)
                     _mod.run_analysis(hours=4.0, auto_heal=True, min_trades=3, quiet=True)
                     LOG.info("Performance analyzer completed (cycle %d)", _analyzer_cycle)
