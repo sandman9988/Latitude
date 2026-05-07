@@ -43,8 +43,8 @@ class TradeAnalyzer:
     def _prepare_data(self) -> None:
         """Prepare data for analysis."""
         # Convert timestamps
-        self.df["entry_time"] = pd.to_datetime(self.df["entry_time"])
-        self.df["exit_time"] = pd.to_datetime(self.df["exit_time"])
+        self.df["entry_time"] = pd.to_datetime(self.df["entry_time"], format="ISO8601")
+        self.df["exit_time"] = pd.to_datetime(self.df["exit_time"], format="ISO8601")
 
         # Convert numeric columns
         numeric_cols = [
@@ -324,54 +324,82 @@ class TradeAnalyzer:
         return obj
 
     def _print_mfe_mae_section(self, stats: dict) -> None:
-        """Print MFE/MAE and duration sub-sections (only when data is available)."""
         if stats["avg_mfe"] is not None:
-            pass
+            print("\n── MFE/MAE ANALYSIS ──────────────────────────────────")
+            print(f"  Avg MFE:              {stats['avg_mfe']:.2f}")
+            print(f"  Avg MAE:              {stats['avg_mae']:.2f}")
+            if stats.get("avg_capture_efficiency") is not None:
+                print(f"  Avg capture:          {stats['avg_capture_efficiency']:.3f}")
 
         if stats["avg_duration_seconds"] is not None:
-            pass
+            print("\n── DURATION ANALYSIS ─────────────────────────────────")
+            avg_min = stats["avg_duration_seconds"] / 60
+            med_min = stats["median_duration_seconds"] / 60
+            print(f"  Avg duration:         {avg_min:.1f} min")
+            print(f"  Median duration:      {med_min:.1f} min")
 
     def _print_dual_agent_section(self, dual: dict) -> None:
-        """Print dual-agent analysis sub-section."""
         if "error" in dual:
             return
+        print("\n── DUAL-AGENT ANALYSIS ───────────────────────────────")
         if dual.get("trigger_quality_distribution"):
-            for _quality, _count in sorted(dual["trigger_quality_distribution"].items()):
-                pass
+            print("  Trigger quality:")
+            for quality, count in sorted(dual["trigger_quality_distribution"].items()):
+                print(f"    {quality:<12} {count}")
         if dual.get("harvester_quality_distribution"):
-            for _quality, _count in sorted(dual["harvester_quality_distribution"].items()):
-                pass
+            print("  Harvester quality:")
+            for quality, count in sorted(dual["harvester_quality_distribution"].items()):
+                print(f"    {quality:<12} {count}")
         if dual.get("avg_runway_error_pct") is not None:
-            pass
+            print(f"  Avg runway error:     {dual['avg_runway_error_pct']:.1f}%")
 
     def print_report(self) -> None:
         """Print comprehensive analysis report to console."""
         stats = self.get_summary_stats()
 
+        print("\n══════════════════════════════════════════════════════")
+        print("  TRADE ANALYSIS REPORT")
+        print(f"  Source: {self.csv_path.name}  |  Trades: {stats['total_trades']}")
+        print("══════════════════════════════════════════════════════")
 
+        print("\n── OVERALL PERFORMANCE ───────────────────────────────")
+        print(f"  Win rate:             {stats['win_rate']:.1%}")
+        print(f"  Total PnL:            {stats['total_pnl']:.2f}")
+        print(f"  Avg win:              {stats['avg_win']:.2f}")
+        print(f"  Avg loss:             {stats['avg_loss']:.2f}")
+        print(f"  Profit factor:        {stats['profit_factor']:.2f}")
+        print(f"  Expectancy:           {stats['expectancy']:.2f}")
+
+        print("\n── RISK METRICS ──────────────────────────────────────")
+        print(f"  Sharpe ratio:         {stats['sharpe_ratio']:.3f}")
+        print(f"  Sortino ratio:        {stats['sortino_ratio']:.3f}")
+        print(f"  Max drawdown:         {stats['max_drawdown']:.2f}")
+        print(f"  Max win streak:       {stats['max_win_streak']}")
+        print(f"  Max loss streak:      {stats['max_loss_streak']}")
 
         self._print_mfe_mae_section(stats)
 
-        # Hourly analysis
         hourly = self.analyze_by_hour().head(5)
-        for _hour, _row in hourly.iterrows():
-            pass
+        print("\n── BEST HOURS ────────────────────────────────────────")
+        for hour, row in hourly.iterrows():
+            print(f"  {hour:02d}:00  PnL={row['total_pnl']:>8.2f}  WR={row['win_rate']:.1%}  n={int(row['num_trades'])}")
 
-        # Daily analysis
         daily = self.analyze_by_day()
-        for _day, _row in daily.iterrows():
-            pass
+        print("\n── BEST DAYS ─────────────────────────────────────────")
+        for day, row in daily.iterrows():
+            print(f"  {day:<12} PnL={row['total_pnl']:>8.2f}  WR={row['win_rate']:.1%}  n={int(row['num_trades'])}")
 
         self._print_dual_agent_section(self.analyze_dual_agents())
 
-        # Best and worst trades
         best = self.find_best_trades(5)
-        for _, _trade in best.iterrows():
-            pass
+        print("\n── BEST TRADES ───────────────────────────────────────")
+        for _, trade in best.iterrows():
+            print(f"  #{int(trade['trade_num'])}  {trade['direction']:<5}  PnL={trade['pnl']:>8.2f}")
 
         worst = self.find_worst_trades(5)
-        for _, _trade in worst.iterrows():
-            pass
+        print("\n── WORST TRADES ──────────────────────────────────────")
+        for _, trade in worst.iterrows():
+            print(f"  #{int(trade['trade_num'])}  {trade['direction']:<5}  PnL={trade['pnl']:>8.2f}")
 
 
 

@@ -16,6 +16,8 @@ import pytest
 
 from src.monitoring.trade_analyzer import TradeAnalyzer, main
 
+_TRADE_LOG = Path(__file__).parent.parent.parent / "data" / "trade_log.jsonl"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -314,3 +316,109 @@ class TestCaptureEfficiencyExtended:
         result = TradeAnalyzer(path).analyze_capture_efficiency()
         assert result["losses_avg"] is not None
         assert result["wins_avg"] is None  # no wins
+
+
+# ---------------------------------------------------------------------------
+# Real-data tests — use live data/trade_log.jsonl when available
+# ---------------------------------------------------------------------------
+def _parse_duration(entry_t: str, exit_t: str) -> float:
+    from dateutil import parser as dtp
+    try:
+        return max(0.0, (dtp.parse(exit_t) - dtp.parse(entry_t)).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _capture(pnl: float, mfe: float, raw: dict) -> float:
+    if raw.get("capture_ratio") is not None:
+        return float(raw["capture_ratio"])
+    return pnl / mfe if mfe > 0 else 0.0
+
+
+def _to_row(i: int, r: dict, equity: float) -> dict:
+    entry_t = r["entry_time"]
+    exit_t = r.get("exit_time") or entry_t
+    pnl = float(r["pnl"])
+    mfe = float(r.get("mfe") or 0.0)
+    mae = float(r.get("mae") or 0.0)
+    ep = float(r.get("entry_price") or 0.0)
+    return {
+        "trade_num": i + 1,
+        "entry_time": entry_t,
+        "exit_time": exit_t,
+        "pnl": pnl,
+        "result": "WIN" if pnl > 0 else "LOSS",
+        "mfe": mfe,
+        "mae": mae,
+        "entry_price": ep,
+        "exit_price": float(r.get("exit_price") or ep),
+        "capture_efficiency": _capture(pnl, mfe, r),
+        "equity_after": equity,
+        "duration_seconds": _parse_duration(entry_t, exit_t),
+        "direction": r.get("direction", "LONG"),
+        "harvester_quality": r.get("harvester_quality", ""),
+    }
+
+
+def _trade_log_to_df() -> pd.DataFrame:
+    """Convert data/trade_log.jsonl to the column layout TradeAnalyzer expects."""
+    records = []
+    equity = 10_000.0
+    with open(_TRADE_LOG) as f:
+        for i, raw in enumerate(f):
+            line = raw.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            if r.get("pnl") is None or r.get("entry_time") is None:
+                continue
+            equity += float(r["pnl"])
+            records.append(_to_row(i, r, equity))
+    return pd.DataFrame(records)
+
+
+@pytest.fixture(scope="module")
+def real_csv_path(tmp_path_factory):
+    if not _TRADE_LOG.exists():
+        pytest.skip("data/trade_log.jsonl not found")
+    df = _trade_log_to_df()
+    if len(df) < 50:
+        pytest.skip(f"Only {len(df)} valid trades — need ≥50")
+    path = str(tmp_path_factory.mktemp("real") / "real_trades.csv")
+    df.to_csv(path, index=False)
+    return path
+
+
+class TestTradeAnalyzerRealData:
+    """TradeAnalyzer smoke tests against live data/trade_log.jsonl."""
+
+    def test_print_report_does_not_crash(self, real_csv_path, capsys):
+        ta = TradeAnalyzer(real_csv_path)
+        ta.print_report()
+        out = capsys.readouterr().out
+        assert "TRADE ANALYSIS REPORT" in out
+        assert "OVERALL PERFORMANCE" in out
+        assert "RISK METRICS" in out
+
+    def test_win_rate_is_fraction(self, real_csv_path):
+        stats = TradeAnalyzer(real_csv_path).get_summary_stats()
+        assert 0.0 <= stats["win_rate"] <= 1.0
+
+    def test_mfe_mae_section_present(self, real_csv_path, capsys):
+        ta = TradeAnalyzer(real_csv_path)
+        ta.print_report()
+        out = capsys.readouterr().out
+        assert "MFE/MAE ANALYSIS" in out
+
+    def test_capture_efficiency_range(self, real_csv_path):
+        result = TradeAnalyzer(real_csv_path).analyze_capture_efficiency()
+        assert "error" not in result
+        assert isinstance(result["overall_avg"], float)
+
+    def test_export_valid_json(self, real_csv_path, tmp_path):
+        out = str(tmp_path / "real_export.json")
+        TradeAnalyzer(real_csv_path).export_analysis(out)
+        data = json.loads(Path(out).read_text())
+        assert data["metadata"]["total_trades"] >= 50
+        assert "summary" in data
+        assert "by_hour" in data

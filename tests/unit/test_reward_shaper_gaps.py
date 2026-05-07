@@ -164,8 +164,8 @@ class TestHarvesterRewardKeyErrors:
         assert result["capture_efficiency"] == pytest.approx(-0.8)
         # wtl: -3.0 * clamp(1 - 50/100, 0.5, 2.0) = -3.0 * 0.5 = -1.5
         assert result["wtl_penalty"] == pytest.approx(-1.5)
-        # timing: mae=50/mfe=100=0.5 > 0.3 → -1.0 * (0.5 - 0.3) = -0.2
-        assert result["timing_penalty"] == pytest.approx(-0.2)
+        # timing: mae=50/mfe=100=0.5 > 0.3 → -0.4 * (0.5 - 0.3) = -0.08
+        assert result["timing_penalty"] == pytest.approx(-0.08)
 
 
 # ---------------------------------------------------------------------------
@@ -269,8 +269,8 @@ class TestHarvesterRewardQuality:
             _bars_held=20,
             _bars_from_mfe_to_exit=10,
         )
-        # drawdown_ratio = 60/100 = 0.6 > 0.3 → penalty = -1.0 * (0.6-0.3) = -0.3
-        assert result["timing_penalty"] == pytest.approx(-0.3)
+        # drawdown_ratio = 60/100 = 0.6 > 0.3 → penalty = -0.4 * (0.6-0.3) = -0.12
+        assert result["timing_penalty"] == pytest.approx(-0.12)
 
     def test_timing_zero_when_no_bars(self, shaper):
         """_bars_held=0 or bars_from_mfe=0 → no timing penalty."""
