@@ -782,7 +782,7 @@ class TabbedHUD:
 
     def _handle_mouse_event(self, seq: str) -> None:
         """Handle SGR mouse events: clicks on tabs, wheel scroll in body."""
-        match = re.match(r"<(\d+);(\d+);(\d+)([mM])", seq)
+        match = re.match(r"<?(\d+)[;,](\d+)[;,](\d+)([mM])", seq)
         if not match:
             return
         button = int(match.group(1))
@@ -801,6 +801,35 @@ class TabbedHUD:
             if y == 10 and start <= x <= end:
                 self._activate_tab(tab_id)
                 return
+
+    def _drain_csi_sequence(self, first: str = "", *, timeout: float = 0.20) -> str:
+        """Read the rest of a CSI sequence so partial mouse bytes never leak as keys."""
+        payload = first
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and select.select([sys.stdin.fileno()], [], [], 0.01)[0]:
+            ch = self._read_raw()
+            payload += ch
+            if "@" <= ch <= "~":
+                break
+        return payload
+
+    def _handle_x10_mouse_event(self) -> None:
+        """Handle legacy X10 mouse packets: ESC [ M Cb Cx Cy."""
+        raw = ""
+        deadline = time.monotonic() + 0.20
+        while len(raw) < 3 and time.monotonic() < deadline:
+            if not select.select([sys.stdin.fileno()], [], [], 0.01)[0]:
+                continue
+            raw += self._read_raw()
+        if len(raw) != 3:
+            return
+        button = max(0, ord(raw[0]) - 32)
+        x = max(0, ord(raw[1]) - 32)
+        y = max(0, ord(raw[2]) - 32)
+        event = "M"
+        if button & 3 == 3:
+            event = "m"
+        self._handle_mouse_event(f"{button};{x};{y}{event}")
 
     def start(self) -> None:
         """Start HUD."""
@@ -880,14 +909,13 @@ class TabbedHUD:
                     if self._read_raw() == "~":  # PageUp/PageDown
                         self._scroll_current_body(-10 if seq2 == "5" else 10)
                 elif seq2 == "<":
-                    mouse_seq = ""
-                    deadline = time.monotonic() + 0.05
-                    while time.monotonic() < deadline and select.select([sys.stdin.fileno()], [], [], 0.005)[0]:
-                        ch = self._read_raw()
-                        mouse_seq += ch
-                        if ch in {"m", "M"}:
-                            break
-                    self._handle_mouse_event("<" + mouse_seq)
+                    self._handle_mouse_event("<" + self._drain_csi_sequence(timeout=0.25))
+                elif seq2 == "M":
+                    self._handle_x10_mouse_event()
+                elif seq2.isdigit() or seq2 in {";", ","}:
+                    self._handle_mouse_event(self._drain_csi_sequence(seq2, timeout=0.25))
+                else:
+                    self._drain_csi_sequence(seq2, timeout=0.05)
         elif seq1.lower() == "k":  # Alt+K — emergency kill switch (handle both 'k' and 'K')
             self._handle_kill_switch()
 
@@ -1073,7 +1101,8 @@ class TabbedHUD:
         if not _path.exists():
             return
         try:
-            self._health_report = json.loads(_path.read_text())
+            _payload = json.loads(_path.read_text())
+            self._health_report = _payload if isinstance(_payload, dict) else {}
         except Exception:
             LOG.debug("[HUD] Failed to load performance_health.json", exc_info=True)
 
@@ -4679,12 +4708,18 @@ class TabbedHUD:
         _header_age = f"  {_ANSI_DIM}({_window:.0f}h window{', ' + _age_str if _age_str else ''}){_ANSI_RST}"
         print(f"\n\033[1m🔄 SELF-HEAL\033[0m  {_h_icon} {_h_col}{overall}{_ANSI_RST}{_header_age}")
 
-        anomalies: list = hr.get("anomalies", [])
-        corrections: list = hr.get("corrections_applied", [])
-        fleet: dict = hr.get("fleet", {})
+        anomalies = hr.get("anomalies", [])
+        if not isinstance(anomalies, list):
+            anomalies = []
+        corrections = hr.get("corrections_applied", [])
+        if not isinstance(corrections, list):
+            corrections = []
+        fleet = hr.get("fleet", {})
+        if not isinstance(fleet, dict):
+            fleet = {}
 
         # Fleet summary row
-        _n_trades = int(fleet.get("total_trades", 0))
+        _n_trades = int(fleet.get("total_trades", fleet.get("n_trades", 0)) or 0)
         _wr = float(fleet.get("win_rate", 0)) * 100
         _pf = float(fleet.get("profit_factor", 0))
         _emg = float(fleet.get("emergency_rate", 0)) * 100
@@ -4702,8 +4737,12 @@ class TabbedHUD:
         if anomalies:
             _a_strs = []
             for _a in anomalies[:4]:
-                _bot = f"{_a.get('symbol','?')} {_a.get('timeframe','?')}"
-                _code = _a.get("code", "?")
+                if isinstance(_a, dict):
+                    _bot = f"{_a.get('symbol','?')} {_a.get('timeframe','?')}"
+                    _code = _a.get("code", "?")
+                else:
+                    _bot = "fleet"
+                    _code = str(_a)
                 _a_strs.append(f"{_ANSI_Y}⚡ {_bot} {_code}{_ANSI_RST}")
             print(f"  Anomalies: {'  '.join(_a_strs)}")
             if len(anomalies) > 4:
@@ -4715,6 +4754,9 @@ class TabbedHUD:
         if corrections:
             _c_parts = []
             for _c in corrections[:3]:
+                if not isinstance(_c, dict):
+                    _c_parts.append(_truncate_visible(str(_c), 72))
+                    continue
                 _bot = f"{_c.get('symbol','?')} {_c.get('timeframe','?')}"
                 _param = _c.get("parameter", "?").replace("_", " ")
                 _old = _c.get("old_value")

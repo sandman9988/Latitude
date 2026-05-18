@@ -148,6 +148,30 @@ class TestPidAlive:
             assert ru._pid_alive(999999) is False
 
 
+class TestWatchLock:
+    def test_acquire_watch_lock_blocks_second_owner(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ru, "_WATCH_LOCK_PATH", tmp_path / "run_universe.watch.lock")
+
+        first = ru._acquire_watch_lock()
+        assert first is not None
+        try:
+            second = ru._acquire_watch_lock()
+            assert second is None
+        finally:
+            first.close()
+
+    def test_acquire_watch_lock_reusable_after_close(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ru, "_WATCH_LOCK_PATH", tmp_path / "run_universe.watch.lock")
+
+        first = ru._acquire_watch_lock()
+        assert first is not None
+        first.close()
+
+        second = ru._acquire_watch_lock()
+        assert second is not None
+        second.close()
+
+
 class TestOfflineTrainingSupervisor:
     def test_offline_status_active_detects_unfinished_queue(self):
         status = {"status": "running", "results": [{"status": "done"}, {"status": "queued"}]}

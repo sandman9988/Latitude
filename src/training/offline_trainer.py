@@ -36,9 +36,12 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
+import tempfile
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -822,6 +825,7 @@ class OfflineTrainer:
                 total_train_steps,
                 _gpu_mb,
             )
+            self._save_resume_checkpoint(policy, label, epoch + 1)
         return total_train_steps, total_train_trades
 
     def _run_focused_replay(self, policy, label: str) -> tuple[int, int]:
@@ -897,27 +901,35 @@ class OfflineTrainer:
         _harv = policy.harvester
         _global_bar = epoch_bar_offset + bar_idx
         try:
-            tmp_path = progress_path.with_suffix(".tmp")
-            tmp_path.write_text(
-                json.dumps(
-                    {
-                        "symbol": self.symbol,
-                        "timeframe_minutes": self.timeframe_minutes,
-                        "bar": _global_bar,
-                        "total_bars": total_bars_all_epochs,
-                        "pct": round(_global_bar / total_bars_all_epochs * 100, 1),
-                        "epoch": epoch + 1,
-                        "n_epochs": self.n_epochs,
-                        "train_steps": total_train_steps,
-                        "trades": total_train_trades + len(sim.trades),
-                        "epsilon": round(float(_trig.epsilon), 4),
-                        "beta": round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
-                        "trigger_buf": int(_trig.buffer.size) if _trig.buffer else 0,
-                        "harvester_buf": int(_harv.buffer.size) if _harv.buffer else 0,
-                    },
-                ),
+            payload = {
+                "symbol": self.symbol,
+                "timeframe_minutes": self.timeframe_minutes,
+                "bar": _global_bar,
+                "total_bars": total_bars_all_epochs,
+                "pct": round(_global_bar / total_bars_all_epochs * 100, 1),
+                "epoch": epoch + 1,
+                "n_epochs": self.n_epochs,
+                "train_steps": total_train_steps,
+                "trades": total_train_trades + len(sim.trades),
+                "epsilon": round(float(_trig.epsilon), 4),
+                "beta": round(float(_harv.buffer.beta) if _harv.buffer else 0.4, 4),
+                "trigger_buf": int(_trig.buffer.size) if _trig.buffer else 0,
+                "harvester_buf": int(_harv.buffer.size) if _harv.buffer else 0,
+            }
+            fd, tmp_name = tempfile.mkstemp(
+                dir=progress_path.parent,
+                prefix=f".{progress_path.name}.",
+                suffix=".tmp",
             )
-            tmp_path.replace(progress_path)
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                tmp_path.replace(progress_path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
         except Exception:
             LOG.debug("[OFFLINE] Failed to write progress file: %s", progress_path, exc_info=True)
 
@@ -985,3 +997,35 @@ class OfflineTrainer:
                 LOG.warning("[OFFLINE] Could not save %s weights: %s", agent_name, exc)
 
         return ";".join(paths)
+
+    def _save_resume_checkpoint(self, policy, label: str, epoch: int) -> None:
+        """Persist candidate weights between epochs so interrupted jobs warm-start."""
+        try:
+            weights_path = self._save_weights(policy, label)
+            meta = {
+                "symbol": self.symbol,
+                "timeframe_minutes": self.timeframe_minutes,
+                "label": label,
+                "epoch": int(epoch),
+                "n_epochs": int(self.n_epochs),
+                "weights_path": weights_path,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+            meta_path = self.checkpoint_dir / "offline_resume_metadata.json"
+            fd, tmp_name = tempfile.mkstemp(
+                dir=self.checkpoint_dir,
+                prefix=".offline_resume_metadata.",
+                suffix=".tmp",
+            )
+            tmp = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(meta, handle, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                tmp.replace(meta_path)
+            finally:
+                tmp.unlink(missing_ok=True)
+            LOG.info("[OFFLINE] %s resume checkpoint saved after epoch %d/%d", label, epoch, self.n_epochs)
+        except Exception as exc:
+            LOG.warning("[OFFLINE] %s could not save resume checkpoint: %s", label, exc)

@@ -402,6 +402,59 @@ start_universe_watcher() {
     fi
 }
 
+repo_pids_matching_cmd() {
+    local pattern="$1"
+    local proc pid cwd cmd
+    for proc in /proc/[0-9]*; do
+        [[ -d "$proc" ]] || continue
+        pid="${proc##*/}"
+        [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
+        cwd=$(readlink -f "$proc/cwd" 2>/dev/null || true)
+        [[ "$cwd" == "$SCRIPT_DIR" ]] || continue
+        cmd=$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)
+        [[ -n "$cmd" && "$cmd" == *"$pattern"* ]] || continue
+        printf '%s\n' "$pid"
+    done
+}
+
+wait_pids_gone() {
+    local timeout="$1"
+    shift || true
+    local pids=("$@")
+    local remaining=()
+    local i pid
+    for ((i=0; i<timeout; i++)); do
+        remaining=()
+        for pid in "${pids[@]}"; do
+            if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+                remaining+=("$pid")
+            fi
+        done
+        if [[ "${#remaining[@]}" -eq 0 ]]; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+terminate_repo_pids() {
+    local label="$1"
+    shift || true
+    local pids=("$@")
+    if [[ "${#pids[@]}" -eq 0 ]]; then
+        log "  No ${label} found."
+        return 0
+    fi
+    log "  Stopping ${label}: ${pids[*]}"
+    kill -TERM "${pids[@]}" 2>/dev/null || true
+    if ! wait_pids_gone 8 "${pids[@]}"; then
+        log "${YELLOW}  ${label} did not stop cleanly; forcing remaining PIDs...${NC}"
+        kill -KILL "${pids[@]}" 2>/dev/null || true
+        wait_pids_gone 3 "${pids[@]}" || true
+    fi
+}
+
 apply_pending_profile() {
     local pending_file="data/pending_profile.json"
     if [[ ! -f "$pending_file" ]]; then
@@ -765,7 +818,14 @@ help_flow() {
     echo -e "  THRESHOLD=1.5             stricter Z-Omega gate"
     echo -e "  EPOCHS=5                  training passes per dataset"
     echo -e "  WORKERS=4                 parallel workers"
+    echo -e "  ALLOW_GPU_PARALLEL=1      honor WORKERS>1 on GPU hosts (monitor VRAM)"
     echo -e "  WEEKEND_TRAIN_EPOCHS=3    weekend training passes per cache"
+    echo -e "  WEEKEND_TRAIN_WORKERS=2   weekend parallel worker count"
+    echo -e "  WEEKEND_TRAIN_ALLOW_GPU_PARALLEL=1 allow weekend GPU parallelism"
+    echo -e "  WEEKEND_TRAIN_REPLACE_EXISTING=1 replace stale repo-local trainers"
+    echo -e "  WEEKEND_TRAIN_FRESH_STATUS=1 archive old status and retrain all jobs"
+    echo -e "  WEEKEND_TRAIN_INCREMENTAL_SYNC=1 stage accepted weights during training"
+    echo -e "  WEEKEND_TRAIN_MAX_BARS_BY_TF=M1=500000 cap long M1 weekend jobs"
     echo -e "  WEEKEND_TRAIN_FORCE=1     bypass weekend market-close guard manually"
     echo -e ""
     echo -e "${BLUE}Examples:${NC}"
@@ -851,13 +911,25 @@ universe_flow() {
     # Merge any session.json paper instruments into universe.json before starting
     sync_session_to_universe
     log ""
-    log "${YELLOW}Stopping any existing universe watcher...${NC}"
-    pkill -f "run_universe.py --watch" 2>/dev/null || true
-    sleep 1
+    log "${YELLOW}Stopping stale universe launcher shells...${NC}"
+    mapfile -t _launcher_pids < <(repo_pids_matching_cmd "./run.sh universe")
+    terminate_repo_pids "stale universe launcher shell(s)" "${_launcher_pids[@]}"
+
     mkdir -p logs
+    log "${YELLOW}Stopping any existing universe watcher...${NC}"
+    mapfile -t _watcher_pids < <(repo_pids_matching_cmd "run_universe.py --watch")
+    terminate_repo_pids "universe watcher(s)" "${_watcher_pids[@]}"
+
     log "${YELLOW}Stopping tracked/orphan paper bots for a clean restart...${NC}"
     python3 run_universe.py --stop-all >> logs/run_universe.log 2>&1 || true
     sleep 1
+    if [[ "${UNIVERSE_FIX_CB_LOCKOUT_ON_RESTART:-0}" == "1" ]]; then
+        log "${YELLOW}Clearing stale circuit-breaker lockouts before relaunch...${NC}"
+        python3 scripts/fix_cb_lockout.py >> logs/run_universe.log 2>&1 || {
+            log "${RED}✗ CB lockout fix failed — see logs/run_universe.log${NC}"
+            exit 1
+        }
+    fi
     log "${GREEN}Starting universe watcher (paper trading supervisor)...${NC}"
     start_universe_watcher
     UPID=$!
@@ -867,6 +939,12 @@ universe_flow() {
         log "  Log: logs/run_universe.log"
         log "  Stop: pkill -f 'run_universe.py --watch'"
         log ""
+        mapfile -t _active_watchers < <(repo_pids_matching_cmd "run_universe.py --watch")
+        if [[ "${#_active_watchers[@]}" -ne 1 ]]; then
+            log "${RED}✗ Expected exactly one universe watcher, found ${#_active_watchers[@]}: ${_active_watchers[*]:-(none)}${NC}"
+            tail -20 logs/run_universe.log 2>/dev/null || true
+            exit 1
+        fi
         log "${BLUE}Recent log:${NC}"
         tail -8 logs/run_universe.log 2>/dev/null || true
     else
@@ -959,6 +1037,7 @@ print(' '.join(tfs) if tfs else '')
         --paper-threshold "${THRESHOLD:-1.0}" \
         --retrain-rounds "${RETRAIN_ROUNDS:-3}" \
         --tournament-variants "${TOURNAMENT_VARIANTS:-6}" \
+        ${ALLOW_GPU_PARALLEL:+--allow-gpu-parallel} \
         "${FORWARDED_ARGS[@]}"
 }
 

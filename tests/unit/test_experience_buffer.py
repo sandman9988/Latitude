@@ -374,6 +374,30 @@ class TestSaveLoad:
         assert buf2.load(path)
         assert buf2.size == 30
 
+    def test_load_full_smaller_checkpoint_keeps_data_and_tree_aligned(self, tmp_path):
+        """A full checkpoint from a smaller capacity has saved write_idx=0.
+
+        Loading it into a larger runtime buffer must append new data after the
+        compacted loaded rows, matching SumTree's next priority slot. Otherwise
+        sampling can hit priority slots whose data entries are still None.
+        """
+        old = ExperienceBuffer(capacity=5)
+        _fill_buffer(old, 5, dim=7)
+        assert old.write_idx == 0
+        path = str(tmp_path / "full_old_capacity")
+        assert old.save(path)
+
+        new = ExperienceBuffer(capacity=20, seed=42)
+        assert new.load(path)
+        assert new.size == 5
+        assert new.write_idx == 5
+        assert new.tree.write_index == 5
+
+        _fill_buffer(new, 3, dim=7)
+        assert new.size == 8
+        assert all(new.data[i] is not None for i in range(new.tree.n_entries))
+        assert new.sample(batch_size=8) is not None
+
     def test_save_survives_mixed_state_dims(self, tmp_path):
         """Save must not crash when buffer contains experiences with different
         state sizes (happens after offline-training populates the buffer with

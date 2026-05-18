@@ -829,6 +829,43 @@ class TFAgent:
         return (self._last_depth_bid / self._last_depth_ask
                 if self._last_depth_ask > 0 else 1.0)
 
+    def _l2_book_crossed(self) -> tuple[bool, float, float]:
+        """Return whether the latest L2 snapshot has bid >= ask."""
+        snapshot = getattr(self, "_last_l2_snapshot", {}) or {}
+        try:
+            bids = snapshot.get("bids") or []
+            asks = snapshot.get("asks") or []
+            if not bids or not asks:
+                return False, 0.0, 0.0
+            best_bid = float(bids[0][0])
+            best_ask = float(asks[0][0])
+            if best_bid <= 0 or best_ask <= 0:
+                return False, best_bid, best_ask
+            return best_bid >= best_ask, best_bid, best_ask
+        except (TypeError, ValueError, IndexError):
+            return False, 0.0, 0.0
+
+    def _paper_entry_guard_blocks(self, gated: list[str]) -> bool:
+        """Block paper execution on structurally unsafe market snapshots.
+
+        Paper mode can still explore weak model setups, but it should not open
+        account-level paper trades from crossed books or rejected spreads. Those
+        states remain visible through gated_conditions for HUD/replay analysis.
+        """
+        if not self.paper_mode:
+            return False
+        enabled = float(self._param_manager.get(
+            self.symbol,
+            "paper_entry_guard_enabled",
+            timeframe=self.tf_label,
+            broker="default",
+            default=1.0,
+        ) or 0.0)
+        if enabled <= 0.0:
+            return False
+        unsafe_prefixes = ("crossed_l2", "spread=")
+        return any(str(g).startswith(unsafe_prefixes) for g in gated)
+
     # ---- entry / exit logic ----------------------------------------------
 
     def _active_kurtosis_threshold(self) -> float:
@@ -1561,6 +1598,17 @@ class TFAgent:
             LOG.debug("[%s %s] [SOFT-GATE] VPIN z=%.2f > %.2f — allowing for RL training",
                       self.symbol, self.tf_label, self._vpin_z, vpin_threshold)
 
+        crossed_l2, best_bid, best_ask = self._l2_book_crossed()
+        if crossed_l2:
+            _gated.append(f"crossed_l2={best_bid:.5f}>={best_ask:.5f}")
+            LOG.warning(
+                "[%s %s] Crossed L2 book: bid=%.5f >= ask=%.5f — unsafe for paper execution",
+                self.symbol,
+                self.tf_label,
+                best_bid,
+                best_ask,
+            )
+
         try:
             _spread_ok, _cur_spread, _max_spread = self.friction_calc.is_spread_acceptable()
             if not _spread_ok:
@@ -1612,6 +1660,17 @@ class TFAgent:
                         _floor_dbg["uplift"], _floor_dbg["runway_penalty"],
                     )
                     action = 0
+
+        if action != 0 and self._paper_entry_guard_blocks(_gated):
+            LOG.warning(
+                "[%s %s] Paper entry guard blocked execution: action=%d conf=%.3f gates=%s",
+                self.symbol,
+                self.tf_label,
+                action,
+                conf,
+                ",".join(_gated),
+            )
+            action = 0
 
         # Snapshot entry-time trade_id and lifecycle metrics BEFORE logging the decision
         # so _log_entry_decision captures them with the correct trade_id for LONG/SHORT.
@@ -3206,6 +3265,7 @@ class TFAgent:
             "updated_at": dt.datetime.now(dt.UTC).isoformat(),
         }
         shared = Path("data")
+        _write_json_atomic(self.data_dir / "training_stats.json", stats)
         _write_json_atomic(shared / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json", stats)
 
     def _compute_var_kurtosis(self) -> tuple[float, float]:
@@ -3528,6 +3588,8 @@ class OpenAPIHub:
 
         # Order-book write rate limit (write at most once per second)
         self._last_ob_write: float = 0.0
+        self._last_l2_prune_log: float = 0.0
+        self._l2_prune_suppressed: int = 0
 
         # Control-file poll thread (kill-switch, CB reset, kurtosis gate reset)
         self._control_poll_thread = threading.Thread(
@@ -4071,6 +4133,41 @@ class OpenAPIHub:
         self._vpin_z = float(self._vpin_stats.get("zscore", 0.0))
         self._vpin_last_mid = mid
 
+    def _prune_l2_against_spot(self, mid: float, half_spread: float) -> int:
+        """Drop stale depth levels that cross the current spot bid/ask."""
+        if half_spread <= 0:
+            return 0
+        spot_bid = mid - half_spread
+        spot_ask = mid + half_spread
+        if spot_bid <= 0 or spot_ask <= 0 or spot_bid >= spot_ask:
+            return 0
+
+        bad_bids = [price for price in self._order_book.bids if price >= spot_ask]
+        bad_asks = [price for price in self._order_book.asks if price <= spot_bid]
+        for price in bad_bids:
+            self._order_book.bids.pop(price, None)
+        for price in bad_asks:
+            self._order_book.asks.pop(price, None)
+
+        removed = len(bad_bids) + len(bad_asks)
+        if removed:
+            now = time.time()
+            suppressed = int(getattr(self, "_l2_prune_suppressed", 0))
+            if now - float(getattr(self, "_last_l2_prune_log", 0.0)) >= 30.0:
+                LOG.warning(
+                    "[HUB] Dropped %d stale L2 level(s) crossing spot bid/ask %.5f/%.5f"
+                    " (suppressed=%d)",
+                    removed,
+                    spot_bid,
+                    spot_ask,
+                    suppressed,
+                )
+                self._last_l2_prune_log = now
+                self._l2_prune_suppressed = 0
+            else:
+                self._l2_prune_suppressed = suppressed + removed
+        return removed
+
     def _write_order_book(self) -> None:
         depth_bid, depth_ask = self._order_book.depth_sum()
         bids = [[p, s] for p, s in sorted(self._order_book.bids.items(), reverse=True)[:10]]
@@ -4210,6 +4307,7 @@ class OpenAPIHub:
         self._tick_count += 1
         self._log_tick(mid, half_spread)
         self._update_vpin(mid)
+        self._prune_l2_against_spot(mid, half_spread)
         imbalance = self._order_book.imbalance()
         depth_bid, depth_ask = self._order_book.depth_sum()
         l2_snapshot = self._l2_snapshot()

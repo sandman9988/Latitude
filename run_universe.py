@@ -57,6 +57,7 @@ Logs: ``logs/paper_{SYMBOL}_M{TF}.log``
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import logging
@@ -66,6 +67,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,6 +87,7 @@ LOG = logging.getLogger("run_universe")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 _UNIVERSE_PATH = Path("data/universe.json")
+_WATCH_LOCK_PATH = Path("data/run_universe.watch.lock")
 _SYMBOL_SPECS = Path("config/symbol_specs.json")
 _ENV_PATH = Path(".env")
 _BOT_MODULE = "src.core.ctrader_ddqn_paper"
@@ -393,6 +396,26 @@ def _prepare_bot_runtime(symbol: str, timeframe_minutes: int) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+def _acquire_watch_lock() -> object | None:
+    """Acquire a repo-scoped singleton lock for supervisor mode."""
+    _WATCH_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    handle = _WATCH_LOCK_PATH.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.seek(0)
+        owner = handle.read().strip() or "unknown"
+        LOG.error("Universe watcher already running for this checkout (lock owner PID %s)", owner)
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    os.fsync(handle.fileno())
+    return handle
+
+
 def _pid_alive(pid: int | None) -> bool:
     if not pid:
         return False
@@ -464,10 +487,32 @@ def _read_offline_status() -> dict:
 
 def _write_offline_status(status: dict) -> None:
     _OFFLINE_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _OFFLINE_STATUS_PATH.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump(status, f, indent=2)
-    tmp.replace(_OFFLINE_STATUS_PATH)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=_OFFLINE_STATUS_PATH.parent,
+        prefix=f".{_OFFLINE_STATUS_PATH.name}.",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(status, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(_OFFLINE_STATUS_PATH)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _touch_offline_supervisor(pid: int, *, status: dict | None = None) -> None:
+    """Refresh supervisor heartbeat without overwriting worker progress fields."""
+    latest = _read_offline_status()
+    if latest:
+        status = latest
+    elif status is None:
+        status = {}
+    status.setdefault("supervisor", {})["pid"] = pid
+    status["supervisor"]["last_seen_at"] = datetime.now(UTC).isoformat()
+    _write_offline_status(status)
 
 
 def _offline_status_active(status: dict) -> bool:
@@ -521,6 +566,8 @@ def _offline_progress_mtime() -> float:
             mtimes.append(path.stat().st_mtime)
         except OSError:
             continue
+    if mtimes:
+        return max(mtimes)
     try:
         mtimes.append(_OFFLINE_STATUS_PATH.stat().st_mtime)
     except OSError:
@@ -635,6 +682,7 @@ def _reconcile_offline_training(base_env: dict[str, str]) -> None:
 
     if _pid_is_train_offline(pid_int):
         if not _offline_training_stalled(base_env):
+            _touch_offline_supervisor(pid_int, status=status)
             return
         LOG.warning("Offline training PID %d appears stalled; restarting unfinished queue", pid_int)
         _stop_pid(pid_int, label="offline training")
@@ -642,9 +690,7 @@ def _reconcile_offline_training(base_env: dict[str, str]) -> None:
 
     live_pid = _find_train_offline_pid(cwd)
     if live_pid:
-        status.setdefault("supervisor", {})["pid"] = live_pid
-        status["supervisor"]["last_seen_at"] = datetime.now(UTC).isoformat()
-        _write_offline_status(status)
+        _touch_offline_supervisor(live_pid, status=status)
         return
 
     command_info = _offline_restart_command(status, base_env)
@@ -1560,7 +1606,7 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915
+def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
     parser = _build_parser()
     args = parser.parse_args(argv)
 
@@ -1571,6 +1617,12 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0915
 
     global _UNIVERSE_PATH  # noqa: PLW0603
     _UNIVERSE_PATH = args.universe
+    watch_lock = None
+    if args.watch:
+        watch_lock = _acquire_watch_lock()
+        if watch_lock is None:
+            return 2
+        LOG.debug("Universe watcher lock acquired: %s", _WATCH_LOCK_PATH)
 
     # Build base environment: .env values first, os.environ overrides on top
     # (already-exported vars always win; per-instrument overrides added at launch)

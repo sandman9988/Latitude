@@ -70,6 +70,8 @@ class TestTriggerInit:
         assert ta.epsilon_end == pytest.approx(PAPER_EPSILON_END)
         assert ta.epsilon_decay == pytest.approx(PAPER_EPSILON_DECAY)
         assert ta.force_exploration is True
+        assert ta.feasibility_threshold == pytest.approx(0.0)
+        assert ta.confidence_floor == pytest.approx(0.0)
 
     def test_init_symbol_params(self):
         ta = TriggerAgent(symbol="XAUUSD", timeframe="M5", broker="pepperstone")
@@ -458,6 +460,21 @@ class TestEWMARunwayCalibration:
         ta._runway_cal_counts = [10, 10, 0, 0, 0]
         assert ta._is_runway_predictor_reliable() is True
         assert ta._confidence_gate_blocked(0.20) is True
+
+    def test_confidence_gate_bypassed_in_paper_mode(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta.paper_mode = True
+        ta.confidence_floor = 0.95
+        ta._runway_cal_counts = [10, 10, 0, 0, 0]
+        assert ta._confidence_gate_blocked(0.20) is False
+
+    def test_entry_risk_gate_bypassed_in_paper_mode(self):
+        ta = TriggerAgent(window=64, n_features=7)
+        ta.paper_mode = True
+        ta.entry_conf_deadzone_low = 0.45
+        ta.entry_conf_deadzone_high = 0.55
+        state = np.zeros((64, 7), dtype=np.float32)
+        assert ta._entry_risk_gate_blocked(1, 0.50, state) is False
 
     def test_initial_state_uses_static_mapping(self):
         """Before any trades, _q_to_runway should use static linear mapping."""

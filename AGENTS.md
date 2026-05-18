@@ -37,6 +37,19 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
 - Weekend offline training should run per symbol/timeframe from the complete
   available cache set discovered under `data/training_cache_*_<TF>.jsonl` and
   per-bot cache directories.
+- Completed offline-training rows in `data/offline_training_status.json` are
+  resume guards. Restarted weekend runs must skip those `(symbol, timeframe)`
+  rows unless `CTRADER_OFFLINE_RESUME_STATUS=0` is explicitly set.
+- Long offline jobs write `data/offline_progress_<SYMBOL>_<TF>.json` and
+  candidate resume weights under
+  `data/checkpoints/<SYMBOL>_<TF>/<candidate_id>/`. Treat those files as the
+  live progress/checkpoint source for the currently running job; do not infer a
+  cold restart from a stale summary row alone.
+- GPU hosts default offline training to one worker to avoid VRAM contention.
+  To deliberately parallelize weekend jobs on the same GPU, use
+  `ALLOW_GPU_PARALLEL=1 WORKERS=<N> ./run.sh train` or pass
+  `--allow-gpu-parallel` to `train_offline.py`, then monitor VRAM and process
+  health. CPU-only runs may use `--workers N` directly.
 - `train_offline.py` must keep `data/offline_training_status.json`
   restartable while work is unfinished. The status file should include
   supervisor metadata (`pid`, `python`, `argv`, `cwd`, restart count, heartbeat)
@@ -151,6 +164,17 @@ python3 -m py_compile run_universe.py train_offline.py
 - When restarting live paper processes, verify flat/current position state first
   unless the user has explicitly accepted weekend/market-closed restart risk.
 - Treat `/tmp/ctrader_hud.pid` as possibly stale when restarting the HUD.
+- `./run.sh universe` performs a repo-scoped clean restart: it stops stale
+  launcher shells, waits for existing `run_universe.py --watch` supervisors to
+  exit, stops tracked/orphan paper bots, then verifies exactly one watcher is
+  running after relaunch. `run_universe.py --watch` also holds
+  `data/run_universe.watch.lock`; a second watcher for this checkout must exit
+  instead of supervising the same universe concurrently.
+- If stale circuit-breaker state must be cleared as part of a restart, run the
+  launcher with `UNIVERSE_FIX_CB_LOCKOUT_ON_RESTART=1 ./run.sh universe` so
+  old hubs are stopped before `scripts/fix_cb_lockout.py` edits CB files. Do
+  not run the fix before stopping stale hubs, because old hub processes can
+  save their in-memory breaker state back over the repaired files on shutdown.
 
 ## Audit Log & Trade Log
 

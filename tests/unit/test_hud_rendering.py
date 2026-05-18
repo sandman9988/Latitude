@@ -438,6 +438,59 @@ class TestFramePipeline:
         assert hud.current_tab == "performance"
         assert hud._force_redraw is True
 
+    def test_mouse_click_accepts_comma_delimited_terminal_payload(self, hud: TabbedHUD):
+        hud._term_width = lambda: 120  # type: ignore[method-assign]
+        hud._render_tab_bar()
+
+        market_range = next(r for r in hud._tab_click_ranges if r[2] == "market")
+        hud._handle_mouse_event(f"0,{market_range[0]};10M")
+
+        assert hud.current_tab == "market"
+        assert hud._force_redraw is True
+
+    def test_escape_parser_consumes_legacy_x10_mouse_packet(self, hud: TabbedHUD, monkeypatch):
+        hud._term_width = lambda: 120  # type: ignore[method-assign]
+        hud._render_tab_bar()
+        risk_range = next(r for r in hud._tab_click_ranges if r[2] == "risk")
+        queued = iter(["M", chr(32), chr(risk_range[0] + 32), chr(10 + 32)])
+
+        class _FakeStdin:
+            @staticmethod
+            def fileno() -> int:
+                return 0
+
+        monkeypatch.setattr("src.monitoring.hud_tabbed.sys.stdin", _FakeStdin())
+        monkeypatch.setattr("src.monitoring.hud_tabbed.select.select", lambda *_args: ([0], [], []))
+        monkeypatch.setattr(hud, "_read_raw", lambda: next(queued))
+
+        hud._handle_escape_sequence("[")
+
+        assert hud.current_tab == "risk"
+        assert hud._force_redraw is True
+
+    def test_escape_parser_consumes_numeric_mouse_payload_without_leaking_digits(
+        self, hud: TabbedHUD, monkeypatch
+    ):
+        hud._term_width = lambda: 120  # type: ignore[method-assign]
+        hud._render_tab_bar()
+        log_range = next(r for r in hud._tab_click_ranges if r[2] == "log")
+        payload = f"0,{log_range[0]};10M"
+        queued = iter(payload)
+
+        class _FakeStdin:
+            @staticmethod
+            def fileno() -> int:
+                return 0
+
+        monkeypatch.setattr("src.monitoring.hud_tabbed.sys.stdin", _FakeStdin())
+        monkeypatch.setattr("src.monitoring.hud_tabbed.select.select", lambda *_args: ([0], [], []))
+        monkeypatch.setattr(hud, "_read_raw", lambda: next(queued))
+
+        hud._handle_escape_sequence("[")
+
+        assert hud.current_tab == "log"
+        assert hud._force_redraw is True
+
     def test_mouse_wheel_scrolls_body(self, hud: TabbedHUD):
         hud._body_scroll_max = 20
         hud._body_scroll_offsets[hud.current_tab] = 5

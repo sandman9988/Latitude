@@ -474,7 +474,7 @@ class HarvesterAgent(AgentTrainingMixin):
             - confidence: [0, 1] probability from model
 
         """
-        LOG.info(
+        LOG.debug(
             "[HARVESTER_DECIDE] use_torch=%s ddqn=%s enable_training=%s training_steps=%d",
             self.use_torch,
             self.ddqn is not None,
@@ -1225,4 +1225,3 @@ if __name__ == "__main__":
     # Test 5: Update from trade (logging only)
     harvester.update_from_trade(capture_ratio=0.75, was_wtl=False)
     harvester.update_from_trade(capture_ratio=0.0, was_wtl=True)
-

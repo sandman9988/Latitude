@@ -195,17 +195,16 @@ class TriggerAgent(AgentTrainingMixin):
         self._current_zeta: float = 0.5  # Regime damping ratio, updated each decide()
 
         # Phase 2: Gating strategy
-        # Paper mode keeps feasibility gate disabled, but confidence floor remains active.
-        if self.disable_gates:
+        # Paper mode is the exploration baseline: model confidence/risk gates are
+        # audit signals there, not execution blockers. Hard market-safety gates
+        # are enforced by the hub before order placement.
+        if self.disable_gates or self.paper_mode:
             self.feasibility_threshold = 0.0
             self.confidence_floor = 0.0
         else:
-            if self.paper_mode:
-                self.feasibility_threshold = 0.0
-            else:
-                self.feasibility_threshold, _ = self._resolve_gate_value(
-                    env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5,
-                )
+            self.feasibility_threshold, _ = self._resolve_gate_value(
+                env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5,
+            )
             self.confidence_floor, _ = self._resolve_gate_value(
                 env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55,
             )
@@ -500,7 +499,7 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _confidence_gate_blocked(self, calibrated_prob: float) -> bool:
         """Return True if confidence floor blocks entry."""
-        if self.disable_gates:
+        if self.disable_gates or self.paper_mode:
             return False
         if not self._is_runway_predictor_reliable():
             LOG.debug(
@@ -516,7 +515,7 @@ class TriggerAgent(AgentTrainingMixin):
 
     def _entry_risk_gate_blocked(self, action: int, confidence: float, state: np.ndarray) -> bool:
         """Return True when adaptive confidence/risk pockets should block entry."""
-        if self.disable_gates or action == 0:
+        if self.disable_gates or self.paper_mode or action == 0:
             return False
         dead_low = min(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
         dead_high = max(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)

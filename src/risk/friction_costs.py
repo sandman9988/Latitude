@@ -113,6 +113,8 @@ class SpreadTracker:
         self.window_size = window_size
         self.spreads = deque(maxlen=window_size)
         self.timestamps = deque(maxlen=window_size)
+        self._last_extreme_spread_log = 0.0
+        self._extreme_spread_suppressed = 0
 
         # Hourly spread buckets (0-23 UTC)
         self.hourly_spreads: dict[int, deque] = {h: deque(maxlen=100) for h in range(24)}
@@ -140,7 +142,18 @@ class SpreadTracker:
         # For BTC ~$100k, spread should be $1-$50 typically
         # Cap at MAX_SPREAD_PIPS (0.1% for BTC) as safety limit
         if spread_pips > MAX_SPREAD_PIPS:
-            LOG.warning("Extreme spread detected: %.2f pips, capping to %.0f", spread_pips, MAX_SPREAD_PIPS)
+            now_ts = time.time()
+            if now_ts - self._last_extreme_spread_log >= 30.0:
+                LOG.warning(
+                    "Extreme spread detected: %.2f pips, capping to %.0f (suppressed=%d)",
+                    spread_pips,
+                    MAX_SPREAD_PIPS,
+                    self._extreme_spread_suppressed,
+                )
+                self._last_extreme_spread_log = now_ts
+                self._extreme_spread_suppressed = 0
+            else:
+                self._extreme_spread_suppressed += 1
             spread_pips = MAX_SPREAD_PIPS
 
         # Defensive: Validate final value
@@ -1068,4 +1081,3 @@ if __name__ == "__main__":
 
     # Show statistics
     stats = calc.get_statistics()
-

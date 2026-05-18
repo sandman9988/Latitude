@@ -13,6 +13,7 @@
 #   FROM_DATE=2024-01-01                history download start date
 #   TO_DATE=<today>                     history download end date
 #   WEEKEND_TRAIN_WORKERS=2             parallel worker processes
+#   WEEKEND_TRAIN_ALLOW_GPU_PARALLEL=1  honor multiple workers on GPU hosts
 #   WEEKEND_TRAIN_EPOCHS=3              training epochs per job
 #   WEEKEND_TRAIN_PAPER_THRESHOLD=1.0   minimum z_omega to promote
 #   WEEKEND_TRAIN_ACCEPTANCE_MARGIN=0.0 extra margin above incumbent z_omega
@@ -23,6 +24,11 @@
 #   WEEKEND_TRAIN_FOCUSED_CAP_LOOKBACK_DAYS=7
 #   WEEKEND_TRAIN_FOCUSED_CAP_PASSES=2
 #   WEEKEND_TRAIN_MAX_BARS=<unset>      cap bars per job (unset = unlimited)
+#   WEEKEND_TRAIN_MAX_BARS_BY_TF=M1=500000 per-timeframe bar caps
+#   WEEKEND_TRAIN_REPLACE_EXISTING=1    terminate stale repo-local trainers first
+#   WEEKEND_TRAIN_FRESH_STATUS=1        archive old status and train all jobs
+#   WEEKEND_TRAIN_INCREMENTAL_SYNC=1    stage accepted weights while jobs finish
+#   WEEKEND_TRAIN_INCREMENTAL_SYNC_SECS=300
 #   WEEKEND_TRAIN_RESTART_UNIVERSE=1    restart watcher after training
 #   WEEKEND_TRAIN_LOG=logs/weekend_offline_training.log
 #   WEEKEND_TRAIN_LOCK=data/.weekend_offline_training.lock
@@ -210,12 +216,108 @@ raise SystemExit(1)
 PY
 }
 
+repo_train_offline_pids() {
+    python3 - "$PROJECT_ROOT" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve()
+
+for proc_dir in Path("/proc").iterdir():
+    if not proc_dir.name.isdigit():
+        continue
+    pid = int(proc_dir.name)
+    if pid == os.getpid():
+        continue
+    try:
+        argv = [
+            part.decode("utf-8", "ignore")
+            for part in (proc_dir / "cmdline").read_bytes().split(b"\0")
+            if part
+        ]
+    except OSError:
+        continue
+    if not any(Path(part).name == "train_offline.py" or part == "train_offline.py" for part in argv):
+        continue
+    try:
+        cwd = (proc_dir / "cwd").resolve()
+    except OSError:
+        continue
+    if cwd == root:
+        print(pid)
+PY
+}
+
+terminate_repo_trainers() {
+    local -a pids=("$@")
+    [[ ${#pids[@]} -gt 0 ]] || return 0
+
+    log "Terminating existing repo-local train_offline.py process(es): ${pids[*]}"
+    kill "${pids[@]}" 2>/dev/null || true
+
+    local deadline=$((SECONDS + 45))
+    local -a remaining=()
+    while (( SECONDS < deadline )); do
+        remaining=()
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                remaining+=("$pid")
+            fi
+        done
+        [[ ${#remaining[@]} -eq 0 ]] && return 0
+        sleep 2
+    done
+
+    log "Existing trainer(s) did not exit cleanly; forcing: ${remaining[*]}"
+    kill -9 "${remaining[@]}" 2>/dev/null || true
+}
+
+ensure_no_existing_trainer() {
+    local -a pids=()
+    mapfile -t pids < <(repo_train_offline_pids)
+    [[ ${#pids[@]} -gt 0 ]] || return 0
+
+    if [[ "${WEEKEND_TRAIN_REPLACE_EXISTING:-1}" != "1" ]]; then
+        log "Another repo-local train_offline.py is already running (${pids[*]}); skipping."
+        return 1
+    fi
+
+    terminate_repo_trainers "${pids[@]}"
+    mapfile -t pids < <(repo_train_offline_pids)
+    if [[ ${#pids[@]} -gt 0 ]]; then
+        log "Existing train_offline.py process(es) still running after termination attempt: ${pids[*]}"
+        return 1
+    fi
+}
+
+archive_previous_offline_status() {
+    if [[ "${WEEKEND_TRAIN_FRESH_STATUS:-1}" != "1" ]]; then
+        export CTRADER_OFFLINE_RESUME_STATUS="${CTRADER_OFFLINE_RESUME_STATUS:-1}"
+        return 0
+    fi
+
+    export CTRADER_OFFLINE_RESUME_STATUS=0
+
+    local status_file="data/offline_training_status.json"
+    [[ -f "$status_file" ]] || return 0
+
+    local stamp
+    stamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+    local archive="data/offline_training_status.pre_weekend_${stamp}.json"
+    mv "$status_file" "$archive"
+    log "Archived previous offline status to $archive; starting a fresh weekend queue."
+}
+
 sync_accepted_checkpoints_to_runtime() {
     python3 - <<'PY'
 from __future__ import annotations
 import json
 import re
 import shutil
+import filecmp
 from pathlib import Path
 
 root = Path.cwd()
@@ -269,6 +371,8 @@ for entry in champions.values():
             dst = runtime_dir / f"harvester_ddqn_weights{src.suffix}"
         else:
             dst = runtime_dir / src.name
+        if dst.exists() and filecmp.cmp(src, dst, shallow=False):
+            continue
         shutil.copy2(src, dst)
         copied += 1
         try:
@@ -284,6 +388,22 @@ for entry in champions.values():
 if copied:
     print(f"[SYNC] Deployed {copied} accepted checkpoint file(s) to runtime bot directories.")
 PY
+}
+
+runtime_sync_monitor() {
+    local train_pid="$1"
+    local interval="${WEEKEND_TRAIN_INCREMENTAL_SYNC_SECS:-300}"
+
+    while kill -0 "$train_pid" 2>/dev/null; do
+        if ! sync_accepted_checkpoints_to_runtime | tee -a "$LOG_FILE"; then
+            log "Incremental checkpoint runtime sync failed; will retry."
+        fi
+        sleep "$interval"
+    done
+
+    if ! sync_accepted_checkpoints_to_runtime | tee -a "$LOG_FILE"; then
+        log "Final incremental checkpoint runtime sync failed."
+    fi
 }
 
 stop_universe_if_running() {
@@ -345,8 +465,7 @@ main() {
         return 0
     fi
 
-    if pgrep -f "train_offline.py" >/dev/null 2>&1; then
-        log "Another train_offline.py is already running; skipping."
+    if ! ensure_no_existing_trainer; then
         return 0
     fi
 
@@ -365,6 +484,8 @@ main() {
     fi
 
     log "Inputs: ${#caches[@]} cache(s), ${#csvs[@]} CSV(s)"
+
+    archive_previous_offline_status
 
     stop_universe_if_running
 
@@ -388,6 +509,10 @@ main() {
         --tournament-seed "${WEEKEND_TRAIN_TOURNAMENT_SEED:-8675309}"
     )
 
+    if [[ "${WEEKEND_TRAIN_ALLOW_GPU_PARALLEL:-1}" == "1" ]]; then
+        cmd+=(--allow-gpu-parallel)
+    fi
+
     if [[ -n "${WEEKEND_TRAIN_SYMBOLS:-}" ]]; then
         # shellcheck disable=SC2206
         cmd+=(--symbols ${WEEKEND_TRAIN_SYMBOLS})
@@ -397,12 +522,28 @@ main() {
         cmd+=(--max-bars "$WEEKEND_TRAIN_MAX_BARS")
     fi
 
+    if [[ -n "${WEEKEND_TRAIN_MAX_BARS_BY_TF:-M1=500000}" ]]; then
+        cmd+=(--max-bars-by-timeframe "${WEEKEND_TRAIN_MAX_BARS_BY_TF:-M1=500000}")
+    fi
+
     log "Starting offline training."
     log "Command: ${cmd[*]}"
 
     set +e
-    "${cmd[@]}" >> "$LOG_FILE" 2>&1
+    "${cmd[@]}" >> "$LOG_FILE" 2>&1 &
+    local train_pid=$!
+    local sync_pid=""
+    if [[ "${WEEKEND_TRAIN_INCREMENTAL_SYNC:-1}" == "1" ]]; then
+        runtime_sync_monitor "$train_pid" &
+        sync_pid=$!
+        log "Incremental accepted-checkpoint sync enabled every ${WEEKEND_TRAIN_INCREMENTAL_SYNC_SECS:-300}s (PID $sync_pid)."
+    fi
+    wait "$train_pid"
     local status=$?
+    if [[ -n "$sync_pid" ]]; then
+        kill "$sync_pid" 2>/dev/null || true
+        wait "$sync_pid" 2>/dev/null || true
+    fi
     set -e
 
     if [[ $status -eq 0 ]]; then

@@ -835,7 +835,7 @@ class DualPolicy:
             LOG.warning("[TRIGGER-EXPERIENCE-DIAG] SKIPPED — enable_training=%s", self.enable_training)
             return
 
-        LOG.info(
+        LOG.debug(
             "[TRIGGER-EXPERIENCE-DIAG] Adding experience: "
             "(state_shape=%s, action=%d, reward=%.4f, enable_training=%s, regime=%s)",
             state.shape,
@@ -852,7 +852,7 @@ class DualPolicy:
             done=done,
             regime=self.current_regime_enum,
         )
-        LOG.info(
+        LOG.debug(
             "[TRIGGER-EXPERIENCE-DIAG] DONE — buffer_size=%d",
             self.trigger.buffer.size if self.trigger.buffer else -1,
         )
@@ -876,10 +876,10 @@ class DualPolicy:
 
         """
         if not self.enable_training:
-            LOG.info("[DIAG] add_harvester_experience: SKIPPED — enable_training=%s", self.enable_training)
+            LOG.debug("[DIAG] add_harvester_experience: SKIPPED — enable_training=%s", self.enable_training)
             return
 
-        LOG.info(
+        LOG.debug(
             "[DIAG] add_harvester_experience: CALLING harvester.add_experience "
             "(state_shape=%s, action=%d, reward=%.4f, regime=%s)",
             state.shape,
@@ -895,7 +895,7 @@ class DualPolicy:
             done=done,
             regime=self.current_regime_enum,
         )
-        LOG.info(
+        LOG.debug(
             "[DIAG] add_harvester_experience: DONE — buffer_size=%d",
             self.harvester.buffer.size if self.harvester.buffer else -1,
         )

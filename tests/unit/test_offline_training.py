@@ -131,6 +131,13 @@ class TestOfflineStatusResume:
         assert Path(payload["argv"][0]).name == "train_offline.py"
         assert payload["argv"][1:] == ["data/history", "--workers", "2"]
 
+    def test_parser_accepts_explicit_gpu_parallel_opt_in(self):
+        parser = to._build_parser()
+        args = parser.parse_args(["data", "--workers", "2", "--allow-gpu-parallel"])
+
+        assert args.workers == 2
+        assert args.allow_gpu_parallel is True
+
 
 # ── _detect_columns ───────────────────────────────────────────────────────────
 
@@ -693,6 +700,20 @@ class TestOfflineAcceptance:
         assert any(not v.warm_start for v in variants)
         assert all(v.n_epochs >= 3 for v in variants)
 
+    def test_max_bars_by_timeframe_overrides_global_limit(self, tmp_path):
+        args = type(
+            "Args",
+            (),
+            {"max_bars": 1_000_000, "max_bars_by_timeframe": "M1=500000,M240=250000"},
+        )()
+        m1 = to.Job("XAUUSD", 1, tmp_path / "XAUUSD_M1.csv", "csv")
+        m5 = to.Job("XAUUSD", 5, tmp_path / "XAUUSD_M5.csv", "csv")
+        m240 = to.Job("XAUUSD", 240, tmp_path / "XAUUSD_M240.csv", "csv")
+
+        assert to._job_max_bars(args, m1) == 500_000
+        assert to._job_max_bars(args, m5) == 1_000_000
+        assert to._job_max_bars(args, m240) == 250_000
+
     def test_candidate_seed_is_stable_per_job_and_variant(self, tmp_path):
         job = to.Job("XAUUSD", 5, tmp_path / "XAUUSD_M5.jsonl", "jsonl")
 
@@ -777,6 +798,10 @@ class TestOfflineAcceptance:
 
 
 class TestDiscoverJobs:
+    def test_tf_label_uses_canonical_minute_labels(self):
+        assert to._tf_label(60) == "M60"
+        assert to._tf_label(240) == "M240"
+
     def test_detect_symbol_and_tf_from_filename(self, tmp_path):
         from train_offline import discover_jobs
 
@@ -819,8 +844,16 @@ class TestDiscoverJobs:
         from train_offline import discover_jobs
 
         (tmp_path / "XAUUSD_M5.csv").write_text("Date & Time,Open,High,Low,Close\n")
+        (tmp_path / "XAUUSD_M60.csv").write_text("Date & Time,Open,High,Low,Close\n")
+        jobs = discover_jobs([str(tmp_path)], tf_filter=["M60"])
+        assert all(j.timeframe_minutes == 60 for j in jobs)
+
+    def test_legacy_h1_input_still_maps_to_m60(self, tmp_path):
+        from train_offline import discover_jobs
+
         (tmp_path / "XAUUSD_H1.csv").write_text("Date & Time,Open,High,Low,Close\n")
         jobs = discover_jobs([str(tmp_path)], tf_filter=["H1"])
+        assert len(jobs) == 1
         assert all(j.timeframe_minutes == 60 for j in jobs)
 
     def test_nonexistent_path_skipped(self, tmp_path):

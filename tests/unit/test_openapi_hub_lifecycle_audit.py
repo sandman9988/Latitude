@@ -7,7 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.core.openapi_hub import TFAgent
+from src.core.openapi_hub import OpenAPIHub, TFAgent
+from src.core.order_book import OrderBook
 
 
 def _agent_stub() -> TFAgent:
@@ -44,6 +45,8 @@ def _agent_stub() -> TFAgent:
     agent._runway_accuracy_ema = 0.64
     agent.equity = 10001.23
     agent.policy = SimpleNamespace(harvester=SimpleNamespace(last_close_reason="capture_decay"))
+    agent.paper_mode = True
+    agent._param_manager = SimpleNamespace(get=lambda *_args, **kwargs: kwargs.get("default"))
     return agent
 
 
@@ -94,6 +97,58 @@ def test_trade_log_persists_exit_lifecycle_data(tmp_path, monkeypatch):
     assert "mfe_bar_offset" in record
     assert "mae_bar_offset" in record
     assert "bars_from_mfe_to_exit" in record
+
+
+def test_l2_book_crossed_detects_inverted_snapshot():
+    agent = _agent_stub()
+    agent._last_l2_snapshot = {
+        "bids": [[80312.46, 1.0]],
+        "asks": [[80226.82, 1.0]],
+    }
+
+    crossed, best_bid, best_ask = agent._l2_book_crossed()
+
+    assert crossed is True
+    assert best_bid == pytest.approx(80312.46)
+    assert best_ask == pytest.approx(80226.82)
+
+
+def test_paper_entry_guard_blocks_crossed_l2_and_spread_gates():
+    agent = _agent_stub()
+
+    assert agent._paper_entry_guard_blocks(["crossed_l2=80312.46000>=80226.82000"])
+    assert agent._paper_entry_guard_blocks(["spread=18.190>4.000"])
+
+
+def test_paper_entry_guard_keeps_regular_exploration_open():
+    agent = _agent_stub()
+
+    assert agent._paper_entry_guard_blocks(["conf=0.500<floor=0.600"]) is False
+    assert agent._paper_entry_guard_blocks(["kurtosis=6.20>5.50"]) is False
+
+
+def test_paper_entry_guard_can_be_disabled_by_learned_param():
+    agent = _agent_stub()
+    agent._param_manager = SimpleNamespace(get=lambda *_args, **_kwargs: 0.0)
+
+    assert agent._paper_entry_guard_blocks(["crossed_l2=80312.46000>=80226.82000"]) is False
+
+
+def test_hub_prunes_l2_levels_crossing_current_spot():
+    hub = OpenAPIHub.__new__(OpenAPIHub)
+    hub._order_book = OrderBook(depth=10)
+    hub._order_book.update_level("BID", 101.5, 1.0)
+    hub._order_book.update_level("BID", 99.8, 2.0)
+    hub._order_book.update_level("ASK", 98.9, 1.0)
+    hub._order_book.update_level("ASK", 100.3, 2.0)
+
+    removed = hub._prune_l2_against_spot(mid=100.0, half_spread=0.1)
+
+    assert removed == 2
+    assert 101.5 not in hub._order_book.bids
+    assert 98.9 not in hub._order_book.asks
+    assert 99.8 in hub._order_book.bids
+    assert 100.3 in hub._order_book.asks
 
 
 def test_transaction_event_is_scoped_for_trade_lifecycle():

@@ -19,7 +19,7 @@ Usage
 Options
 -------
     --symbols   SYM [SYM ...]   Only process these symbols (default: all detected)
-    --timeframes TF [TF ...]    Timeframes to train  e.g. M1 M5 M15 H1
+    --timeframes TF [TF ...]    Timeframes to train  e.g. M1 M5 M15 M60
                                 (default: auto-detect from filenames)
     --workers   N               Parallel worker processes (default: CPU count)
     --checkpoint-dir  PATH      Where to save weights (default: data/checkpoints)
@@ -33,8 +33,8 @@ Examples
     # Train on all CSVs in data/history/
     python3 train_offline.py data/history/
 
-    # XAUUSD M5 + H1 only, 4 workers
-    python3 train_offline.py data/history/XAUUSD_M5.csv data/history/XAUUSD_H1.csv \\
+    # XAUUSD M5 + M60 only, 4 workers
+    python3 train_offline.py data/history/XAUUSD_M5.csv data/history/XAUUSD_M60.csv \\
         --workers 4
 
     # Replay live-captured experience cache
@@ -54,9 +54,10 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 import time
 import zlib
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -81,13 +82,13 @@ _STAGE_ORDER = ["UNTRAINED", "OFFLINE_TRAINING", "PAPER", "MICRO", "LIVE"]
 
 
 def _tf_label(minutes: int) -> str:
-    """Human-readable timeframe label: 60→H1, 1440→D1, else M{n}.
+    """Human-readable canonical runtime label: M{minutes}.
 
-    Convention: always use M{minutes} format (M240, not H4) per project
-    guidelines — never introduce H4/H8/H12 runtime paths.
+    Convention: always use M{minutes} format (M60/M240, not H1/H4) per
+    project guidelines. Legacy H1/H4 inputs are still accepted by
+    _tf_to_minutes(), but generated runtime/status labels stay canonical.
     """
-    _MAP = {15: "M15", 30: "M30", 60: "H1", 120: "H2", 1440: "D1", 10080: "W1"}
-    return _MAP.get(int(minutes), f"M{minutes}")
+    return f"M{int(minutes)}"
 
 
 def _offline_supervisor_payload(argv: list[str] | None = None) -> dict[str, Any]:
@@ -117,10 +118,63 @@ def _write_status(data: dict) -> None:
         supervisor["pid"] = os.getpid()
         supervisor["last_heartbeat"] = datetime.now(UTC).isoformat()
     _STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _STATUS_PATH.with_suffix(".tmp")
-    with open(tmp, "w") as _f:
-        json.dump(data, _f, indent=2)
-    tmp.replace(_STATUS_PATH)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=_STATUS_PATH.parent,
+        prefix=f".{_STATUS_PATH.name}.",
+        suffix=".tmp",
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as _f:
+            json.dump(data, _f, indent=2)
+            _f.flush()
+            os.fsync(_f.fileno())
+        tmp.replace(_STATUS_PATH)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _progress_path_for(symbol: str, timeframe_minutes: int) -> Path:
+    return Path(f"data/offline_progress_{symbol}_M{timeframe_minutes}.json")
+
+
+def _refresh_running_status(
+    ot_status: dict[str, Any],
+    jobs: list[Any],
+    t_start: float,
+) -> None:
+    """Keep the HUD/status file live while long worker futures are still running."""
+    job_keys = {(j.symbol, j.timeframe_minutes) for j in jobs}
+    ot_status["elapsed_s"] = time.perf_counter() - t_start
+    for entry in ot_status.get("results") or []:
+        if not isinstance(entry, dict) or entry.get("status") != "running":
+            continue
+        try:
+            symbol = str(entry.get("symbol") or "").upper()
+            timeframe = int(entry.get("timeframe_minutes"))
+        except (TypeError, ValueError):
+            continue
+        if (symbol, timeframe) not in job_keys:
+            continue
+        progress_path = _progress_path_for(symbol, timeframe)
+        if not progress_path.exists():
+            continue
+        try:
+            progress = json.loads(progress_path.read_text())
+        except Exception:
+            continue
+        if not isinstance(progress, dict):
+            continue
+        entry["progress_pct"] = progress.get("pct")
+        entry["progress_bar"] = progress.get("bar")
+        entry["progress_total_bars"] = progress.get("total_bars")
+        entry["progress_epoch"] = progress.get("epoch")
+        entry["progress_epochs"] = progress.get("n_epochs")
+        entry["progress_train_steps"] = progress.get("train_steps")
+        entry["progress_trades"] = progress.get("trades")
+        entry["progress_epsilon"] = progress.get("epsilon")
+        entry["progress_updated_at"] = datetime.fromtimestamp(progress_path.stat().st_mtime, UTC).isoformat()
+    _write_status(ot_status)
 
 
 def _load_offline_status() -> dict[str, Any]:
@@ -399,6 +453,12 @@ class OptunaSearchConfig:
     timeout_s: int | None
     min_val_trades: int
     storage_dir: str
+
+
+@dataclass(frozen=True)
+class TimeframeLimit:
+    timeframe_minutes: int
+    max_bars: int
 
 
 @dataclass(frozen=True)
@@ -809,6 +869,41 @@ def _variant_args(args, variant: TrainingVariant, defer_candidate_deploy: bool):
     variant_args.candidate_seed = int(getattr(args, "tournament_seed", 8675309) or 8675309) + variant.seed_offset
     variant_args.defer_candidate_deploy = defer_candidate_deploy
     return variant_args
+
+
+def _parse_timeframe_limits(raw: str | None) -> dict[int, int]:
+    """Parse per-timeframe max-bars limits like ``M1=500000,M5=750000``."""
+    if not raw:
+        return {}
+    limits: dict[int, int] = {}
+    for part in str(raw).split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid timeframe limit {item!r}; expected TF=N")
+        tf_raw, value_raw = item.split("=", 1)
+        tf = _tf_to_minutes(tf_raw.strip())
+        if tf is None:
+            raise ValueError(f"Invalid timeframe in {item!r}")
+        try:
+            value = int(value_raw.strip())
+        except ValueError as exc:
+            raise ValueError(f"Invalid max-bars value in {item!r}") from exc
+        if value <= 0:
+            raise ValueError(f"Invalid max-bars value in {item!r}; must be > 0")
+        limits[tf] = value
+    return limits
+
+
+def _job_max_bars(args, job: Job) -> int | None:
+    limits = getattr(args, "_max_bars_by_timeframe", None)
+    if limits is None:
+        limits = _parse_timeframe_limits(getattr(args, "max_bars_by_timeframe", None))
+        setattr(args, "_max_bars_by_timeframe", limits)
+    if job.timeframe_minutes in limits:
+        return limits[job.timeframe_minutes]
+    return getattr(args, "max_bars", None)
 
 
 def _optuna_storage_path(storage_dir: str | Path, symbol: str, timeframe_minutes: int) -> Path:
@@ -1290,7 +1385,7 @@ def _run_job_tournament(
     return best
 
 
-def _run_job_optuna(
+def _run_job_optuna(  # noqa: PLR0915
     symbol: str,
     timeframe_minutes: int,
     bars_file: str,
@@ -1345,6 +1440,58 @@ def _run_job_optuna(
     args = argparse.Namespace(**base_args)
     job = Job(symbol, timeframe_minutes, Path(bars_file), file_format)
     best: dict[str, Any] | None = None
+
+    def _completed_trial_result(trial) -> dict[str, Any]:
+        attrs = trial.user_attrs
+        return {
+            "symbol": symbol,
+            "timeframe_minutes": timeframe_minutes,
+            "z_omega": attrs.get("z_omega", 0.0),
+            "val_net_pnl": attrs.get("val_net_pnl", 0.0),
+            "val_avg_pnl": attrs.get("val_avg_pnl", 0.0),
+            "val_profit_factor": attrs.get("val_profit_factor", 0.0),
+            "val_trades": attrs.get("val_trades", 0),
+            "train_trades": attrs.get("train_trades", 0),
+            "total_train_steps": attrs.get("total_train_steps", 0),
+            "elapsed_s": attrs.get("elapsed_s", 0.0),
+            "weights_path": attrs.get("weights_path", ""),
+            "accepted": attrs.get("accepted", False),
+            "accept_reason": attrs.get("accept_reason", ""),
+            "candidate_id": attrs.get("candidate_id", f"optuna_t{int(trial.number):04d}"),
+            "candidate_seed": attrs.get("candidate_seed"),
+            "optuna_objective": float(trial.value),
+            "optuna_trial_number": trial.number,
+            "optuna_params": dict(trial.params),
+            "error": "",
+        }
+
+    completed_trials = [
+        trial
+        for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE and trial.value is not None
+    ]
+    if completed_trials:
+        best_trial = completed_trials[0]
+        for trial in completed_trials:
+            candidate = _completed_trial_result(trial)
+            if _prefer_optuna_result(candidate, best):
+                best = candidate
+                best_trial = trial
+        logger.info(
+            "[OPTUNA] %s resuming study with %d completed trial(s); best trial=%d objective=%.4f",
+            label,
+            len(completed_trials),
+            best_trial.number,
+            float(best_trial.value),
+        )
+    remaining_trials = max(0, int(search_config.trials) - len(completed_trials))
+    if remaining_trials <= 0:
+        if best is not None:
+            best["optuna_storage"] = str(storage_path)
+            best["optuna_study_name"] = study.study_name
+            best["optuna_best_value"] = best.get("optuna_objective", 0.0)
+            return best
+        remaining_trials = 1
 
     def objective(trial) -> float:
         nonlocal best
@@ -1411,6 +1558,10 @@ def _run_job_optuna(
         trial.set_user_attr("accepted", result.get("accepted", False))
         trial.set_user_attr("accept_reason", result.get("accept_reason", ""))
         trial.set_user_attr("weights_path", result.get("weights_path", ""))
+        trial.set_user_attr("train_trades", result.get("train_trades", 0))
+        trial.set_user_attr("total_train_steps", result.get("total_train_steps", 0))
+        trial.set_user_attr("elapsed_s", result.get("elapsed_s", 0.0))
+        trial.set_user_attr("candidate_seed", result.get("candidate_seed"))
 
         if not result.get("error") and _prefer_optuna_result(result, best):
             best = result
@@ -1427,7 +1578,7 @@ def _run_job_optuna(
 
     study.optimize(
         objective,
-        n_trials=max(1, int(search_config.trials)),
+        n_trials=remaining_trials,
         timeout=search_config.timeout_s,
         gc_after_trial=True,
     )
@@ -1490,8 +1641,8 @@ def _detect_symbol(filename: str) -> str | None:
 
     Examples
     --------
-    XAUUSD_H1.csv               → XAUUSD
-    XAUUSD+_H1_20240101.csv     → XAUUSD+
+    XAUUSD_M60.csv              → XAUUSD
+    XAUUSD+_M60_20240101.csv    → XAUUSD+
     XAUUSD.crp_H4_20240101.csv  → XAUUSD.CRP
     BTCUSD_M15.csv              → BTCUSD
 
@@ -1501,7 +1652,7 @@ def _detect_symbol(filename: str) -> str | None:
         stem = stem[len("training_cache_") :]
     m = _TF_PATTERN.search(stem)
     if m:
-        sym = stem[: m.start()]  # everything before _M15 / _H1 / etc.
+        sym = stem[: m.start()]  # everything before _M15 / _M60 / legacy _H1 / etc.
         if sym:
             return sym.upper()
     # Fallback for filenames without a recognised TF marker
@@ -1866,13 +2017,31 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         metavar="TF",
-        help="Timeframe codes to train e.g. M5 H1 (default: all detected)",
+        help="Timeframe codes to train e.g. M5 M60 (default: all detected; legacy H1 input is accepted)",
     )
     p.add_argument("--workers", type=int, default=None, help="Worker processes (default: CPU count)")
+    p.add_argument(
+        "--allow-gpu-parallel",
+        action="store_true",
+        default=False,
+        help=(
+            "Honor --workers > 1 even when a GPU is visible. Default is one "
+            "worker on GPU hosts to avoid VRAM contention."
+        ),
+    )
     p.add_argument("--checkpoint-dir", default="data/checkpoints", metavar="PATH")
     p.add_argument("--train-split", type=float, default=0.80, metavar="0.8")
     p.add_argument("--train-every", type=int, default=4, metavar="N")
     p.add_argument("--max-bars", type=int, default=None, metavar="N")
+    p.add_argument(
+        "--max-bars-by-timeframe",
+        default=None,
+        metavar="TF=N[,TF=N]",
+        help=(
+            "Per-timeframe bar caps, e.g. M1=500000,M5=750000. "
+            "Overrides --max-bars for matching timeframes."
+        ),
+    )
     p.add_argument(
         "--n-epochs",
         type=int,
@@ -2123,7 +2292,7 @@ def _execute_pool(  # noqa: PLR0912, PLR0915
                     j.file_format,
                     args.checkpoint_dir,
                     args.train_split,
-                    args.max_bars,
+                    _job_max_bars(args, j),
                     args.accept_if_better,
                     args.acceptance_margin,
                     [str(path) for path in _job_source_files(j)],
@@ -2148,7 +2317,7 @@ def _execute_pool(  # noqa: PLR0912, PLR0915
                     j.file_format,
                     args.checkpoint_dir,
                     args.train_split,
-                    args.max_bars,
+                    _job_max_bars(args, j),
                     args.accept_if_better,
                     args.acceptance_margin,
                     [str(path) for path in _job_source_files(j)],
@@ -2171,7 +2340,7 @@ def _execute_pool(  # noqa: PLR0912, PLR0915
                     args.checkpoint_dir,
                     args.train_split,
                     args.train_every,
-                    args.max_bars,
+                    _job_max_bars(args, j),
                     args.n_epochs,
                     warm_start,
                     args.epsilon_start,
@@ -2205,9 +2374,15 @@ def _execute_pool(  # noqa: PLR0912, PLR0915
                 entry["candidate_id"] = candidate_id
         _write_status(ot_status)
 
+        pending = dict(futures)
         try:
-            for fut in as_completed(futures):
-                job = futures[fut]
+            while pending:
+                try:
+                    fut = next(as_completed(pending, timeout=30.0))
+                except FuturesTimeoutError:
+                    _refresh_running_status(ot_status, jobs, t_start)
+                    continue
+                job = pending.pop(fut)
                 label = f"{job.symbol}_M{job.timeframe_minutes}"
                 try:
                     res = fut.result()
@@ -2447,11 +2622,19 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0912, PLR0915
         _write_status(_ot_status)
         return 0
 
-    if _gpu_available and (args.workers is None or args.workers > 1):
+    allow_gpu_parallel = bool(args.allow_gpu_parallel) or str(
+        os.environ.get("CTRADER_OFFLINE_ALLOW_GPU_PARALLEL", ""),
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if _gpu_available and (args.workers is None or args.workers > 1) and not allow_gpu_parallel:
         LOG.info("[SPAWN] GPU detected — forcing 1 worker to prevent CUDA contention")
         n_workers = 1
     else:
         n_workers = args.workers or min(len(jobs), multiprocessing.cpu_count())
+        if _gpu_available and n_workers > 1:
+            LOG.warning(
+                "[SPAWN] GPU parallelism explicitly enabled — running %d worker(s); monitor VRAM/OOM",
+                n_workers,
+            )
     LOG.info("Launching %d worker(s) for %d job(s)", n_workers, len(jobs))
 
     results: list[dict] = []

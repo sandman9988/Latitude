@@ -39,6 +39,32 @@ universe watcher only when needed, runs `train_offline.py`, syncs accepted
 champions into isolated runtime checkpoint directories, and restarts the watcher
 if it was running before training.
 
+Saturday scheduled retraining starts a fresh weekly queue by default. It archives
+the previous `data/offline_training_status.json`, sets
+`CTRADER_OFFLINE_RESUME_STATUS=0` for the new run, and replaces any stale
+repo-local `train_offline.py` process that would otherwise block the full
+symbol/timeframe retrain. Once the new run has started, normal watcher recovery
+uses resume mode so interrupted unfinished rows continue instead of starting the
+whole weekend queue again.
+
+On GPU hosts the weekend script opts into parallel workers explicitly. Tune with
+`WEEKEND_TRAIN_WORKERS=<N>` and disable that opt-in with
+`WEEKEND_TRAIN_ALLOW_GPU_PARALLEL=0` if VRAM contention appears.
+
+Accepted checkpoints are staged into the isolated paper runtime directories
+incrementally while the weekend queue is still running. The wrapper watches
+`data/checkpoints/offline_champions.json`, copies only changed accepted trigger
+and harvester weights, and repeats every
+`WEEKEND_TRAIN_INCREMENTAL_SYNC_SECS` seconds (default `300`). This keeps
+completed timeframes ready for the final watcher restart instead of waiting for
+the slowest timeframe before copying files.
+
+M1 weekend jobs are capped by default with
+`WEEKEND_TRAIN_MAX_BARS_BY_TF=M1=500000`. Higher timeframes still use the full
+discovered history unless another cap is configured. This prevents deterministic
+tournament variants from spending the entire weekend repeatedly replaying
+multi-million-bar M1 datasets.
+
 ### Queue Recovery And Autorestart
 
 Offline training is restartable while `data/offline_training_status.json` shows
@@ -63,6 +89,11 @@ and restarts the unfinished queue. Restarts are capped by
 Resume keeps completed `(symbol, timeframe_minutes)` rows marked `done` and only
 queues unfinished rows. Set `CTRADER_OFFLINE_RESUME_STATUS=0` only when you
 intentionally want to ignore the previous status and rerun all discovered jobs.
+
+For the scheduled weekend wrapper, `WEEKEND_TRAIN_FRESH_STATUS=1` is the default
+so the Saturday 03:00 run retrains every discovered active symbol/timeframe. Set
+`WEEKEND_TRAIN_FRESH_STATUS=0` only when manually continuing an existing weekend
+queue outside watcher recovery.
 
 Operational controls:
 

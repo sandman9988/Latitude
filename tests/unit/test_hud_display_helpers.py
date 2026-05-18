@@ -799,6 +799,28 @@ class TestRenderHealthAnalyzer:
         assert "EMERGENCY_RATE_HIGH" in text
         assert "exit confidence threshold" in text or "exit_confidence_threshold" in text
 
+    def test_health_report_accepts_string_corrections(self):
+        hud = TabbedHUD()
+        hud._health_report = {
+            "overall_health": "CRITICAL",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "analysis_window_hours": 4,
+            "fleet": {"n_trades": 11, "win_rate": 0.55, "profit_factor": 1.1, "emergency_rate": 0.0},
+            "anomalies": ["CB_LOCKOUT"],
+            "corrections_applied": [
+                "[BAD_RISK_REWARD] BTCUSD M60 data/learned_parameters.json: confidence_floor 0.5500 -> 0.5700",
+            ],
+        }
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            hud._render_health_analyzer()
+        text = _strip_ansi(buf.getvalue())
+
+        assert "CRITICAL" in text
+        assert "11 trades" in text
+        assert "CB_LOCKOUT" in text
+        assert "BAD_RISK_REWARD" in text
+
     def test_load_health_report_reads_file(self, tmp_path: Path):
         import json
         hud = TabbedHUD()

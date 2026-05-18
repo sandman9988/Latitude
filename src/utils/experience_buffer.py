@@ -784,8 +784,13 @@ class ExperienceBuffer:
             for i in range(self.tree.capacity - 2, -1, -1):
                 self.tree.tree[i] = self.tree.tree[2 * i + 1] + self.tree.tree[2 * i + 2]
 
-            # Restore metadata
-            self.write_idx = int(data["write_idx"])
+            # Restore metadata.  Experiences are compacted into slots
+            # ``0..n-1`` during load, so the next write must follow the loaded
+            # block.  Do not blindly reuse the saved write_idx: a checkpoint
+            # that was full at an older, smaller capacity stores write_idx=0,
+            # which would desynchronise data slots from SumTree priority slots
+            # after loading into a larger runtime buffer.
+            self.write_idx = self.tree.write_index
             self.total_added = int(data["total_added"])
             self.total_sampled = int(data["total_sampled"])
             self.beta = float(data["beta"])
@@ -918,4 +923,3 @@ if __name__ == "__main__":
             pass
         else:
             pass
-

@@ -256,7 +256,7 @@ class AgentTrainingMixin:
     ) -> None:
         """Store a transition in the replay buffer."""
         if not self.enable_training or self.buffer is None:
-            LOG.info(
+            LOG.debug(
                 "[DIAG] %s.add_experience: SKIPPED — enable_training=%s, buffer=%s",
                 self._AGENT_TAG,
                 self.enable_training,
@@ -279,7 +279,7 @@ class AgentTrainingMixin:
         )
         buf_after = self.buffer.tree.n_entries
 
-        LOG.info(
+        LOG.debug(
             "[DIAG] %s.add_experience: action=%d, reward=%.4f, buffer_before=%d, buffer_after=%d, total_added=%d",
             self._AGENT_TAG,
             action,
