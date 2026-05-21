@@ -3337,155 +3337,141 @@ class TabbedHUD:
 
         print(f"  {_ANSI_DIM}Detail collapsed: [d] full trigger/harvester blocks and pipeline cards.{_ANSI_RST}")
 
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _agent_conf_color(confidence: float) -> str:
+        if CONF_HEALTHY_LOW < confidence < CONF_HEALTHY_HIGH:
+            return _ANSI_G
+        if CONF_WARM_LOW < confidence <= CONF_HEALTHY_LOW:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _agent_fill_note(is_in_pos: Any, *, fills_when_in_position: bool) -> str:
+        if is_in_pos is None:
+            return ""
+        filling = is_in_pos if fills_when_in_position else not is_in_pos
+        if filling:
+            return f"  {_ANSI_G}⬆ filling — {'in position' if is_in_pos else 'bot flat'}{_ANSI_RST}"
+        return f"  {_ANSI_Y}⏸ paused — {'bot in position' if is_in_pos else 'bot flat'}{_ANSI_RST}"
+
+    def _print_agent_loss_history(self, loss: float, hist: deque[float]) -> None:
+        loss_str = f"{loss:.6f}" if loss > 0 else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
+        print(f"    Loss:   {loss_str}")
+        print(f"    Trend:  {self._rt_trend(hist)}")
+        spark = self._rt_spark(hist)
+        if spark:
+            print(f"    Hist:   {spark}")
+
+    def _print_agent_confidence(self, confidence: float) -> None:
+        col = self._agent_conf_color(confidence)
+        print(f"    Conf:   {col}{confidence:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
+
+    @staticmethod
+    def _print_agent_floor(label: str, floor: float | None, confidence: float, *, warn: float, alert: float) -> None:
+        if floor is None:
+            print(f"    RL min: {_ANSI_DIM}—{_ANSI_RST}  {_ANSI_DIM}(risk tuner pending){_ANSI_RST}")
+            return
+        floor_col = _ANSI_G if floor <= warn else (_ANSI_Y if floor <= alert else _ANSI_R)
+        gap = float(confidence) - floor
+        gap_col = _ANSI_G if gap >= 0 else _ANSI_R
+        print(
+            f"    RL min: {floor_col}{floor:.3f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(dynamic {label} floor){_ANSI_RST}  Δnow {gap_col}{gap:+.3f}{_ANSI_RST}"
+        )
+
     def _render_live_trigger_agent(self, ts: dict, pm: dict) -> None:
         """Render the Trigger Agent training block."""
-
-        def _to_float(v):
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return None
-
         trig_buf = ts.get("trigger_buffer_size", 0)
         trig_added = ts.get("trigger_total_added", 0)
-        trig_loss = ts.get("trigger_loss", 0.0)
         trig_eps = ts.get("trigger_epsilon", 0.0)
-        is_in_pos = ts.get("is_in_position")  # None = unknown (old data)
-        # Prefer training_stats confidence (single source of truth); fall back to production_metrics
         trig_ready = ts.get("trigger_ready", False)
         trig_steps = ts.get("trigger_training_steps", 0)
         trig_conf = ts.get("trigger_confidence", pm.get("trigger_confidence_avg", 0.5))
-        ready_t = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if trig_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
-        # Buffer fill-status annotation: trigger only fills when bot is FLAT
-        if is_in_pos is True:
-            _trig_buf_note = f"  {_ANSI_Y}⏸ paused — bot in position{_ANSI_RST}"
-        elif is_in_pos is False:
-            _trig_buf_note = f"  {_ANSI_G}⬆ filling — bot flat{_ANSI_RST}"
-        else:
-            _trig_buf_note = ""
-        print(f"  \033[1m🎯 TRIGGER AGENT  (Entry)\033[0m  {ready_t}  {_ANSI_DIM}fills when flat{_ANSI_RST}")
+        ready = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if trig_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
+        note = self._agent_fill_note(ts.get("is_in_position"), fills_when_in_position=False)
+        print(f"  \033[1m🎯 TRIGGER AGENT  (Entry)\033[0m  {ready}  {_ANSI_DIM}fills when flat{_ANSI_RST}")
         print(f"    Steps:  {trig_steps:>10,}   Velocity: {self._rt_velocity(self._trig_step_hist)}")
-        print(f"    Buffer: {self._rt_pct_bar(trig_buf, _RT_TRIG_CAP)}  {trig_buf:,}/{_RT_TRIG_CAP:,}{_trig_buf_note}")
+        print(f"    Buffer: {self._rt_pct_bar(trig_buf, _RT_TRIG_CAP)}  {trig_buf:,}/{_RT_TRIG_CAP:,}{note}")
         if trig_added > 0:
             print(f"    Added:  {trig_added:,} total experiences")
         print(f"    ε:      {self._rt_eps_bar(trig_eps)}")
-        # Regime-aware epsilon factor: 1.0 = normal decay, <1.0 = slower (exploring more)
-        _regime_f = ts.get("trigger_epsilon_regime_factor", 1.0)
-        _rf_col = _ANSI_G if _regime_f >= 0.9 else (_ANSI_Y if _regime_f >= 0.7 else _ANSI_B)
+        self._print_trigger_exploration_controls(ts)
+        self._print_agent_loss_history(ts.get("trigger_loss", 0.0), self._trig_loss_hist)
+        self._print_agent_confidence(float(trig_conf))
+        floor = self._float_or_none(ts.get("entry_conf_dynamic_floor"))
+        self._print_agent_floor("entry", floor, float(trig_conf), warn=0.75, alert=0.85)
+        self._print_trigger_runway_status(ts)
+        print()
+
+    def _print_trigger_exploration_controls(self, ts: dict) -> None:
+        regime_f = ts.get("trigger_epsilon_regime_factor", 1.0)
+        rf_col = _ANSI_G if regime_f >= 0.9 else (_ANSI_Y if regime_f >= 0.7 else _ANSI_B)
         print(
-            f"    ε ζ:    {_rf_col}{_regime_f:.2f}{_ANSI_RST}  "
+            f"    ε ζ:    {rf_col}{regime_f:.2f}{_ANSI_RST}  "
             f"{_ANSI_DIM}(decay factor — 1.0 normal, <1 slower){_ANSI_RST}"
         )
-        # Adaptive tau (target network update rate)
-        _trig_tau = ts.get("trigger_tau", 0.005)
-        _tau_col = _ANSI_G if _trig_tau > 0.003 else (_ANSI_Y if _trig_tau > 0.001 else _ANSI_R)
-        print(f"    τ:      {_tau_col}{_trig_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
-        _tl_str = f"{trig_loss:.6f}" if trig_loss > 0 else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
-        print(f"    Loss:   {_tl_str}")
-        print(f"    Trend:  {self._rt_trend(self._trig_loss_hist)}")
-        _sp = self._rt_spark(self._trig_loss_hist)
-        if _sp:
-            print(f"    Hist:   {_sp}")
-        if CONF_HEALTHY_LOW < trig_conf < CONF_HEALTHY_HIGH:
-            _cc = _ANSI_G
-        elif CONF_WARM_LOW < trig_conf <= CONF_HEALTHY_LOW:
-            _cc = _ANSI_Y
-        else:
-            _cc = _ANSI_R
-        print(f"    Conf:   {_cc}{trig_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
-        _entry_floor = _to_float(ts.get("entry_conf_dynamic_floor"))
-        if _entry_floor is None:
-            print(f"    RL min: {_ANSI_DIM}—{_ANSI_RST}  {_ANSI_DIM}(risk tuner pending){_ANSI_RST}")
-        else:
-            _floor_col = _ANSI_G if _entry_floor <= 0.75 else (_ANSI_Y if _entry_floor <= 0.85 else _ANSI_R)
-            _gap = float(trig_conf) - _entry_floor
-            _gap_col = _ANSI_G if _gap >= 0 else _ANSI_R
-            print(
-                f"    RL min: {_floor_col}{_entry_floor:.3f}{_ANSI_RST}  "
-                f"{_ANSI_DIM}(dynamic entry floor){_ANSI_RST}  Δnow {_gap_col}{_gap:+.3f}{_ANSI_RST}"
-            )
-        _rw_total = int(ts.get("trigger_runway_cal_total_samples", 0) or 0)
-        _rw_active = int(ts.get("trigger_runway_cal_active_buckets", 0) or 0)
-        _rw_reliable = bool(ts.get("trigger_runway_predictor_reliable", False))
-        _rw_col = _ANSI_G if _rw_reliable else _ANSI_Y
-        _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
-        print(
-            f"    Runway: {_rw_col}{_rw_lbl}{_ANSI_RST}  "
-            f"{_ANSI_DIM}samples={_rw_total} active_buckets={_rw_active}{_ANSI_RST}"
-        )
-        print()
+        trig_tau = ts.get("trigger_tau", 0.005)
+        tau_col = _ANSI_G if trig_tau > 0.003 else (_ANSI_Y if trig_tau > 0.001 else _ANSI_R)
+        print(f"    τ:      {tau_col}{trig_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
+
+    @staticmethod
+    def _print_trigger_runway_status(ts: dict) -> None:
+        total = int(ts.get("trigger_runway_cal_total_samples", 0) or 0)
+        active = int(ts.get("trigger_runway_cal_active_buckets", 0) or 0)
+        reliable = bool(ts.get("trigger_runway_predictor_reliable", False))
+        col = _ANSI_G if reliable else _ANSI_Y
+        label = "RELIABLE (gate active)" if reliable else "LEARNING (gate bypass)"
+        print(f"    Runway: {col}{label}{_ANSI_RST}  {_ANSI_DIM}samples={total} active_buckets={active}{_ANSI_RST}")
 
     def _render_live_harvester_agent(self, ts: dict, pm: dict) -> None:
         """Render the Harvester Agent training block."""
-
-        def _to_float(v):
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return None
-
         harv_buf = ts.get("harvester_buffer_size", 0)
         harv_added = ts.get("harvester_total_added", 0)
-        harv_loss = ts.get("harvester_loss", 0.0)
         harv_beta = ts.get("harvester_beta", 0.4)
-        harv_min_hold = ts.get("harvester_min_hold_ticks", 10)
-        is_in_pos = ts.get("is_in_position")
         harv_ready = ts.get("harvester_ready", False)
         harv_steps = ts.get("harvester_training_steps", 0)
         harv_conf = ts.get("harvester_confidence", pm.get("harvester_confidence_avg", 0.5))
-        ready_h = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if harv_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
-        # Buffer fill-status annotation: harvester only fills when bot is IN POSITION
-        if is_in_pos is True:
-            _harv_buf_note = f"  {_ANSI_G}⬆ filling — in position{_ANSI_RST}"
-        elif is_in_pos is False:
-            _harv_buf_note = f"  {_ANSI_Y}⏸ paused — bot flat{_ANSI_RST}"
-        else:
-            _harv_buf_note = ""
-        print(f"  \033[1m🌾 HARVESTER AGENT  (Exit)\033[0m  {ready_h}  {_ANSI_DIM}fills in position{_ANSI_RST}")
+        ready = f"{_ANSI_G}✓ Ready{_ANSI_RST}" if harv_ready else f"{_ANSI_Y}⏳ Filling…{_ANSI_RST}"
+        note = self._agent_fill_note(ts.get("is_in_position"), fills_when_in_position=True)
+        print(f"  \033[1m🌾 HARVESTER AGENT  (Exit)\033[0m  {ready}  {_ANSI_DIM}fills in position{_ANSI_RST}")
         print(f"    Steps:  {harv_steps:>10,}   Velocity: {self._rt_velocity(self._harv_step_hist)}")
-        print(f"    Buffer: {self._rt_pct_bar(harv_buf, _RT_HARV_CAP)}  {harv_buf:,}/{_RT_HARV_CAP:,}{_harv_buf_note}")
+        print(f"    Buffer: {self._rt_pct_bar(harv_buf, _RT_HARV_CAP)}  {harv_buf:,}/{_RT_HARV_CAP:,}{note}")
         if harv_added > 0:
             print(f"    Added:  {harv_added:,} total experiences")
         print(f"    β IS:   {self._rt_beta_bar(harv_beta)}")
-        # Adaptive tau (target network update rate)
-        _harv_tau = ts.get("harvester_tau", 0.005)
-        _htau_col = _ANSI_G if _harv_tau > 0.003 else (_ANSI_Y if _harv_tau > 0.001 else _ANSI_R)
-        print(f"    τ:      {_htau_col}{_harv_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
-        _hl_str = f"{harv_loss:.6f}" if harv_loss > 0 else f"{_ANSI_DIM}0.000000 (idle/no training event){_ANSI_RST}"
-        print(f"    Loss:   {_hl_str}")
-        print(f"    Trend:  {self._rt_trend(self._harv_loss_hist)}")
-        _sp = self._rt_spark(self._harv_loss_hist)
-        if _sp:
-            print(f"    Hist:   {_sp}")
-        if CONF_HEALTHY_LOW < harv_conf < CONF_HEALTHY_HIGH:
-            _cc = _ANSI_G
-        elif CONF_WARM_LOW < harv_conf <= CONF_HEALTHY_LOW:
-            _cc = _ANSI_Y
-        else:
-            _cc = _ANSI_R
-        print(f"    Conf:   {_cc}{harv_conf:.3f}{_ANSI_RST}  {_ANSI_DIM}(healthy 0.55–0.85){_ANSI_RST}")
-        _exit_floor = _to_float(ts.get("exit_conf_dynamic_floor"))
-        if _exit_floor is None:
-            print(f"    RL min: {_ANSI_DIM}—{_ANSI_RST}  {_ANSI_DIM}(risk tuner pending){_ANSI_RST}")
-        else:
-            _floor_col = _ANSI_G if _exit_floor <= 0.65 else (_ANSI_Y if _exit_floor <= 0.80 else _ANSI_R)
-            _gap = float(harv_conf) - _exit_floor
-            _gap_col = _ANSI_G if _gap >= 0 else _ANSI_R
-            print(
-                f"    RL min: {_floor_col}{_exit_floor:.3f}{_ANSI_RST}  "
-                f"{_ANSI_DIM}(dynamic exit floor){_ANSI_RST}  Δnow {_gap_col}{_gap:+.3f}{_ANSI_RST}"
-            )
-        # Regime-aware hold duration
-        _hold_mult = ts.get("harvester_regime_hold_mult", 1.0)
-        _hm_col = _ANSI_G if _hold_mult > 1.0 else (_ANSI_Y if _hold_mult >= 0.9 else _ANSI_R)
+        self._print_harvester_tau(ts)
+        self._print_agent_loss_history(ts.get("harvester_loss", 0.0), self._harv_loss_hist)
+        self._print_agent_confidence(float(harv_conf))
+        floor = self._float_or_none(ts.get("exit_conf_dynamic_floor"))
+        self._print_agent_floor("exit", floor, float(harv_conf), warn=0.65, alert=0.80)
+        self._print_harvester_exit_controls(ts)
+        print()
+
+    @staticmethod
+    def _print_harvester_tau(ts: dict) -> None:
+        harv_tau = ts.get("harvester_tau", 0.005)
+        col = _ANSI_G if harv_tau > 0.003 else (_ANSI_Y if harv_tau > 0.001 else _ANSI_R)
+        print(f"    τ:      {col}{harv_tau:.5f}{_ANSI_RST}  {_ANSI_DIM}(adaptive target sync){_ANSI_RST}")
+
+    @staticmethod
+    def _print_harvester_exit_controls(ts: dict) -> None:
+        hold_mult = ts.get("harvester_regime_hold_mult", 1.0)
+        hold_col = _ANSI_G if hold_mult > 1.0 else (_ANSI_Y if hold_mult >= 0.9 else _ANSI_R)
+        min_hold = ts.get("harvester_min_hold_ticks", 10)
         print(
-            f"    Hold:   {harv_min_hold} ticks min  {_hm_col}×{_hold_mult:.2f}{_ANSI_RST}  "
+            f"    Hold:   {min_hold} ticks min  {hold_col}×{hold_mult:.2f}{_ANSI_RST}  "
             f"{_ANSI_DIM}(regime mult — >1 trend run, <1 quick exit){_ANSI_RST}"
         )
-        _cd = float(ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
-        _mw = float(ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
-        print(f"    WTL:    {_ANSI_Y}capture_decay<{_cd:.2f}  micro_giveback>{_mw:.2f}×MFE{_ANSI_RST}")
-        print()
+        cd = float(ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
+        mw = float(ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
+        print(f"    WTL:    {_ANSI_Y}capture_decay<{cd:.2f}  micro_giveback>{mw:.2f}×MFE{_ANSI_RST}")
 
     def _render_live_arena_and_health(
         self,
