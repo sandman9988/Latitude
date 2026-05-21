@@ -318,10 +318,17 @@ def detect_anomalies(
             code="TRIGGER_SATURATION",
             severity="CRITICAL",
             symbol="FLEET", timeframe="ALL",
-            message=f"Trigger reward at ±3.0 rail: {fleet.trigger_saturation_pct:.0%} of trades (threshold {TRIGGER_SATURATION_PCT:.0%}). Runway predictor saturation bug may have re-appeared.",
+            message=(
+                f"Trigger reward at ±3.0 rail: {fleet.trigger_saturation_pct:.0%} "
+                f"of trades (threshold {TRIGGER_SATURATION_PCT:.0%}). "
+                "Runway predictor saturation bug may have re-appeared."
+            ),
             metric_value=fleet.trigger_saturation_pct,
             threshold=TRIGGER_SATURATION_PCT,
-            correction="Check openapi_hub.py _close_position — ensure shaped_tr fallback is active (abs(shaped_tr) < 2.99 gate).",
+            correction=(
+                "Check openapi_hub.py _close_position — ensure shaped_tr fallback is active "
+                "(abs(shaped_tr) < 2.99 gate)."
+            ),
             param_name="", delta=0.0,
         ))
 
@@ -331,7 +338,10 @@ def detect_anomalies(
             code="EMERGENCY_RATE_HIGH",
             severity="CRITICAL",
             symbol="FLEET", timeframe="ALL",
-            message=f"Emergency stop rate {fleet.emergency_rate:.1%} > {EMERGENCY_RATE_HIGH:.0%}. Entries are too risky — raise confidence floor.",
+            message=(
+                f"Emergency stop rate {fleet.emergency_rate:.1%} > {EMERGENCY_RATE_HIGH:.0%}. "
+                "Entries are too risky — raise confidence floor."
+            ),
             metric_value=fleet.emergency_rate,
             threshold=EMERGENCY_RATE_HIGH,
             correction=f"Raise confidence_floor by {DELTA_CONF_FLOOR_EMERGENCY:+.3f} for affected bots.",
@@ -394,7 +404,10 @@ def detect_anomalies(
                 code="CAPTURE_EFFICIENCY_LOW",
                 severity="WARNING",
                 symbol=m.symbol, timeframe=m.timeframe,
-                message=f"{key}: mean_capture={m.mean_capture:.3f} < {CAPTURE_MEAN_LOW}. DDQN is exiting before protective stops fire.",
+                message=(
+                    f"{key}: mean_capture={m.mean_capture:.3f} < {CAPTURE_MEAN_LOW}. "
+                    "DDQN is exiting before protective stops fire."
+                ),
                 metric_value=m.mean_capture,
                 threshold=CAPTURE_MEAN_LOW,
                 correction=f"Raise exit_confidence_threshold by {DELTA_EXIT_CONF_CAPTURE:+.3f}.",
@@ -407,7 +420,10 @@ def detect_anomalies(
                 code="WTL_PENALTY_EXCESSIVE",
                 severity="INFO",
                 symbol=m.symbol, timeframe=m.timeframe,
-                message=f"{key}: mean WTL penalty={m.mean_wtl_penalty:.3f} < {WTL_PENALTY_EXCESSIVE}. Reward dominated by penalty — reduce wtl_penalty_multiplier.",
+                message=(
+                    f"{key}: mean WTL penalty={m.mean_wtl_penalty:.3f} < {WTL_PENALTY_EXCESSIVE}. "
+                    "Reward dominated by penalty — reduce wtl_penalty_multiplier."
+                ),
                 metric_value=m.mean_wtl_penalty,
                 threshold=WTL_PENALTY_EXCESSIVE,
                 correction=f"Reduce wtl_penalty_multiplier by {DELTA_WTL_MULT_REDUCE:+.3f}.",
@@ -420,7 +436,10 @@ def detect_anomalies(
                 code="RUNWAY_ACCURACY_LOW",
                 severity="INFO",
                 symbol=m.symbol, timeframe=m.timeframe,
-                message=f"{key}: runway_accuracy={m.runway_accuracy:.3f} < {RUNWAY_ACCURACY_LOW}. Predictor under-calibrated — speed up adaptation.",
+                message=(
+                    f"{key}: runway_accuracy={m.runway_accuracy:.3f} < {RUNWAY_ACCURACY_LOW}. "
+                    "Predictor under-calibrated — speed up adaptation."
+                ),
                 metric_value=m.runway_accuracy,
                 threshold=RUNWAY_ACCURACY_LOW,
                 correction=f"Raise runway_cal_alpha by {DELTA_RUNWAY_CAL_ALPHA:+.3f}.",
@@ -433,7 +452,10 @@ def detect_anomalies(
                 code="PNL_ALIGNMENT_WEAK",
                 severity="INFO",
                 symbol=m.symbol, timeframe=m.timeframe,
-                message=f"{key}: mean pnl_alignment={m.mean_pnl_alignment:.4f} < {PNL_ALIGNMENT_WEAK}. PnL gradient too weak in reward signal.",
+                message=(
+                    f"{key}: mean pnl_alignment={m.mean_pnl_alignment:.4f} < {PNL_ALIGNMENT_WEAK}. "
+                    "PnL gradient too weak in reward signal."
+                ),
                 metric_value=m.mean_pnl_alignment,
                 threshold=PNL_ALIGNMENT_WEAK,
                 correction=f"Raise pnl_alignment_multiplier by {DELTA_PNL_ALIGN_MULT:+.3f}.",
@@ -626,6 +648,60 @@ def _apply_cb_lockout_corrections(
                 LOG.warning("Could not normalize lockout gates for %s %s in %s: %s", symbol, timeframe, path, exc)
     return applied
 
+
+def _dedupe_correction_anomalies(anomalies: list[Anomaly]) -> dict[tuple[str, str, str], Anomaly]:
+    dedup: dict[tuple[str, str, str], Anomaly] = {}
+    for anomaly in anomalies:
+        if not anomaly.param_name or anomaly.delta == 0.0:
+            continue
+        key = (anomaly.symbol, anomaly.timeframe, anomaly.param_name)
+        if key not in dedup or abs(anomaly.delta) > abs(dedup[key].delta):
+            dedup[key] = anomaly
+    return dedup
+
+
+def _correction_targets(symbol: str, timeframe: str, manager) -> list[tuple[str, str]]:
+    if symbol != "FLEET":
+        return [(symbol, timeframe)]
+    mgr = manager(DATA_DIR / "learned_parameters.json")
+    return [(instrument.symbol, instrument.timeframe) for instrument in mgr.instruments.values()]
+
+
+def _apply_param_correction(
+    anomaly: Anomaly,
+    sym: str,
+    tf: str,
+    path: Path,
+    manager,
+    changed_paths: set[Path],
+    verbose: bool,
+) -> str | None:
+    try:
+        mgr = manager(path)
+        current = mgr.get(sym, anomaly.param_name, timeframe=tf)
+        new_val = current + anomaly.delta
+        mgr.set_value(sym, anomaly.param_name, new_val, timeframe=tf)
+        final = mgr.get(sym, anomaly.param_name, timeframe=tf)
+        changed_paths.add(path.resolve())
+        msg = (
+            f"[{anomaly.code}] {sym} {tf} {path}: {anomaly.param_name} "
+            f"{current:.4f} → {final:.4f} (Δ{anomaly.delta:+.4f})"
+        )
+        if verbose:
+            LOG.info("CORRECTION: %s", msg)
+        return msg
+    except Exception as exc:
+        LOG.warning(
+            "Could not apply correction for %s %s %s in %s: %s",
+            sym,
+            tf,
+            anomaly.param_name,
+            path,
+            exc,
+        )
+        return None
+
+
 def apply_corrections(
     anomalies: list[Anomaly],
     auto_heal: bool,
@@ -660,46 +736,15 @@ def apply_corrections(
     applied.extend(_apply_cb_lockout_corrections(anomalies, _target_paths, _manager, changed_paths, verbose))
 
     # De-duplicate: per (symbol, timeframe, param_name) apply only the largest delta
-    dedup: dict[tuple[str, str, str], Anomaly] = {}
-    for a in anomalies:
-        if not a.param_name or a.delta == 0.0:
+    for (symbol, timeframe, _param_name), anomaly in _dedupe_correction_anomalies(anomalies).items():
+        try:
+            targets = _correction_targets(symbol, timeframe, _manager)
+        except Exception:
             continue
-        key = (a.symbol, a.timeframe, a.param_name)
-        if key not in dedup or abs(a.delta) > abs(dedup[key].delta):
-            dedup[key] = a
-
-    for (symbol, timeframe, param_name), a in dedup.items():
-        if symbol == "FLEET":
-            # Apply to all active bots for fleet-wide corrections
-            try:
-                mgr = _manager(DATA_DIR / "learned_parameters.json")
-                targets = [
-                    (instrument.symbol, instrument.timeframe)
-                    for instrument in mgr.instruments.values()
-                ]
-            except Exception:
-                continue
-        else:
-            targets = [(symbol, timeframe)]
-
         for sym, tf in targets:
             for path in _target_paths(sym, tf):
-                try:
-                    mgr = _manager(path)
-                    current = mgr.get(sym, param_name, timeframe=tf)
-                    new_val = current + a.delta
-                    mgr.set_value(sym, param_name, new_val, timeframe=tf)
-                    final = mgr.get(sym, param_name, timeframe=tf)
-                    changed_paths.add(path.resolve())
-                    msg = (
-                        f"[{a.code}] {sym} {tf} {path}: {param_name} "
-                        f"{current:.4f} → {final:.4f} (Δ{a.delta:+.4f})"
-                    )
+                if msg := _apply_param_correction(anomaly, sym, tf, path, _manager, changed_paths, verbose):
                     applied.append(msg)
-                    if verbose:
-                        LOG.info("CORRECTION: %s", msg)
-                except Exception as e:
-                    LOG.warning("Could not apply correction for %s %s %s in %s: %s", sym, tf, param_name, path, e)
 
     for resolved, mgr in managers.items():
         if resolved in changed_paths:
@@ -827,9 +872,13 @@ def _print_summary(fleet: FleetMetrics, bot_metrics: dict[str, BotMetrics],
     print(f"PERFORMANCE HEALTH — last {fleet.analysis_window_hours:.0f}h")
     print(f"{'='*60}")
     print(f"Trades:   {fleet.n_trades}  WR={fleet.fleet_wr:.0%}  PnL=${fleet.total_pnl:.2f}")
-    print(f"Avg W/L:  +${fleet.avg_winner:.2f} / -${abs(fleet.avg_loser):.2f}  R:R={abs(fleet.avg_loser)/max(fleet.avg_winner,0.01):.2f}×")
+    rr_ratio = abs(fleet.avg_loser) / max(fleet.avg_winner, 0.01)
+    print(f"Avg W/L:  +${fleet.avg_winner:.2f} / -${abs(fleet.avg_loser):.2f}  R:R={rr_ratio:.2f}×")
     print(f"DDQN WR:  {fleet.ddqn_wr:.0%}   Runway WR: {fleet.runway_wr:.0%}")
-    print(f"Emergency:{fleet.emergency_rate:.1%}  Capture:{fleet.mean_capture:.3f}  RunwayAcc:{fleet.runway_accuracy:.3f}")
+    print(
+        f"Emergency:{fleet.emergency_rate:.1%}  "
+        f"Capture:{fleet.mean_capture:.3f}  RunwayAcc:{fleet.runway_accuracy:.3f}"
+    )
     print(f"Trigger@rail:{fleet.trigger_saturation_pct:.0%}")
     print()
     print("Per-bot:")
@@ -909,7 +958,11 @@ def run_analysis(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Performance analyzer & self-healing system")
     parser.add_argument("--hours",       type=float, default=24.0,  help="Analysis window in hours (default 24)")
-    parser.add_argument("--auto-heal",   action="store_true",        help="Apply corrective adjustments to learned_parameters.json")
+    parser.add_argument(
+        "--auto-heal",
+        action="store_true",
+        help="Apply corrective adjustments to learned_parameters.json",
+    )
     parser.add_argument("--min-trades",  type=int,   default=5,      help="Min trades before anomaly fires (default 5)")
     parser.add_argument("--verbose",     action="store_true",        help="Log each correction detail")
     parser.add_argument("--quiet",       action="store_true",        help="Skip human-readable summary")
