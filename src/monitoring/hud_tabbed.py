@@ -1336,51 +1336,40 @@ class TabbedHUD:
             return f"{_sym}::idx{fallback_idx}"
         return f"idx{fallback_idx}"
 
+    @staticmethod
+    def _normalize_universe_entry(item: dict, symbol: str = "") -> dict:
+        entry = dict(item)
+        if symbol:
+            entry.setdefault("symbol", str(symbol).upper())
+        elif not entry.get("symbol"):
+            entry["symbol"] = str(entry.get("_symbol", "") or "")
+        if entry.get("symbol"):
+            entry["symbol"] = str(entry["symbol"]).upper()
+        return entry
+
+    def _iter_universe_collection(self, items: Any, symbol: str = "") -> list[dict]:
+        if isinstance(items, list):
+            return [self._normalize_universe_entry(item, symbol) for item in items if isinstance(item, dict)]
+        if isinstance(items, dict):
+            return [self._normalize_universe_entry(items, symbol)]
+        return []
+
+    def _iter_universe_mapping(self, mapping: dict, *, skip_reserved: bool = False) -> list[dict]:
+        entries: list[dict] = []
+        for sym, item in mapping.items():
+            if skip_reserved and sym in {"version", "instruments"}:
+                continue
+            entries.extend(self._iter_universe_collection(item, str(sym)))
+        return entries
+
     def _iter_universe_entries(self, uni_raw: dict) -> list[dict]:
         """Return normalized universe entries supporting old and new schemas."""
-        entries: list[dict] = []
         instruments = uni_raw.get("instruments", {})
         if isinstance(instruments, list):
-            for item in instruments:
-                if not isinstance(item, dict):
-                    continue
-                _entry = dict(item)
-                if not _entry.get("symbol"):
-                    _entry["symbol"] = str(_entry.get("_symbol", "") or "")
-                if _entry.get("symbol"):
-                    _entry["symbol"] = str(_entry["symbol"]).upper()
-                entries.append(_entry)
-            return entries
+            return self._iter_universe_collection(instruments)
         if isinstance(instruments, dict):
-            for sym, item in instruments.items():
-                if isinstance(item, list):
-                    for sub in item:
-                        if not isinstance(sub, dict):
-                            continue
-                        _entry = dict(sub)
-                        _entry.setdefault("symbol", str(sym).upper())
-                        entries.append(_entry)
-                elif isinstance(item, dict):
-                    _entry = dict(item)
-                    _entry.setdefault("symbol", str(sym).upper())
-                    entries.append(_entry)
-            return entries
-        if isinstance(uni_raw, dict):
-            for sym, item in uni_raw.items():
-                if sym in ("version", "instruments"):
-                    continue
-                if isinstance(item, list):
-                    for sub in item:
-                        if not isinstance(sub, dict):
-                            continue
-                        _entry = dict(sub)
-                        _entry.setdefault("symbol", str(sym).upper())
-                        entries.append(_entry)
-                elif isinstance(item, dict):
-                    _entry = dict(item)
-                    _entry.setdefault("symbol", str(sym).upper())
-                    entries.append(_entry)
-        return entries
+            return self._iter_universe_mapping(instruments)
+        return self._iter_universe_mapping(uni_raw, skip_reserved=True)
 
     def _universe_starting_equity(self) -> float:
         """Resolve starting equity for active bot, falling back safely."""
