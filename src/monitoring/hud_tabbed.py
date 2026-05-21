@@ -2186,6 +2186,113 @@ class TabbedHUD:
         sys.stdout.write("\033[2J\033[H\033[?25h")
         sys.stdout.flush()
 
+    @staticmethod
+    def _print_help_section(title: str, rows: list[str], *, gap_before: bool = True) -> None:
+        prefix = "\n" if gap_before else ""
+        print(f"{prefix}\033[1m{title}\033[0m\n")
+        for row in rows:
+            print(row)
+
+    def _help_sections(self) -> list[tuple[str, list[str]]]:
+        return [
+            (
+                "📋 KEYBOARD SHORTCUTS",
+                [
+                    "  [1]           - Overview tab (compact summary)",
+                    "  [2]           - Performance tab (detailed metrics)",
+                    "  [3]           - Training tab (agent statistics)",
+                    "  [4]           - Risk tab (risk management)",
+                    "  [5]           - Market tab (microstructure)",
+                    "  [6]           - Decision Log tab (last 20 decisions)",
+                    "  [7]           - Trade History tab (all closed trades with drill-down)",
+                    "  [←] / [→]     - Cycle tabs without reaching for Tab",
+                    "  [Tab]         - Cycle to next tab",
+                    "  [Shift+Tab]   - Cycle to previous tab",
+                    "  [s]           - Select symbol/timeframe preset",
+                    "  [h]           - Show this help screen",
+                    "  [q] / Ctrl+Q / Ctrl+X  - Quit HUD",
+                    "  [Alt+K]       - Emergency kill switch (close all positions + halt trading)",
+                    "  [r]           - Review tripped circuit breakers and reset if OK",
+                    "  [e]           - Set/clear stats epoch (exclude old trades from metrics)",
+                ],
+            ),
+            (
+                "📈 PERFORMANCE TAB KEYS",
+                [
+                    "  [d]           - Toggle detailed quality / prediction drill-down",
+                    "  [b]           - Back to summary view",
+                ],
+            ),
+            (
+                "🧠 TRAINING TAB KEYS",
+                ["  [d]           - Toggle full per-agent training detail", "  [b]           - Back to summary view"],
+            ),
+            (
+                "📋 TRADE HISTORY TAB KEYS",
+                [
+                    "  [↓]/[↑], [j]/[k] - Move selection down / up",
+                    "  [n] / [p]     - Next / previous page",
+                    "  [d]           - Drill into selected trade (full detail view)",
+                    "  [b] / [d]     - Back from detail view to trade list",
+                ],
+            ),
+            (
+                "📊 TAB DESCRIPTIONS",
+                [
+                    "  Overview      - Quick snapshot of position, daily stats, risk, and health",
+                    "  Performance   - Trade-log metrics for 24h/7d/month, epoch, lifetime, and current sessions",
+                    "  Training      - Agent training status, buffer sizes, loss metrics",
+                    "  Risk          - Circuit breaker (with trip reasons + reset), VaR, vol, regime",
+                    "  Market        - Spread, VPIN toxicity, order imbalance, depth",
+                    "  Decision Log  - Last 20 trading decisions with color-coded events",
+                    "  Trades        - Full trade history, paginated, with per-trade drill-down",
+                ],
+            ),
+            (
+                "🎨 COLOR CODING",
+                [
+                    f"  {_ANSI_G}✓ Green{_ANSI_RST}       - Positive values, good status, active longs",
+                    f"  {_ANSI_R}✗ Red{_ANSI_RST}         - Negative values, alerts, active shorts",
+                    f"  {_ANSI_Y}⚡ Yellow{_ANSI_RST}      - Neutral/warning, hold actions",
+                    f"  {_ANSI_B}ℹ Blue{_ANSI_RST}        - Informational messages",
+                ],
+            ),
+            (
+                "📁 DATA SOURCES",
+                [
+                    "  All data is read from JSON/JSONL files in the 'data/' directory:",
+                    f"    • {_BOT_CONFIG_FILE:<27} - Bot configuration and status",
+                    "    • current_position_SYM_MTF.json - Active position (per symbol/timeframe)",
+                    "    • trade_log.jsonl           - All closed trades (primary source for performance)",
+                    "    • training_stats.json        - Agent training statistics",
+                    "    • training_stats_SYM_MTF.json- Per-bot training stats (overrides shared file)",
+                    "    • risk_metrics.json          - Risk metrics (drawdown, VaR, circuit breakers)",
+                    "    • order_book.json            - Live market data (spread, depth, VPIN, imbalance)",
+                    "    • performance_snapshot.json  - Trading mode identifier only",
+                    "    • logs/audit/decisions.jsonl - Decision history (primary, rich JSONL format)",
+                    "    • decision_log.json          - Decision history (legacy fallback only)",
+                ],
+            ),
+            (
+                "⚙️  SYSTEM REQUIREMENTS",
+                [
+                    "  • Terminal with UTF-8 support",
+                    "  • ANSI color support",
+                    "  • Minimum 80x24 terminal size recommended",
+                    "  • Bot must be running and exporting data files",
+                ],
+            ),
+            (
+                "🔧 TROUBLESHOOTING",
+                [
+                    "  Data stale warning    - Bot may be paused or crashed",
+                    "  Missing files         - Check that bot is running and exporting",
+                    "  Garbled display       - Ensure terminal supports UTF-8 and ANSI colors",
+                    "  Keyboard not working  - Try running in a different terminal emulator",
+                ],
+            ),
+        ]
+
     def _show_help(self) -> None:
         """Display help screen with keyboard shortcuts and information."""
         self._disable_raw_mode()
@@ -2194,79 +2301,8 @@ class TabbedHUD:
             print("╔" + "═" * 78 + "╗")
             print("║" + " " * 25 + "HUD HELP & REFERENCE" + " " * 32 + "║")
             print("╚" + "═" * 78 + "╝\n")
-
-            print("\033[1m📋 KEYBOARD SHORTCUTS\033[0m\n")
-            print("  [1]           - Overview tab (compact summary)")
-            print("  [2]           - Performance tab (detailed metrics)")
-            print("  [3]           - Training tab (agent statistics)")
-            print("  [4]           - Risk tab (risk management)")
-            print("  [5]           - Market tab (microstructure)")
-            print("  [6]           - Decision Log tab (last 20 decisions)")
-            print("  [7]           - Trade History tab (all closed trades with drill-down)")
-            print("  [←] / [→]     - Cycle tabs without reaching for Tab")
-            print("  [Tab]         - Cycle to next tab")
-            print("  [Shift+Tab]   - Cycle to previous tab")
-            print("  [s]           - Select symbol/timeframe preset")
-            print("  [h]           - Show this help screen")
-            print("  [q] / Ctrl+Q / Ctrl+X  - Quit HUD")
-            print("  [Alt+K]       - Emergency kill switch (close all positions + halt trading)")
-            print("  [r]           - Review tripped circuit breakers and reset if OK")
-            print("  [e]           - Set/clear stats epoch (exclude old trades from metrics)")
-
-            print("\n\033[1m📈 PERFORMANCE TAB KEYS\033[0m\n")
-            print("  [d]           - Toggle detailed quality / prediction drill-down")
-            print("  [b]           - Back to summary view")
-
-            print("\n\033[1m🧠 TRAINING TAB KEYS\033[0m\n")
-            print("  [d]           - Toggle full per-agent training detail")
-            print("  [b]           - Back to summary view")
-
-            print("\n\033[1m📋 TRADE HISTORY TAB KEYS\033[0m\n")
-            print("  [↓]/[↑], [j]/[k] - Move selection down / up")
-            print("  [n] / [p]     - Next / previous page")
-            print("  [d]           - Drill into selected trade (full detail view)")
-            print("  [b] / [d]     - Back from detail view to trade list")
-
-            print("\n\033[1m📊 TAB DESCRIPTIONS\033[0m\n")
-            print("  Overview      - Quick snapshot of position, daily stats, risk, and health")
-            print("  Performance   - Trade-log metrics for 24h/7d/month, epoch, lifetime, and current sessions")
-            print("  Training      - Agent training status, buffer sizes, loss metrics")
-            print("  Risk          - Circuit breaker (with trip reasons + reset), VaR, vol, regime")
-            print("  Market        - Spread, VPIN toxicity, order imbalance, depth")
-            print("  Decision Log  - Last 20 trading decisions with color-coded events")
-            print("  Trades        - Full trade history, paginated, with per-trade drill-down")
-
-            print("\n\033[1m🎨 COLOR CODING\033[0m\n")
-            print(f"  {_ANSI_G}✓ Green{_ANSI_RST}       - Positive values, good status, active longs")
-            print(f"  {_ANSI_R}✗ Red{_ANSI_RST}         - Negative values, alerts, active shorts")
-            print(f"  {_ANSI_Y}⚡ Yellow{_ANSI_RST}      - Neutral/warning, hold actions")
-            print(f"  {_ANSI_B}ℹ Blue{_ANSI_RST}        - Informational messages")
-
-            print("\n\033[1m📁 DATA SOURCES\033[0m\n")
-            print("  All data is read from JSON/JSONL files in the 'data/' directory:")
-            print(f"    • {_BOT_CONFIG_FILE:<27} - Bot configuration and status")
-            print("    • current_position_SYM_MTF.json - Active position (per symbol/timeframe)")
-            print("    • trade_log.jsonl           - All closed trades (primary source for performance)")
-            print("    • training_stats.json        - Agent training statistics")
-            print("    • training_stats_SYM_MTF.json- Per-bot training stats (overrides shared file)")
-            print("    • risk_metrics.json          - Risk metrics (drawdown, VaR, circuit breakers)")
-            print("    • order_book.json            - Live market data (spread, depth, VPIN, imbalance)")
-            print("    • performance_snapshot.json  - Trading mode identifier only")
-            print("    • logs/audit/decisions.jsonl - Decision history (primary, rich JSONL format)")
-            print("    • decision_log.json          - Decision history (legacy fallback only)")
-
-            print("\n\033[1m⚙️  SYSTEM REQUIREMENTS\033[0m\n")
-            print("  • Terminal with UTF-8 support")
-            print("  • ANSI color support")
-            print("  • Minimum 80x24 terminal size recommended")
-            print("  • Bot must be running and exporting data files")
-
-            print("\n\033[1m🔧 TROUBLESHOOTING\033[0m\n")
-            print("  Data stale warning    - Bot may be paused or crashed")
-            print("  Missing files         - Check that bot is running and exporting")
-            print("  Garbled display       - Ensure terminal supports UTF-8 and ANSI colors")
-            print("  Keyboard not working  - Try running in a different terminal emulator")
-
+            for idx, (title, rows) in enumerate(self._help_sections()):
+                self._print_help_section(title, rows, gap_before=idx > 0)
             print("\n" + "─" * 80)
             input("Press Enter to return to HUD...")
         except Exception as e:
