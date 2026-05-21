@@ -3152,100 +3152,125 @@ class TabbedHUD:
         col = _ANSI_G if filled_frac >= 0.5 else (_ANSI_Y if filled_frac >= 0.2 else _ANSI_DIM)
         return f"{col}[{'█' * filled}{'░' * (width - filled)}]{_ANSI_RST}"
 
-    def _render_pipeline_card(self, sym: str, entry: dict) -> None:
-        """Render one bot card with connection + training + activity stats."""
-        stage = entry.get("stage", "?")
-        tf_min = entry.get("timeframe_minutes", 0)
-        tf_lbl = f"M{tf_min}" if tf_min else "?"
-        zo = entry.get("z_omega")
-        pid = entry.get("paper_pid")
-        alive = entry.get("_pid_alive", False)
-        ps = entry.get("_bot_stats", {})  # per-bot stats JSON from bot
-
-        # ── title line ────────────────────────────────────────────────────────
-        stage_col = {
+    @staticmethod
+    def _pipeline_stage_color(stage: str) -> str:
+        return {
             "PAPER": _ANSI_Y,
             "LIVE": _ANSI_G,
             "UNTRAINED": _ANSI_DIM,
             "DEMOTED": _ANSI_R,
         }.get(stage, _ANSI_DIM)
-        _no_weights = not entry.get("weights_path")
-        if zo is not None and not (zo == 0.0 and _no_weights):
-            zo_c = _ANSI_G if zo > 1.0 else (_ANSI_Y if zo > 0 else _ANSI_R)
-            zo_str = f"{zo_c}ZΩ {zo:.4f}{_ANSI_RST}"
-        else:
-            zo_str = f"{_ANSI_DIM}ZΩ —{_ANSI_RST}"
-        pid_str = (
-            f"{_ANSI_G}▶ PID {pid}{_ANSI_RST}"
-            if alive
-            else (f"{_ANSI_R}✗ dead ({pid}){_ANSI_RST}" if pid else f"{_ANSI_DIM}not started{_ANSI_RST}")
-        )
+
+    @staticmethod
+    def _pipeline_zo_str(entry: dict) -> str:
+        zo = entry.get("z_omega")
+        no_weights = not entry.get("weights_path")
+        if zo is None or (zo == 0.0 and no_weights):
+            return f"{_ANSI_DIM}ZΩ —{_ANSI_RST}"
+        zo_c = _ANSI_G if zo > 1.0 else (_ANSI_Y if zo > 0 else _ANSI_R)
+        return f"{zo_c}ZΩ {zo:.4f}{_ANSI_RST}"
+
+    @staticmethod
+    def _pipeline_pid_str(entry: dict) -> str:
+        pid = entry.get("paper_pid")
+        if entry.get("_pid_alive", False):
+            return f"{_ANSI_G}▶ PID {pid}{_ANSI_RST}"
+        return f"{_ANSI_R}✗ dead ({pid}){_ANSI_RST}" if pid else f"{_ANSI_DIM}not started{_ANSI_RST}"
+
+    @staticmethod
+    def _pipeline_uptime_str(ps: dict) -> str:
         uptime_s = int(ps.get("uptime_seconds", 0))
         if uptime_s >= 3600:
-            uptime_str = f"{uptime_s // 3600}h {(uptime_s % 3600) // 60}m"
-        elif uptime_s:
-            uptime_str = f"{uptime_s // 60}m {uptime_s % 60}s"
-        else:
-            uptime_str = "—"
+            return f"{uptime_s // 3600}h {(uptime_s % 3600) // 60}m"
+        if uptime_s:
+            return f"{uptime_s // 60}m {uptime_s % 60}s"
+        return "—"
+
+    def _print_pipeline_header(self, sym: str, entry: dict, ps: dict) -> None:
+        stage = entry.get("stage", "?")
+        tf_min = entry.get("timeframe_minutes", 0)
+        tf_lbl = f"M{tf_min}" if tf_min else "?"
         print(
             f"  {_ANSI_B}◼ {sym} {tf_lbl}{_ANSI_RST}  "
-            f"{stage_col}{stage}{_ANSI_RST}  {zo_str}  {pid_str}  uptime {uptime_str}"
+            f"{self._pipeline_stage_color(stage)}{stage}{_ANSI_RST}  "
+            f"{self._pipeline_zo_str(entry)}  {self._pipeline_pid_str(entry)}  "
+            f"uptime {self._pipeline_uptime_str(ps)}"
         )
 
+    @staticmethod
+    def _print_pipeline_connection(ps: dict) -> None:
+        q_str = f"{_ANSI_G}QUOTE ✓{_ANSI_RST}" if ps.get("quote_ok", False) else f"{_ANSI_R}QUOTE ✗{_ANSI_RST}"
+        t_str = f"{_ANSI_G}TRADE ✓{_ANSI_RST}" if ps.get("trade_ok", False) else f"{_ANSI_R}TRADE ✗{_ANSI_RST}"
+        h_str = (
+            f"{_ANSI_G}healthy{_ANSI_RST}"
+            if ps.get("connection_healthy", False)
+            else f"{_ANSI_Y}unhealthy{_ANSI_RST}"
+        )
+        recon = ps.get("total_reconnects", 0)
+        r_col = _ANSI_G if recon == 0 else (_ANSI_Y if recon < 5 else _ANSI_R)
+        print(f"    FIX: {q_str}  {t_str}  {h_str}  │  reconnects: {r_col}{recon}{_ANSI_RST}")
+
+    @staticmethod
+    def _print_pipeline_activity(ps: dict) -> None:
+        bars = ps.get("bar_count", 0)
+        trades = ps.get("total_trades", 0)
+        pnl = ps.get("total_pnl", 0.0)
+        wr = ps.get("win_rate", 0.0)
+        pnl_c = _ANSI_G if pnl >= 0 else _ANSI_R
+        wr_str = f"{wr * 100:.1f}%" if trades > 0 else "—"
+        print(f"    Bars: {bars}  │  Trades: {trades}  │  PnL: {pnl_c}{pnl:+.2f}{_ANSI_RST}  │  Win: {wr_str}")
+
+    @staticmethod
+    def _print_pipeline_account(ps: dict) -> None:
+        real_balance = ps.get("real_account_balance")
+        if real_balance is None:
+            return
+        pnl = ps.get("total_pnl", 0.0)
+        real_equity = ps.get("real_account_equity")
+        real_margin = ps.get("real_margin_free")
+        bal_col = _ANSI_G if pnl >= 0 else _ANSI_R
+        equity_str = f"  │  Equity: {_ANSI_B}{float(real_equity):,.2f}{_ANSI_RST}" if real_equity is not None else ""
+        margin_str = (
+            f"  │  Free margin: {_ANSI_B}{float(real_margin):,.2f}{_ANSI_RST}"
+            if real_margin is not None
+            else ""
+        )
+        print(
+            f"    Balance: {bal_col}{float(real_balance):,.2f}{_ANSI_RST}  "
+            f"{_ANSI_G}✓ live{_ANSI_RST}{equity_str}{margin_str}"
+        )
+
+    def _print_pipeline_training(self, ps: dict) -> None:
+        trigger_buffer = ps.get("trigger_buffer", 0)
+        harvester_buffer = ps.get("harvester_buffer", 0)
+        t_bar = self._pp_bar(trigger_buffer / _RT_TRIG_CAP if _RT_TRIG_CAP else 0)
+        h_bar = self._pp_bar(harvester_buffer / _RT_HARV_CAP if _RT_HARV_CAP else 0)
+        t_pct = f"{100 * trigger_buffer / _RT_TRIG_CAP:4.0f}%" if _RT_TRIG_CAP else ""
+        h_pct = f"{100 * harvester_buffer / _RT_HARV_CAP:4.0f}%" if _RT_HARV_CAP else ""
+        t_rd = f"{_ANSI_G}ready{_ANSI_RST}" if ps.get("trigger_ready", False) else f"{_ANSI_Y}filling{_ANSI_RST}"
+        h_rd = f"{_ANSI_G}ready{_ANSI_RST}" if ps.get("harvester_ready", False) else f"{_ANSI_Y}filling{_ANSI_RST}"
+        t_loss = ps.get("trigger_loss", 0.0)
+        h_loss = ps.get("harvester_loss", 0.0)
+        t_ls = f"{t_loss:.4f}" if t_loss > 0 else f"{_ANSI_DIM}—{_ANSI_RST}"
+        h_ls = f"{h_loss:.4f}" if h_loss > 0 else f"{_ANSI_DIM}—{_ANSI_RST}"
+        print(
+            f"    Trig:  {ps.get('trigger_steps', 0):>6,} steps  ε={ps.get('trigger_epsilon', 0.0):.3f}  "
+            f"buf {t_bar}{t_pct}  loss {t_ls}  {t_rd}"
+        )
+        print(
+            f"    Harv:  {ps.get('harvester_steps', 0):>6,} steps  β={ps.get('harvester_beta', 0.4):.3f}  "
+            f"buf {h_bar}{h_pct}  loss {h_ls}  {h_rd}"
+        )
+
+    def _render_pipeline_card(self, sym: str, entry: dict) -> None:
+        """Render one bot card with connection + training + activity stats."""
+        ps = entry.get("_bot_stats", {})  # per-bot stats JSON from bot
+        self._print_pipeline_header(sym, entry, ps)
         if ps:
-            # ── FIX connection ────────────────────────────────────────────────
-            q_ok = ps.get("quote_ok", False)
-            t_ok = ps.get("trade_ok", False)
-            healthy = ps.get("connection_healthy", False)
-            recon = ps.get("total_reconnects", 0)
-            q_str = f"{_ANSI_G}QUOTE ✓{_ANSI_RST}" if q_ok else f"{_ANSI_R}QUOTE ✗{_ANSI_RST}"
-            t_str = f"{_ANSI_G}TRADE ✓{_ANSI_RST}" if t_ok else f"{_ANSI_R}TRADE ✗{_ANSI_RST}"
-            h_str = f"{_ANSI_G}healthy{_ANSI_RST}" if healthy else f"{_ANSI_Y}unhealthy{_ANSI_RST}"
-            r_col = _ANSI_G if recon == 0 else (_ANSI_Y if recon < 5 else _ANSI_R)
-            print(f"    FIX: {q_str}  {t_str}  {h_str}  │  reconnects: {r_col}{recon}{_ANSI_RST}")
-
-            # ── activity ─────────────────────────────────────────────────────
-            bars = ps.get("bar_count", 0)
-            trades = ps.get("total_trades", 0)
-            pnl = ps.get("total_pnl", 0.0)
-            wr = ps.get("win_rate", 0.0)
-            pnl_c = _ANSI_G if pnl >= 0 else _ANSI_R
-            wr_str = f"{wr * 100:.1f}%" if trades > 0 else "—"
-            print(f"    Bars: {bars}  │  Trades: {trades}  │  PnL: {pnl_c}{pnl:+.2f}{_ANSI_RST}  │  Win: {wr_str}")
-
-            # ── account balance (real from broker if CollateralReport arrived) ─
-            _rb = ps.get("real_account_balance")
-            _re = ps.get("real_account_equity")
-            _rm = ps.get("real_margin_free")
-            if _rb is not None:
-                _rb_pnl = pnl  # compare relative to starting point
-                _rb_c = _ANSI_G if _rb_pnl >= 0 else _ANSI_R
-                _re_str = f"  │  Equity: {_ANSI_B}{float(_re):,.2f}{_ANSI_RST}" if _re is not None else ""
-                _rm_str = f"  │  Free margin: {_ANSI_B}{float(_rm):,.2f}{_ANSI_RST}" if _rm is not None else ""
-                print(f"    Balance: {_rb_c}{float(_rb):,.2f}{_ANSI_RST}  {_ANSI_G}✓ live{_ANSI_RST}{_re_str}{_rm_str}")
-
-            # ── training stats ────────────────────────────────────────────────
-            t_steps = ps.get("trigger_steps", 0)
-            t_eps = ps.get("trigger_epsilon", 0.0)
-            t_buf = ps.get("trigger_buffer", 0)
-            t_loss = ps.get("trigger_loss", 0.0)
-            t_ready = ps.get("trigger_ready", False)
-            h_steps = ps.get("harvester_steps", 0)
-            h_beta = ps.get("harvester_beta", 0.4)
-            h_buf = ps.get("harvester_buffer", 0)
-            h_loss = ps.get("harvester_loss", 0.0)
-            h_ready = ps.get("harvester_ready", False)
-
-            t_bar = self._pp_bar(t_buf / _RT_TRIG_CAP if _RT_TRIG_CAP else 0)
-            h_bar = self._pp_bar(h_buf / _RT_HARV_CAP if _RT_HARV_CAP else 0)
-            t_pct = f"{100 * t_buf / _RT_TRIG_CAP:4.0f}%" if _RT_TRIG_CAP else ""
-            h_pct = f"{100 * h_buf / _RT_HARV_CAP:4.0f}%" if _RT_HARV_CAP else ""
-            t_rd = f"{_ANSI_G}ready{_ANSI_RST}" if t_ready else f"{_ANSI_Y}filling{_ANSI_RST}"
-            h_rd = f"{_ANSI_G}ready{_ANSI_RST}" if h_ready else f"{_ANSI_Y}filling{_ANSI_RST}"
-            t_ls = f"{t_loss:.4f}" if t_loss > 0 else f"{_ANSI_DIM}—{_ANSI_RST}"
-            h_ls = f"{h_loss:.4f}" if h_loss > 0 else f"{_ANSI_DIM}—{_ANSI_RST}"
-            print(f"    Trig:  {t_steps:>6,} steps  ε={t_eps:.3f}  buf {t_bar}{t_pct}  loss {t_ls}  {t_rd}")
-            print(f"    Harv:  {h_steps:>6,} steps  β={h_beta:.3f}  buf {h_bar}{h_pct}  loss {h_ls}  {h_rd}")
+            self._print_pipeline_connection(ps)
+            self._print_pipeline_activity(ps)
+            self._print_pipeline_account(ps)
+            self._print_pipeline_training(ps)
         else:
             started = entry.get("paper_started_at", "")
             started_str = started[:19].replace("T", " ") if started else "—"
