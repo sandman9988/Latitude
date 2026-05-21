@@ -35,6 +35,9 @@ from src.utils.safe_math import SafeMath
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+MAX_BACKTEST_BARS = 500
+MAX_TRAINING_EPISODES = 150
+
 
 def realized_vol(closes: list[float], window: int) -> float:
     """Rogers-Satchell style realized vol from close prices."""
@@ -88,6 +91,13 @@ def print_section(title: str) -> None:
     pass
 
 
+def bars_cache_path(symbol: str = "XAUUSD", tf_label: str = "M5") -> Path:
+    root_path = PROJECT_ROOT / "data" / "bars_cache.json"
+    if root_path.exists():
+        return root_path
+    return PROJECT_ROOT / "data" / f"paper_{symbol}_{tf_label}" / "bars_cache.json"
+
+
 def print_comparison_table(labels: list[str], results: dict[str, dict]) -> None:
     """Print a formatted comparison table."""
     metrics = list(next(iter(results.values())).keys())
@@ -104,6 +114,49 @@ def print_comparison_table(labels: list[str], results: dict[str, dict]) -> None:
                 row += f"{val:>{col_w}.4f}"
             else:
                 row += f"{val!s:>{col_w}}"
+
+
+def static_q_to_runway(q: float) -> float:
+    return 0.8 * max(0.0, q - 0.5)
+
+
+def runway_bucket(q: float, edges: list[float], n_buckets: int) -> int:
+    bucket = 0
+    for edge_idx in range(1, len(edges)):
+        if q >= edges[edge_idx]:
+            bucket = edge_idx - 1
+        else:
+            break
+    return min(bucket, n_buckets - 1)
+
+
+def calibrated_q_to_runway(
+    q: float,
+    ewma_values: list[float],
+    ewma_counts: list[int],
+    edges: list[float],
+    min_samples: int,
+) -> float:
+    bucket = runway_bucket(q, edges, len(ewma_values))
+    if ewma_counts[bucket] >= min_samples:
+        return ewma_values[bucket]
+    return static_q_to_runway(q)
+
+
+def update_runway_ewma(
+    q: float,
+    actual_mfe_frac: float,
+    ewma_values: list[float],
+    ewma_counts: list[int],
+    edges: list[float],
+    alpha: float,
+) -> None:
+    bucket = runway_bucket(q, edges, len(ewma_values))
+    if ewma_counts[bucket] == 0:
+        ewma_values[bucket] = actual_mfe_frac
+    else:
+        ewma_values[bucket] = alpha * actual_mfe_frac + (1 - alpha) * ewma_values[bucket]
+    ewma_counts[bucket] += 1
 
 
 def discrimination_ratio(forecasts: np.ndarray, actuals: np.ndarray) -> float:
@@ -158,9 +211,9 @@ def compute_metrics(forecasts: np.ndarray, actuals: np.ndarray) -> dict:
 def test_bars_cache() -> None:
     print_section("TEST 1: Sliding-Window Forward MFE — bars_cache.json (500 bars)")
 
-    with open(PROJECT_ROOT / "data" / "bars_cache.json") as f:
+    with open(bars_cache_path()) as f:
         cache = json.load(f)
-    raw_bars = cache["bars"]  # list of [ts, o, h, l, c]
+    raw_bars = cache["bars"][-MAX_BACKTEST_BARS:]  # list of [ts, o, h, l, c]
 
     WARMUP = 50  # need 50 bars for sigma_long
     HORIZON = 10  # forward MFE horizon (10 bars = 50 min)
@@ -239,10 +292,6 @@ def test_bars_cache() -> None:
     labels = list(results.keys())
     print_comparison_table(labels, results)
 
-    # Interpretation
-    max(results.items(), key=lambda x: x[1].get("spearman_r") or -1)
-    max(results.items(), key=lambda x: x[1].get("disc_ratio") or 0)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TEST 2: Real trade episodes from training cache
@@ -257,6 +306,7 @@ def test_training_cache() -> None:
         for line in f:
             ep = json.loads(line.strip())
             episodes.append(ep)
+    episodes = episodes[-MAX_TRAINING_EPISODES:]
 
     # We need episodes with exit_bars (have at least 30 bars for vol + HMM warmup)
     usable = [ep for ep in episodes if len(ep.get("exit_bars", [])) >= 30]
@@ -270,7 +320,6 @@ def test_training_cache() -> None:
     fc_C: list[float] = []
     fc_BC: list[float] = []
     actual_mfe_list: list[float] = []
-    actual_pnl: list[float] = []
 
     for ep in usable:
         bars = ep["exit_bars"]  # list of [ts, o, h, l, c]
@@ -317,14 +366,12 @@ def test_training_cache() -> None:
         fc_C.append(r_old * hmm_mult)
         fc_BC.append(r_B * hmm_mult)
         actual_mfe_list.append(mfe_frac)
-        actual_pnl.append(ep.get("pnl_pts", 0))
 
     fc_old = np.array(fc_old)
     fc_B = np.array(fc_B)
     fc_C = np.array(fc_C)
     fc_BC = np.array(fc_BC)
     actual_mfe_arr = np.array(actual_mfe_list)
-    actual_pnl_arr = np.array(actual_pnl)
 
 
     # Metrics
@@ -338,23 +385,6 @@ def test_training_cache() -> None:
     labels = list(results.keys())
     print_comparison_table(labels, results)
 
-    # PnL-weighted analysis: filter by forecast quartiles
-    avg_all = float(np.mean(actual_pnl_arr))
-    for _label, forecasts in [
-        ("OLD (static)", fc_old),
-        ("B (vol ratio)", fc_B),
-        ("C (HMM blend)", fc_C),
-        ("B+C (both)", fc_BC),
-    ]:
-        median_fc = np.median(forecasts)
-        mask = forecasts > median_fc
-        avg_filtered = float(np.mean(actual_pnl_arr[mask])) if mask.sum() > 0 else 0
-        ((avg_filtered / avg_all) - 1) * 100 if avg_all != 0 else 0
-
-    # Best method
-    max(results.items(), key=lambda x: x[1].get("spearman_r") or -1)
-    max(results.items(), key=lambda x: x[1].get("disc_ratio") or 0)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TEST 3: Enhancement A — EWMA Q→Runway calibration (online simulation)
@@ -367,6 +397,7 @@ def test_ewma_calibration() -> None:
     episodes: list[dict[str, Any]] = []
     with open(PROJECT_ROOT / "data" / "training_cache_XAUUSD_M5.jsonl") as f:
         episodes.extend(json.loads(line.strip()) for line in f)
+    episodes = episodes[-MAX_TRAINING_EPISODES:]
 
     # Sort by timestamp to simulate chronological online learning
     episodes.sort(key=lambda e: e.get("ts_recorded", ""))
@@ -381,40 +412,6 @@ def test_ewma_calibration() -> None:
 
     ewma_values = [0.0] * RUNWAY_CAL_N_BUCKETS
     ewma_counts = [0] * RUNWAY_CAL_N_BUCKETS
-
-    # Static Q→runway mapping (old)
-    def static_q_to_runway(q: float) -> float:
-        return 0.8 * max(0.0, q - 0.5)
-
-    # Calibrated Q→runway with EWMA
-    def calibrated_q_to_runway(q: float) -> float:
-        bucket = 0
-        for edge_idx in range(1, len(RUNWAY_CAL_Q_EDGES)):
-            if q >= RUNWAY_CAL_Q_EDGES[edge_idx]:
-                bucket = edge_idx - 1
-            else:
-                break
-        bucket = min(bucket, RUNWAY_CAL_N_BUCKETS - 1)
-
-        if ewma_counts[bucket] >= RUNWAY_CAL_MIN_SAMPLES:
-            return ewma_values[bucket]
-        return static_q_to_runway(q)
-
-    # Update EWMA with actual outcome
-    def update_ewma(q: float, actual_mfe_frac: float) -> None:
-        bucket = 0
-        for edge_idx in range(1, len(RUNWAY_CAL_Q_EDGES)):
-            if q >= RUNWAY_CAL_Q_EDGES[edge_idx]:
-                bucket = edge_idx - 1
-            else:
-                break
-        bucket = min(bucket, RUNWAY_CAL_N_BUCKETS - 1)
-
-        if ewma_counts[bucket] == 0:
-            ewma_values[bucket] = actual_mfe_frac
-        else:
-            ewma_values[bucket] = RUNWAY_CAL_ALPHA * actual_mfe_frac + (1 - RUNWAY_CAL_ALPHA) * ewma_values[bucket]
-        ewma_counts[bucket] += 1
 
     # Process episodes in order, tracking prediction error
     static_errors: list[float] = []
@@ -441,7 +438,13 @@ def test_ewma_calibration() -> None:
 
         # Predictions
         pred_static = static_q_to_runway(synthetic_q)
-        pred_calibrated = calibrated_q_to_runway(synthetic_q)
+        pred_calibrated = calibrated_q_to_runway(
+            synthetic_q,
+            ewma_values,
+            ewma_counts,
+            RUNWAY_CAL_Q_EDGES,
+            RUNWAY_CAL_MIN_SAMPLES,
+        )
 
         # Errors
         err_s = abs(pred_static - mfe_frac)
@@ -455,7 +458,14 @@ def test_ewma_calibration() -> None:
             calibrated_errors.append(err_c)
 
         # Learn from outcome
-        update_ewma(synthetic_q, mfe_frac)
+        update_runway_ewma(
+            synthetic_q,
+            mfe_frac,
+            ewma_values,
+            ewma_counts,
+            RUNWAY_CAL_Q_EDGES,
+            RUNWAY_CAL_ALPHA,
+        )
 
     if len(static_errors) < 5:
         return
@@ -464,24 +474,17 @@ def test_ewma_calibration() -> None:
     calibrated_errors = np.array(calibrated_errors)
 
 
-    mae_s = float(np.mean(static_errors))
-    mae_c = float(np.mean(calibrated_errors))
-    ((mae_c / mae_s) - 1) * 100 if mae_s > 0 else 0
-
-    med_s = float(np.median(static_errors))
-    med_c = float(np.median(calibrated_errors))
-    ((med_c / med_s) - 1) * 100 if med_s > 0 else 0
-
-    p90_s = float(np.percentile(static_errors, 90))
-    p90_c = float(np.percentile(calibrated_errors, 90))
-    ((p90_c / p90_s) - 1) * 100 if p90_s > 0 else 0
-
-    # How many times calibrated was better?
-    int(np.sum(calibrated_errors < static_errors))
-    len(static_errors)
-
-    if len(warmup_static) >= 3:
-        pass
+    _ = {
+        "mae_static": float(np.mean(static_errors)),
+        "mae_calibrated": float(np.mean(calibrated_errors)),
+        "median_static": float(np.median(static_errors)),
+        "median_calibrated": float(np.median(calibrated_errors)),
+        "p90_static": float(np.percentile(static_errors, 90)),
+        "p90_calibrated": float(np.percentile(calibrated_errors, 90)),
+        "calibrated_better": int(np.sum(calibrated_errors < static_errors)),
+        "sample_count": len(static_errors),
+        "warmup_count": len(warmup_static),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -495,6 +498,7 @@ def test_entry_decision_quality() -> None:
     episodes: list[dict[str, Any]] = []
     with open(PROJECT_ROOT / "data" / "training_cache_XAUUSD_M5.jsonl") as f:
         episodes.extend(json.loads(line.strip()) for line in f)
+    episodes = episodes[-MAX_TRAINING_EPISODES:]
 
     usable = [ep for ep in episodes if len(ep.get("exit_bars", [])) >= 30]
 

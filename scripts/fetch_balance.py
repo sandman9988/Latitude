@@ -108,6 +108,146 @@ def _detect_account_id(project_root: Path) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+def _load_openapi_deps():
+    try:
+        from ctrader_open_api import Client, Protobuf, TcpProtocol  # type: ignore
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import (  # type: ignore
+            ProtoOAAccountAuthReq,
+            ProtoOAApplicationAuthReq,
+            ProtoOATraderReq,
+        )
+        from twisted.internet import defer, reactor  # type: ignore
+    except ImportError:
+        LOG.exception("ctrader-open-api is not installed.  pip install ctrader-open-api")
+        return None
+    return (
+        Client,
+        Protobuf,
+        TcpProtocol,
+        ProtoOAAccountAuthReq,
+        ProtoOAApplicationAuthReq,
+        ProtoOATraderReq,
+        defer,
+        reactor,
+    )
+
+
+def _trader_balance_payload(trader, account_id: int) -> dict:
+    money_digits = trader.moneyDigits or 2
+    divisor = 10**money_digits
+    now = datetime.datetime.now(datetime.UTC)
+    return {
+        "balance": trader.balance / divisor,
+        "money_digits": money_digits,
+        "balance_raw": trader.balance,
+        "leverage_in_cents": trader.leverageInCents,
+        "max_leverage": trader.maxLeverage,
+        "broker_name": trader.brokerName,
+        "trader_login": trader.traderLogin,
+        "swap_free": trader.swapFree,
+        "account_id": account_id,
+        "fetched_at": now.isoformat(),
+        "fetched_at_unix": now.timestamp(),
+    }
+
+
+def _write_balance_payload(output_path: Path, data: dict) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output_path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    tmp.replace(output_path)
+
+
+def _make_balance_runner(
+    *,
+    deps,
+    result: dict,
+    client_id: str,
+    client_secret: str,
+    access_token: str,
+    account_id: int,
+    output_path: Path,
+):
+    (
+        _Client,
+        Protobuf,
+        _TcpProtocol,
+        ProtoOAAccountAuthReq,
+        ProtoOAApplicationAuthReq,
+        ProtoOATraderReq,
+        defer,
+        reactor,
+    ) = deps
+
+    def on_error(failure) -> None:
+        result["error"] = str(failure)
+        LOG.error("Open API error: %s", failure)
+        if reactor.running:
+            reactor.stop()
+
+    def run(client) -> None:
+        app_req = ProtoOAApplicationAuthReq()
+        app_req.clientId = client_id
+        app_req.clientSecret = client_secret
+        app_d: defer.Deferred = defer.Deferred()
+
+        def on_app_auth(_client, message) -> None:
+            if message.payloadType == 2101:
+                app_d.callback(None)
+
+        client.setMessageReceivedCallback(on_app_auth)
+        client.send(app_req)
+
+        @app_d.addCallback
+        def account_auth(_):
+            acc_req = ProtoOAAccountAuthReq()
+            acc_req.ctidTraderAccountId = account_id
+            acc_req.accessToken = access_token
+            acc_d: defer.Deferred = defer.Deferred()
+
+            def on_acc_auth(_client, message) -> None:
+                if message.payloadType == 2103:
+                    acc_d.callback(None)
+
+            client.setMessageReceivedCallback(on_acc_auth)
+            client.send(acc_req)
+            return acc_d
+
+        @app_d.addCallback
+        def request_trader(_):
+            trader_req = ProtoOATraderReq()
+            trader_req.ctidTraderAccountId = account_id
+            trader_d: defer.Deferred = defer.Deferred()
+
+            def on_trader(_client, message) -> None:
+                if message.payloadType == 2122:
+                    data = _trader_balance_payload(Protobuf.extract(message).trader, account_id)
+                    result["data"] = data
+                    trader_d.callback(data)
+
+            client.setMessageReceivedCallback(on_trader)
+            client.send(trader_req)
+            return trader_d
+
+        @app_d.addCallback
+        def done(data) -> None:
+            _write_balance_payload(output_path, data)
+            LOG.info(
+                "✓ Balance: %.2f  (login=%s, broker=%s)  → %s",
+                data["balance"],
+                data.get("trader_login", "?"),
+                data.get("broker_name", "?"),
+                output_path,
+            )
+            if reactor.running:
+                reactor.stop()
+
+        app_d.addErrback(on_error)
+
+    return run
+
+
 def fetch_and_write(
     *,
     host: str,
@@ -123,111 +263,21 @@ def fetch_and_write(
     Returns the balance dict on success, None on error.
     Uses Twisted reactor in a blocking one-shot pattern.
     """
-    try:
-        from ctrader_open_api import Client, Protobuf, TcpProtocol  # type: ignore
-        from ctrader_open_api.messages.OpenApiMessages_pb2 import (  # type: ignore
-            ProtoOAAccountAuthReq,
-            ProtoOAApplicationAuthReq,
-            ProtoOATraderReq,
-        )
-        from twisted.internet import defer, reactor  # type: ignore
-    except ImportError:
-        LOG.exception("ctrader-open-api is not installed.  pip install ctrader-open-api")
+    deps = _load_openapi_deps()
+    if deps is None:
         return None
+    Client, _Protobuf, TcpProtocol, *_rest, reactor = deps
 
     result: dict = {"error": None, "data": None}
-
-    def on_error(failure) -> None:
-        result["error"] = str(failure)
-        LOG.error("Open API error: %s", failure)
-        if reactor.running:
-            reactor.stop()
-
-    def run(client) -> None:
-        # Step 1: Application auth
-        app_req = ProtoOAApplicationAuthReq()
-        app_req.clientId = client_id
-        app_req.clientSecret = client_secret
-        app_d: defer.Deferred = defer.Deferred()
-
-        def on_app_auth(_client, message) -> None:
-            if message.payloadType == 2101:  # ProtoOAApplicationAuthRes
-                app_d.callback(None)
-
-        client.setMessageReceivedCallback(on_app_auth)
-        client.send(app_req)
-
-        @app_d.addCallback
-        def account_auth(_):
-            acc_req = ProtoOAAccountAuthReq()
-            acc_req.ctidTraderAccountId = account_id
-            acc_req.accessToken = access_token
-            acc_d: defer.Deferred = defer.Deferred()
-
-            def on_acc_auth(_client, message) -> None:
-                if message.payloadType == 2103:  # ProtoOAAccountAuthRes
-                    acc_d.callback(None)
-
-            client.setMessageReceivedCallback(on_acc_auth)
-            client.send(acc_req)
-            return acc_d
-
-        @app_d.addCallback
-        def request_trader(_):
-            trader_req = ProtoOATraderReq()
-            trader_req.ctidTraderAccountId = account_id
-            trader_d: defer.Deferred = defer.Deferred()
-
-            def on_trader(_client, message) -> None:
-                if message.payloadType == 2122:  # ProtoOATraderRes
-                    res = Protobuf.extract(message)
-                    trader = res.trader
-                    # balance is in cents (integer) — divide by 10^moneyDigits
-                    money_digits = trader.moneyDigits or 2
-                    divisor = 10**money_digits
-                    balance = trader.balance / divisor
-
-                    now = datetime.datetime.now(datetime.UTC)
-                    data = {
-                        "balance": balance,
-                        "money_digits": money_digits,
-                        "balance_raw": trader.balance,
-                        "leverage_in_cents": trader.leverageInCents,
-                        "max_leverage": trader.maxLeverage,
-                        "broker_name": trader.brokerName,
-                        "trader_login": trader.traderLogin,
-                        "swap_free": trader.swapFree,
-                        "account_id": account_id,
-                        "fetched_at": now.isoformat(),
-                        "fetched_at_unix": now.timestamp(),
-                    }
-                    result["data"] = data
-                    trader_d.callback(data)
-
-            client.setMessageReceivedCallback(on_trader)
-            client.send(trader_req)
-            return trader_d
-
-        @app_d.addCallback
-        def done(data) -> None:
-            # Write JSON atomically
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = output_path.with_suffix(".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            tmp.replace(output_path)
-            LOG.info(
-                "✓ Balance: %.2f  (login=%s, broker=%s)  → %s",
-                data["balance"],
-                data.get("trader_login", "?"),
-                data.get("broker_name", "?"),
-                output_path,
-            )
-            if reactor.running:
-                reactor.stop()
-
-        app_d.addErrback(on_error)
-
+    run = _make_balance_runner(
+        deps=deps,
+        result=result,
+        client_id=client_id,
+        client_secret=client_secret,
+        access_token=access_token,
+        account_id=account_id,
+        output_path=output_path,
+    )
     client = Client(host, PORT, TcpProtocol)
     client.setConnectedCallback(run)
     client.setDisconnectedCallback(lambda _c, _reason: None)
@@ -326,13 +376,7 @@ def run_auth_flow(client_id: str, client_secret: str, redirect_uri: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
+def _build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Fetch cTrader account balance via Open API.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -349,51 +393,47 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--access-token", help="OAuth2 access token")
     ap.add_argument("--account-id", help="cTrader numeric account ID")
     ap.add_argument("-v", "--verbose", action="store_true")
+    return ap
 
-    args = ap.parse_args(argv)
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
 
-    root = Path(__file__).resolve().parent.parent
-    tokens_file = _load_tokens_file(root / "config" / "cTraderAppTokens")
-
-    client_id = _get_cred("CTRADER_CLIENT_ID", tokens_file, args.client_id)
-    client_secret = _get_cred("CTRADER_CLIENT_SECRET", tokens_file, args.client_secret)
-    redirect_uri = os.environ.get("CTRADER_REDIRECT_URI", "http://127.0.0.1:8787/callback")
-
-    # Auth-only mode
-    if args.auth:
-        run_auth_flow(client_id, client_secret, redirect_uri)
-        return 0
-
-    access_token = _get_cred("CTRADER_ACCESS_TOKEN", tokens_file, args.access_token)
-
+def _resolve_account_id(ap: argparse.ArgumentParser, args: argparse.Namespace, root: Path) -> int:
     raw_account = args.account_id or os.environ.get("CTRADER_ACCOUNT_ID") or _detect_account_id(root)
     if not raw_account:
         ap.error("Cannot determine account ID.  Set CTRADER_ACCOUNT_ID or pass --account-id.")
-    account_id = int(raw_account)
+    return int(raw_account)
 
+
+def _run_one_shot(
+    args: argparse.Namespace,
+    client_id: str,
+    client_secret: str,
+    access_token: str,
+    account_id: int,
+    root: Path,
+) -> int:
     host = DEMO_HOST if args.demo else LIVE_HOST
     output_path = args.output or (root / OUTPUT_FILE)
-
     LOG.info("Server: %s  |  Account: %d  |  Output: %s", host, account_id, output_path)
+    data = fetch_and_write(
+        host=host,
+        client_id=client_id,
+        client_secret=client_secret,
+        access_token=access_token,
+        account_id=account_id,
+        output_path=output_path,
+    )
+    return 0 if data else 1
 
-    if not args.loop:
-        # One-shot
-        data = fetch_and_write(
-            host=host,
-            client_id=client_id,
-            client_secret=client_secret,
-            access_token=access_token,
-            account_id=account_id,
-            output_path=output_path,
-        )
-        return 0 if data else 1
 
-    # Loop mode — poll every N seconds
-    # Twisted reactor can only run once, so for loop mode we use subprocess
+def _run_loop(
+    args: argparse.Namespace,
+    client_id: str,
+    client_secret: str,
+    access_token: str,
+    account_id: int,
+    root: Path,
+) -> int:
     LOG.info("Loop mode: polling every %d s  (Ctrl+C to stop)", args.interval)
-
     stop = False
 
     def _sigterm(*_) -> None:
@@ -405,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import subprocess
 
+    output_path = args.output or (root / OUTPUT_FILE)
     cmd_base = [
         sys.executable,
         __file__,
@@ -438,6 +479,33 @@ def main(argv: list[str] | None = None) -> int:
 
     LOG.info("Stopped.")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    ap = _build_arg_parser()
+    args = ap.parse_args(argv)
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    root = Path(__file__).resolve().parent.parent
+    tokens_file = _load_tokens_file(root / "config" / "cTraderAppTokens")
+    client_id = _get_cred("CTRADER_CLIENT_ID", tokens_file, args.client_id)
+    client_secret = _get_cred("CTRADER_CLIENT_SECRET", tokens_file, args.client_secret)
+    if args.auth:
+        redirect_uri = os.environ.get("CTRADER_REDIRECT_URI", "http://127.0.0.1:8787/callback")
+        run_auth_flow(client_id, client_secret, redirect_uri)
+        return 0
+
+    access_token = _get_cred("CTRADER_ACCESS_TOKEN", tokens_file, args.access_token)
+    account_id = _resolve_account_id(ap, args, root)
+    if args.loop:
+        return _run_loop(args, client_id, client_secret, access_token, account_id, root)
+    return _run_one_shot(args, client_id, client_secret, access_token, account_id, root)
 
 
 if __name__ == "__main__":
