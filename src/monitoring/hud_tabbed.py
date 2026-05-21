@@ -1874,6 +1874,167 @@ class TabbedHUD:
                 )
         return profiles
 
+    def _reset_trade_log_metrics(self) -> None:
+        self.daily_metrics = {}
+        self.weekly_metrics = {}
+        self.monthly_metrics = {}
+        self.lifetime_metrics = {}
+        self.all_time_metrics = {}
+        self.daily_metrics_by_mode = {}
+        self.weekly_metrics_by_mode = {}
+        self.monthly_metrics_by_mode = {}
+        self.lifetime_metrics_by_mode = {}
+        self.all_time_metrics_by_mode = {}
+        self.per_symbol_metrics = {}
+        self.metrics_cube = {}
+        self.metrics_cube_keys = []
+        self.metrics_by_symbol_tf = {}
+        self._trade_log_metrics_trades = []
+        self._trade_log_metrics_trades_by_mode = {}
+        self._trade_log_all_trades = []
+        self._trade_log_all_trades_by_mode = {}
+
+    @staticmethod
+    def _log_trade_data_quality(trades: list[dict]) -> None:
+        null_entry_time = sum(1 for trade in trades if trade.get("entry_time") is None)
+        missing_quantity = sum(1 for trade in trades if "quantity" not in trade or trade.get("quantity") is None)
+        recalc_trades = sum(1 for trade in trades if trade.get("pnl_recalculated"))
+        if null_entry_time > 0:
+            LOG.debug(
+                "[DATA-QUALITY] %d/%d trades have NULL entry_time (will be excluded from duration calc)",
+                null_entry_time,
+                len(trades),
+            )
+        if missing_quantity > 0:
+            LOG.debug(
+                "[DATA-QUALITY] %d/%d trades missing 'quantity' field (HUD cannot display position sizing)",
+                missing_quantity,
+                len(trades),
+            )
+        if recalc_trades <= 0:
+            return
+        original_pnl = sum(trade.get("pnl_original", 0) for trade in trades if "pnl_original" in trade)
+        current_pnl = sum(trade.get("pnl", 0) for trade in trades)
+        variance = abs(current_pnl - original_pnl)
+        LOG.debug(
+            "[DATA-QUALITY] %d/%d trades recalculated. Original PnL: $%.2f, Current: $%.2f, Variance: $%.2f",
+            recalc_trades,
+            len(trades),
+            original_pnl,
+            current_pnl,
+            variance,
+        )
+
+    def _resolve_trade_log_modes(self, trades: list[dict]) -> None:
+        modes: set[str] = set()
+        unlabeled = 0
+        inferred = 0
+        for trade in trades:
+            raw_mode = str(trade.get("trading_mode", "") or "").strip().lower()
+            if raw_mode in ("paper", "live"):
+                resolved = raw_mode
+            else:
+                unlabeled += 1
+                inferred += 1
+                resolved = self._resolve_trade_mode_from_record(trade)
+                trade["trading_mode"] = resolved
+            modes.add(resolved)
+        self._trade_log_unlabeled_count = unlabeled
+        self._trade_log_inferred_count = inferred
+        self._trade_log_unknown_timeframe_count = sum(
+            1 for trade in trades if self._normalize_timeframe_label(trade) == "M?"
+        )
+        self._trade_log_mode = next(iter(modes)) if len(modes) == 1 else ("mixed" if modes else "")
+
+    def _set_all_time_trade_metrics(self, trades: list[dict], starting_equity: float) -> None:
+        self.all_time_metrics = _hud_period_metrics(trades, starting_equity)
+        self.all_time_metrics_by_mode = {
+            mode: _hud_period_metrics([trade for trade in trades if trade.get("trading_mode") == mode], starting_equity)
+            for mode in ("paper", "live")
+        }
+        self._trade_log_all_trades = list(trades)
+        self._trade_log_all_trades_by_mode = {
+            mode: [trade for trade in trades if trade.get("trading_mode") == mode] for mode in ("paper", "live")
+        }
+
+    @staticmethod
+    def _period_start_equity(all_trades: list[dict], period_trades: list[dict], starting_equity: float) -> float:
+        period_ids = set(map(id, period_trades))
+        return starting_equity + sum(trade.get("pnl", 0) for trade in all_trades if id(trade) not in period_ids)
+
+    def _set_epoch_trade_sets(self, trades: list[dict]) -> dict[str, list[dict]]:
+        self._trade_log_metrics_trades = list(trades)
+        self._build_metrics_cube(trades)
+        trades_by_mode = {
+            "paper": [trade for trade in trades if trade.get("trading_mode") == "paper"],
+            "live": [trade for trade in trades if trade.get("trading_mode") == "live"],
+        }
+        self._trade_log_metrics_trades_by_mode = {key: list(value) for key, value in trades_by_mode.items()}
+        return trades_by_mode
+
+    def _set_period_trade_metrics(self, trades: list[dict], starting_equity: float) -> None:
+        daily, weekly, monthly = _classify_trades_by_period(trades)
+        pre_daily = self._period_start_equity(trades, daily, starting_equity)
+        pre_weekly = self._period_start_equity(trades, weekly, starting_equity)
+        pre_monthly = self._period_start_equity(trades, monthly, starting_equity)
+        self.daily_metrics = _hud_period_metrics(daily, pre_daily)
+        self.weekly_metrics = _hud_period_metrics(weekly, pre_weekly)
+        self.monthly_metrics = _hud_period_metrics(monthly, pre_monthly)
+        self.lifetime_metrics = _hud_period_metrics(trades, starting_equity)
+
+    def _set_mode_period_metrics(self, trades_by_mode: dict[str, list[dict]], starting_equity: float) -> None:
+        self.daily_metrics_by_mode = {}
+        self.weekly_metrics_by_mode = {}
+        self.monthly_metrics_by_mode = {}
+        self.lifetime_metrics_by_mode = {}
+        for mode_name, mode_trades in trades_by_mode.items():
+            daily, weekly, monthly = _classify_trades_by_period(mode_trades)
+            self.daily_metrics_by_mode[mode_name] = _hud_period_metrics(
+                daily, self._period_start_equity(mode_trades, daily, starting_equity)
+            )
+            self.weekly_metrics_by_mode[mode_name] = _hud_period_metrics(
+                weekly, self._period_start_equity(mode_trades, weekly, starting_equity)
+            )
+            self.monthly_metrics_by_mode[mode_name] = _hud_period_metrics(
+                monthly, self._period_start_equity(mode_trades, monthly, starting_equity)
+            )
+            self.lifetime_metrics_by_mode[mode_name] = _hud_period_metrics(mode_trades, starting_equity)
+
+    def _augment_lifetime_timing_metrics(self, trades: list[dict]) -> None:
+        durations: list[float] = []
+        trades_with_complete_times = 0
+        last_exit_dt = None
+        for trade in trades:
+            entry_dt = _hud_parse_dt(trade.get("entry_time", ""))
+            exit_dt = _hud_parse_dt(trade.get("exit_time", ""))
+            if entry_dt and exit_dt:
+                durations.append((exit_dt - entry_dt).total_seconds() / 60.0)
+                trades_with_complete_times += 1
+            if exit_dt and (last_exit_dt is None or exit_dt > last_exit_dt):
+                last_exit_dt = exit_dt
+        now = datetime.now(UTC)
+        self.lifetime_metrics["avg_trade_duration_mins"] = sum(durations) / len(durations) if durations else 0.0
+        self.lifetime_metrics["last_trade_mins_ago"] = (
+            (now - last_exit_dt).total_seconds() / 60.0 if last_exit_dt else 0.0
+        )
+        self.lifetime_metrics["_data_quality_trades_with_complete_times"] = trades_with_complete_times
+        self.lifetime_metrics["_data_quality_total_trades"] = len(trades)
+
+    def _set_trade_symbol_breakdowns(self, trades: list[dict], starting_equity: float) -> None:
+        by_symbol: dict[str, list] = {}
+        for trade in trades:
+            by_symbol.setdefault(trade.get("symbol", "UNKNOWN"), []).append(trade)
+        self.per_symbol_metrics = {
+            symbol: _hud_period_metrics(symbol_trades, starting_equity)
+            for symbol, symbol_trades in by_symbol.items()
+        }
+        by_symbol_tf: dict[tuple[str, str], list[dict]] = {}
+        for (sym, tf, _mode), cube_trades in self.metrics_cube.items():
+            by_symbol_tf.setdefault((sym, tf), []).extend(cube_trades)
+        self.metrics_by_symbol_tf = {
+            key: _hud_period_metrics(value, starting_equity) for key, value in by_symbol_tf.items()
+        }
+
     def _compute_metrics_from_trade_log(self) -> None:
         """Compute performance metrics directly from trade_log.jsonl.
 
@@ -1884,181 +2045,19 @@ class TabbedHUD:
         """
         trades = self._trade_log_reader.trades
         if not trades:
-            self.daily_metrics = {}
-            self.weekly_metrics = {}
-            self.monthly_metrics = {}
-            self.lifetime_metrics = {}
-            self.all_time_metrics = {}
-            self.daily_metrics_by_mode = {}
-            self.weekly_metrics_by_mode = {}
-            self.monthly_metrics_by_mode = {}
-            self.lifetime_metrics_by_mode = {}
-            self.all_time_metrics_by_mode = {}
-            self.per_symbol_metrics = {}
-            self.metrics_cube = {}
-            self.metrics_cube_keys = []
-            self.metrics_by_symbol_tf = {}
-            self._trade_log_metrics_trades = []
-            self._trade_log_metrics_trades_by_mode = {}
-            self._trade_log_all_trades = []
-            self._trade_log_all_trades_by_mode = {}
+            self._reset_trade_log_metrics()
             return
 
-        # Resolve starting_equity: universe.json entries are authoritative (they
-        # reflect the real account size); bot_config.json is shared across bots
-        # and may carry a stale or default value from whichever bot wrote last.
-        _uni_eq = self._universe_starting_equity()
-        starting_equity = float(_uni_eq)
-
-        # DATA QUALITY CHECK: Log warnings for data integrity issues
-        _null_entry_time = sum(1 for t in trades if t.get("entry_time") is None)
-        _missing_quantity = sum(1 for t in trades if "quantity" not in t or t.get("quantity") is None)
-        _recalc_trades = sum(1 for t in trades if t.get("pnl_recalculated"))
-
-        if _null_entry_time > 0:
-            LOG.debug(
-                "[DATA-QUALITY] %d/%d trades have NULL entry_time (will be excluded from duration calc)",
-                _null_entry_time,
-                len(trades),
-            )
-        if _missing_quantity > 0:
-            LOG.debug(
-                "[DATA-QUALITY] %d/%d trades missing 'quantity' field (HUD cannot display position sizing)",
-                _missing_quantity,
-                len(trades),
-            )
-        if _recalc_trades > 0:
-            _original_pnl = sum(t.get("pnl_original", 0) for t in trades if "pnl_original" in t)
-            _current_pnl = sum(t.get("pnl", 0) for t in trades)
-            _variance = abs(_current_pnl - _original_pnl)
-            LOG.debug(
-                "[DATA-QUALITY] %d/%d trades recalculated. Original PnL: $%.2f, Current: $%.2f, Variance: $%.2f",
-                _recalc_trades,
-                len(trades),
-                _original_pnl,
-                _current_pnl,
-                _variance,
-            )
-
-        # Determine active trading mode; infer missing legacy labels.
-        _modes: set[str] = set()
-        _unlabeled = 0
-        _inferred = 0
-        for _t in trades:
-            _raw_mode = str(_t.get("trading_mode", "") or "").strip().lower()
-            if _raw_mode in ("paper", "live"):
-                _resolved = _raw_mode
-            else:
-                _unlabeled += 1
-                _resolved = self._resolve_trade_mode_from_record(_t)
-                _inferred += 1
-                _t["trading_mode"] = _resolved
-            _modes.add(_resolved)
-        self._trade_log_unlabeled_count = _unlabeled
-        self._trade_log_inferred_count = _inferred
-        self._trade_log_unknown_timeframe_count = sum(1 for _t in trades if self._normalize_timeframe_label(_t) == "M?")
-        if len(_modes) == 1:
-            self._trade_log_mode = next(iter(_modes))
-        elif _modes:
-            self._trade_log_mode = "mixed"
-        else:
-            self._trade_log_mode = ""
-
-        self.all_time_metrics = _hud_period_metrics(trades, starting_equity)
-        self.all_time_metrics_by_mode = {
-            _mode_name: _hud_period_metrics([t for t in trades if t.get("trading_mode") == _mode_name], starting_equity)
-            for _mode_name in ("paper", "live")
-        }
-        self._trade_log_all_trades = list(trades)
-        self._trade_log_all_trades_by_mode = {
-            _mode_name: [t for t in trades if t.get("trading_mode") == _mode_name] for _mode_name in ("paper", "live")
-        }
-
-        # Apply stats epoch filter — exclude old trades from all metrics
+        starting_equity = float(self._universe_starting_equity())
+        self._log_trade_data_quality(trades)
+        self._resolve_trade_log_modes(trades)
+        self._set_all_time_trade_metrics(trades, starting_equity)
         trades = self._filter_trades_by_epoch(trades)
-        self._trade_log_metrics_trades = list(trades)
-        self._build_metrics_cube(trades)
-
-        trades_by_mode = {
-            "paper": [t for t in trades if t.get("trading_mode") == "paper"],
-            "live": [t for t in trades if t.get("trading_mode") == "live"],
-        }
-        self._trade_log_metrics_trades_by_mode = {k: list(v) for k, v in trades_by_mode.items()}
-
-        daily, weekly, monthly = _classify_trades_by_period(trades)
-
-        # For period MaxDD to be meaningful it must be anchored to the account
-        # equity at the START of each period, not at bot launch.  Trades
-        # classified into a period are a subset of the global trade list; the
-        # equity at period-start equals launch_equity + PnL of all trades that
-        # completed BEFORE that period window.
-        # id() is used to match the exact dict objects returned by
-        # _classify_trades_by_period (same objects as in `trades`).
-        _daily_ids = set(map(id, daily))
-        _weekly_ids = set(map(id, weekly))
-        _monthly_ids = set(map(id, monthly))
-        _pre_daily_equity = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _daily_ids)
-        _pre_weekly_equity = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _weekly_ids)
-        _pre_monthly_equity = starting_equity + sum(t.get("pnl", 0) for t in trades if id(t) not in _monthly_ids)
-
-        self.daily_metrics = _hud_period_metrics(daily, _pre_daily_equity)
-        self.weekly_metrics = _hud_period_metrics(weekly, _pre_weekly_equity)
-        self.monthly_metrics = _hud_period_metrics(monthly, _pre_monthly_equity)
-        self.lifetime_metrics = _hud_period_metrics(trades, starting_equity)
-
-        self.daily_metrics_by_mode = {}
-        self.weekly_metrics_by_mode = {}
-        self.monthly_metrics_by_mode = {}
-        self.lifetime_metrics_by_mode = {}
-        for _mode_name, _mode_trades in trades_by_mode.items():
-            _d_m, _w_m, _m_m = _classify_trades_by_period(_mode_trades)
-            _d_ids = set(map(id, _d_m))
-            _w_ids = set(map(id, _w_m))
-            _m_ids = set(map(id, _m_m))
-            _pre_d = starting_equity + sum(t.get("pnl", 0) for t in _mode_trades if id(t) not in _d_ids)
-            _pre_w = starting_equity + sum(t.get("pnl", 0) for t in _mode_trades if id(t) not in _w_ids)
-            _pre_m = starting_equity + sum(t.get("pnl", 0) for t in _mode_trades if id(t) not in _m_ids)
-            self.daily_metrics_by_mode[_mode_name] = _hud_period_metrics(_d_m, _pre_d)
-            self.weekly_metrics_by_mode[_mode_name] = _hud_period_metrics(_w_m, _pre_w)
-            self.monthly_metrics_by_mode[_mode_name] = _hud_period_metrics(_m_m, _pre_m)
-            self.lifetime_metrics_by_mode[_mode_name] = _hud_period_metrics(_mode_trades, starting_equity)
-
-        # Augment lifetime_metrics with timing data derived from trade timestamps.
-        # These are more accurate than the runtime-counter values in production_metrics.json
-        # which reset on each bot session and only reflect the current session.
-        _durations: list[float] = []
-        _trades_with_complete_times = 0
-        _last_exit_dt = None
-        for _t in trades:
-            _entry_dt = _hud_parse_dt(_t.get("entry_time", ""))
-            _exit_dt = _hud_parse_dt(_t.get("exit_time", ""))
-            if _entry_dt and _exit_dt:
-                _durations.append((_exit_dt - _entry_dt).total_seconds() / 60.0)
-                _trades_with_complete_times += 1
-            if _exit_dt and (_last_exit_dt is None or _exit_dt > _last_exit_dt):
-                _last_exit_dt = _exit_dt
-        _now = datetime.now(UTC)
-        self.lifetime_metrics["avg_trade_duration_mins"] = sum(_durations) / len(_durations) if _durations else 0.0
-        self.lifetime_metrics["last_trade_mins_ago"] = (
-            (_now - _last_exit_dt).total_seconds() / 60.0 if _last_exit_dt else 0.0
-        )
-        # Track data quality for metrics
-        self.lifetime_metrics["_data_quality_trades_with_complete_times"] = _trades_with_complete_times
-        self.lifetime_metrics["_data_quality_total_trades"] = len(trades)
-
-        # Per-symbol breakdown
-        _by_sym: dict[str, list] = {}
-        for _t in trades:
-            _s = _t.get("symbol", "UNKNOWN")
-            _by_sym.setdefault(_s, []).append(_t)
-        self.per_symbol_metrics: dict[str, dict] = {}
-        for _s, _st in _by_sym.items():
-            self.per_symbol_metrics[_s] = _hud_period_metrics(_st, starting_equity)
-
-        _by_symbol_tf: dict[tuple[str, str], list[dict]] = {}
-        for (_sym, _tf, _mode), _trades in self.metrics_cube.items():
-            _by_symbol_tf.setdefault((_sym, _tf), []).extend(_trades)
-        self.metrics_by_symbol_tf = {_k: _hud_period_metrics(_v, starting_equity) for _k, _v in _by_symbol_tf.items()}
+        trades_by_mode = self._set_epoch_trade_sets(trades)
+        self._set_period_trade_metrics(trades, starting_equity)
+        self._set_mode_period_metrics(trades_by_mode, starting_equity)
+        self._augment_lifetime_timing_metrics(trades)
+        self._set_trade_symbol_breakdowns(trades, starting_equity)
 
     def _price_decimals(self, ref_price: float = 0.0) -> int:
         """Return the correct number of decimal places for the active symbol.
