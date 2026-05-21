@@ -124,10 +124,12 @@ class EventTimeFeatureEngine:
             and self._is_session_active(dt, self.SESSIONS["NEW_YORK"]),
         )
         features["tokyo_london_overlap"] = float(
-            self._is_session_active(dt, self.SESSIONS["TOKYO"]) and self._is_session_active(dt, self.SESSIONS["LONDON"]),
+            self._is_session_active(dt, self.SESSIONS["TOKYO"])
+            and self._is_session_active(dt, self.SESSIONS["LONDON"]),
         )
         features["sydney_tokyo_overlap"] = float(
-            self._is_session_active(dt, self.SESSIONS["SYDNEY"]) and self._is_session_active(dt, self.SESSIONS["TOKYO"]),
+            self._is_session_active(dt, self.SESSIONS["SYDNEY"])
+            and self._is_session_active(dt, self.SESSIONS["TOKYO"]),
         )
 
         # Week position (0 = Sunday open, 1 = Friday close)

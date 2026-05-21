@@ -430,7 +430,8 @@ class FrictionCalculator:
 
                 self._refresh_derived_costs()
                 LOG.info(
-                    "[FRICTION] Loaded symbol specs from config for %s: digits=%d min=%.4f max=%.2f step=%.4f contract_size=%.2f swap_long=%.2f swap_short=%.2f",
+                    "[FRICTION] Loaded symbol specs from config for %s: digits=%d min=%.4f "
+                    "max=%.2f step=%.4f contract_size=%.2f swap_long=%.2f swap_short=%.2f",
                     self.symbol,
                     self.costs.digits,
                     self.costs.min_volume,
@@ -595,7 +596,8 @@ class FrictionCalculator:
         info = self.get_symbol_info()
         source = "broker" if kwargs else "config"
         LOG.info(
-            "[FRICTION] Symbol costs updated for %s: digits=%d tick=%.6f min=%.4f max=%.2f step=%.4f contract_size=%.2f swap_long=%.2f swap_short=%.2f (source: %s)",
+            "[FRICTION] Symbol costs updated for %s: digits=%d tick=%.6f min=%.4f "
+            "max=%.2f step=%.4f contract_size=%.2f swap_long=%.2f swap_short=%.2f (source: %s)",
             self.symbol,
             info["digits"],
             info["tick_size"],

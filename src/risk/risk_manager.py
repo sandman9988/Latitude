@@ -224,22 +224,68 @@ class RiskManager:
             symbol: Trading symbol (for multi-asset coordination)
             timeframe: Timeframe (for context)
             broker: Broker name (for context)
-            param_manager: LearnedParametersManager for adaptive thresholds (None = use defaults)
+        param_manager: LearnedParametersManager for adaptive thresholds (None = use defaults)
 
         """
+        self._init_core_state(
+            circuit_breakers=circuit_breakers,
+            var_estimator=var_estimator,
+            risk_budget_usd=risk_budget_usd,
+            max_position_size=max_position_size,
+            param_manager=param_manager,
+            symbol=symbol,
+            timeframe=timeframe,
+            broker=broker,
+        )
+        self._init_confidence_thresholds(
+            min_confidence_entry=min_confidence_entry,
+            min_confidence_exit=min_confidence_exit,
+        )
+        self._init_portfolio_tracking(risk_budget_usd)
+        self._init_rl_learning_state()
+        self._init_calibration_state()
+        self._init_feedback_and_correlation_state()
+        LOG.info(
+            "[RISK] Initialized RiskManager (Central Risk Coordinator): budget=$%.2f max_size=%.4f symbol=%s",
+            risk_budget_usd,
+            max_position_size,
+            symbol,
+        )
+
+    def _init_core_state(
+        self,
+        *,
+        circuit_breakers: CircuitBreakerManager,
+        var_estimator: VaREstimator,
+        risk_budget_usd: float,
+        max_position_size: float,
+        param_manager,
+        symbol: str,
+        timeframe: str,
+        broker: str,
+    ) -> None:
         self.circuit_breakers = circuit_breakers
         self.var_estimator = var_estimator
         self.risk_budget_usd = risk_budget_usd
         self.max_position_size = max_position_size
         self.param_manager = param_manager
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.broker = broker
 
+    def _init_confidence_thresholds(
+        self,
+        *,
+        min_confidence_entry: float | None,
+        min_confidence_exit: float | None,
+    ) -> None:
         # Load confidence thresholds from param_manager if available, otherwise use provided/default values
-        if param_manager is not None:
-            self.min_confidence_entry = param_manager.get(
-                symbol, "entry_confidence_threshold", timeframe=timeframe, broker=broker, default=0.6,
+        if self.param_manager is not None:
+            self.min_confidence_entry = self.param_manager.get(
+                self.symbol, "entry_confidence_threshold", timeframe=self.timeframe, broker=self.broker, default=0.6,
             )
-            self.min_confidence_exit = param_manager.get(
-                symbol, "exit_confidence_threshold", timeframe=timeframe, broker=broker, default=0.45,
+            self.min_confidence_exit = self.param_manager.get(
+                self.symbol, "exit_confidence_threshold", timeframe=self.timeframe, broker=self.broker, default=0.45,
             )
             LOG.info(
                 "[RISK] Loaded adaptive thresholds: entry=%.3f exit=%.3f (from LearnedParametersManager)",
@@ -255,10 +301,7 @@ class RiskManager:
                 self.min_confidence_exit,
             )
 
-        self.symbol = symbol
-        self.timeframe = timeframe
-        self.broker = broker
-
+    def _init_portfolio_tracking(self, risk_budget_usd: float) -> None:
         # Portfolio tracking (for multi-asset expansion)
         self.total_exposure_usd = 0.0
         self.active_positions: dict[str, float] = {}  # {symbol: position_size}
@@ -285,6 +328,7 @@ class RiskManager:
         self._last_decision_type: str = "entry"
         self._last_decision_confidence: float = 0.0
 
+    def _init_rl_learning_state(self) -> None:
         # === RL LEARNING COMPONENTS ===
         # Q-table: state -> action -> Q-value
         self.q_table: dict[tuple, dict[str, float]] = {}
@@ -294,6 +338,7 @@ class RiskManager:
         self.rl_enabled: bool = True
         self.rl_state_history: deque = deque(maxlen=1000)
 
+    def _init_calibration_state(self) -> None:
         # === PROBABILITY CALIBRATION (PER-AGENT) ===
         # Separate tracking for TriggerAgent, HarvesterAgent, and Composite
         self.calibration_window: int = 100  # trades per agent
@@ -307,6 +352,7 @@ class RiskManager:
             b: deque(maxlen=self.calibration_window) for b in (0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
         }
 
+    def _init_feedback_and_correlation_state(self) -> None:
         # Adaptive confidence threshold feedback loops:
         # - Entry quality approximates runway prediction usefulness.
         # - Exit quality approximates capture efficiency / giveback control.
@@ -323,13 +369,6 @@ class RiskManager:
         self.correlation_matrix: np.ndarray | None = None
         self.last_correlation_check: float = 0.0
         self.flash_crash_threshold: float = 0.85  # avg correlation > 0.85 = warning
-
-        LOG.info(
-            "[RISK] Initialized RiskManager (Central Risk Coordinator): budget=$%.2f max_size=%.4f symbol=%s",
-            risk_budget_usd,
-            max_position_size,
-            symbol,
-        )
 
     @staticmethod
     def _get_tripped_breaker_names(breakers_status: dict) -> list:
@@ -820,7 +859,8 @@ class RiskManager:
             new_budget = max(self.risk_budget_usd * 0.9, self.initial_risk_budget * 0.5)
             if new_budget < self.risk_budget_usd:
                 LOG.warning(
-                    "[RISK] Weak performance (wr=%.0f%% payoff=%.2fx eq_chg=%.1f%%) → REDUCING risk budget: $%.2f → $%.2f",
+                    "[RISK] Weak performance (wr=%.0f%% payoff=%.2fx eq_chg=%.1f%%) "
+                    "→ REDUCING risk budget: $%.2f → $%.2f",
                     win_rate * 100,
                     payoff_ratio,
                     equity_change * 100,

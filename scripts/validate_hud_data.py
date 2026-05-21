@@ -140,8 +140,10 @@ class HUDDataValidator:
                     "Current pnl is account-currency; pnl_original is retained point-scale history.",
                 )
             else:
+                mismatch_rate = recalc_count / len(self.trade_log)
                 self.issues.append(
-                    f"⚠️  CRITICAL: {recalc_count} trades ({recalc_count / len(self.trade_log):.1%}) have unreconciled recalculated PnL. "
+                    f"⚠️  CRITICAL: {recalc_count} trades ({mismatch_rate:.1%}) "
+                    "have unreconciled recalculated PnL. "
                     f"Current total: ${current_pnl:.2f}, Original: ${original_pnl:.2f}, "
                     f"Variance: ${variance:.2f} ({variance_pct:.1f}%). "
                     f"Mismatches against expected account-currency scale: {mismatches}",
@@ -290,8 +292,10 @@ class HUDDataValidator:
 
         ok = True
         if actual_symbol and actual_symbol != expected_symbol:
+            display_path = self._display_path(path)
             self.issues.append(
-                f"CRITICAL: {self._display_path(path)} symbol scope {actual_symbol} does not match expected {expected_symbol}",
+                f"CRITICAL: {display_path} symbol scope {actual_symbol} "
+                f"does not match expected {expected_symbol}",
             )
             ok = False
         elif not actual_symbol:
@@ -299,8 +303,10 @@ class HUDDataValidator:
             ok = False
 
         if actual_tf and actual_tf != expected_tf:
+            display_path = self._display_path(path)
             self.issues.append(
-                f"CRITICAL: {self._display_path(path)} timeframe scope M{actual_tf} does not match expected M{expected_tf}",
+                f"CRITICAL: {display_path} timeframe scope M{actual_tf} "
+                f"does not match expected M{expected_tf}",
             )
             ok = False
         elif not actual_tf:

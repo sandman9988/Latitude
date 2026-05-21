@@ -318,7 +318,10 @@ def _filter_trades_by_period_single(period: str, trades: list) -> list:
         return list(trades)  # Epoch filtering already done at load time
     else:
         cutoff = now - timedelta(days=30)
-    return [t for t in trades if _hud_parse_dt(t.get("entry_time", "")) and _hud_parse_dt(t.get("entry_time", "")) >= cutoff]
+    return [
+        t for t in trades
+        if _hud_parse_dt(t.get("entry_time", "")) and _hud_parse_dt(t.get("entry_time", "")) >= cutoff
+    ]
 
 
 # ANSI colour codes shared across HUD render methods
@@ -475,7 +478,15 @@ _RT_HARV_CAP: int = get_amd_optimized_buffer_capacity(HARVESTER_BUFFER_CAPACITY)
 class TabbedHUD:
     """Real-time tabbed HUD for trading bot monitoring."""
 
-    TABS: ClassVar[dict[str, str]] = {"1": "overview", "2": "performance", "3": "training", "4": "risk", "5": "market", "6": "log", "7": "trades"}
+    TABS: ClassVar[dict[str, str]] = {
+        "1": "overview",
+        "2": "performance",
+        "3": "training",
+        "4": "risk",
+        "5": "market",
+        "6": "log",
+        "7": "trades",
+    }
 
     TAB_ORDER: ClassVar[list[str]] = ["overview", "performance", "training", "risk", "market", "log", "trades"]
 
@@ -517,11 +528,14 @@ class TabbedHUD:
         self.thread = None
         self.current_tab = "overview"
         self.raw_mode_enabled = False
-
-        # Data sources
         self.data_dir = Path("data")
+        self._init_data_state()
+        self._init_trade_metric_state()
+        self._init_ui_state()
+        self._init_context_state()
 
-        # State
+    def _init_data_state(self) -> None:
+        """Initialize source-backed HUD data containers."""
         self.position = {}
         self.metrics = {}
         self.training_stats = {}
@@ -529,18 +543,20 @@ class TabbedHUD:
         self.market_stats = {}
         self.bot_config = {}
         self.production_metrics = {}
-        self.offline_stats: dict = {}  # offline_training_status.json
-        self.offline_job_progress: dict = {}  # keyed by (symbol, tf_minutes)
-        self.universe_stats: dict = {}  # universe.json + PID liveness
-        self.all_bots_stats: list = []  # one entry per paper_stats_*.json
-        self.training_stats_all: list = []  # one entry per training_stats_*_M*.json
-        # Active-position bot identity (populated each refresh from position file metadata)
+        self.offline_stats: dict = {}
+        self.offline_job_progress: dict = {}
+        self.universe_stats: dict = {}
+        self.all_bots_stats: list = []
+        self.training_stats_all: list = []
         self.active_sym: str = ""
         self.active_tf_min: int = 0
-        self._active_pos_file: str = ""  # path of the file that provided self.position
+        self._active_pos_file: str = ""
         self.self_test_results: list = []
-        self._health_report: dict = {}  # data/performance_health.json — self-healing analyzer
+        self._health_report: dict = {}
         self._metrics_from_trade_log = False
+
+    def _init_trade_metric_state(self) -> None:
+        """Initialize trade-log metric caches."""
         # Loss history for trend / sparkline (non-zero samples only)
         self._trig_loss_hist: deque = deque(maxlen=40)
         self._harv_loss_hist: deque = deque(maxlen=40)
@@ -583,14 +599,11 @@ class TabbedHUD:
         self._trade_log_inferred_count: int = 0
         self._trade_log_unknown_timeframe_count: int = 0
 
-        # Heartbeat
+    def _init_ui_state(self) -> None:
+        """Initialize terminal and per-tab UI state."""
         self.heartbeat_idx = 0
         self.heartbeat_chars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-
-        # Terminal settings for non-blocking input
         self.old_settings = None
-
-        # Trade history tab state
         self._trades_page: int = 0
         self._trades_per_page: int = 22
         self._trades_cursor: int = 0
@@ -613,6 +626,8 @@ class TabbedHUD:
         self._stats_epoch_excluded_pnl: float = 0.0  # PnL of excluded trades
         self._load_stats_epoch()
 
+    def _init_context_state(self) -> None:
+        """Initialize global trading-context hierarchy and legacy aliases."""
         # ── Global trading-context hierarchy ─────────────────────────────
         # One hierarchy, seven tabs as analytical lenses over the same context.
         # Level 0: Mode       (Live / Paper / Offline)
@@ -2675,7 +2690,12 @@ class TabbedHUD:
             footer_buf.getvalue(),
         )
         frame_key = frame
-        frame_key = re.sub(r"^[^\n]*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$", "<HEARTBEAT>", frame_key, flags=re.MULTILINE)
+        frame_key = re.sub(
+            r"^[^\n]*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$",
+            "<HEARTBEAT>",
+            frame_key,
+            flags=re.MULTILINE,
+        )
         frame_key = re.sub(r"\((\d+(?:\.\d+)?)s\)", "(<AGE>s)", frame_key)
         if self._force_redraw or frame_key != self._last_frame_key:
             # Root-cause of the post-flicker-fix 'duplicate / tab bleed'
@@ -3276,7 +3296,8 @@ class TabbedHUD:
         _regime_f = ts.get("trigger_epsilon_regime_factor", 1.0)
         _rf_col = _ANSI_G if _regime_f >= 0.9 else (_ANSI_Y if _regime_f >= 0.7 else _ANSI_B)
         print(
-            f"    ε ζ:    {_rf_col}{_regime_f:.2f}{_ANSI_RST}  {_ANSI_DIM}(decay factor — 1.0 normal, <1 slower){_ANSI_RST}"
+            f"    ε ζ:    {_rf_col}{_regime_f:.2f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(decay factor — 1.0 normal, <1 slower){_ANSI_RST}"
         )
         # Adaptive tau (target network update rate)
         _trig_tau = ts.get("trigger_tau", 0.005)
@@ -3312,7 +3333,8 @@ class TabbedHUD:
         _rw_col = _ANSI_G if _rw_reliable else _ANSI_Y
         _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
         print(
-            f"    Runway: {_rw_col}{_rw_lbl}{_ANSI_RST}  {_ANSI_DIM}samples={_rw_total} active_buckets={_rw_active}{_ANSI_RST}"
+            f"    Runway: {_rw_col}{_rw_lbl}{_ANSI_RST}  "
+            f"{_ANSI_DIM}samples={_rw_total} active_buckets={_rw_active}{_ANSI_RST}"
         )
         print()
 
@@ -3380,7 +3402,8 @@ class TabbedHUD:
         _hold_mult = ts.get("harvester_regime_hold_mult", 1.0)
         _hm_col = _ANSI_G if _hold_mult > 1.0 else (_ANSI_Y if _hold_mult >= 0.9 else _ANSI_R)
         print(
-            f"    Hold:   {harv_min_hold} ticks min  {_hm_col}×{_hold_mult:.2f}{_ANSI_RST}  {_ANSI_DIM}(regime mult — >1 trend run, <1 quick exit){_ANSI_RST}"
+            f"    Hold:   {harv_min_hold} ticks min  {_hm_col}×{_hold_mult:.2f}{_ANSI_RST}  "
+            f"{_ANSI_DIM}(regime mult — >1 trend run, <1 quick exit){_ANSI_RST}"
         )
         _cd = float(ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
         _mw = float(ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
@@ -4003,7 +4026,8 @@ class TabbedHUD:
             mfe_color = _ANSI_G if mfe > 0 else _ANSI_Y
             mae_color = _ANSI_R if mae > 0 else _ANSI_Y
             print(
-                f"  MFE: {mfe_color}+{mfe:.2f}{_ANSI_RST}  |  MAE: {mae_color}-{mae:.2f}{_ANSI_RST}  (USD, excl. spread)"
+                f"  MFE: {mfe_color}+{mfe:.2f}{_ANSI_RST}  |  "
+                f"MAE: {mae_color}-{mae:.2f}{_ANSI_RST}  (USD, excl. spread)"
             )
         else:
             print()  # stable height spacer
@@ -4160,7 +4184,10 @@ class TabbedHUD:
                 if str(b.get("symbol", "")).upper() == _sym_f
             ]
             if _sym_bots:
-                _hdr = f"  {'TF':<6} {'Mode':<5} {'Pos':<6} {'ε':>6} {'Buf%':>5} {'ZΩ':>6} {'24h Trades':>10} {'24h PnL':>10}"
+                _hdr = (
+                    f"  {'TF':<6} {'Mode':<5} {'Pos':<6} {'ε':>6} {'Buf%':>5} "
+                    f"{'ZΩ':>6} {'24h Trades':>10} {'24h PnL':>10}"
+                )
                 print(_hdr)
                 print("  " + "─" * (_visible_width(_hdr) - 2))
                 for _bot in sorted(_sym_bots, key=lambda b: int(b.get("timeframe_minutes", 0) or 0)):
@@ -4284,7 +4311,8 @@ class TabbedHUD:
         if _tf_keys:
             _scope = self._epoch_scope_label().upper()
             print(
-                f"\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m  {_ANSI_DIM}— {_scope} closed trades from trade_log.jsonl{_ANSI_RST}"
+                f"\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m  "
+                f"{_ANSI_DIM}— {_scope} closed trades from trade_log.jsonl{_ANSI_RST}"
             )
             _sn_hdr = f"  {'Symbol':<9} {'TF':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11}"
             print(_sn_hdr)
@@ -4349,7 +4377,8 @@ class TabbedHUD:
         _sp_bps = self._spread_bps()
         _sp_col = self._spread_color()
         print(
-            f"  Spread: {_sp_col}{spread:.5f} ({_sp_bps:.1f}bp){_ANSI_RST}  |  VPIN: {vpin:.3f} (z={vpin_z:+.1f}) {vpin_status}  |  {_imb_label}: {imb:+.3f}"
+            f"  Spread: {_sp_col}{spread:.5f} ({_sp_bps:.1f}bp){_ANSI_RST}  |  "
+            f"VPIN: {vpin:.3f} (z={vpin_z:+.1f}) {vpin_status}  |  {_imb_label}: {imb:+.3f}"
         )
 
         self._render_system_health_block()
@@ -4516,8 +4545,10 @@ class TabbedHUD:
             return f"{_ANSI_G}✓{_ANSI_RST}" if r else f"{_ANSI_Y}…{_ANSI_RST}"
 
         print(
-            f"  Trig buf: {_trig_col}{_trig_buf:,}/{_RT_TRIG_CAP:,} ({_trig_pct:.0f}%){_ANSI_RST} {_rdy_icon(_trig_rdy)}  │  "
-            f"Harv buf: {_harv_col}{_harv_buf:,}/{_RT_HARV_CAP:,} ({_harv_pct:.0f}%){_ANSI_RST} {_rdy_icon(_harv_rdy)}"
+            f"  Trig buf: {_trig_col}{_trig_buf:,}/{_RT_TRIG_CAP:,} "
+            f"({_trig_pct:.0f}%){_ANSI_RST} {_rdy_icon(_trig_rdy)}  │  "
+            f"Harv buf: {_harv_col}{_harv_buf:,}/{_RT_HARV_CAP:,} "
+            f"({_harv_pct:.0f}%){_ANSI_RST} {_rdy_icon(_harv_rdy)}"
         )
 
     def _render_health_model(self) -> None:
@@ -4695,7 +4726,11 @@ class TabbedHUD:
         _age_str = ""
         if _gen:
             try:
-                _dt = datetime.fromisoformat(_gen).replace(tzinfo=UTC) if _gen.endswith("Z") else datetime.fromisoformat(_gen)
+                _dt = (
+                    datetime.fromisoformat(_gen).replace(tzinfo=UTC)
+                    if _gen.endswith("Z")
+                    else datetime.fromisoformat(_gen)
+                )
                 _age_s = (datetime.now(UTC) - _dt).total_seconds()
                 if _age_s < 3600:
                     _age_str = f"{_age_s/60:.0f}m ago"
@@ -4951,7 +4986,8 @@ class TabbedHUD:
             for _mk in ("paper", "live")
         }
         _active_all_by_mode = {
-            _mk: self._active_scope_trades(self._trade_log_all_trades_by_mode.get(_mk, [])) for _mk in ("paper", "live")
+            _mk: self._active_scope_trades(self._trade_log_all_trades_by_mode.get(_mk, []))
+            for _mk in ("paper", "live")
         }
 
         # ── Period-column summary (L1: portfolio, L2: symbol, L3: symbol/TF) ──────
@@ -4972,9 +5008,14 @@ class TabbedHUD:
                 if not _al:
                     continue
                 _mode_badge = "PPR" if _lmode == "paper" else "LIV"
-                _col_rows.append((f"{_lsym} {_mode_badge}", _lmode, _ep, _al))
+            _col_rows.append((f"{_lsym} {_mode_badge}", _lmode, _ep, _al))
             if _col_rows:
-                print("  \033[1mPORTFOLIO SUMMARY\033[0m  " + _ANSI_DIM + "period columns; [Enter] to drill" + _ANSI_RST)
+                print(
+                    "  \033[1mPORTFOLIO SUMMARY\033[0m  "
+                    + _ANSI_DIM
+                    + "period columns; [Enter] to drill"
+                    + _ANSI_RST
+                )
                 self._render_perf_period_columns(_col_rows)
                 print()
         elif self._ctx_level >= 2:
@@ -5074,7 +5115,10 @@ class TabbedHUD:
             )
             return
 
-        print(f"\n  \033[1mDETAIL DRILL-DOWN\033[0m  {_ANSI_DIM}(same live trade source; still separated by mode){_ANSI_RST}")
+        print(
+            f"\n  \033[1mDETAIL DRILL-DOWN\033[0m  "
+            f"{_ANSI_DIM}(same live trade source; still separated by mode){_ANSI_RST}"
+        )
         for _mode_key, _label, _color, _trades, _all_trades in _mode_blocks:
             if not _trades and _mode != _mode_key:
                 continue
@@ -5085,7 +5129,8 @@ class TabbedHUD:
         if self._has_active_scope():
             _scope = self._active_scope_label()
             print(
-                f"\n  \033[1mACTIVE BOT DETAIL [{_scope}]\033[0m  {_ANSI_DIM}(per-bot decision-learning scope){_ANSI_RST}"
+                f"\n  \033[1mACTIVE BOT DETAIL [{_scope}]\033[0m  "
+                f"{_ANSI_DIM}(per-bot decision-learning scope){_ANSI_RST}"
             )
             _active_mode_trades = []
             for _mode_key, _label, _color, _trades, _all_trades in [
@@ -5101,14 +5146,21 @@ class TabbedHUD:
                     _active_mode_trades = _trades
             _quality_metrics = _hud_period_metrics(_active_mode_trades, self._universe_starting_equity())
         else:
-            _quality_metrics = _hud_period_metrics(_portfolio_by_mode.get("paper", []), self._universe_starting_equity())
+            _quality_metrics = _hud_period_metrics(
+                _portfolio_by_mode.get("paper", []),
+                self._universe_starting_equity(),
+            )
         # Prediction convergence is scoped to the active bot when available.
         self._render_trade_timing(_quality_metrics, pm)
 
     def _render_offline_improvement_summary(self) -> None:
         """Render offline training/champion evidence without mixing it into account PnL."""
         _results = self.offline_stats.get("results", []) if isinstance(self.offline_stats, dict) else []
-        _status = self._offline_status_normalized(self.offline_stats) if isinstance(self.offline_stats, dict) else "idle"
+        _status = (
+            self._offline_status_normalized(self.offline_stats)
+            if isinstance(self.offline_stats, dict)
+            else "idle"
+        )
         _counts: dict[str, int] = {}
         for _row in _results if isinstance(_results, list) else []:
             _key = str(_row.get("status", "unknown") or "unknown").lower()
@@ -5330,7 +5382,8 @@ class TabbedHUD:
                 f"{_cal_col}{_cal_gap:>+8.3f}{_ANSI_RST}"
             )
         print(
-            f"  {_ANSI_DIM}(Capture exit_pnl/MFE target ≥60%; Edge MFE-MAE; Gap conf_win-conf_loss +ve=calibrated){_ANSI_RST}"
+            f"  {_ANSI_DIM}(Capture exit_pnl/MFE target ≥60%; Edge MFE-MAE; "
+            f"Gap conf_win-conf_loss +ve=calibrated){_ANSI_RST}"
         )
 
     def _compute_trade_log_convergence_metrics(self, trades: list[dict] | None = None) -> dict:
@@ -5464,7 +5517,8 @@ class TabbedHUD:
             else "production_metrics.json"
         )
         print(
-            f"\n  Avg hold time:    {self._format_duration(avg_dur):>8}  {_ANSI_DIM}(source: {_timing_source}){_ANSI_RST}"
+            f"\n  Avg hold time:    {self._format_duration(avg_dur):>8}  "
+            f"{_ANSI_DIM}(source: {_timing_source}){_ANSI_RST}"
         )
         print(f"  Last trade:       {self._format_duration(last_trade):>8} ago")
         self._render_prediction_convergence(pm)
@@ -6023,7 +6077,11 @@ class TabbedHUD:
         else:
             dec_color = _ANSI_RST
 
-        mode_str = f"{_ANSI_Y}PAPER{_ANSI_RST}" if mode == "paper" else (f"{_ANSI_G}LIVE{_ANSI_RST}" if mode == "live" else mode)
+        mode_str = (
+            f"{_ANSI_Y}PAPER{_ANSI_RST}"
+            if mode == "paper"
+            else (f"{_ANSI_G}LIVE{_ANSI_RST}" if mode == "live" else mode)
+        )
 
         print("\n  ┌─ DECISION DETAIL ──────────────────────────────────────────────────")
         print(f"  │  {ts}")
@@ -6140,11 +6198,17 @@ class TabbedHUD:
         if self._ctx_level == 1:
             print(f"\n  {_ANSI_DIM}Portfolio scope — all bots, {_n_rows} most recent signal decisions{_ANSI_RST}")
         elif self._ctx_level == 2:
-            print(f"\n  {_ANSI_DIM}Symbol scope — {_sym_f} all TFs, {_n_rows} most recent decisions  [Enter] drill to TF{_ANSI_RST}")
+            print(
+                f"\n  {_ANSI_DIM}Symbol scope — {_sym_f} all TFs, {_n_rows} most recent decisions  "
+                f"[Enter] drill to TF{_ANSI_RST}"
+            )
         elif self._ctx_level >= 3:
             _tf_lbl = self._format_timeframe_minutes_label(_tf_f) if _tf_f else "?"
             _nav = "[↑↓/jk] cursor  [Enter/d] detail card  [Esc] back"
-            print(f"\n  {_ANSI_DIM}Bot scope — {_sym_f}/{_tf_lbl}, {len(self._dec_log_view)} decisions  {_nav}{_ANSI_RST}")
+            print(
+                f"\n  {_ANSI_DIM}Bot scope — {_sym_f}/{_tf_lbl}, "
+                f"{len(self._dec_log_view)} decisions  {_nav}{_ANSI_RST}"
+            )
 
         # ── Render entries list with cursor highlight at L3 ───────────────
         self._render_jsonl_decision_entries(
@@ -6748,7 +6812,8 @@ class TabbedHUD:
         print(f"    VPIN Z-Score:      {vpin_z:>+12.2f}")
         print(f"    Status:            {vpin_status}")
         print(
-            f"                       {_ANSI_DIM}High +z = informed sellers active → widen stops / reduce size{_ANSI_RST}"
+            f"                       {_ANSI_DIM}High +z = informed sellers active "
+            f"→ widen stops / reduce size{_ANSI_RST}"
         )
         bar_len = 40
         z_norm = max(0.0, min(1.0, (vpin_z + 3) / 6))
@@ -6868,64 +6933,70 @@ class TabbedHUD:
         """Render footer with controls and data freshness."""
         W = self._term_width()
         print("\n" + "─" * W)
+        self._render_footer_tab_nav()
+        self._render_footer_controls(W)
+        note = self._current_notification() or "Press 'h' for help and keyboard shortcuts."
+        print(f"  {note}  |  {self._footer_data_freshness()}")
+        print("─" * W)
 
+    def _render_footer_tab_nav(self) -> None:
         idx = self.TAB_ORDER.index(self.current_tab)
         prev_tab = self.TAB_DISPLAY_SHORT[self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)]]
         next_tab = self.TAB_DISPLAY_SHORT[self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)]]
         tab_pos = f"Tab {idx + 1}/{len(self.TAB_ORDER)}: {self.TAB_DISPLAY_SHORT[self.current_tab]}"
         print(f"  {_ANSI_DIM}← {prev_tab}  |  {tab_pos}  |  {next_tab} →{_ANSI_RST}")
 
+    def _render_footer_controls(self, width: int) -> None:
         # Controls — two lines when narrow, one line when wide
         _trades_hint = "  [↑/↓ or j/k] Select  [n/p] Page  [d] Detail  [b] Back" if self.current_tab == "trades" else ""
         _scroll_hint = "" if self.current_tab == "trades" else "  [Wheel/↑↓/j/k/Pg] Scroll"
-        ctrl_wide = f"  [1-7/←/→] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB  |  [e] Epoch  |  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_scroll_hint}{_trades_hint}"
+        ctrl_wide = (
+            "  [1-7/←/→] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB  |  "
+            f"[e] Epoch  |  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_scroll_hint}{_trades_hint}"
+        )
         ctrl_line1 = "  [1-7/←/→] Tabs  |  [Tab/S+Tab] Cycle  |  [s] Presets  |  [r] Review CB"
         ctrl_line2 = f"  [h] Help  |  [Alt+K] Kill  |  [q/^Q/^X] Quit{_scroll_hint}{_trades_hint}"
-        if len(ctrl_wide) <= W:
+        if len(ctrl_wide) <= width:
             print(ctrl_wide)
         else:
             print(ctrl_line1)
             print(ctrl_line2)
 
+    def _footer_data_candidates(self) -> list[Path]:
         # Data freshness — use freshest file across all bots so one stale file
         # cannot trigger false "Bot silent" while others are active.
-        _candidates: list[Path] = []
+        candidates: list[Path] = []
         for _b in self.all_bots_stats or []:
             _sym = _b.get("symbol", "")
             _tf = int(_b.get("timeframe_minutes", 0) or 0)
             if _sym and _tf > 0:
-                _ob = self.data_dir / f"order_book_{_sym}_M{_tf}.json"
-                _bc = self.data_dir / f"bot_config_{_sym}_M{_tf}.json"
-                _ps = self.data_dir / f"paper_stats_{_sym}_M{_tf}.json"
-                if _ob.exists():
-                    _candidates.append(_ob)
-                if _bc.exists():
-                    _candidates.append(_bc)
-                if _ps.exists():
-                    _candidates.append(_ps)
-        if not _candidates:
+                for candidate in (
+                    self.data_dir / f"order_book_{_sym}_M{_tf}.json",
+                    self.data_dir / f"bot_config_{_sym}_M{_tf}.json",
+                    self.data_dir / f"paper_stats_{_sym}_M{_tf}.json",
+                ):
+                    if candidate.exists():
+                        candidates.append(candidate)
+        if not candidates:
             _ob = self.data_dir / _ORDER_BOOK_FILE
             _bc = self.data_dir / _BOT_CONFIG_FILE
             if _ob.exists():
-                _candidates.append(_ob)
+                candidates.append(_ob)
             if _bc.exists():
-                _candidates.append(_bc)
+                candidates.append(_bc)
+        return candidates
 
-        if _candidates:
-            _latest_mtime = max(_p.stat().st_mtime for _p in _candidates)
-            _fage = time.time() - _latest_mtime
-            if _fage > DATA_STALE_SECS:
-                freshness = f"{_ANSI_R}⚠️  Bot silent ({_fage:.0f}s){_ANSI_RST}"
-            elif _fage > DATA_AGING_SECS:
-                freshness = f"{_ANSI_Y}⚡ Data aging ({_fage:.0f}s){_ANSI_RST}"
-            else:
-                freshness = f"{_ANSI_G}✓ Data fresh ({_fage:.1f}s){_ANSI_RST}"
-        else:
-            freshness = f"{_ANSI_DIM}⏳ Waiting for data...{_ANSI_RST}"
-
-        note = self._current_notification() or "Press 'h' for help and keyboard shortcuts."
-        print(f"  {note}  |  {freshness}")
-        print("─" * W)
+    def _footer_data_freshness(self) -> str:
+        candidates = self._footer_data_candidates()
+        if not candidates:
+            return f"{_ANSI_DIM}⏳ Waiting for data...{_ANSI_RST}"
+        latest_mtime = max(path.stat().st_mtime for path in candidates)
+        file_age = time.time() - latest_mtime
+        if file_age > DATA_STALE_SECS:
+            return f"{_ANSI_R}⚠️  Bot silent ({file_age:.0f}s){_ANSI_RST}"
+        if file_age > DATA_AGING_SECS:
+            return f"{_ANSI_Y}⚡ Data aging ({file_age:.0f}s){_ANSI_RST}"
+        return f"{_ANSI_G}✓ Data fresh ({file_age:.1f}s){_ANSI_RST}"
 
     def _load_all_trades_cached(self) -> None:
         """Load trade_log.jsonl into self._all_trades (newest first), re-read at most once per 5 s."""

@@ -251,7 +251,10 @@ class ProductionMonitor:
                 Alert(
                     severity="warning",
                     category="system",
-                    message=f"{self.metrics.circuit_breakers_tripped} circuit breakers tripped: {', '.join(self.metrics.circuit_breaker_names)}",
+                    message=(
+                        f"{self.metrics.circuit_breakers_tripped} circuit breakers tripped: "
+                        f"{', '.join(self.metrics.circuit_breaker_names)}"
+                    ),
                     metric_value=self.metrics.circuit_breakers_tripped,
                     threshold=0,
                     timestamp=time.time(),
@@ -494,4 +497,3 @@ if __name__ == "__main__":
         pass
     finally:
         monitor7.stop_http_server()
-

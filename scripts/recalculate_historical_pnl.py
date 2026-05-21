@@ -184,7 +184,8 @@ def main() -> None:
 
     # Create backup if requested
     if args.backup and not args.dry_run:
-        backup_path = input_path.with_suffix(f".backup_{datetime.datetime.now(tz=datetime.UTC).strftime('%Y%m%d_%H%M%S')}.jsonl")
+        backup_stamp = datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
+        backup_path = input_path.with_suffix(f".backup_{backup_stamp}.jsonl")
         shutil.copy2(input_path, backup_path)
 
     # Recalculate

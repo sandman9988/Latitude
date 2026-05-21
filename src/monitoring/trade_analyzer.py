@@ -382,7 +382,10 @@ class TradeAnalyzer:
         hourly = self.analyze_by_hour().head(5)
         print("\n── BEST HOURS ────────────────────────────────────────")
         for hour, row in hourly.iterrows():
-            print(f"  {hour:02d}:00  PnL={row['total_pnl']:>8.2f}  WR={row['win_rate']:.1%}  n={int(row['num_trades'])}")
+            print(
+                f"  {hour:02d}:00  PnL={row['total_pnl']:>8.2f}  "
+                f"WR={row['win_rate']:.1%}  n={int(row['num_trades'])}",
+            )
 
         daily = self.analyze_by_day()
         print("\n── BEST DAYS ─────────────────────────────────────────")

@@ -452,7 +452,9 @@ class LearnedParametersManager:
                 "max": 400,
                 "learning_rate": 1.0,
                 "momentum": 0.8,
-                "description": "Minimum closed trades before calibration/runway uplift terms are applied to entry guard",
+                "description": (
+                    "Minimum closed trades before calibration/runway uplift terms are applied to entry guard"
+                ),
             },
             "entry_guard_calib_err_start": {
                 "default": 0.30,
@@ -492,7 +494,9 @@ class LearnedParametersManager:
                 "max": 0.30,
                 "learning_rate": 0.01,
                 "momentum": 0.9,
-                "description": "Maximum extra headroom above base confidence floor allowed from RL entry-floor recommendation",
+                "description": (
+                    "Maximum extra headroom above base confidence floor allowed from RL entry-floor recommendation"
+                ),
             },
             "zero_mfe_floor_frac": {
                 "default": 1e-7,
@@ -810,7 +814,9 @@ class LearnedParametersManager:
                 "max": 100000.0,
                 "learning_rate": 0.05,
                 "momentum": 0.95,
-                "description": "EMA-tracked p50 of trade MFE — instrument-agnostic replacement for BASELINE_MFE magic number",
+                "description": (
+                    "EMA-tracked p50 of trade MFE — instrument-agnostic replacement for BASELINE_MFE magic number"
+                ),
             },
             "opportunity_p75_baseline": {
                 "default": 15.0,
@@ -829,7 +835,10 @@ class LearnedParametersManager:
                 "max": 0.50,
                 "learning_rate": 0.005,
                 "momentum": 0.9,
-                "description": "Fractional regime threshold adjustment magnitude (instrument-agnostic, replaces TRIGGER_ADJUST_* constants)",
+                "description": (
+                    "Fractional regime threshold adjustment magnitude "
+                    "(instrument-agnostic, replaces TRIGGER_ADJUST_* constants)"
+                ),
             },
             # Runway prediction accuracy EMAs — updated per trade, persisted across restarts.
             # Managed by TFAgent._close_position via set_value (direct write, no momentum).

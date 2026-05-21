@@ -186,7 +186,9 @@ class HarvesterAgent(AgentTrainingMixin):
         # Expressed in ticks so tick-driven exit evaluation remains responsive.
         _default_hold = round(self._get_param("harvester_min_hold_ticks", MIN_HOLD_TICKS_DEFAULT))
         self.min_hold_ticks = int(os.environ.get("MIN_HOLD_TICKS", str(_default_hold)))
-        self.min_hold_ticks_trend = round(self._get_param("harvester_min_hold_ticks_trend", max(1, self.min_hold_ticks + 2)))
+        self.min_hold_ticks_trend = round(
+            self._get_param("harvester_min_hold_ticks_trend", max(1, self.min_hold_ticks + 2)),
+        )
         # Approximate market tick cadence used to convert bar-based limits to ticks.
         self.ticks_per_minute = float(os.environ.get("HARVESTER_TICKS_PER_MINUTE", str(DEFAULT_TICKS_PER_MINUTE)))
 
@@ -443,37 +445,14 @@ class HarvesterAgent(AgentTrainingMixin):
 
             return action, confidence
 
-    def decide(
+    def _prepare_decision_state(
         self,
         market_state: np.ndarray,
         mfe: float,
         mae: float,
         ticks_held: int,
         entry_price: float,
-        current_price: float = 0.0,
-        direction: int = 1,
-        zeta: float = 0.5,
-        predicted_runway: float = 0.0,
-    ) -> tuple[int, float]:
-        """Decide exit action based on market + position state.
-
-        Args:
-            market_state: Normalized market features (window, 7)
-            mfe: Maximum favorable excursion (absolute price)
-            mae: Maximum adverse excursion (absolute price)
-            ticks_held: Number of market data ticks position has been open (~2-3/sec)
-            entry_price: Entry price for normalization
-            current_price: Current market price (for unrealized P&L calculation)
-            direction: +1=LONG, -1=SHORT (used for correct sign of unrealized P&L)
-            zeta: Regime damping ratio (lower = trending, allows longer holds)
-            predicted_runway: Trigger-predicted runway fraction at entry (for convergence-aware exits)
-
-        Returns:
-            (action, confidence)
-            - action: 0=HOLD, 1=CLOSE
-            - confidence: [0, 1] probability from model
-
-        """
+    ) -> np.ndarray:
         LOG.debug(
             "[HARVESTER_DECIDE] use_torch=%s ddqn=%s enable_training=%s training_steps=%d",
             self.use_torch,
@@ -492,8 +471,20 @@ class HarvesterAgent(AgentTrainingMixin):
         else:
             self.last_state = full_state
         self.last_close_reason = ""  # reset for this decision cycle
+        return full_state
 
-        # Emergency stop loss check (always executed, not subject to min-hold)
+    def _hard_exit_override(
+        self,
+        *,
+        mfe: float,
+        mae: float,
+        ticks_held: int,
+        entry_price: float,
+        current_price: float,
+        direction: int,
+        zeta: float,
+        predicted_runway: float,
+    ) -> tuple[int, float] | None:
         should_exit, exit_decision = self._check_emergency_stop_loss(mae, entry_price)
         if should_exit:
             self.last_close_reason = "emergency_stop"
@@ -520,7 +511,9 @@ class HarvesterAgent(AgentTrainingMixin):
         )
         if protective_exit is not None:
             return protective_exit
+        return None
 
+    def _min_hold_blocks_exit(self, ticks_held: int, zeta: float) -> bool:
         effective_min_hold_ticks = self.min_hold_ticks
         if zeta < 0.5:
             effective_min_hold_ticks = max(self.min_hold_ticks, self.min_hold_ticks_trend)
@@ -533,11 +526,10 @@ class HarvesterAgent(AgentTrainingMixin):
                 self.min_hold_ticks_trend,
                 zeta,
             )
-            return 0, 0.0
+            return True
+        return False
 
-        # Regime-aware time stop scaling: in strong trends (ζ < 0.5) allow
-        # positions to run longer; in choppy/mean-reverting (ζ > 0.7) exit
-        # faster to protect profits.
+    def _effective_time_stops(self, ticks_held: int, zeta: float) -> tuple[float, int, int, int, int]:
         self._last_zeta = zeta  # Store for stats exposure
         self._last_ticks_held = ticks_held
         if zeta < 0.5:
@@ -551,15 +543,35 @@ class HarvesterAgent(AgentTrainingMixin):
         effective_soft_stop_bars = int(self.soft_time_stop_bars * regime_hold_mult)
         effective_hard_stop_ticks = self._bars_to_ticks(effective_hard_stop_bars)
         effective_soft_stop_ticks = self._bars_to_ticks(effective_soft_stop_bars)
+        return (
+            regime_hold_mult,
+            effective_hard_stop_bars,
+            effective_soft_stop_bars,
+            effective_hard_stop_ticks,
+            effective_soft_stop_ticks,
+        )
 
+    def _time_stop_exit(
+        self,
+        *,
+        mfe: float,
+        mae: float,
+        ticks_held: int,
+        entry_price: float,
+        current_price: float,
+        direction: int,
+        zeta: float,
+    ) -> tuple[int, float] | None:
+        regime_hold_mult, hard_bars, soft_bars, hard_ticks, soft_ticks = self._effective_time_stops(ticks_held, zeta)
         # Hard time stop: safety valve that overrides DDQN/model decisions.
         # Prevents degenerate Q-functions from holding positions indefinitely.
-        if ticks_held > effective_hard_stop_ticks:
+        if ticks_held > hard_ticks:
             LOG.warning(
-                "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d ticks (%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
+                "[HARVESTER] Hard time stop override: ticks=%d > hard_limit=%d ticks "
+                "(%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
                 ticks_held,
-                effective_hard_stop_ticks,
-                effective_hard_stop_bars,
+                hard_ticks,
+                hard_bars,
                 zeta,
                 regime_hold_mult,
             )
@@ -567,7 +579,7 @@ class HarvesterAgent(AgentTrainingMixin):
             return 1, 1.0  # CLOSE with full confidence
 
         # Soft time stop: exit when holding too long with diminished or positive profits.
-        if ticks_held > effective_soft_stop_ticks and entry_price > 0:
+        if ticks_held > soft_ticks and entry_price > 0:
             mfe_pct = (mfe / entry_price) * PCT_SCALE
             mae_pct = (mae / entry_price) * PCT_SCALE
             if current_price > 0 and direction != 0:
@@ -578,16 +590,30 @@ class HarvesterAgent(AgentTrainingMixin):
             net_profit_pct = mfe_pct - friction_pct
             if self._check_soft_time_stop(ticks_held, mfe_pct, current_profit_pct, net_profit_pct):
                 LOG.info(
-                    "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d ticks (%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
+                    "[HARVESTER] Soft time stop override: ticks=%d > soft_limit=%d ticks "
+                    "(%d bars, ζ=%.2f, mult=%.2f) → CLOSE",
                     ticks_held,
-                    effective_soft_stop_ticks,
-                    effective_soft_stop_bars,
+                    soft_ticks,
+                    soft_bars,
                     zeta,
                     regime_hold_mult,
                 )
                 self.last_close_reason = "soft_time_stop"
                 return 1, 0.9  # CLOSE with high confidence
+        return None
 
+    def _model_exit_decision(
+        self,
+        market_state: np.ndarray,
+        full_state: np.ndarray,
+        mfe: float,
+        mae: float,
+        ticks_held: int,
+        entry_price: float,
+        current_price: float,
+        direction: int,
+        zeta: float,
+    ) -> tuple[int, float]:
         if not self.use_torch:
             # Use DDQN network if available and trained, else fallback
             if self.ddqn is not None and self.enable_training and self.training_steps > 0:
@@ -607,6 +633,57 @@ class HarvesterAgent(AgentTrainingMixin):
         if action == 1:
             self.last_close_reason = "torch_model"
         return action, confidence
+
+    def decide(
+        self,
+        market_state: np.ndarray,
+        mfe: float,
+        mae: float,
+        ticks_held: int,
+        entry_price: float,
+        current_price: float = 0.0,
+        direction: int = 1,
+        zeta: float = 0.5,
+        predicted_runway: float = 0.0,
+    ) -> tuple[int, float]:
+        """Decide exit action based on market + position state."""
+        full_state = self._prepare_decision_state(market_state, mfe, mae, ticks_held, entry_price)
+        hard_exit = self._hard_exit_override(
+            mfe=mfe,
+            mae=mae,
+            ticks_held=ticks_held,
+            entry_price=entry_price,
+            current_price=current_price,
+            direction=direction,
+            zeta=zeta,
+            predicted_runway=predicted_runway,
+        )
+        if hard_exit is not None:
+            return hard_exit
+        if self._min_hold_blocks_exit(ticks_held, zeta):
+            return 0, 0.0
+        time_stop_exit = self._time_stop_exit(
+            mfe=mfe,
+            mae=mae,
+            ticks_held=ticks_held,
+            entry_price=entry_price,
+            current_price=current_price,
+            direction=direction,
+            zeta=zeta,
+        )
+        if time_stop_exit is not None:
+            return time_stop_exit
+        return self._model_exit_decision(
+            market_state,
+            full_state,
+            mfe,
+            mae,
+            ticks_held,
+            entry_price,
+            current_price,
+            direction,
+            zeta,
+        )
 
     def _build_full_state(
         self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float,
@@ -716,7 +793,8 @@ class HarvesterAgent(AgentTrainingMixin):
             giveback_pct = mfe_pct - current_profit_pct
             if giveback_pct >= (mfe_pct * effective_giveback_threshold):
                 LOG.info(
-                    "[HARVESTER] Micro-winner quick exit: MFE=%.4f%%, current=%.4f%%, giveback=%.1f%% of MFE, zeta=%.2f",
+                    "[HARVESTER] Micro-winner quick exit: MFE=%.4f%%, current=%.4f%%, "
+                    "giveback=%.1f%% of MFE, zeta=%.2f",
                     mfe_pct,
                     current_profit_pct,
                     (giveback_pct / mfe_pct * 100),
@@ -891,8 +969,12 @@ class HarvesterAgent(AgentTrainingMixin):
             "harvester_profit_target_pct", PROFIT_TARGET_PCT_DEFAULT * timeframe_scale,
         )
         self.stop_loss_pct = self._get_param("harvester_stop_loss_pct", STOP_LOSS_PCT_DEFAULT * timeframe_scale)
-        self.soft_time_stop_bars = round(self._get_param("harvester_soft_time_bars", SOFT_TIME_STOP_BARS / timeframe_scale))
-        self.hard_time_stop_bars = round(self._get_param("harvester_hard_time_bars", HARD_TIME_STOP_BARS / timeframe_scale))
+        self.soft_time_stop_bars = round(
+            self._get_param("harvester_soft_time_bars", SOFT_TIME_STOP_BARS / timeframe_scale),
+        )
+        self.hard_time_stop_bars = round(
+            self._get_param("harvester_hard_time_bars", HARD_TIME_STOP_BARS / timeframe_scale),
+        )
         self.min_soft_profit_pct = self._get_param(
             "harvester_min_soft_profit_pct", MIN_SOFT_PROFIT_PCT * timeframe_scale,
         )

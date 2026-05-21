@@ -345,11 +345,23 @@ def decision_quality(trades: list) -> dict:
     """
     confs_pos = [t.get("entry_confidence", 0) for t in trades if isinstance(t, dict) and t.get("pnl", 0) > 0]
     confs_neg = [t.get("entry_confidence", 0) for t in trades if isinstance(t, dict) and t.get("pnl", 0) <= 0]
-    trig_rews = [t.get("trigger_reward", 0) for t in trades if isinstance(t, dict) and t.get("trigger_reward") is not None]
-    cap_rews = [t.get("capture_reward", 0) for t in trades if isinstance(t, dict) and t.get("capture_reward") is not None]
+    trig_rews = [
+        t.get("trigger_reward", 0)
+        for t in trades
+        if isinstance(t, dict) and t.get("trigger_reward") is not None
+    ]
+    cap_rews = [
+        t.get("capture_reward", 0)
+        for t in trades
+        if isinstance(t, dict) and t.get("capture_reward") is not None
+    ]
     reasons = _close_reason_breakdown(trades)
     qual = _capture_quality(trades)
-    wtl_penalties = [t.get("reward_wtl_penalty", 0) for t in trades if isinstance(t, dict) and t.get("reward_wtl_penalty") is not None]
+    wtl_penalties = [
+        t.get("reward_wtl_penalty", 0)
+        for t in trades
+        if isinstance(t, dict) and t.get("reward_wtl_penalty") is not None
+    ]
 
     return {
         "avg_conf_win": sum(confs_pos) / len(confs_pos) if confs_pos else 0.0,
@@ -451,7 +463,9 @@ def self_healing_metrics(trades: list, starting_equity: float = 10_000.0) -> dic
     # WTL rate check
     if total > 10 and wtl_count / total > 0.15:
         flags.append("high_wtl_rate")
-        recs.append(f"WTL rate {wtl_count/total*100:.0f}% > 15% — tighten trailing stops or raise exit confidence floor")
+        recs.append(
+            f"WTL rate {wtl_count/total*100:.0f}% > 15% — tighten trailing stops or raise exit confidence floor",
+        )
 
     # Capture degradation
     if ct.get("status") == "degrading":
@@ -477,13 +491,19 @@ def self_healing_metrics(trades: list, starting_equity: float = 10_000.0) -> dic
         recent_win = sum(1 for t in recent_pnls if isinstance(t, dict) and t.get("pnl", 0) > 0)
         if recent_win / len(recent_pnls) < 0.4:
             flags.append("recent_loss_streak")
-            recs.append(f"Last {len(recent_pnls)} trades: {recent_win}/{len(recent_pnls)} wins — check market regime or reduce position size")
+            recs.append(
+                f"Last {len(recent_pnls)} trades: {recent_win}/{len(recent_pnls)} wins — "
+                "check market regime or reduce position size",
+            )
 
     # Max-loss cap frequency
     max_loss_count = reasons.get("max_loss_cap", 0)
     if total > 20 and max_loss_count / total > 0.05:
         flags.append("frequent_max_loss")
-        recs.append(f"max_loss_cap in {max_loss_count}/{total} trades ({max_loss_count/total*100:.0f}%) — entries too aggressive for current volatility")
+        recs.append(
+            f"max_loss_cap in {max_loss_count}/{total} trades ({max_loss_count/total*100:.0f}%) — "
+            "entries too aggressive for current volatility",
+        )
 
     health = "HEALTHY"
     if len(flags) >= 2:

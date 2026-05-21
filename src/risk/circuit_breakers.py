@@ -561,7 +561,8 @@ class CircuitBreakerManager:
         self.manual_reset_cooldown_until: datetime | None = None
 
         LOG.info(
-            "Circuit Breaker Manager initialized | Sortino>=%.2f (%s) Kurtosis<=%.1f (%s) DD<=%.0f%% (%s) MaxLoss=%d (%s)",
+            "Circuit Breaker Manager initialized | Sortino>=%.2f (%s) Kurtosis<=%.1f (%s) "
+            "DD<=%.0f%% (%s) MaxLoss=%d (%s)",
             self.sortino_threshold,
             sortino_source,
             self.kurtosis_threshold,
@@ -890,106 +891,98 @@ class CircuitBreakerManager:
 
         save_json_atomic(filepath, state)
 
+    @staticmethod
+    def _restore_breaker_state(breaker_state: BreakerState, saved: dict[str, Any]) -> None:
+        breaker_state.is_tripped = saved.get("is_tripped", False)
+        trip_time = saved.get("trip_time")
+        if isinstance(trip_time, str):
+            try:
+                breaker_state.trip_time = datetime.fromisoformat(trip_time)
+            except (ValueError, TypeError):
+                breaker_state.trip_time = None
+        else:
+            breaker_state.trip_time = None
+        breaker_state.trip_reason = saved.get("trip_reason", "")
+        breaker_state.trip_value = saved.get("trip_value", 0.0)
+        breaker_state.threshold = saved.get("threshold", breaker_state.threshold)
+
+    def _restore_kurtosis_threshold(self, saved: dict[str, Any]) -> None:
+        saved_raw = saved.get("threshold")
+        if saved_raw is None:
+            return
+        try:
+            saved_threshold = float(saved_raw)
+        except (TypeError, ValueError):
+            return
+        if (
+            self.param_manager is None
+            and abs(self.kurtosis_threshold - MANAGER_DEFAULT_KURTOSIS) < SAFE_EPSILON
+        ):
+            self.kurtosis_breaker.threshold = saved_threshold
+        elif abs(saved_threshold - self.kurtosis_threshold) > SAFE_EPSILON:
+            LOG.info(
+                "[CIRCUIT-BREAKERS] Ignoring restored kurtosis threshold %.3f; "
+                "using active %.3f for %s/%s/%s",
+                saved_threshold,
+                self.kurtosis_threshold,
+                self.symbol,
+                self.timeframe,
+                self.broker,
+            )
+
+    def _restore_kurtosis_readings(self, saved: dict[str, Any]) -> None:
+        saved_readings = saved.get("readings", [])
+        if saved_readings:
+            self.kurtosis_breaker._kurtosis_readings = deque(
+                (float(r) for r in saved_readings if np.isfinite(r)),
+                maxlen=KURTOSIS_ADAPT_READING_LIMIT,
+            )
+
+    def _restore_saved_breakers(self, state: dict[str, Any]) -> None:
+        if "sortino" in state:
+            self._restore_breaker_state(self.sortino_breaker.state, state["sortino"])
+            self.sortino_breaker.returns = deque(state["sortino"].get("returns", []), maxlen=100)
+        if "kurtosis" in state:
+            saved = state["kurtosis"]
+            self._restore_breaker_state(self.kurtosis_breaker.state, saved)
+            self.kurtosis_breaker.returns = deque(saved.get("returns", []), maxlen=100)
+            self._restore_kurtosis_threshold(saved)
+            self._restore_kurtosis_readings(saved)
+        if "drawdown" in state:
+            saved = state["drawdown"]
+            self._restore_breaker_state(self.drawdown_breaker.state, saved)
+            self.drawdown_breaker.current_drawdown = saved.get("current_drawdown", 0.0)
+            self.drawdown_breaker.peak_equity = saved.get("peak_equity", 0.0)
+        if "consecutive_losses" in state:
+            saved = state["consecutive_losses"]
+            self._restore_breaker_state(self.consecutive_losses_breaker.state, saved)
+            self.consecutive_losses_breaker.consecutive_losses = saved.get("consecutive_losses", 0)
+
+    def _restore_manual_reset_cooldown(self, state: dict[str, Any]) -> None:
+        manual_reset_until = state.get("manual_reset_cooldown_until")
+        self.manual_reset_cooldown_until = None
+        if not isinstance(manual_reset_until, str):
+            return
+        try:
+            restored_dt = datetime.fromisoformat(manual_reset_until)
+            if restored_dt.tzinfo is None:
+                restored_dt = restored_dt.replace(tzinfo=UTC)
+            self.manual_reset_cooldown_until = restored_dt
+        except (TypeError, ValueError):
+            self.manual_reset_cooldown_until = None
+
     def restore_state(self, filepath: str = "data/circuit_breakers.json") -> bool | None:
-        """GAP 10.2 FIX: Restore circuit breaker state from disk.
-
-        Args:
-            filepath: Path to state file
-
-        Returns:
-            True if state restored, False if file not found
-
-        """
+        """GAP 10.2 FIX: Restore circuit breaker state from disk."""
         if not Path(filepath).exists():
             return False
 
         try:
             with open(filepath) as f:
                 state = json.load(f)
-
-            def _restore_breaker(breaker_state: BreakerState, saved: dict[str, Any]) -> None:
-                breaker_state.is_tripped = saved.get("is_tripped", False)
-                _tt = saved.get("trip_time")
-                if isinstance(_tt, str):
-                    try:
-                        breaker_state.trip_time = datetime.fromisoformat(_tt)
-                    except (ValueError, TypeError):
-                        breaker_state.trip_time = None
-                else:
-                    breaker_state.trip_time = None
-                breaker_state.trip_reason = saved.get("trip_reason", "")
-                breaker_state.trip_value = saved.get("trip_value", 0.0)
-                breaker_state.threshold = saved.get("threshold", breaker_state.threshold)
-
-            # Restore sortino breaker
-            if "sortino" in state:
-                _restore_breaker(self.sortino_breaker.state, state["sortino"])
-                self.sortino_breaker.returns = deque(state["sortino"].get("returns", []), maxlen=100)
-
-            # Restore kurtosis breaker
-            if "kurtosis" in state:
-                _restore_breaker(self.kurtosis_breaker.state, state["kurtosis"])
-                self.kurtosis_breaker.returns = deque(state["kurtosis"].get("returns", []), maxlen=100)
-                # Restore adaptive-threshold plumbing if it was serialised.
-                # A saved breaker state can be older than learned_parameters.json;
-                # keep learned/explicit startup thresholds authoritative so an
-                # old universal trip level (for example 3.0) cannot override a
-                # per-symbol/timeframe learned value on restart.
-                _saved_thr = state["kurtosis"].get("threshold")
-                if _saved_thr is not None:
-                    try:
-                        saved_threshold = float(_saved_thr)
-                        if (
-                            self.param_manager is None
-                            and abs(self.kurtosis_threshold - MANAGER_DEFAULT_KURTOSIS) < SAFE_EPSILON
-                        ):
-                            self.kurtosis_breaker.threshold = saved_threshold
-                        elif abs(saved_threshold - self.kurtosis_threshold) > SAFE_EPSILON:
-                            LOG.info(
-                                "[CIRCUIT-BREAKERS] Ignoring restored kurtosis threshold %.3f; "
-                                "using active %.3f for %s/%s/%s",
-                                saved_threshold,
-                                self.kurtosis_threshold,
-                                self.symbol,
-                                self.timeframe,
-                                self.broker,
-                            )
-                    except (TypeError, ValueError):
-                        pass
-                _saved_readings = state["kurtosis"].get("readings", [])
-                if _saved_readings:
-                    self.kurtosis_breaker._kurtosis_readings = deque(
-                        (float(r) for r in _saved_readings if np.isfinite(r)),
-                        maxlen=KURTOSIS_ADAPT_READING_LIMIT,
-                    )
-
-            # Restore drawdown breaker
-            if "drawdown" in state:
-                _restore_breaker(self.drawdown_breaker.state, state["drawdown"])
-                self.drawdown_breaker.current_drawdown = state["drawdown"].get("current_drawdown", 0.0)
-                self.drawdown_breaker.peak_equity = state["drawdown"].get("peak_equity", 0.0)
-
-            # Restore consecutive losses breaker
-            if "consecutive_losses" in state:
-                _restore_breaker(self.consecutive_losses_breaker.state, state["consecutive_losses"])
-                self.consecutive_losses_breaker.consecutive_losses = state["consecutive_losses"].get(
-                    "consecutive_losses", 0,
-                )
-
-            _mr_until = state.get("manual_reset_cooldown_until")
-            self.manual_reset_cooldown_until = None
-            if isinstance(_mr_until, str):
-                try:
-                    _dt = datetime.fromisoformat(_mr_until)
-                    if _dt.tzinfo is None:
-                        _dt = _dt.replace(tzinfo=UTC)
-                    self.manual_reset_cooldown_until = _dt
-                except (TypeError, ValueError):
-                    self.manual_reset_cooldown_until = None
-
+            self._restore_saved_breakers(state)
+            self._restore_manual_reset_cooldown(state)
             LOG.info("[CIRCUIT-BREAKER] State restored from %s", filepath)
             return True
-
         except Exception as e:
             LOG.exception("[CIRCUIT-BREAKER] Failed to restore state: %s", e)
             return False
@@ -1103,4 +1096,3 @@ if __name__ == "__main__":
 
 
     manager_demo.reset_if_cooldown_elapsed()
-

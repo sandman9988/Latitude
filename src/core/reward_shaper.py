@@ -675,6 +675,61 @@ class RewardShaper:
             "predicted_runway": predicted_runway,
         }
 
+    def _harvester_capture_reward(self, reward_pnl: float, mfe: float) -> tuple[float, float]:
+        if mfe > 0:
+            raw_ratio = reward_pnl / mfe
+            capture_ratio = max(-5.0, min(5.0, raw_ratio))
+            try:
+                capture_mult = self._get_param("capture_multiplier")
+            except KeyError:
+                capture_mult = CAPTURE_MULT_FALLBACK
+            try:
+                baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
+            except (KeyError, TypeError):
+                baseline_mfe = max(BASELINE_MFE_SEED, 0.01)
+            magnitude_scale = max(min(mfe / baseline_mfe, 2.0), 0.3)
+            reward = max(-3.0, min(3.0, (capture_ratio - TARGET_CAPTURE_RATIO) * capture_mult * magnitude_scale))
+            return reward, capture_ratio
+
+        capture_ratio = 0.0
+        zero_mfe_epsilon = max(float(self._get_param("zero_mfe_epsilon", ZERO_MFE_EPSILON)), 1e-12)
+        if mfe > zero_mfe_epsilon or reward_pnl >= 0:
+            return ZERO_MFE_PENALTY, capture_ratio
+        loss_mult = max(float(self._get_param("zero_mfe_loss_multiplier", ZERO_MFE_LOSS_MULT)), 1.0)
+        baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
+        baseline_scale = max(
+            float(self._get_param("zero_mfe_loss_baseline_scale", ZERO_MFE_LOSS_BASELINE_SCALE)),
+            1e-6,
+        )
+        cap_mult = max(float(self._get_param("zero_mfe_loss_cap_multiplier", ZERO_MFE_LOSS_CAP_MULT)), 1.0)
+        loss_scale = min(abs(reward_pnl) / (baseline_mfe * baseline_scale), cap_mult)
+        return ZERO_MFE_PENALTY * loss_mult * (1.0 + loss_scale), capture_ratio
+
+    def _harvester_wtl_penalty(self, reward_pnl: float, mfe: float, was_wtl: bool) -> float:
+        try:
+            wtl_mult = self._get_param("wtl_multiplier")
+        except KeyError:
+            wtl_mult = WTL_MULT_DEFAULT
+        if not was_wtl:
+            return 0.0
+        if mfe > 0:
+            giveback_ratio = max(0.5, min(1.0 - (reward_pnl / mfe), 2.0))
+        else:
+            giveback_ratio = 1.0
+        negative_exit_mult = WTL_NEGATIVE_EXIT_MULT if reward_pnl < 0 else 1.0
+        reversal_severity = max(0.0, min(1.0, -reward_pnl / mfe)) if mfe > 0 and reward_pnl < 0 else 0.0
+        severity_mult = 1.0 + (reversal_severity * WTL_REVERSAL_SEVERITY_MULT)
+        return max(-5.0, -wtl_mult * giveback_ratio * negative_exit_mult * severity_mult)
+
+    @staticmethod
+    def _harvester_timing_penalty(mfe: float, mae: float) -> float:
+        if mfe <= 0 or mae <= 0:
+            return 0.0
+        drawdown_ratio = min(mae / mfe, 3.0)
+        if drawdown_ratio <= 0.3:
+            return 0.0
+        return UNDEVELOPED_MFE_PENALTY_SCALE * (drawdown_ratio - 0.3)
+
     def calculate_harvester_reward(
         self,
         exit_pnl: float,
@@ -712,92 +767,12 @@ class RewardShaper:
 
         """
         reward_pnl = float(exit_pnl if net_exit_pnl is None else net_exit_pnl)
-
-        # 1. Capture efficiency (with magnitude scaling)
-        if mfe > 0:
-            # Clamp ratio to [-5, 5] — same guard as calculate_capture_efficiency_reward.
-            # Prevents explosion when mfe is tiny relative to a large adverse pnl.
-            raw_ratio = reward_pnl / mfe
-            capture_ratio = max(-5.0, min(5.0, raw_ratio))
-            target_capture = TARGET_CAPTURE_RATIO  # Aim for 70% of MFE
-            try:
-                capture_mult = self._get_param("capture_multiplier")
-            except KeyError:
-                capture_mult = CAPTURE_MULT_FALLBACK  # Default
-
-            # Magnitude scaling: larger MFE moves relative to baseline get
-            # full reward signal; micro-moves that barely cover spread are
-            # down-weighted.  Timeframe-agnostic: scales with the instrument.
-            try:
-                baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
-            except (KeyError, TypeError):
-                baseline_mfe = max(BASELINE_MFE_SEED, 0.01)
-            magnitude_scale = min(mfe / baseline_mfe, 2.0)  # Cap at 2x
-            magnitude_scale = max(magnitude_scale, 0.3)  # Floor at 0.3 (micro-moves still learn)
-
-            r_capture = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult * magnitude_scale))
-        else:
-            capture_ratio = 0.0
-            zero_mfe_epsilon = max(float(self._get_param("zero_mfe_epsilon", ZERO_MFE_EPSILON)), 1e-12)
-            if mfe <= zero_mfe_epsilon and reward_pnl < 0:
-                loss_mult = max(float(self._get_param("zero_mfe_loss_multiplier", ZERO_MFE_LOSS_MULT)), 1.0)
-                baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
-                baseline_scale = max(
-                    float(self._get_param("zero_mfe_loss_baseline_scale", ZERO_MFE_LOSS_BASELINE_SCALE)),
-                    1e-6,
-                )
-                cap_mult = max(float(self._get_param("zero_mfe_loss_cap_multiplier", ZERO_MFE_LOSS_CAP_MULT)), 1.0)
-                loss_mag = abs(reward_pnl)
-                loss_scale = min(loss_mag / (baseline_mfe * baseline_scale), cap_mult)
-                r_capture = ZERO_MFE_PENALTY * loss_mult * (1.0 + loss_scale)
-            else:
-                r_capture = ZERO_MFE_PENALTY
-
-        # 2. WTL penalty (proportional to profit giveback, not flat)
-        try:
-            wtl_mult = self._get_param("wtl_multiplier")
-        except KeyError:
-            wtl_mult = WTL_MULT_DEFAULT  # Default WTL penalty multiplier
-        if was_wtl:
-            # Proportional penalty: worse giveback = worse penalty
-            # If MFE was $10 and exit_pnl is -$2, giveback_ratio = 1.2 (gave back 120% of MFE)
-            if mfe > 0:
-                giveback_ratio = 1.0 - (reward_pnl / mfe)  # 0 = perfect capture, 2 = lost as much as gained
-                giveback_ratio = max(0.5, min(giveback_ratio, 2.0))  # Clamp [0.5, 2.0]
-            else:
-                giveback_ratio = 1.0
-            negative_exit_mult = WTL_NEGATIVE_EXIT_MULT if reward_pnl < 0 else 1.0
-            reversal_severity = max(0.0, min(1.0, -reward_pnl / mfe)) if mfe > 0 and reward_pnl < 0 else 0.0
-            severity_mult = 1.0 + (reversal_severity * WTL_REVERSAL_SEVERITY_MULT)
-            r_wtl = max(-5.0, -wtl_mult * giveback_ratio * negative_exit_mult * severity_mult)
-        else:
-            r_wtl = 0.0
-
-        # 3. Undeveloped-MFE penalty (replaces bar-based timing penalty)
-        # Result-based: if MAE is large relative to MFE, the position was
-        # held through an adverse move without protecting the gain.  This is
-        # timeframe-agnostic — 10 bars overnight or 1 bar on NY open, what
-        # matters is the MAE/MFE outcome ratio.
-        r_timing = 0.0
-        if mfe > 0 and mae > 0:
-            # drawdown_ratio: how much adverse move vs favorable move
-            drawdown_ratio = min(mae / mfe, 3.0)  # Cap at 3x
-            # Only penalize when drawdown is significant relative to MFE
-            if drawdown_ratio > 0.3:
-                r_timing = UNDEVELOPED_MFE_PENALTY_SCALE * (drawdown_ratio - 0.3)
-
-        # 4. Session quality weighting (optional)
-        # MFE captured during London/NY overlap is a stronger signal than
-        # the same MFE overnight.  Modulates total reward, not individual
-        # components — keeps the gradient direction intact.
+        r_capture, capture_ratio = self._harvester_capture_reward(reward_pnl, mfe)
+        r_wtl = self._harvester_wtl_penalty(reward_pnl, mfe, was_wtl)
+        r_timing = self._harvester_timing_penalty(mfe, mae)
         session_mult = self._get_session_quality(exit_time)
-
-        # Total harvester reward
         r_pnl = self.calculate_pnl_alignment_reward(reward_pnl, mfe)
-
         total_reward = (r_capture + r_wtl + r_timing + r_pnl) * session_mult
-
-        # Quality assessment
         quality = self._harvest_quality(capture_ratio)
 
         return {
@@ -893,13 +868,32 @@ if __name__ == "__main__":
         {"exit_pnl": -30.0, "mfe": 150.0, "mae": 50.0, "winner_to_loser": True, "bars_from_mfe": 20},
     )
     shaper.calculate_total_reward(
-        {"exit_pnl": 0.0, "mfe": 0.0, "mae": 0.0, "winner_to_loser": False, "potential_mfe": 200.0, "signal_strength": 0.8},
+        {
+            "exit_pnl": 0.0,
+            "mfe": 0.0,
+            "mae": 0.0,
+            "winner_to_loser": False,
+            "potential_mfe": 200.0,
+            "signal_strength": 0.8,
+        },
     )
     shaper.calculate_trigger_reward(actual_mfe=0.0025, predicted_runway=0.0025)
     shaper.calculate_trigger_reward(actual_mfe=0.0040, predicted_runway=0.0025)
     shaper.calculate_trigger_reward(actual_mfe=0.0010, predicted_runway=0.0025)
-    shaper.calculate_harvester_reward(exit_pnl=0.0034, mfe=0.0040, was_wtl=False, _bars_held=15, _bars_from_mfe_to_exit=3)
-    shaper.calculate_harvester_reward(exit_pnl=-0.0010, mfe=0.0040, was_wtl=True, _bars_held=30, _bars_from_mfe_to_exit=25)
+    shaper.calculate_harvester_reward(
+        exit_pnl=0.0034,
+        mfe=0.0040,
+        was_wtl=False,
+        _bars_held=15,
+        _bars_from_mfe_to_exit=3,
+    )
+    shaper.calculate_harvester_reward(
+        exit_pnl=-0.0010,
+        mfe=0.0040,
+        was_wtl=True,
+        _bars_held=30,
+        _bars_from_mfe_to_exit=25,
+    )
     shaper.calculate_dual_agent_rewards(
         actual_mfe=0.0030, predicted_runway=0.0025,
         exit_pnl=0.0022, was_wtl=False, bars_held=20, bars_from_mfe_to_exit=5,

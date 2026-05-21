@@ -74,7 +74,13 @@ class TradeAuditLogger:
         # Log session start
         self._write_entry("SESSION_START", {"session_id": self.session_id}, "INFO")
 
-    def _write_entry(self, event_type: str, data: dict[str, Any], severity: str = "INFO", ticket: str | None = None) -> None:
+    def _write_entry(
+        self,
+        event_type: str,
+        data: dict[str, Any],
+        severity: str = "INFO",
+        ticket: str | None = None,
+    ) -> None:
         """Write an immutable audit log entry.
 
         Args:
@@ -362,7 +368,13 @@ class TradeAuditLogger:
     # STATE PERSISTENCE
     # ==========================================================================
 
-    def log_state_save(self, state_file: str, num_tickets: int, net_position: float, checksum: str | None = None) -> None:
+    def log_state_save(
+        self,
+        state_file: str,
+        num_tickets: int,
+        net_position: float,
+        checksum: str | None = None,
+    ) -> None:
         """Log state persistence event."""
         self._write_entry(
             "STATE_SAVE",
@@ -519,4 +531,3 @@ if __name__ == "__main__":
         for entry in entries[:5]:
             if "ticket" in entry:
                 pass
-
