@@ -888,51 +888,183 @@ class TabbedHUD:
         """
         return os.read(sys.stdin.fileno(), 1).decode("latin-1")
 
+    def _activate_relative_tab(self, step: int) -> None:
+        idx = self.TAB_ORDER.index(self.current_tab)
+        self._activate_tab(self.TAB_ORDER[(idx + step) % len(self.TAB_ORDER)])
+
+    def _current_trade_page_count(self) -> int:
+        page_start = self._trades_page * self._trades_per_page
+        return min(self._trades_per_page, len(self._trades_view) - page_start)
+
+    def _move_trades_cursor(self, step: int) -> None:
+        page_cnt = self._current_trade_page_count()
+        self._trades_cursor = max(0, min(self._trades_cursor + step, max(0, page_cnt - 1)))
+        self._force_redraw = True
+
+    def _move_dec_log_cursor(self, step: int) -> None:
+        self._dec_log_cursor = max(0, min(self._dec_log_cursor + step, max(0, len(self._dec_log_view) - 1)))
+        self._force_redraw = True
+
+    def _move_ctx_cursor(self, step: int) -> None:
+        self._ctx_cursor = max(0, self._ctx_cursor + step)
+        self._sync_ctx_to_legacy()
+        self._force_redraw = True
+
+    def _handle_vertical_navigation(self, step: int) -> None:
+        if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
+            self._move_trades_cursor(step)
+            return
+        if self.current_tab == "log" and self._ctx_level >= 3 and not self._dec_log_detail:
+            self._move_dec_log_cursor(step)
+            return
+        if self._ctx_level <= 3:
+            self._move_ctx_cursor(step)
+            return
+        self._scroll_current_body(step)
+
+    def _handle_csi_arrow(self, seq2: str) -> bool:
+        if seq2 in {"C", "D"}:
+            self._activate_relative_tab(1 if seq2 == "C" else -1)
+            return True
+        if seq2 in {"A", "B"}:
+            self._handle_vertical_navigation(-1 if seq2 == "A" else 1)
+            return True
+        return False
+
+    def _handle_csi_page_key(self, seq2: str) -> bool:
+        if seq2 in {"H", "F"}:
+            absolute = 0 if seq2 == "H" else self._body_scroll_max
+            self._scroll_current_body(absolute=absolute)
+            return True
+        if seq2 not in {"5", "6"}:
+            return False
+        if select.select([sys.stdin.fileno()], [], [], 0.02)[0] and self._read_raw() == "~":
+            self._scroll_current_body(-10 if seq2 == "5" else 10)
+        return True
+
+    def _handle_csi_mouse_or_unknown(self, seq2: str) -> None:
+        if seq2 == "<":
+            self._handle_mouse_event("<" + self._drain_csi_sequence(timeout=0.25))
+        elif seq2 == "M":
+            self._handle_x10_mouse_event()
+        elif seq2.isdigit() or seq2 in {";", ","}:
+            self._handle_mouse_event(self._drain_csi_sequence(seq2, timeout=0.25))
+        else:
+            self._drain_csi_sequence(seq2, timeout=0.05)
+
+    def _handle_csi_sequence(self) -> None:
+        if not select.select([sys.stdin.fileno()], [], [], 0.05)[0]:
+            return
+        seq2 = self._read_raw()
+        if seq2 == "Z":
+            self._activate_relative_tab(-1)
+            return
+        if self._handle_csi_arrow(seq2) or self._handle_csi_page_key(seq2):
+            return
+        self._handle_csi_mouse_or_unknown(seq2)
+
     def _handle_escape_sequence(self, seq1: str) -> None:
         """Handle CSI / Alt-key escape sequences following the ESC byte."""
-        if seq1 == "[":  # CSI sequence (e.g. Shift+Tab = \x1b[Z)
-            if select.select([sys.stdin.fileno()], [], [], 0.05)[0]:
-                seq2 = self._read_raw()
-                if seq2 == "Z":  # Shift+Tab
-                    idx = self.TAB_ORDER.index(self.current_tab)
-                    self._activate_tab(self.TAB_ORDER[(idx - 1) % len(self.TAB_ORDER)])
-                elif seq2 in {"C", "D"}:  # Right/Left arrows cycle tabs
-                    idx = self.TAB_ORDER.index(self.current_tab)
-                    step = 1 if seq2 == "C" else -1
-                    self._activate_tab(self.TAB_ORDER[(idx + step) % len(self.TAB_ORDER)])
-                elif seq2 in {"A", "B"}:  # Up/Down arrows — move cursor
-                    if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
-                        # Trade list: move within page
-                        step = -1 if seq2 == "A" else 1
-                        page_cnt = min(
-                            self._trades_per_page,
-                            len(self._trades_view) - self._trades_page * self._trades_per_page,
-                        )
-                        self._trades_cursor = max(0, min(self._trades_cursor + step, max(0, page_cnt - 1)))
-                        self._force_redraw = True
-                    elif self._ctx_level <= 3:
-                        # Summary levels: move context cursor
-                        step = -1 if seq2 == "A" else 1
-                        self._ctx_cursor = max(0, self._ctx_cursor + step)
-                        self._sync_ctx_to_legacy()
-                        self._force_redraw = True
-                    else:
-                        self._scroll_current_body(-1 if seq2 == "A" else 1)
-                elif seq2 in {"H", "F"}:
-                    self._scroll_current_body(absolute=0 if seq2 == "H" else self._body_scroll_max)
-                elif seq2 in {"5", "6"} and select.select([sys.stdin.fileno()], [], [], 0.02)[0]:
-                    if self._read_raw() == "~":  # PageUp/PageDown
-                        self._scroll_current_body(-10 if seq2 == "5" else 10)
-                elif seq2 == "<":
-                    self._handle_mouse_event("<" + self._drain_csi_sequence(timeout=0.25))
-                elif seq2 == "M":
-                    self._handle_x10_mouse_event()
-                elif seq2.isdigit() or seq2 in {";", ","}:
-                    self._handle_mouse_event(self._drain_csi_sequence(seq2, timeout=0.25))
-                else:
-                    self._drain_csi_sequence(seq2, timeout=0.05)
-        elif seq1.lower() == "k":  # Alt+K — emergency kill switch (handle both 'k' and 'K')
+        if seq1 == "[":
+            self._handle_csi_sequence()
+        elif seq1.lower() == "k":  # Alt+K - emergency kill switch
             self._handle_kill_switch()
+
+    def _page_trades_forward(self) -> None:
+        if self.current_tab != "trades" or self._ctx_level < 3:
+            return
+        self._trades_detail = False
+        max_page = max(0, (len(self._trades_view) - 1) // self._trades_per_page)
+        self._trades_page = min(self._trades_page + 1, max_page)
+        self._trades_cursor = 0
+        self._force_redraw = True
+
+    def _toggle_trade_detail(self) -> None:
+        if not self._ctx_detail or self._ctx_level < 3:
+            self._trades_detail = False
+            return
+        idx = self._trades_page * self._trades_per_page + self._trades_cursor
+        if idx < len(self._trades_view):
+            self._trades_detail_trade = self._trades_view[idx]
+            self._trades_detail = True
+
+    def _toggle_log_detail(self) -> None:
+        if not self._ctx_detail or self._ctx_level < 3 or not self._dec_log_view:
+            self._dec_log_detail = False
+            return
+        idx = min(self._dec_log_cursor, len(self._dec_log_view) - 1)
+        self._dec_log_detail_entry = self._dec_log_view[idx]
+        self._dec_log_detail = True
+
+    def _toggle_detail_pane(self) -> None:
+        self._ctx_detail = not self._ctx_detail
+        if self.current_tab == "performance":
+            self._performance_detail = self._ctx_detail
+        elif self.current_tab == "training":
+            self._training_detail = self._ctx_detail
+        elif self.current_tab == "trades":
+            self._toggle_trade_detail()
+        elif self.current_tab == "log":
+            self._toggle_log_detail()
+        self._force_redraw = True
+
+    def _close_detail_pane(self) -> None:
+        detail_flags = {
+            "trades": "_trades_detail",
+            "log": "_dec_log_detail",
+            "performance": "_performance_detail",
+            "training": "_training_detail",
+        }
+        attr = detail_flags.get(self.current_tab)
+        if attr and getattr(self, attr):
+            setattr(self, attr, False)
+            self._ctx_detail = False
+            self._force_redraw = True
+
+    def _handle_escape_key(self) -> None:
+        if select.select([sys.stdin.fileno()], [], [], 0.05)[0]:
+            self._handle_escape_sequence(self._read_raw())
+            return
+        self._drill_up()
+
+    def _handle_command_key(self, key: str) -> bool:
+        command_handlers = {
+            "s": self._cycle_scope,
+            "p": self._cycle_period,
+            "n": self._page_trades_forward,
+            "d": self._toggle_detail_pane,
+            "b": self._close_detail_pane,
+        }
+        redraw_handlers = {
+            "r": self._handle_cb_reset,
+            "e": self._handle_stats_epoch,
+            "h": self._show_help,
+        }
+        if key in command_handlers:
+            command_handlers[key]()
+            return True
+        if key in redraw_handlers:
+            redraw_handlers[key]()
+            self._force_redraw = True
+            return True
+        return False
+
+    def _handle_input_key(self, key: str) -> None:
+        key_lower = key.lower()
+        if key in self.TABS:
+            self._activate_tab(self.TABS[key])
+        elif key == "\t":
+            self._activate_relative_tab(1)
+        elif key == "\x1b":
+            self._handle_escape_key()
+        elif key in ("\r", "\n"):
+            self._drill_down()
+        elif key_lower == "q" or key in {"\x18", "\x11"}:
+            self.running = False
+        elif key_lower in {"j", "k"}:
+            self._handle_vertical_navigation(1 if key_lower == "j" else -1)
+        else:
+            self._handle_command_key(key_lower)
 
     def _check_input(self):
         """Check for keyboard input (non-blocking).
@@ -940,127 +1072,17 @@ class TabbedHUD:
         Drains queued bytes so rapid tab-cycling never lags behind by multiple
         refresh cycles.
         """
-        _handled = False
+        handled = False
         try:
-            _fd = sys.stdin.fileno()
-            _drained = 0
-            while _drained < INPUT_DRAIN_MAX and select.select([_fd], [], [], 0)[0]:
-                _drained += 1
-                _handled = True
-                key = self._read_raw()
-                if key in self.TABS:
-                    self._activate_tab(self.TABS[key])
-                elif key == "\t":  # Tab key to cycle forward
-                    idx = self.TAB_ORDER.index(self.current_tab)
-                    self._activate_tab(self.TAB_ORDER[(idx + 1) % len(self.TAB_ORDER)])
-                elif key == "\x1b":  # Escape: CSI/Alt sequence, or bare Esc
-                    if select.select([sys.stdin.fileno()], [], [], 0.05)[0]:
-                        seq1 = self._read_raw()
-                        self._handle_escape_sequence(seq1)
-                    else:
-                        # Bare Escape — drill up one level (ALL tabs)
-                        self._drill_up()
-                elif key in ("\r", "\n"):  # Enter — drill down (ALL tabs)
-                    self._drill_down()
-                elif key.lower() == "q" or key in {"\x18", "\x11"}:  # 'q' or Ctrl+X (\x18) or Ctrl+Q (\x11)
-                    self.running = False
-                elif key.lower() == "s":
-                    self._cycle_scope()
-                elif key.lower() == "r":
-                    self._handle_cb_reset()
-                    self._force_redraw = True
-                elif key.lower() == "e":
-                    self._handle_stats_epoch()
-                    self._force_redraw = True
-                elif key.lower() == "h":
-                    self._show_help()
-                    self._force_redraw = True
-                elif key.lower() == "p":
-                    self._cycle_period()
-                elif key.lower() == "n":
-                    # Page forward (trades only)
-                    if self.current_tab == "trades" and self._ctx_level >= 3:
-                        self._trades_detail = False
-                        _max_pg = max(0, (len(self._trades_view) - 1) // self._trades_per_page)
-                        self._trades_page = min(self._trades_page + 1, _max_pg)
-                        self._trades_cursor = 0
-                        self._force_redraw = True
-                elif key.lower() == "j":
-                    # Move cursor down
-                    if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
-                        _page_cnt = min(
-                            self._trades_per_page,
-                            len(self._trades_view) - self._trades_page * self._trades_per_page,
-                        )
-                        self._trades_cursor = min(self._trades_cursor + 1, max(0, _page_cnt - 1))
-                        self._force_redraw = True
-                    elif self.current_tab == "log" and self._ctx_level >= 3 and not self._dec_log_detail:
-                        self._dec_log_cursor = min(self._dec_log_cursor + 1, max(0, len(self._dec_log_view) - 1))
-                        self._force_redraw = True
-                    elif self._ctx_level <= 3:
-                        self._ctx_cursor += 1
-                        self._sync_ctx_to_legacy()
-                        self._force_redraw = True
-                    else:
-                        self._scroll_current_body(1)
-                elif key.lower() == "k":
-                    # Move cursor up
-                    if self.current_tab == "trades" and self._ctx_level >= 3 and not self._trades_detail:
-                        self._trades_cursor = max(0, self._trades_cursor - 1)
-                        self._force_redraw = True
-                    elif self.current_tab == "log" and self._ctx_level >= 3 and not self._dec_log_detail:
-                        self._dec_log_cursor = max(0, self._dec_log_cursor - 1)
-                        self._force_redraw = True
-                    elif self._ctx_level <= 3:
-                        self._ctx_cursor = max(0, self._ctx_cursor - 1)
-                        self._sync_ctx_to_legacy()
-                        self._force_redraw = True
-                    else:
-                        self._scroll_current_body(-1)
-                elif key.lower() == "d":
-                    # Toggle detail/diagnostics pane (ALL tabs, consistent meaning)
-                    self._ctx_detail = not self._ctx_detail
-                    if self.current_tab == "performance":
-                        self._performance_detail = self._ctx_detail
-                    elif self.current_tab == "training":
-                        self._training_detail = self._ctx_detail
-                    elif self.current_tab == "trades":
-                        if self._ctx_detail and self._ctx_level >= 3:
-                            _idx = self._trades_page * self._trades_per_page + self._trades_cursor
-                            if _idx < len(self._trades_view):
-                                self._trades_detail_trade = self._trades_view[_idx]
-                                self._trades_detail = True
-                        else:
-                            self._trades_detail = False
-                    elif self.current_tab == "log":
-                        if self._ctx_detail and self._ctx_level >= 3 and self._dec_log_view:
-                            _idx = min(self._dec_log_cursor, len(self._dec_log_view) - 1)
-                            self._dec_log_detail_entry = self._dec_log_view[_idx]
-                            self._dec_log_detail = True
-                        else:
-                            self._dec_log_detail = False
-                    self._force_redraw = True
-                elif key.lower() == "b":
-                    # Back — close detail panes
-                    if self.current_tab == "trades" and self._trades_detail:
-                        self._trades_detail = False
-                        self._ctx_detail = False
-                        self._force_redraw = True
-                    elif self.current_tab == "log" and self._dec_log_detail:
-                        self._dec_log_detail = False
-                        self._ctx_detail = False
-                        self._force_redraw = True
-                    elif self.current_tab == "performance" and self._performance_detail:
-                        self._performance_detail = False
-                        self._ctx_detail = False
-                        self._force_redraw = True
-                    elif self.current_tab == "training" and self._training_detail:
-                        self._training_detail = False
-                        self._ctx_detail = False
-                        self._force_redraw = True
+            fd = sys.stdin.fileno()
+            drained = 0
+            while drained < INPUT_DRAIN_MAX and select.select([fd], [], [], 0)[0]:
+                drained += 1
+                handled = True
+                self._handle_input_key(self._read_raw())
         except Exception:
             pass
-        return _handled
+        return handled
 
     def _update_loop(self) -> None:
         """Main update loop."""
