@@ -689,113 +689,93 @@ class ExperienceBuffer:
             LOG.error("[BUFFER] Failed to save: %s", e, exc_info=True)
             return False
 
-    def load(self, filepath: str) -> bool:
-        """Load buffer state from disk.
-
-        Restores experiences, priorities, and metadata from a previous save.
-
-        Args:
-            filepath: Path to load the buffer from (.npz file)
-
-        Returns:
-            True if load succeeded
-
-        """
+    @staticmethod
+    def _resolve_load_path(filepath: str) -> Path | None:
         # Handle both with and without .npz extension
         path = Path(filepath)
-        if not path.exists():
-            npz_path = Path(f"{filepath}.npz")
-            if npz_path.exists():
-                path = npz_path
-            else:
-                LOG.warning("[BUFFER] No saved buffer found at %s", filepath)
-                return False
+        if path.exists():
+            return path
+        npz_path = Path(f"{filepath}.npz")
+        return npz_path if npz_path.exists() else None
 
+    def _restore_loaded_experiences(self, data, filepath: str) -> int:
+        states = data["states"]
+        n = min(len(states), self.capacity)
+        if len(states) > self.capacity:
+            LOG.warning("[BUFFER] Saved buffer (%d) exceeds capacity (%d), truncating", len(states), self.capacity)
+        self.tree = SumTree(self.capacity, seed=None)
+        self.data = [None] * self.capacity
+        canonical_state_size: int | None = None
+        dropped = 0
+        slot = 0
+        for i in range(n):
+            state_flat = states[i].astype(np.float32).ravel()
+            next_flat = data["next_states"][i].astype(np.float32).ravel()
+            if canonical_state_size is None:
+                canonical_state_size = state_flat.size
+            if state_flat.size != canonical_state_size or next_flat.size != canonical_state_size:
+                dropped += 1
+                continue
+            self._restore_loaded_experience_slot(data, i, slot, state_flat, next_flat)
+            slot += 1
+        if dropped:
+            LOG.warning(
+                "[BUFFER] Dropped %d/%d experiences with mismatched state size (canonical=%s) from %s",
+                dropped, n, canonical_state_size, filepath,
+            )
+        self._rebuild_tree_sums()
+        return slot
+
+    def _restore_loaded_experience_slot(
+        self,
+        data,
+        index: int,
+        slot: int,
+        state_flat: np.ndarray,
+        next_flat: np.ndarray,
+    ) -> None:
+        exp = Experience(
+            state=state_flat,
+            action=int(data["actions"][index]),
+            reward=float(data["rewards"][index]),
+            next_state=next_flat,
+            done=bool(data["dones"][index]),
+            timestamp=float(data["timestamps"][index]),
+            regime=int(data["regimes"][index]),
+            priority=float(data["priorities"][index]),
+        )
+        self.data[slot] = exp
+        tree_idx = slot + self.tree.capacity - 1
+        self.tree.tree[tree_idx] = float(data["priorities"][index])
+        self.tree.n_entries = slot + 1
+        self.tree.write_index = (slot + 1) % self.capacity
+
+    def _rebuild_tree_sums(self) -> None:
+        for i in range(self.tree.capacity - 2, -1, -1):
+            self.tree.tree[i] = self.tree.tree[2 * i + 1] + self.tree.tree[2 * i + 2]
+
+    def _restore_loaded_metadata(self, data) -> None:
+        # Experiences are compacted into slots ``0..n-1`` during load, so the next
+        # write must follow the loaded block. Do not blindly reuse saved write_idx.
+        self.write_idx = self.tree.write_index
+        self.total_added = int(data["total_added"])
+        self.total_sampled = int(data["total_sampled"])
+        self.beta = float(data["beta"])
+        self.current_regime = RegimeSampling(int(data["current_regime"]))
+
+    def load(self, filepath: str) -> bool:
+        """Load buffer state from disk."""
+        path = self._resolve_load_path(filepath)
+        if path is None:
+            LOG.warning("[BUFFER] No saved buffer found at %s", filepath)
+            return False
         try:
             data = np.load(str(path), allow_pickle=False)
-
-            states = data["states"]
-            actions = data["actions"]
-            rewards = data["rewards"]
-            next_states = data["next_states"]
-            dones = data["dones"]
-            timestamps = data["timestamps"]
-            regimes = data["regimes"]
-            priorities = data["priorities"]
-
-            n = len(states)
-            if n == 0:
+            if len(data["states"]) == 0:
                 LOG.info("[BUFFER] Loaded empty buffer from %s", filepath)
                 return True
-
-            if n > self.capacity:
-                LOG.warning("[BUFFER] Saved buffer (%d) exceeds capacity (%d), truncating", n, self.capacity)
-                n = self.capacity
-
-            # Reset tree and data
-            self.tree = SumTree(self.capacity, seed=None)
-            self.data = [None] * self.capacity
-
-            # Re-add all experiences
-            # States may be flat (from new save) or 2D (from old save).
-            # Always reshape to float32 flat so add() normalises to the
-            # current buffer's expected shape.
-            # Guard: use the first entry's flat size as canonical; discard any
-            # entries whose state size differs (prevents mixed-shape save failures
-            # when the state dimension changed between sessions).
-            canonical_state_size: int | None = None
-            dropped = 0
-            slot = 0
-            for i in range(n):
-                state_flat = states[i].astype(np.float32).ravel()
-                next_flat = next_states[i].astype(np.float32).ravel()
-                if canonical_state_size is None:
-                    canonical_state_size = state_flat.size
-                if state_flat.size != canonical_state_size or next_flat.size != canonical_state_size:
-                    dropped += 1
-                    continue
-                exp = Experience(
-                    state=state_flat,
-                    action=int(actions[i]),
-                    reward=float(rewards[i]),
-                    next_state=next_flat,
-                    done=bool(dones[i]),
-                    timestamp=float(timestamps[i]),
-                    regime=int(regimes[i]),
-                    priority=float(priorities[i]),
-                )
-                self.data[slot] = exp
-
-                # Set priority in tree
-                tree_idx = slot + self.tree.capacity - 1
-                self.tree.tree[tree_idx] = float(priorities[i])
-                self.tree.n_entries = slot + 1
-                self.tree.write_index = (slot + 1) % self.capacity
-                slot += 1
-
-            if dropped:
-                LOG.warning(
-                    "[BUFFER] Dropped %d/%d experiences with mismatched state size (canonical=%s) from %s",
-                    dropped, n, canonical_state_size, filepath,
-                )
-            n = slot
-
-            # Rebuild tree sums from leaves up
-            for i in range(self.tree.capacity - 2, -1, -1):
-                self.tree.tree[i] = self.tree.tree[2 * i + 1] + self.tree.tree[2 * i + 2]
-
-            # Restore metadata.  Experiences are compacted into slots
-            # ``0..n-1`` during load, so the next write must follow the loaded
-            # block.  Do not blindly reuse the saved write_idx: a checkpoint
-            # that was full at an older, smaller capacity stores write_idx=0,
-            # which would desynchronise data slots from SumTree priority slots
-            # after loading into a larger runtime buffer.
-            self.write_idx = self.tree.write_index
-            self.total_added = int(data["total_added"])
-            self.total_sampled = int(data["total_sampled"])
-            self.beta = float(data["beta"])
-            self.current_regime = RegimeSampling(int(data["current_regime"]))
-
+            n = self._restore_loaded_experiences(data, filepath)
+            self._restore_loaded_metadata(data)
             LOG.info("[BUFFER] Loaded %d experiences from %s", n, filepath)
             return True
         except Exception as e:

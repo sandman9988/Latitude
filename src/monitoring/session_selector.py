@@ -220,7 +220,10 @@ class SessionSelector:
         inst = sel.instrument
         tfs  = inst.available_timeframes
         n_inst = len(self.selections)
+        self._render_timeframe_step(h, sel, inst, tfs, n_inst)
+        return self._handle_timeframe_key(self.stdscr.getch(), sel, tfs, n_inst)
 
+    def _render_timeframe_step(self, h: int, sel: Selection, inst: Instrument, tfs: list[int], n_inst: int) -> None:
         row = self._header(
             f"Step 2 of 3  ·  Timeframes  ·  {inst.symbol}  ({self.tf_inst_idx + 1}/{n_inst})",
         )
@@ -258,7 +261,7 @@ class SessionSelector:
         back_hint = "b = back to instruments" if self.tf_inst_idx == 0 else "b = prev instrument"
         self._footer(f"↑/↓ navigate  │  SPACE toggle  │  {next_hint}  │  {back_hint}  │  q quit")
 
-        key = self.stdscr.getch()
+    def _handle_timeframe_key(self, key: int, sel: Selection, tfs: list[int], n_inst: int) -> str:
         if key in (ord("q"), ord("Q"), 27):
             return "quit"
         if key == curses.KEY_UP:
@@ -278,22 +281,29 @@ class SessionSelector:
             else:
                 self.step = self.STEP_INSTRUMENTS
         elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):
-            if not sel.timeframes:
-                pass  # need at least one
-            elif self.tf_inst_idx < n_inst - 1:
-                self.tf_inst_idx += 1
-                self.tf_cursor = 0
-            else:
-                for s in self.selections:
-                    s.mode = "PAPER"
-                self.mode_cursor = 0
-                self.step = self.STEP_MODES
+            self._advance_timeframe_step(sel, n_inst)
         return "continue"
+
+    def _advance_timeframe_step(self, sel: Selection, n_inst: int) -> None:
+        if not sel.timeframes:
+            return
+        if self.tf_inst_idx < n_inst - 1:
+            self.tf_inst_idx += 1
+            self.tf_cursor = 0
+            return
+        for selection in self.selections:
+            selection.mode = "PAPER"
+        self.mode_cursor = 0
+        self.step = self.STEP_MODES
 
     # ── Step 3 — mode selection ───────────────────────────────────────────────
 
     def _step_modes(self) -> str:
         h, _w = self.stdscr.getmaxyx()
+        live_count = self._render_mode_step(h)
+        return self._handle_mode_key(self.stdscr.getch(), live_count)
+
+    def _render_mode_step(self, h: int) -> int:
         row = self._header("Step 3 of 3  ·  Trading Modes")
         _safe_addstr(self.stdscr, row, 2,
                      "↑/↓ rows  ·  ←/→ or SPACE cycle mode  ·  ENTER confirm  ·  b back",
@@ -344,8 +354,9 @@ class SessionSelector:
                          curses.color_pair(_C_GREEN) | curses.A_BOLD)
 
         self._footer("↑/↓ rows  │  ←/→ or SPACE cycle mode  │  ENTER confirm  │  b back  │  q quit")
+        return live_count
 
-        key = self.stdscr.getch()
+    def _handle_mode_key(self, key: int, live_count: int) -> str:
         if key in (ord("q"), ord("Q"), 27):
             return "quit"
         if key == curses.KEY_UP:
@@ -363,9 +374,7 @@ class SessionSelector:
             self.tf_cursor   = 0
             self.step = self.STEP_TIMEFRAMES
         elif key in (ord("\n"), curses.KEY_ENTER, 10, 13):
-            if live_count > 1:
-                pass  # must resolve conflict
-            else:
+            if live_count <= 1:
                 self.result = _build_session(self.selections)
                 self.step = self.STEP_REVIEW
         return "continue"
@@ -399,7 +408,13 @@ class SessionSelector:
                      f"Saves to: {SESSION_PATH}  ·  Updates .env for backward compatibility",
                      curses.color_pair(_C_DIM) | curses.A_DIM)
         row += 2
-        _safe_addstr(self.stdscr, row,   2, "  [ENTER / s]  Save session and exit", curses.color_pair(_C_GREEN) | curses.A_BOLD)
+        _safe_addstr(
+            self.stdscr,
+            row,
+            2,
+            "  [ENTER / s]  Save session and exit",
+            curses.color_pair(_C_GREEN) | curses.A_BOLD,
+        )
         _safe_addstr(self.stdscr, row+1, 2, "  [b]          Go back and edit",       curses.color_pair(_C_DIM))
         _safe_addstr(self.stdscr, row+2, 2, "  [q]          Cancel without saving",  curses.color_pair(_C_RED))
 

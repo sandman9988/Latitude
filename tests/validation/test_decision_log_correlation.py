@@ -268,79 +268,99 @@ def check_invariants(entries: list[dict]) -> list[str]:
         sid = e.get("session", "unknown")
         sessions.setdefault(sid, []).append(e)
 
-    # Build global set of all trade_ids ever opened (any session) so that
-    # cross-session restart HOLDs aren't flagged as orphans.
-    all_opened_tids: set[str] = set()
-    for evts in sessions.values():
-        for e in evts:
-            if e.get("agent") == "TriggerAgent" and e.get("decision") in ("LONG", "SHORT") and (tid := e.get("trade_id")):
-                all_opened_tids.add(tid)
+    all_opened_tids = _opened_trade_ids(sessions)
 
     for sid, evts in sessions.items():
-        open_trades: dict[str, dict] = {}  # trade_id -> entry event
-        closed_trade_ids: set[str] = set()  # trade_ids that were previously used + closed
-
-        for e in evts:
-            agent = e.get("agent")
-            decision = e.get("decision")
-            tid = e.get("trade_id")
-            ts = e.get("timestamp", "?")
-
-            if agent == "TriggerAgent":
-                if decision in ("LONG", "SHORT"):
-                    # Invariant 3: each trade_id is unique to one entry
-                    # Check both currently-open and previously-closed trades
-                    if tid and (tid in open_trades or tid in closed_trade_ids):
-                        violations.append(
-                            f"[{sid}] Duplicate trade_id={tid} on second entry @{ts} (already seen in this session)",
-                        )
-                    if tid:
-                        open_trades[tid] = e
-                elif decision == "NO_ENTRY":
-                    # Invariant 5: NO_ENTRY must not carry a trade_id
-                    if tid:
-                        violations.append(f"[{sid}] NO_ENTRY carries trade_id={tid} @{ts}")
-
-            elif agent == "HarvesterAgent" and decision in ("HOLD", "CLOSE"):
-                if decision == "CLOSE" and tid and tid in closed_trade_ids:
-                    continue
-
-                # Invariant 2: harvester entry without prior trigger entry.
-                # Recovered trades have rcv_ prefix — don't flag those.
-                # Cross-session restarts produce HOLDs for trade_ids whose LONG/SHORT
-                # was logged in a prior session — check the global set, not just
-                # the current-session open_trades.
-                if tid and not tid.startswith("rcv_") and tid not in open_trades and tid not in all_opened_tids:
-                    violations.append(
-                        f"[{sid}] {decision} has trade_id={tid} @{ts} but no matching LONG/SHORT entry found",
-                    )
-                # Ghost HOLD: HOLD fired after the trade was already closed in this session
-                if decision == "HOLD" and tid and tid in closed_trade_ids:
-                    violations.append(
-                        f"[{sid}] Ghost HOLD: trade_id={tid} @{ts} appeared after CLOSE already recorded",
-                    )
-                if decision == "CLOSE" and tid and tid in open_trades:
-                    closed_trade_ids.add(tid)
-                    del open_trades[tid]
-
-        # Invariant 1: every open trade must eventually close
-        # (only flag non-recovered trades; recovered ones may still be open)
-        # NOTE: Session restarts, crashes, and paper-mode exploration naturally
-        # leave positions unclosed at session boundaries.  We log these as
-        # warnings but do NOT count them as hard invariant violations.
-        for tid, entry in open_trades.items():
-            if not tid.startswith("rcv_"):
-                last_session = list(sessions.keys())[-1]
-                if sid != last_session:
-                    logging.getLogger(__name__).warning(
-                        "[%s] trade_id=%s opened @%s never received a CLOSE "
-                        "(session ended before close — expected during restarts)",
-                        sid,
-                        tid,
-                        entry["timestamp"],
-                    )
+        open_trades = _check_session_sequence(sid, evts, all_opened_tids, violations)
+        _warn_unclosed_session_trades(sid, sessions, open_trades)
 
     return violations
+
+
+def _opened_trade_ids(sessions: dict[str, list[dict]]) -> set[str]:
+    opened: set[str] = set()
+    for evts in sessions.values():
+        for entry in evts:
+            is_entry = entry.get("agent") == "TriggerAgent" and entry.get("decision") in ("LONG", "SHORT")
+            if is_entry and (tid := entry.get("trade_id")):
+                opened.add(tid)
+    return opened
+
+
+def _check_session_sequence(
+    sid: str,
+    evts: list[dict],
+    all_opened_tids: set[str],
+    violations: list[str],
+) -> dict[str, dict]:
+    open_trades: dict[str, dict] = {}
+    closed_trade_ids: set[str] = set()
+    for entry in evts:
+        agent = entry.get("agent")
+        decision = entry.get("decision")
+        if agent == "TriggerAgent":
+            _check_trigger_entry(sid, entry, open_trades, closed_trade_ids, violations)
+        elif agent == "HarvesterAgent" and decision in ("HOLD", "CLOSE"):
+            _check_harvester_entry(sid, entry, open_trades, closed_trade_ids, all_opened_tids, violations)
+    return open_trades
+
+
+def _check_trigger_entry(
+    sid: str,
+    entry: dict,
+    open_trades: dict[str, dict],
+    closed_trade_ids: set[str],
+    violations: list[str],
+) -> None:
+    decision = entry.get("decision")
+    tid = entry.get("trade_id")
+    ts = entry.get("timestamp", "?")
+    if decision in ("LONG", "SHORT"):
+        if tid and (tid in open_trades or tid in closed_trade_ids):
+            violations.append(f"[{sid}] Duplicate trade_id={tid} on second entry @{ts} (already seen in this session)")
+        if tid:
+            open_trades[tid] = entry
+    elif decision == "NO_ENTRY" and tid:
+        violations.append(f"[{sid}] NO_ENTRY carries trade_id={tid} @{ts}")
+
+
+def _check_harvester_entry(
+    sid: str,
+    entry: dict,
+    open_trades: dict[str, dict],
+    closed_trade_ids: set[str],
+    all_opened_tids: set[str],
+    violations: list[str],
+) -> None:
+    decision = entry.get("decision")
+    tid = entry.get("trade_id")
+    ts = entry.get("timestamp", "?")
+    if decision == "CLOSE" and tid and tid in closed_trade_ids:
+        return
+    if tid and not tid.startswith("rcv_") and tid not in open_trades and tid not in all_opened_tids:
+        violations.append(f"[{sid}] {decision} has trade_id={tid} @{ts} but no matching LONG/SHORT entry found")
+    if decision == "HOLD" and tid and tid in closed_trade_ids:
+        violations.append(f"[{sid}] Ghost HOLD: trade_id={tid} @{ts} appeared after CLOSE already recorded")
+    if decision == "CLOSE" and tid and tid in open_trades:
+        closed_trade_ids.add(tid)
+        del open_trades[tid]
+
+
+def _warn_unclosed_session_trades(
+    sid: str,
+    sessions: dict[str, list[dict]],
+    open_trades: dict[str, dict],
+) -> None:
+    last_session = list(sessions.keys())[-1]
+    for tid, entry in open_trades.items():
+        if not tid.startswith("rcv_") and sid != last_session:
+            logging.getLogger(__name__).warning(
+                "[%s] trade_id=%s opened @%s never received a CLOSE "
+                "(session ended before close — expected during restarts)",
+                sid,
+                tid,
+                entry["timestamp"],
+            )
 
 
 class TestSequenceInvariants:

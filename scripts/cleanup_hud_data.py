@@ -83,41 +83,28 @@ def execute_cleanup(dry_run: bool = True) -> None:
         return
 
     stale_files, backups_to_delete = analyze_data_dir()
-
     if dry_run:
-        pass
+        return
+    _archive_stale_files(stale_files)
+    _delete_old_backups(backups_to_delete)
 
-    # Archive stale files
-    if stale_files:
-        if not dry_run:
-            ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
-        for filename, _age_days, mtime in stale_files:
-            src = DATA_DIR / filename
-            dst = ARCHIVE_DIR / f"{filename}.{mtime.strftime('%Y%m%d_%H%M%S')}"
+def _archive_stale_files(stale_files: list[tuple[str, int, datetime]]) -> None:
+    if not stale_files:
+        return
+    ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+    for filename, _age_days, mtime in stale_files:
+        src = DATA_DIR / filename
+        dst = ARCHIVE_DIR / f"{filename}.{mtime.strftime('%Y%m%d_%H%M%S')}"
+        with contextlib.suppress(Exception):
+            shutil.copy2(src, dst)
+            src.unlink()
 
-            if dry_run:
-                pass
-            else:
-                try:
-                    shutil.copy2(src, dst)
-                    src.unlink()
-                except Exception:
-                    pass
 
-    # Delete old backups
-    if backups_to_delete:
-        for backup_file in backups_to_delete:
-            if dry_run:
-                pass
-            else:
-                with contextlib.suppress(Exception):
-                    backup_file.unlink()
-
-    if not dry_run:
-        pass
-    else:
-        pass
+def _delete_old_backups(backups_to_delete: list[Path]) -> None:
+    for backup_file in backups_to_delete:
+        with contextlib.suppress(Exception):
+            backup_file.unlink()
 
 
 def main() -> None:

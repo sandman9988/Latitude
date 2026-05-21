@@ -442,13 +442,7 @@ def _parse_date(s: str) -> datetime.datetime:
     raise argparse.ArgumentTypeError(msg)
 
 
-def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-7s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
+def _build_arg_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         description="Download cTrader historical bars to data/history/.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -482,26 +476,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--access-token", help="OAuth2 access token (overrides env/tokens file)")
     ap.add_argument("--account-id", help="cTrader numeric account ID (overrides env/config)")
     ap.add_argument("-v", "--verbose", action="store_true")
+    return ap
 
-    args = ap.parse_args(argv)
 
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    # Locate project root
-    root = Path(__file__).resolve().parent.parent
-    tokens_file = _load_tokens_file(root / "config" / "cTraderAppTokens")
-
-    client_id = _get_cred("CTRADER_CLIENT_ID", tokens_file, args.client_id)
-    client_secret = _get_cred("CTRADER_CLIENT_SECRET", tokens_file, args.client_secret)
-    redirect_uri = os.environ.get("CTRADER_REDIRECT_URI", "http://127.0.0.1:8787/callback")
-
-    # Auth-only mode
-    if args.auth:
-        run_auth_flow(client_id, client_secret, redirect_uri)
-        return 0
-
-    # Validate required args for download mode
+def _validate_download_args(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if not args.symbol:
         ap.error("--symbol is required for download mode (or use --auth first)")
     if not args.timeframe:
@@ -509,17 +487,21 @@ def main(argv: list[str] | None = None) -> int:
     if not args.date_from:
         ap.error("--from is required")
 
-    # Check library before touching credentials
-    _check_library()
 
-    access_token = _get_cred("CTRADER_ACCESS_TOKEN", tokens_file, args.access_token)
-
-    # Account ID: CLI > env > FIX config
+def _resolve_account_id(ap: argparse.ArgumentParser, args: argparse.Namespace, root: Path) -> int:
     raw_account = args.account_id or os.environ.get("CTRADER_ACCOUNT_ID") or _detect_account_id_from_fix_cfg(root)
     if not raw_account:
         ap.error("Cannot determine account ID.  Set CTRADER_ACCOUNT_ID or pass --account-id.")
-    account_id = int(raw_account)
+    return int(raw_account)
 
+
+def _run_download_jobs(
+    args: argparse.Namespace,
+    client_id: str,
+    client_secret: str,
+    access_token: str,
+    account_id: int,
+) -> int:
     host = DEMO_HOST if args.demo else LIVE_HOST
     LOG.info("Server: %s  |  Account: %d", host, account_id)
 
@@ -569,6 +551,33 @@ def main(argv: list[str] | None = None) -> int:
     successes = sum(results)
     LOG.info("Done: %d/%d succeeded.", successes, len(jobs))
     return 0 if successes == len(jobs) else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    ap = _build_arg_parser()
+    args = ap.parse_args(argv)
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    root = Path(__file__).resolve().parent.parent
+    tokens_file = _load_tokens_file(root / "config" / "cTraderAppTokens")
+    client_id = _get_cred("CTRADER_CLIENT_ID", tokens_file, args.client_id)
+    client_secret = _get_cred("CTRADER_CLIENT_SECRET", tokens_file, args.client_secret)
+    if args.auth:
+        redirect_uri = os.environ.get("CTRADER_REDIRECT_URI", "http://127.0.0.1:8787/callback")
+        run_auth_flow(client_id, client_secret, redirect_uri)
+        return 0
+
+    _validate_download_args(ap, args)
+    _check_library()
+    access_token = _get_cred("CTRADER_ACCESS_TOKEN", tokens_file, args.access_token)
+    account_id = _resolve_account_id(ap, args, root)
+    return _run_download_jobs(args, client_id, client_secret, access_token, account_id)
 
 
 if __name__ == "__main__":

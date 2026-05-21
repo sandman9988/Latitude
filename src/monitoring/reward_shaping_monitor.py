@@ -500,16 +500,7 @@ class RewardShapingMonitor:
     def _read_decision_entries(self) -> list[dict]:
         log_path = self.decision_log_path
         self._last_decision_log_source = None
-        if not log_path.exists():
-            legacy_path = log_path.parent / "decision_log.json"
-            if legacy_path.exists() and log_path.name.startswith("decision_log_"):
-                log_path = legacy_path
-            else:
-                audit_path = log_path.parent / "logs" / "audit" / "decisions.jsonl"
-                if audit_path.exists() and log_path.name.startswith("decision_log_"):
-                    log_path = audit_path
-                else:
-                    return []
+        log_path = self._resolve_decision_log_path(log_path)
         if not log_path.exists():
             return []
         self._last_decision_log_source = str(log_path)
@@ -538,6 +529,18 @@ class RewardShapingMonitor:
             return payload if isinstance(payload, list) else []
         except (OSError, ValueError):
             return []
+
+    @staticmethod
+    def _resolve_decision_log_path(log_path: Path) -> Path:
+        if log_path.exists():
+            return log_path
+        if not log_path.name.startswith("decision_log_"):
+            return log_path
+        legacy_path = log_path.parent / "decision_log.json"
+        if legacy_path.exists():
+            return legacy_path
+        audit_path = log_path.parent / "logs" / "audit" / "decisions.jsonl"
+        return audit_path if audit_path.exists() else log_path
 
     def _resolve_regime(self, current_regime: str) -> str:
         if current_regime and current_regime != "UNKNOWN":
