@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import scripts.performance_analyzer as pa
 from src.persistence.learned_parameters import LearnedParametersManager
@@ -59,3 +60,75 @@ def test_apply_corrections_updates_learned_parameters(tmp_path, monkeypatch):
     scoped_value = scoped_data["instruments"]["XAUUSD_M5_default"]["params"]["exit_confidence_threshold"]["value"]
     assert scoped_value == 0.63
     assert (tmp_path / pa.PARAM_RELOAD_FILE).exists()
+    assert (tmp_path / "paper_XAUUSD_M5" / pa.PARAM_RELOAD_FILE).exists()
+
+
+def test_cb_lockout_auto_heal_requests_targeted_reset_and_normalizes_gates(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(pa, "HEALTH_FILE", tmp_path / "performance_health.json")
+    root_path = tmp_path / "learned_parameters.json"
+    scoped_path = tmp_path / "paper_XAUUSD_M5" / "learned_parameters.json"
+    scoped_path.parent.mkdir()
+
+    for path in (root_path, scoped_path):
+        mgr = LearnedParametersManager(path)
+        mgr.set_value("XAUUSD", "entry_confidence_threshold", 0.90, timeframe="M5")
+        mgr.set_value("XAUUSD", "feasibility_threshold", 0.80, timeframe="M5")
+        mgr.save()
+
+    anomaly = pa.Anomaly(
+        code="CB_LOCKOUT",
+        severity="CRITICAL",
+        symbol="XAUUSD",
+        timeframe="M5",
+        message="locked out",
+        metric_value=4.5,
+        threshold=4.0,
+        correction="reset",
+        param_name="",
+        delta=0.0,
+    )
+
+    applied = pa.apply_corrections([anomaly], auto_heal=True, verbose=False)
+
+    reset_path = tmp_path / "paper_XAUUSD_M5" / pa.CB_RESET_FILE
+    payload = json.loads(reset_path.read_text())
+    assert payload["reason"] == "performance_analyzer_cb_lockout"
+    assert payload["target_timeframes"] == [5]
+    assert any("requested targeted circuit-breaker reset" in msg for msg in applied)
+
+    for path in (root_path, scoped_path):
+        raw = json.loads(path.read_text())
+        data = raw.get("data", raw)
+        params = data["instruments"]["XAUUSD_M5_default"]["params"]
+        assert params["entry_confidence_threshold"]["value"] == 0.6
+        assert params["feasibility_threshold"]["value"] == 0.5
+
+    assert (tmp_path / pa.PARAM_RELOAD_FILE).exists()
+    assert (tmp_path / "paper_XAUUSD_M5" / pa.PARAM_RELOAD_FILE).exists()
+
+
+def test_run_analysis_detects_cb_lockout_even_with_no_recent_trades(tmp_path, monkeypatch):
+    monkeypatch.setattr(pa, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(pa, "TRADE_LOG", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr(pa, "HEALTH_FILE", tmp_path / "performance_health.json")
+    bot_dir = tmp_path / "paper_BTCUSD_M1"
+    bot_dir.mkdir(parents=True)
+    trip_time = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    (bot_dir / "circuit_breakers.json").write_text(json.dumps({
+        "sortino": {
+            "is_tripped": True,
+            "trip_time": trip_time,
+            "trip_reason": "Sortino ratio below threshold",
+            "trip_value": -0.5,
+            "threshold": 0.9,
+            "returns": [-1.0],
+        }
+    }))
+    pa.TRADE_LOG.write_text("")
+
+    report = pa.run_analysis(hours=4, auto_heal=True, min_trades=3, quiet=True)
+
+    assert report["overall_health"] == "CRITICAL"
+    assert report["anomalies"][0]["code"] == "CB_LOCKOUT"
+    assert (bot_dir / pa.CB_RESET_FILE).exists()

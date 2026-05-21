@@ -16,10 +16,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
 import sys
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -34,6 +36,7 @@ DATA_DIR = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
 TRADE_LOG = DATA_DIR / "trade_log.jsonl"
 HEALTH_FILE = DATA_DIR / "performance_health.json"
 PARAM_RELOAD_FILE = "learned_parameters_reload.json"
+CB_RESET_FILE = "circuit_breaker_reset.json"
 
 LOG = logging.getLogger("perf_analyzer")
 
@@ -60,6 +63,11 @@ DELTA_EXIT_CONF_CAPTURE     = +0.03   # raise exit_confidence_threshold on poor 
 DELTA_WTL_MULT_REDUCE       = -0.20   # reduce wtl_penalty_multiplier (absolute)
 DELTA_RUNWAY_CAL_ALPHA       = +0.04   # speed up runway calibration when drifting
 DELTA_PNL_ALIGN_MULT        = +0.10   # raise pnl_alignment_multiplier when weak
+
+ENTRY_CONF_BASELINE = 0.6
+ENTRY_CONF_RESET_IF_ABOVE = 0.65
+FEASIBILITY_RESET_TO = 0.5
+FEASIBILITY_RESET_IF_ABOVE = 0.75
 
 
 # ── data structures ───────────────────────────────────────────────────────────
@@ -498,11 +506,11 @@ def detect_cb_lockouts(
             message=(
                 f"{bot_key}: {names_str} CB tripped ({max_hours:.1f}h), "
                 f"0 trades in last {hours:.0f}h. "
-                f"Fix: python3 scripts/fix_cb_lockout.py then restart hub."
+                f"Self-heal can request a targeted CB reset and normalize runaway entry gates."
             ),
             metric_value=max_hours,
             threshold=CB_LOCKOUT_WINDOW_MIN_HOURS,
-            correction="Run fix_cb_lockout.py then kill and restart the hub process.",
+            correction="Request targeted circuit-breaker reset and normalize runaway entry gates.",
             param_name="",
             delta=0.0,
         ))
@@ -511,6 +519,112 @@ def detect_cb_lockouts(
 
 
 # ── corrections ───────────────────────────────────────────────────────────────
+
+def _timeframe_minutes(timeframe: str) -> int | None:
+    tf = str(timeframe or "").upper()
+    if tf == "H4":
+        return 240
+    if tf == "H1":
+        return 60
+    if tf.startswith("M") and tf[1:].isdigit():
+        return int(tf[1:])
+    try:
+        return int(tf)
+    except (TypeError, ValueError):
+        return None
+
+
+def _atomic_write_control(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
+        Path(tmp_name).replace(path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            Path(tmp_name).unlink()
+        raise
+
+
+def _request_targeted_cb_reset(symbol: str, timeframe: str) -> str:
+    tf_minutes = _timeframe_minutes(timeframe)
+    bot_dir = DATA_DIR / f"paper_{symbol}_{timeframe}"
+    payload = {
+        "reset": True,
+        "reason": "performance_analyzer_cb_lockout",
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "timeframe_minutes": tf_minutes,
+        "target_timeframes": [tf_minutes] if tf_minutes is not None else [],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    path = bot_dir / CB_RESET_FILE
+    _atomic_write_control(path, payload)
+    return f"[CB_LOCKOUT] {symbol} {timeframe} requested targeted circuit-breaker reset via {path}"
+
+
+def _reset_runaway_gate_params(
+    mgr: Any,
+    symbol: str,
+    timeframe: str,
+    path: Path,
+    changed_paths: set[Path],
+) -> list[str]:
+    applied: list[str] = []
+    for param_name, reset_if_above, reset_to in (
+        ("entry_confidence_threshold", ENTRY_CONF_RESET_IF_ABOVE, ENTRY_CONF_BASELINE),
+        ("feasibility_threshold", FEASIBILITY_RESET_IF_ABOVE, FEASIBILITY_RESET_TO),
+    ):
+        try:
+            current = float(mgr.get(symbol, param_name, timeframe=timeframe))
+        except Exception:
+            continue
+        if current < reset_if_above:
+            continue
+        try:
+            final = mgr.set_value(symbol, param_name, reset_to, timeframe=timeframe)
+            changed_paths.add(path.resolve())
+            applied.append(
+                f"[CB_LOCKOUT] {symbol} {timeframe} {path}: {param_name} "
+                f"{current:.4f} → {final:.4f}"
+            )
+        except Exception as exc:
+            LOG.warning("Could not reset %s for %s %s in %s: %s", param_name, symbol, timeframe, path, exc)
+    return applied
+
+
+def _apply_cb_lockout_corrections(
+    anomalies: list[Anomaly],
+    target_paths,
+    manager,
+    changed_paths: set[Path],
+    verbose: bool,
+) -> list[str]:
+    applied: list[str] = []
+    cb_lockouts = {
+        (a.symbol, a.timeframe)
+        for a in anomalies
+        if a.code == "CB_LOCKOUT" and a.symbol not in ("", "FLEET") and a.timeframe not in ("", "ALL")
+    }
+    for symbol, timeframe in sorted(cb_lockouts):
+        try:
+            msg = _request_targeted_cb_reset(symbol, timeframe)
+            applied.append(msg)
+            if verbose:
+                LOG.info("CORRECTION: %s", msg)
+        except Exception as exc:
+            LOG.warning("Could not request CB reset for %s %s: %s", symbol, timeframe, exc)
+
+        for path in target_paths(symbol, timeframe):
+            try:
+                mgr = manager(path)
+                applied.extend(_reset_runaway_gate_params(mgr, symbol, timeframe, path, changed_paths))
+            except Exception as exc:
+                LOG.warning("Could not normalize lockout gates for %s %s in %s: %s", symbol, timeframe, path, exc)
+    return applied
 
 def apply_corrections(
     anomalies: list[Anomaly],
@@ -542,6 +656,8 @@ def apply_corrections(
         if scoped.exists():
             paths.append(scoped)
         return paths
+
+    applied.extend(_apply_cb_lockout_corrections(anomalies, _target_paths, _manager, changed_paths, verbose))
 
     # De-duplicate: per (symbol, timeframe, param_name) apply only the largest delta
     dedup: dict[tuple[str, str, str], Anomaly] = {}
@@ -590,12 +706,12 @@ def apply_corrections(
             mgr.save()
     if applied:
         LOG.info("Saved %d correction(s) across %d learned-parameter file(s)", len(applied), len(changed_paths))
-        _request_runtime_param_reload()
+        _request_runtime_param_reload(changed_paths)
 
     return applied
 
 
-def _request_runtime_param_reload() -> None:
+def _request_runtime_param_reload(changed_paths: set[Path] | None = None) -> None:
     """Ask running OpenAPI hubs to reload scoped learned-parameter files."""
     try:
         payload = {
@@ -603,11 +719,19 @@ def _request_runtime_param_reload() -> None:
             "reason": "performance_analyzer_auto_heal",
             "generated_at": datetime.now(UTC).isoformat(),
         }
-        path = DATA_DIR / PARAM_RELOAD_FILE
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        tmp.replace(path)
-        LOG.info("Requested runtime learned-parameter reload via %s", path)
+        reload_dirs = {DATA_DIR}
+        for changed_path in changed_paths or set():
+            path = Path(changed_path)
+            if path.name == "learned_parameters.json" and path.parent.name.startswith("paper_"):
+                reload_dirs.add(path.parent)
+        written: list[Path] = []
+        for reload_dir in sorted(reload_dirs):
+            path = reload_dir / PARAM_RELOAD_FILE
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp.replace(path)
+            written.append(path)
+        LOG.info("Requested runtime learned-parameter reload via %s", ", ".join(str(p) for p in written))
     except Exception as e:
         LOG.warning("Could not request runtime learned-parameter reload: %s", e)
 
@@ -738,9 +862,26 @@ def run_analysis(
     trades = load_recent_trades(hours)
     if not trades:
         LOG.warning("No trades found in the last %.0fh", hours)
+        anomalies = detect_cb_lockouts({}, hours)
+        applied = apply_corrections(anomalies, auto_heal=auto_heal, verbose=verbose)
+        overall = "CRITICAL" if anomalies else "NO_DATA"
         report = {"generated_at": datetime.now(UTC).isoformat(),
-                  "analysis_window_hours": hours, "overall_health": "NO_DATA",
-                  "fleet": {}, "bots": {}, "anomalies": [], "corrections_applied": []}
+                  "analysis_window_hours": hours, "overall_health": overall,
+                  "fleet": {}, "bots": {}, "anomalies": [
+                      {
+                          "code": a.code,
+                          "severity": a.severity,
+                          "symbol": a.symbol,
+                          "timeframe": a.timeframe,
+                          "message": a.message,
+                          "metric_value": round(a.metric_value, 6),
+                          "threshold": round(a.threshold, 6),
+                          "correction": a.correction,
+                          "param_name": a.param_name,
+                          "delta": a.delta,
+                      }
+                      for a in anomalies
+                  ], "corrections_applied": applied}
         _write_health_report(report)
         return report
 

@@ -10,6 +10,7 @@ Architecture:
 From MASTER_HANDBOOK.md Section 2.2: Dual-Agent Architecture
 """
 
+import datetime as dt
 import json
 import logging
 import os
@@ -114,6 +115,21 @@ class DualPolicy:
             **kwargs: Field overrides for DualPolicyConfig
 
         """
+        config = self._coerce_config(args, config, kwargs)
+        self._apply_config(config)
+        trigger_features, harvester_total_features = self._feature_dimensions(config)
+        self._init_agents(config, trigger_features, harvester_total_features)
+        self._init_regime_detector(config)
+        self._init_runtime_state()
+
+        LOG.info("[DUAL_POLICY] Initialized with TriggerAgent + HarvesterAgent")
+
+    @staticmethod
+    def _coerce_config(
+        args: tuple[int, ...],
+        config: DualPolicyConfig | None,
+        kwargs: dict[str, Any],
+    ) -> DualPolicyConfig:
         if args:
             if len(args) > 1:
                 msg = "DualPolicy accepts at most one positional argument (window)"
@@ -133,85 +149,80 @@ class DualPolicy:
             else:
                 msg = f"Unexpected argument: {key}"
                 raise TypeError(msg)
+        return config
 
-        window = config.window
-        enable_regime_detection = config.enable_regime_detection
-        enable_training = config.enable_training
-        enable_event_features = config.enable_event_features
-        param_manager = config.param_manager
-        symbol = config.symbol
-        timeframe = config.timeframe
-        broker = config.broker
-        timeframe_minutes = config.timeframe_minutes
-        min_bars_for_features = config.min_bars_for_features
-        friction_calculator = config.friction_calculator
-        trigger_buffer_capacity = config.trigger_buffer_capacity
-        harvester_buffer_capacity = config.harvester_buffer_capacity
-        path_geometry = config.path_geometry
-
-        self.window = window
-        self.enable_training = enable_training
-        self.enable_event_features = enable_event_features
-        self.param_manager = param_manager
-        self.symbol = symbol
-        self.timeframe = timeframe
-        self.timeframe_minutes = timeframe_minutes
-        self.broker = broker
-        self.friction_calculator = friction_calculator
+    def _apply_config(self, config: DualPolicyConfig) -> None:
+        self.window = config.window
+        self.enable_training = config.enable_training
+        self.enable_event_features = config.enable_event_features
+        self.param_manager = config.param_manager
+        self.symbol = config.symbol
+        self.timeframe = config.timeframe
+        self.timeframe_minutes = config.timeframe_minutes
+        self.broker = config.broker
+        self.friction_calculator = config.friction_calculator
+        self.path_geometry = config.path_geometry
         # Scale minimum-bars threshold to wall-clock time so higher timeframes
         # don't produce zero-state for absurd durations (H4 would need 11 days!).
-        self.min_bars_for_features = min_bars_for_features
+        self.min_bars_for_features = config.min_bars_for_features
 
+    def _feature_dimensions(self, config: DualPolicyConfig) -> tuple[int, int]:
         # Calculate feature dimensions (base=7, geometry=5, event=6)
         base_features = 7
-        geometry_features = 5 if path_geometry else 0
-        self.event_feature_count = 6 if enable_event_features else 0
+        geometry_features = 5 if config.path_geometry else 0
+        self.event_feature_count = 6 if config.enable_event_features else 0
 
         trigger_features = base_features + geometry_features + self.event_feature_count
         harvester_market_features = trigger_features
         harvester_total_features = harvester_market_features + 3  # +3 position stats (MFE/MAE/bars)
+        return trigger_features, harvester_total_features
 
+    def _init_agents(
+        self,
+        config: DualPolicyConfig,
+        trigger_features: int,
+        harvester_total_features: int,
+    ) -> None:
         self.trigger = TriggerAgent(
-            window=window,
+            window=config.window,
             n_features=trigger_features,
-            enable_training=enable_training,
+            enable_training=config.enable_training,
             symbol=self.symbol,
             timeframe=self.timeframe,
             broker=self.broker,
             param_manager=self.param_manager,
-            timeframe_minutes=timeframe_minutes,
-            buffer_capacity=trigger_buffer_capacity,
+            timeframe_minutes=config.timeframe_minutes,
+            buffer_capacity=config.trigger_buffer_capacity,
         )
         self.harvester = HarvesterAgent(
-            window=window,
+            window=config.window,
             n_features=harvester_total_features,
-            enable_training=enable_training,
+            enable_training=config.enable_training,
             symbol=self.symbol,
             timeframe=self.timeframe,
             broker=self.broker,
             param_manager=self.param_manager,
             friction_calculator=self.friction_calculator,
-            timeframe_minutes=timeframe_minutes,
-            buffer_capacity=harvester_buffer_capacity,
+            timeframe_minutes=config.timeframe_minutes,
+            buffer_capacity=config.harvester_buffer_capacity,
         )
 
         LOG.info("[DUAL_POLICY] TriggerAgent: %d features (7 base + 5 geometry + 6 event)", trigger_features)
         LOG.info("[DUAL_POLICY] HarvesterAgent: %d features (market + position)", harvester_total_features)
 
-        # Path geometry for entry features
-        self.path_geometry = path_geometry
-
+    def _init_regime_detector(self, config: DualPolicyConfig) -> None:
         # Regime detection
-        self.enable_regime_detection = enable_regime_detection
+        self.enable_regime_detection = config.enable_regime_detection
         if self.enable_regime_detection:
             # Scale update_interval inversely with timeframe so regime reacts
             # at roughly the same wall-clock frequency regardless of bar size.
             # M5 → every 5 bars; H1 → every 1 bar; H4+ → every 1 bar
-            update_interval = max(1, min(5, int(5 * 5 / max(1, timeframe_minutes))))
+            update_interval = max(1, min(5, int(5 * 5 / max(1, config.timeframe_minutes))))
             self.regime_detector = RegimeDetector(window_size=50, update_interval=update_interval)
         else:
             self.regime_detector = None
 
+    def _init_runtime_state(self) -> None:
         # Position tracking for harvester
         self.current_position = 0
         self.entry_price = 0.0
@@ -225,8 +236,6 @@ class DualPolicy:
         self.current_regime = "UNKNOWN"
         self.current_zeta = 1.0
         self.current_regime_enum = RegimeSampling.UNKNOWN
-
-        LOG.info("[DUAL_POLICY] Initialized with TriggerAgent + HarvesterAgent")
 
     # ── MFE / MAE properties (delegate to _mfe_calc) ──────────────────────
 
@@ -1030,6 +1039,7 @@ class DualPolicy:
 
         # 3. Save training metadata (epsilon, steps, calibration, etc.)
         metadata = {
+            "saved_at": dt.datetime.now(dt.UTC).isoformat(),
             "trigger_training_steps": self.trigger.training_steps,
             "trigger_epsilon": self.trigger.epsilon,
             "trigger_epsilon_decay": self.trigger.epsilon_decay,
@@ -1137,6 +1147,13 @@ class DualPolicy:
                 self.trigger.ddqn.training_steps = self.trigger.training_steps
             if self.harvester.ddqn is not None:
                 self.harvester.ddqn.training_steps = self.harvester.training_steps
+            restored_at = metadata.get("last_training_time") or metadata.get("saved_at")
+            if not restored_at:
+                restored_at = dt.datetime.fromtimestamp(meta_path.stat().st_mtime, dt.UTC).isoformat()
+            if self.trigger.training_steps > 0 and not getattr(self.trigger, "_last_training_time", ""):
+                self.trigger._last_training_time = restored_at
+            if self.harvester.training_steps > 0 and not getattr(self.harvester, "_last_training_time", ""):
+                self.harvester._last_training_time = restored_at
             if hasattr(self.trigger, "platt_a"):
                 self.trigger.platt_a = metadata.get("trigger_platt_a", 1.0)
                 self.trigger.platt_b = metadata.get("trigger_platt_b", 0.0)

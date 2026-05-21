@@ -3640,12 +3640,36 @@ class OpenAPIHub:
             if not _p.exists():
                 continue
             try:
+                try:
+                    with open(_p, encoding="utf-8") as _f:
+                        _payload = json.load(_f)
+                except Exception:
+                    _payload = {"reset": True, "reason": "parse_error"}
                 _p.unlink(missing_ok=True)
-                for agent in self.agents.values():
+                _target_tfs = {
+                    int(_tf)
+                    for _tf in (_payload.get("target_timeframes") or [])
+                    if str(_tf).strip().isdigit()
+                }
+                _single_tf = _payload.get("timeframe_minutes")
+                if _single_tf is not None:
+                    with contextlib.suppress(TypeError, ValueError):
+                        _target_tfs.add(int(_single_tf))
+                _reset_count = 0
+                for _tf, agent in self.agents.items():
+                    if _target_tfs and int(_tf) not in _target_tfs:
+                        continue
                     if agent.circuit_breakers is not None:
                         agent.circuit_breakers.reset_all()
                         agent._save_cb_state()
-                LOG.info("[HUB] Circuit breakers reset via HUD (%s)", self.symbol)
+                        _reset_count += 1
+                LOG.info(
+                    "[HUB] Circuit breakers reset via control file (%s, targets=%s, reset=%d, reason=%s)",
+                    self.symbol,
+                    sorted(_target_tfs) if _target_tfs else "ALL",
+                    _reset_count,
+                    _payload.get("reason", "unspecified"),
+                )
             except Exception as _e:
                 LOG.debug("[HUB] CB reset error: %s", _e)
             break

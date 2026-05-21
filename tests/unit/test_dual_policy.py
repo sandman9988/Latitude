@@ -98,9 +98,11 @@ class TestDualPolicyInit:
         monkeypatch.setenv("PAPER_MODE", "1")
         monkeypatch.setenv("EPSILON_END", str(PAPER_EPSILON_END))
         monkeypatch.setenv("EPSILON_DECAY", str(PAPER_EPSILON_DECAY))
+        saved_at = "2026-05-21T07:06:30+00:00"
         (tmp_path / "training_metadata.json").write_text(
             json.dumps(
                 {
+                    "saved_at": saved_at,
                     "trigger_training_steps": 10,
                     "trigger_epsilon": 0.01,
                     "trigger_epsilon_decay": 0.998,
@@ -109,11 +111,33 @@ class TestDualPolicyInit:
             ),
         )
 
-        dp = DualPolicy(window=64, enable_training=False)
+        dp = DualPolicy(window=64, enable_training=True)
 
         assert dp._ckpt_load_metadata(tmp_path) is True
         assert dp.trigger.epsilon == pytest.approx(PAPER_EPSILON_END)
         assert dp.trigger.epsilon_decay == pytest.approx(PAPER_EPSILON_DECAY)
+        assert dp.trigger.get_training_stats()["last_training_time"] == saved_at
+        assert dp.harvester.get_training_stats()["last_training_time"] == saved_at
+
+    def test_checkpoint_metadata_load_uses_file_mtime_for_legacy_last_training_time(self, tmp_path):
+        (tmp_path / "training_metadata.json").write_text(
+            json.dumps(
+                {
+                    "trigger_training_steps": 10,
+                    "trigger_epsilon": 0.7,
+                    "trigger_epsilon_decay": 0.9998,
+                    "harvester_training_steps": 0,
+                },
+            ),
+        )
+
+        dp = DualPolicy(window=64, enable_training=True)
+
+        assert dp._ckpt_load_metadata(tmp_path) is True
+        last_train = dp.trigger.get_training_stats()["last_training_time"]
+        assert last_train
+        assert last_train != "Never"
+        assert dp.harvester.get_training_stats()["last_training_time"] == ""
 
 
 # ---------------------------------------------------------------------------

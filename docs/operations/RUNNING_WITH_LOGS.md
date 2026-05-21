@@ -63,6 +63,8 @@ The live log stream will show you:
 ```
 [ONLINE_LEARNING] TriggerAgent training step complete
 [TRAIN] Buffer size: 1234, Loss: 0.0023
+[CHECKPOINT] Restored metadata: {'trigger_training_steps': 11437, ...}
+[BUFFER] Loaded 22511 experiences from data/checkpoints/XAUUSD_M1/trigger_buffer.npz
 ```
 
 ---
@@ -142,12 +144,50 @@ Significant gaps in timestamps
 ```
 Buffer size not growing
 No training steps in logs
+HUD/training_stats shows last_training_time: Never
 ```
 
 **Solutions:**
 - Check if trades are executing
 - Verify `DDQN_ONLINE_LEARNING=1` in `.env`
 - Look for circuit breaker trips preventing trading
+- Check the scoped runtime truth before assuming a cold start:
+
+```bash
+python3 -m json.tool data/training_stats_XAUUSD_M5.json | sed -n '1,100p'
+python3 -m json.tool data/checkpoints/XAUUSD_M5/training_metadata.json | sed -n '1,100p'
+rg 'Restored metadata|Loaded [0-9]+ experiences|Saved training metadata' logs/hub_XAUUSD.log
+```
+
+If `training_stats_<SYMBOL>_M<TF>.json` shows `last_training_time: Never` while
+checkpoint metadata has non-zero steps and hub logs show buffer loads, treat it
+as telemetry drift rather than lost learning state.
+
+### 5. Scoped Circuit Breaker Lockout
+
+**Symptoms:**
+```
+CB_LOCKOUT in data/performance_health.json
+circuit breaker tripped - skip entry
+0 trades for one symbol/timeframe while bars and quotes are fresh
+```
+
+**Solutions:**
+- Prefer scoped analyzer self-healing first:
+
+```bash
+python3 scripts/performance_analyzer.py --auto-heal --hours 4
+find data/paper_* -name circuit_breaker_reset.json -o -name learned_parameters_reload.json
+```
+
+- The analyzer writes `data/paper_<SYMBOL>_<TF>/circuit_breaker_reset.json` with
+  `target_timeframes`; the OpenAPI hub resets only matching in-process agents.
+- If stale in-memory state is suspected or several bots are locked, use the
+  integrated restart path:
+
+```bash
+UNIVERSE_FIX_CB_LOCKOUT_ON_RESTART=1 ./run.sh universe
+```
 
 ---
 

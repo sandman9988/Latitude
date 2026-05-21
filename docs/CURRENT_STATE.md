@@ -1,29 +1,29 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** April 25, 2026 (weekend offline champion reconciliation and runtime sync)
+**Last Updated:** May 21, 2026 (paper-training telemetry and scoped CB self-heal)
 **Branch:** `update-1.1-mfe-mae-tracking-v2`\
-**Status:** ✅ Operational — all tests green\
+**Status:** ✅ Operational — targeted runtime/HUD validation green\
 **Audience:** All
 
 ______________________________________________________________________
 
 ## 🎯 Executive Summary
 
-XAUUSD trading bot using dual-agent DDQN reinforcement learning. Currently in **paper trading** mode, running as a **multi-timeframe fleet** (M1, M5, M15, M30, M60, M240) supervised by `run_universe.py --watch`. Offline, paper, and live training pipelines now use the same per-symbol/per-timeframe identity for metrics, caches, learned parameters, decision logs, reward shaping, runway prediction, and checkpoint promotion. Dead code removed. Profitability tail-risk fixes applied. Stats epoch feature allows excluding old losing periods from performance metrics. Defense-in-depth audit complete — max-loss enforcement hardened, paper fill bug fixed, circuit breaker reset fixed.
+XAUUSD/BTCUSD trading bots use dual-agent DDQN reinforcement learning. The current production shape is **paper trading** through one OpenAPI hub per symbol, each supervising the canonical M1, M5, M15, M30, M60, and M240 timeframes under `run_universe.py --watch`. Offline, paper, and live training pipelines use the same per-symbol/per-timeframe identity for metrics, caches, learned parameters, decision logs, reward shaping, runway prediction, checkpoints, and HUD rows. Recent runtime work tightened paper-training telemetry after checkpoint restores and added scoped CB-lockout self-healing without requiring a full fleet restart.
 
-**Test Suite:** 2,221 passing, 0 skipped, 0 failures (~35 s)\
+**Targeted Validation:** dual-policy, HUD training-stat, replay-shape, performance-analyzer, and OpenAPI control tests passing\
 **Production Lines:** ~41,300
 
 **Trading Status:**
 
-- **Symbol:** XAUUSD (Gold Spot)
-- **Timeframes:** M1, M5, M15, M30, M60, M240 (one bot per timeframe, isolated FIX sessions)
+- **Symbols:** XAUUSD (Gold Spot), BTCUSD
+- **Timeframes:** M1, M5, M15, M30, M60, M240
 - **Supervisor:** `run_universe.py --watch` (30 s poll, auto-restarts crashed bots)
 - **Registry:** `data/universe.json` (schema: `{"version": 1, "instruments": [ ... ]}`)
 - **Champion Registry:** `data/checkpoints/offline_champions.json` (per symbol/timeframe)
 - **Mode:** Paper Trading (PAPER_MODE=1)
 - **Position Size:** 0.01 lots
-- **Session:** QUOTE + TRADE dual FIX sessions (one pair per bot)
+- **Runtime Topology:** one OpenAPI hub process per symbol, multiple timeframe agents per hub
 
 **Fleet operations cheat-sheet:**
 
@@ -31,7 +31,43 @@ XAUUSD trading bot using dual-agent DDQN reinforcement learning. Currently in **
 ./run.sh universe       # (re)start fleet + supervisor
 ./run.sh status         # list running bots / watcher
 ./run.sh --hud-only     # attach TUI HUD (interactive terminal required)
-pkill -f run_universe ; pkill -f ctrader_ddqn_paper   # stop everything
+pgrep -af 'run_universe.py --watch|src.core.openapi_hub'
+```
+
+## Paper Runtime Telemetry (May 21, 2026)
+
+### Training Timestamp Continuity
+
+Paper agents restore weights, replay buffers, epsilon, and training-step metadata
+from `data/checkpoints/<SYMBOL>_<TF>/`. `DualPolicy.save_checkpoint()` now writes
+`saved_at` into `training_metadata.json`; `DualPolicy._ckpt_load_metadata()` uses
+that timestamp, or a legacy metadata timestamp/file mtime, to repopulate agent
+`last_training_time` when restored training steps are non-zero.
+
+This keeps HUD-facing files such as `data/training_stats_XAUUSD_M5.json` from
+showing `last_training_time: "Never"` after a successful checkpoint restore.
+If a bot still shows `Never`, compare:
+
+```bash
+python3 -m json.tool data/checkpoints/XAUUSD_M5/training_metadata.json | sed -n '1,80p'
+python3 -m json.tool data/training_stats_XAUUSD_M5.json | sed -n '1,80p'
+rg 'Restored metadata|Loaded [0-9]+ experiences|TFAgent initialized' logs/hub_XAUUSD.log
+```
+
+### Scoped CB-Lockout Self-Healing
+
+`scripts/performance_analyzer.py --auto-heal` can request a scoped reset for a
+detected `CB_LOCKOUT` by writing
+`data/paper_<SYMBOL>_<TF>/circuit_breaker_reset.json`. The payload includes
+`target_timeframes`, and the OpenAPI hub resets only matching in-process agents.
+When gate values are in runaway territory, the analyzer also normalizes the
+scoped/root learned parameters and writes `learned_parameters_reload.json` in
+the affected directories.
+
+The full integrated restart path remains available for stale in-memory state:
+
+```bash
+UNIVERSE_FIX_CB_LOCKOUT_ON_RESTART=1 ./run.sh universe
 ```
 
 ______________________________________________________________________

@@ -343,7 +343,7 @@ price movement. The trade card must label these distinctly — never display poi
 | `data/trade_log.jsonl` | — | ✅ primary | — | — | — | link | ✅ primary |
 | `logs/audit/decisions.jsonl` | — | — | explore_flag | last gated | — | ✅ primary | linked |
 | `logs/audit/transactions.jsonl` | ✅ health | — | — | — | — | — | ✅ linked |
-| `data/training_stats_*.json` | ε/buf | — | ✅ primary | — | — | — | — |
+| `data/training_stats_*.json` | ε/buf | — | ✅ primary; `last_training_time` is checkpoint-backed after restore | — | — | — | — |
 | `data/risk_metrics_*.json` | alerts | — | — | ✅ primary | — | — | — |
 | `data/performance_health.json` | ✅ self-heal | — | anomalies | — | — | — | — |
 | `data/offline_training_status.json` | queue | — | ✅ primary | — | — | — | — |

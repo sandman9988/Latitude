@@ -22,6 +22,12 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
   both symbol and timeframe.
 - Runtime telemetry must prefer scoped files such as
   `data/paper_XAUUSD_M5/...` or `*_XAUUSD_M5.json` over root fallback files.
+- Paper-training HUD/status timestamps come from the runtime training stats
+  writer, which reads `DualPolicy.get_training_stats()`. Restored checkpoints
+  must preserve a meaningful `last_training_time` from checkpoint metadata
+  (`saved_at`, legacy `last_training_time`, or the metadata file mtime) whenever
+  restored training steps are non-zero; do not regress resumed agents back to a
+  misleading `Never` status.
 - Offline champions are sourced from
   `data/checkpoints/offline_champions.json`, then from `data/universe.json` for
   the default checkpoint root.
@@ -126,6 +132,12 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
   `EPSILON_START=1.0`, `EPSILON_END=0.25`, `EPSILON_DECAY=0.9998`, and
   `FORCE_EXPLORATION=1`. Stale checkpoint metadata must not lower the paper
   exploration floor or speed up paper epsilon decay.
+- `DualPolicy.save_checkpoint()` writes `saved_at` into
+  `data/checkpoints/<SYMBOL>_<TF>/training_metadata.json`. On restore,
+  `DualPolicy._ckpt_load_metadata()` uses that timestamp to repopulate agent
+  `last_training_time` after non-zero training steps are restored, so
+  `data/training_stats_<SYMBOL>_M<TF>.json` and HUD training panels can
+  distinguish resumed learning from a cold start.
 - Multiple simultaneously running bots need a portfolio/account view before
   making account-level exposure decisions. Per-timeframe bots may learn
   independently, but order ownership and exposure should be reconciled through
@@ -175,6 +187,12 @@ python3 -m py_compile run_universe.py train_offline.py
   old hubs are stopped before `scripts/fix_cb_lockout.py` edits CB files. Do
   not run the fix before stopping stale hubs, because old hub processes can
   save their in-memory breaker state back over the repaired files on shutdown.
+- The performance analyzer may now self-heal a detected scoped `CB_LOCKOUT`
+  without a full fleet restart by writing
+  `data/paper_<SYMBOL>_<TF>/circuit_breaker_reset.json` with
+  `target_timeframes`, then writing scoped `learned_parameters_reload.json`
+  files for any normalized runaway gates. The OpenAPI hub must honor
+  `target_timeframes` and reset only matching in-process agents.
 
 ## Audit Log & Trade Log
 
