@@ -2403,108 +2403,124 @@ class TabbedHUD:
         finally:
             self._enable_raw_mode()
 
+    def _load_circuit_breaker_state(self) -> dict:
+        cb_path = self.data_dir / "circuit_breakers.json"
+        if not cb_path.exists():
+            return {}
+        try:
+            with open(cb_path, encoding="utf-8") as handle:
+                return json.load(handle)
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _breaker_labels() -> dict[str, tuple[str, str]]:
+        return {
+            "sortino": ("Sortino Ratio", "Risk-adjusted returns too low"),
+            "kurtosis": ("Kurtosis", "Return distribution has fat tails"),
+            "drawdown": ("Drawdown", "Equity drawdown exceeded limit"),
+            "consecutive_losses": ("Consecutive Losses", "Too many losses in a row"),
+        }
+
+    def _kurtosis_gate_review(self) -> tuple[bool, float, float, str]:
+        gate_active = bool(self.risk_stats.get("kurtosis_gate_active", False))
+        kurtosis_now = float(self.risk_stats.get("kurtosis", 0.0) or 0.0)
+        threshold = float(
+            self.risk_stats.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
+        )
+        return gate_active, kurtosis_now, threshold, self._risk_scope_label(self.risk_stats)
+
+    def _print_breaker_cooldown(self, breaker: dict) -> None:
+        trip_ts = breaker.get("trip_time", "")
+        if not trip_ts:
+            return
+        print(f"    Tripped:   {trip_ts[:19]}")
+        try:
+            trip_dt = datetime.fromisoformat(trip_ts)
+            cooldown_mins = breaker.get("cooldown_minutes", 60)
+            elapsed = (datetime.now(UTC) - trip_dt).total_seconds() / 60.0
+            remaining = max(0, cooldown_mins - elapsed)
+            if remaining > 0:
+                print(f"    Cooldown:  {remaining:.0f}m remaining (auto-reset after {cooldown_mins}m)")
+            else:
+                print(f"    Cooldown:  {_ANSI_G}Elapsed — safe to reset{_ANSI_RST}")
+        except (ValueError, TypeError):
+            pass
+
+    def _print_tripped_breaker(
+        self,
+        label: str,
+        reason: str,
+        value: float,
+        threshold: float,
+        breaker: dict,
+    ) -> None:
+        print(f"  {_ANSI_R}✗ {label}: TRIPPED{_ANSI_RST}")
+        print(f"    Reason:    {_ANSI_Y}{reason}{_ANSI_RST}")
+        print(f"    Value:     {value:.4f}  (threshold: {threshold:.4f})")
+        self._print_breaker_cooldown(breaker)
+        print()
+
+    def _print_circuit_breaker_rows(self, cb_data: dict) -> bool:
+        any_tripped = False
+        kurt_gate_active, kurtosis_now, kurtosis_threshold, risk_scope = self._kurtosis_gate_review()
+        for key, (label, explain) in self._breaker_labels().items():
+            breaker = cb_data.get(key, {})
+            breaker = breaker if isinstance(breaker, dict) else {}
+            tripped = bool(breaker.get("is_tripped", False))
+            gate_only = key == "kurtosis" and kurt_gate_active and not tripped
+            if not tripped and not gate_only:
+                print(f"  {_ANSI_G}✓ {label}: OK{_ANSI_RST}")
+                continue
+            any_tripped = True
+            reason = (
+                f"Kurtosis gate active [{risk_scope}] (entry gate)"
+                if gate_only
+                else breaker.get("trip_reason", explain)
+            )
+            value = kurtosis_now if gate_only else breaker.get("trip_value", 0.0)
+            threshold = kurtosis_threshold if gate_only else breaker.get("threshold", 0.0)
+            self._print_tripped_breaker(label, reason, float(value), float(threshold), breaker)
+        return any_tripped
+
+    def _confirm_cb_reset(self) -> bool:
+        print(f"\n{_ANSI_DIM}Resetting will allow the bot to resume trading immediately.{_ANSI_RST}")
+        print(f"{_ANSI_DIM}Only reset if you understand why the breaker tripped and the condition is resolved.")
+        print(f"{_ANSI_RST}")
+        print(
+            _ANSI_Y
+            + "Type 'reset' and press Enter to reset all tripped breakers, or press Enter to abort:"
+            + _ANSI_RST
+        )
+        return input("> ").strip().upper() == "RESET"
+
+    def _send_cb_reset_request(self) -> None:
+        reset_data = {
+            "reset": True,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        self._broadcast_control_file("circuit_breaker_reset.json", reset_data, prefix=".cb_reset_")
+        print(f"\n{_ANSI_G}✓ Reset request sent — bot will reset breakers within ~5 seconds{_ANSI_RST}")
+        self._set_notification("🔄 Circuit breaker reset requested", ttl=30)
+        input("\nPress Enter to return to HUD...")
+
     def _handle_cb_reset(self) -> None:
         """R key: Show tripped circuit breakers with reasons and offer reset."""
         self._disable_raw_mode()
         try:
             self._menu_enter()
-            YLW = _ANSI_Y
-            GRN = _ANSI_G
-            RED = _ANSI_R
-            DIM = _ANSI_DIM
-            RST = _ANSI_RST
-
-            print(YLW + "╔" + "═" * 60 + "╗")
+            print(_ANSI_Y + "╔" + "═" * 60 + "╗")
             print("║" + " " * 14 + "🔌 CIRCUIT BREAKER REVIEW" + " " * 19 + "║")
-            print("╚" + "═" * 60 + "╝" + RST + "\n")
-
-            # Load circuit_breakers.json
-            _cb_path = self.data_dir / "circuit_breakers.json"
-            _cb_data: dict = {}
-            if _cb_path.exists():
-                try:
-                    with open(_cb_path, encoding="utf-8") as _f:
-                        _cb_data = json.load(_f)
-                except Exception:
-                    pass
-
-            _breaker_labels = {
-                "sortino": ("Sortino Ratio", "Risk-adjusted returns too low"),
-                "kurtosis": ("Kurtosis", "Return distribution has fat tails"),
-                "drawdown": ("Drawdown", "Equity drawdown exceeded limit"),
-                "consecutive_losses": ("Consecutive Losses", "Too many losses in a row"),
-            }
-
-            _any_tripped = False
-            _kurt_gate_active = bool(self.risk_stats.get("kurtosis_gate_active", False))
-            _kurtosis_now = float(self.risk_stats.get("kurtosis", 0.0) or 0.0)
-            _kurtosis_threshold = float(
-                self.risk_stats.get("kurtosis_threshold", KURTOSIS_FAT_TAIL_THRESHOLD) or KURTOSIS_FAT_TAIL_THRESHOLD
-            )
-            _risk_scope = self._risk_scope_label(self.risk_stats)
-            for _key, (_label, _explain) in _breaker_labels.items():
-                _b = _cb_data.get(_key, {})
-                if not isinstance(_b, dict):
-                    _b = {}
-                _tripped = bool(_b.get("is_tripped", False))
-                _gate_only = False
-                if _key == "kurtosis" and _kurt_gate_active and not _tripped:
-                    _tripped = True
-                    _gate_only = True
-                if _tripped:
-                    _any_tripped = True
-                    _reason = _b.get("trip_reason", _explain)
-                    _tv = _b.get("trip_value", 0.0)
-                    _th = _b.get("threshold", 0.0)
-                    _trip_ts = _b.get("trip_time", "")
-                    _cd_mins = _b.get("cooldown_minutes", 60)
-                    if _gate_only:
-                        _reason = f"Kurtosis gate active [{_risk_scope}] (entry gate)"
-                        _tv = _kurtosis_now
-                        _th = _kurtosis_threshold
-                    print(f"  {RED}✗ {_label}: TRIPPED{RST}")
-                    print(f"    Reason:    {YLW}{_reason}{RST}")
-                    print(f"    Value:     {_tv:.4f}  (threshold: {_th:.4f})")
-                    if _trip_ts:
-                        print(f"    Tripped:   {_trip_ts[:19]}")
-                        try:
-                            _trip_dt = datetime.fromisoformat(_trip_ts)
-                            _elapsed = (datetime.now(UTC) - _trip_dt).total_seconds() / 60.0
-                            _remaining = max(0, _cd_mins - _elapsed)
-                            if _remaining > 0:
-                                print(f"    Cooldown:  {_remaining:.0f}m remaining (auto-reset after {_cd_mins}m)")
-                            else:
-                                print(f"    Cooldown:  {GRN}Elapsed — safe to reset{RST}")
-                        except (ValueError, TypeError):
-                            pass
-                    print()
-                else:
-                    print(f"  {GRN}✓ {_label}: OK{RST}")
-
-            if not _any_tripped:
-                print(f"\n  {GRN}All circuit breakers are OK — nothing to reset.{RST}")
+            print("╚" + "═" * 60 + "╝" + _ANSI_RST + "\n")
+            if not self._print_circuit_breaker_rows(self._load_circuit_breaker_state()):
+                print(f"\n  {_ANSI_G}All circuit breakers are OK — nothing to reset.{_ANSI_RST}")
                 input("\nPress Enter to return to HUD...")
                 return
 
-            print(f"\n{DIM}Resetting will allow the bot to resume trading immediately.{RST}")
-            print(f"{DIM}Only reset if you understand why the breaker tripped and the condition is resolved.{RST}\n")
-            print(YLW + "Type 'reset' and press Enter to reset all tripped breakers, or press Enter to abort:" + RST)
-            confirm = input("> ").strip()
-            if confirm.upper() == "RESET":
-                _reset_data = {
-                    "reset": True,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                }
-                self._broadcast_control_file(
-                    "circuit_breaker_reset.json",
-                    _reset_data,
-                    prefix=".cb_reset_",
-                )
-                print(f"\n{GRN}✓ Reset request sent — bot will reset breakers within ~5 seconds{RST}")
-                self._set_notification("🔄 Circuit breaker reset requested", ttl=30)
-                input("\nPress Enter to return to HUD...")
+            if self._confirm_cb_reset():
+                self._send_cb_reset_request()
             else:
-                print(f"\n{YLW}Aborted — no action taken.{RST}")
+                print(f"\n{_ANSI_Y}Aborted — no action taken.{_ANSI_RST}")
                 time.sleep(1)
         except Exception as e:
             print(f"Error: {e}")
@@ -2513,72 +2529,73 @@ class TabbedHUD:
         finally:
             self._enable_raw_mode()
 
+    def _print_stats_epoch_state(self) -> None:
+        if self._stats_epoch:
+            epoch_str = self._stats_epoch.strftime("%Y-%m-%d %H:%M UTC")
+            print(f"  Current epoch: {_ANSI_G}{epoch_str}{_ANSI_RST}")
+            print(
+                f"  Excluded:      {self._stats_epoch_excluded} trades, "
+                f"${self._stats_epoch_excluded_pnl:+.2f} PnL\n"
+            )
+            return
+        print(f"  Current epoch: {_ANSI_DIM}None (all trades included){_ANSI_RST}\n")
+
+    def _print_stats_epoch_options(self) -> None:
+        print("  Options:")
+        print(f"    {_ANSI_Y}1{_ANSI_RST}  Set epoch to NOW (fresh start from this moment)")
+        print(f"    {_ANSI_Y}2{_ANSI_RST}  Set epoch to start of today")
+        print(f"    {_ANSI_Y}3{_ANSI_RST}  Set epoch to 7 days ago")
+        print(f"    {_ANSI_Y}4{_ANSI_RST}  Set epoch to 30 days ago")
+        print(f"    {_ANSI_Y}5{_ANSI_RST}  Enter a custom date (YYYY-MM-DD)")
+        print(f"    {_ANSI_Y}c{_ANSI_RST}  Clear epoch (show all trades)")
+        print(f"    {_ANSI_DIM}Enter{_ANSI_RST}  Cancel\n")
+
+    def _resolve_stats_epoch_choice(self, choice: str) -> tuple[datetime | None, bool]:
+        now = datetime.now(UTC)
+        options = {
+            "1": now,
+            "2": now.replace(hour=0, minute=0, second=0, microsecond=0),
+            "3": now - timedelta(days=7),
+            "4": now - timedelta(days=30),
+        }
+        if choice in options:
+            return options[choice], True
+        if choice != "5":
+            return None, False
+        parsed = _hud_parse_dt(input("Enter date (YYYY-MM-DD): ").strip() + "T00:00:00+00:00")
+        if parsed:
+            return parsed, True
+        print(f"\n  {_ANSI_R}Invalid date format.{_ANSI_RST}")
+        input("Press Enter to return to HUD...")
+        return None, True
+
+    def _clear_stats_epoch_from_menu(self) -> None:
+        self._save_stats_epoch(None)
+        self._set_notification("Stats epoch cleared — all trades included", ttl=6)
+        self._trade_log_reader.invalidate()
+
     def _handle_stats_epoch(self) -> None:
         """[e] key: Set or clear the stats epoch to exclude old trades from metrics."""
         self._disable_raw_mode()
         try:
             self._menu_enter()
-            YLW = _ANSI_Y
-            GRN = _ANSI_G
-            DIM = _ANSI_DIM
-            RST = _ANSI_RST
-
-            print(YLW + "╔" + "═" * 60 + "╗")
+            print(_ANSI_Y + "╔" + "═" * 60 + "╗")
             print("║" + " " * 14 + "📅 STATS EPOCH MANAGER" + " " * 22 + "║")
-            print("╚" + "═" * 60 + "╝" + RST + "\n")
-
-            if self._stats_epoch:
-                _epoch_str = self._stats_epoch.strftime("%Y-%m-%d %H:%M UTC")
-                print(f"  Current epoch: {GRN}{_epoch_str}{RST}")
-                print(
-                    f"  Excluded:      {self._stats_epoch_excluded} trades, "
-                    f"${self._stats_epoch_excluded_pnl:+.2f} PnL\n"
-                )
-            else:
-                print(f"  Current epoch: {DIM}None (all trades included){RST}\n")
-
-            print("  Options:")
-            print(f"    {YLW}1{RST}  Set epoch to NOW (fresh start from this moment)")
-            print(f"    {YLW}2{RST}  Set epoch to start of today")
-            print(f"    {YLW}3{RST}  Set epoch to 7 days ago")
-            print(f"    {YLW}4{RST}  Set epoch to 30 days ago")
-            print(f"    {YLW}5{RST}  Enter a custom date (YYYY-MM-DD)")
-            print(f"    {YLW}c{RST}  Clear epoch (show all trades)")
-            print(f"    {DIM}Enter{RST}  Cancel\n")
+            print("╚" + "═" * 60 + "╝" + _ANSI_RST + "\n")
+            self._print_stats_epoch_state()
+            self._print_stats_epoch_options()
             choice = input("Selection: ").strip().lower()
 
-            _now = datetime.now(UTC)
-            _new_epoch: datetime | None = None
-            if choice == "1":
-                _new_epoch = _now
-            elif choice == "2":
-                _new_epoch = _now.replace(hour=0, minute=0, second=0, microsecond=0)
-            elif choice == "3":
-                _new_epoch = _now - timedelta(days=7)
-            elif choice == "4":
-                _new_epoch = _now - timedelta(days=30)
-            elif choice == "5":
-                _date_str = input("Enter date (YYYY-MM-DD): ").strip()
-                _parsed = _hud_parse_dt(_date_str + "T00:00:00+00:00")
-                if _parsed:
-                    _new_epoch = _parsed
-                else:
-                    print(f"\n  {_ANSI_R}Invalid date format.{RST}")
-                    input("Press Enter to return to HUD...")
-                    return
-            elif choice == "c":
-                self._save_stats_epoch(None)
-                self._set_notification("Stats epoch cleared — all trades included", ttl=6)
-                # Force metrics recompute
-                self._trade_log_reader.invalidate()
+            if choice == "c":
+                self._clear_stats_epoch_from_menu()
                 return
-            else:
+            new_epoch, handled = self._resolve_stats_epoch_choice(choice)
+            if not handled:
                 return
 
-            self._save_stats_epoch(_new_epoch)
-            _label = _new_epoch.strftime("%Y-%m-%d %H:%M UTC") if _new_epoch else "cleared"
-            self._set_notification(f"Stats epoch set to {_label}", ttl=6)
-            # Force metrics recompute on next refresh
+            self._save_stats_epoch(new_epoch)
+            label = new_epoch.strftime("%Y-%m-%d %H:%M UTC") if new_epoch else "cleared"
+            self._set_notification(f"Stats epoch set to {label}", ttl=6)
             self._trade_log_reader.invalidate()
         except Exception as exc:
             print(f"\nError: {exc}")
