@@ -1630,30 +1630,184 @@ class TabbedHUD:
                     self._set_notification(f"⚠️  Error loading risk metrics: {e}", ttl=10)
                     self._risk_error_shown = True
 
-        # order_book.json is fresher — overwrite book-specific fields
+        self._apply_orderbook_overlay(debug_label="risk/orderbook data")
+
+    def _load_account_balance_fallback(self) -> None:
+        if self.bot_config.get("real_account_balance"):
+            return
+        bal_file = self.data_dir / "account_balance.json"
+        if not bal_file.exists():
+            return
+        try:
+            with open(bal_file, encoding="utf-8") as handle:
+                bal_data = json.load(handle)
+            bal_val = bal_data.get("balance")
+            if bal_val is not None:
+                self.bot_config["real_account_balance"] = float(bal_val)
+        except Exception:
+            LOG.debug("[HUD] Failed to load account_balance.json", exc_info=True)
+
+    def _load_active_position(self) -> None:
+        pos_files = sorted(
+            [str(p) for p in self.data_dir.glob("current_position_*.json")],
+            key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0,
+            reverse=True,
+        )
+        self.position = {}
+        self._active_pos_file = ""
+        for pos_file in pos_files:
+            try:
+                with open(pos_file, encoding="utf-8") as handle:
+                    pos_data = json.load(handle)
+                if pos_data.get("direction", "FLAT") != "FLAT":
+                    self.position = pos_data
+                    self._active_pos_file = pos_file
+                    break
+            except Exception:
+                LOG.debug("[HUD] Failed to load position file %s", pos_file, exc_info=True)
+        if not self.position:
+            self._load_json("current_position.json", "position")
+
+    def _set_active_scope_from_position(self) -> None:
+        self.active_sym = self.position.get("symbol", "")
+        self.active_tf_min = int(self.position.get("timeframe_minutes", 0) or 0)
+        if not self.active_sym and self._active_pos_file:
+            self._set_active_scope_from_position_filename()
+        if not self.active_sym or not self.active_tf_min:
+            self._set_active_scope_from_config()
+
+    def _set_active_scope_from_position_filename(self) -> None:
+        stem = Path(self._active_pos_file).stem
+        tail = stem.removeprefix("current_position_")
+        if "_M" not in tail:
+            return
+        sym_part, _, tf_str = tail.rpartition("_M")
+        self.active_sym = sym_part
+        with contextlib.suppress(ValueError):
+            self.active_tf_min = int(tf_str)
+
+    def _set_active_scope_from_config(self) -> None:
+        cfg_sym = str(self.bot_config.get("symbol", "") or "").upper()
+        try:
+            cfg_tf = int(self.bot_config.get("timeframe_minutes", 0) or 0)
+        except (TypeError, ValueError):
+            cfg_tf = 0
+        if cfg_sym and cfg_tf > 0:
+            self.active_sym = cfg_sym
+            self.active_tf_min = cfg_tf
+
+    def _load_offline_job_progress(self) -> None:
+        progress: dict = {}
+        for progress_file in self.data_dir.glob("offline_progress_*.json"):
+            try:
+                data = json.loads(progress_file.read_text())
+                progress[(data["symbol"], data["timeframe_minutes"])] = data
+            except Exception:
+                LOG.debug("[HUD] Failed to load offline progress %s", progress_file, exc_info=True)
+        self.offline_job_progress = progress
+
+    def _load_active_scoped_stats(self) -> None:
+        if self.active_sym and self.active_tf_min:
+            sym, tf = self.active_sym, self.active_tf_min
+            per_train = f"training_stats_{sym}_M{tf}.json"
+            if (self.data_dir / per_train).exists():
+                self._load_json(per_train, "training_stats")
+                self._accumulate_loss_history()
+            per_risk = f"risk_metrics_{sym}_M{tf}.json"
+            if (self.data_dir / per_risk).exists():
+                self._load_json(per_risk, "risk_stats")
+                self._apply_risk_stats_to_market_stats()
+            return
+        self._fallback_to_freshest_scoped_stats()
+
+    def _fallback_to_freshest_scoped_stats(self) -> None:
+        if self.training_stats_all:
+            active_item = max(self.training_stats_all, key=lambda item: item.get("mtime", 0))
+            self.training_stats = active_item.get("stats", {})
+            self._accumulate_loss_history()
+            self.active_sym = active_item.get("symbol", "")
+            self.active_tf_min = int(active_item.get("timeframe_minutes", 0) or 0)
+        risk_files = sorted(
+            self.data_dir.glob("risk_metrics_*_M*.json"),
+            key=lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse=True,
+        )
+        risk_file = self._matched_or_freshest_risk_file(risk_files)
+        if risk_file:
+            self._load_json(risk_file.name, "risk_stats")
+            self._apply_risk_stats_to_market_stats()
+
+    def _matched_or_freshest_risk_file(self, risk_files: list[Path]) -> Path | None:
+        if self.active_sym and self.active_tf_min:
+            matched = self.data_dir / f"risk_metrics_{self.active_sym}_M{self.active_tf_min}.json"
+            if matched.exists():
+                return matched
+        return risk_files[0] if risk_files else None
+
+    def _reload_scoped_production_metrics(self) -> None:
+        if not (self.active_sym and self.active_tf_min):
+            return
+        self._load_json(_BOT_CONFIG_FILE, "bot_config")
+        self._load_json("production_metrics.json", "production_metrics")
+
+    def _load_self_test_results(self) -> None:
+        st_file = self.data_dir / "self_test.json"
+        if not st_file.exists():
+            return
+        try:
+            with open(st_file) as handle:
+                self.self_test_results = json.load(handle).get("results", [])
+        except Exception:
+            LOG.debug("[HUD] Failed to load self_test.json", exc_info=True)
+
+    def _apply_orderbook_overlay(self, *, debug_label: str = "order_book.json overlay") -> None:
         ob_file = self._preferred_data_file(_ORDER_BOOK_FILE)
         if not ob_file.exists():
             return
         try:
-            with open(ob_file) as f:
-                ob = json.load(f)
+            with open(ob_file) as handle:
+                ob = json.load(handle)
             ms = self.market_stats
             ms["spread"] = ob.get("spread", ms.get("spread", 0.0))
             ms["depth_bid"] = ob.get("depth_bid", ms.get("depth_bid", 0.0))
             ms["depth_ask"] = ob.get("depth_ask", ms.get("depth_ask", 0.0))
-            ms["order_book_bids"] = ob.get("order_book_bids", ms.get("order_book_bids", []))
-            ms["order_book_asks"] = ob.get("order_book_asks", ms.get("order_book_asks", []))
             ms["vpin"] = ob.get("vpin", ms.get("vpin", 0.0))
             ms["vpin_z"] = ob.get("vpin_zscore", ms.get("vpin_z", 0.0))
-            _ob_imb = ob.get("imbalance")
-            if _ob_imb is not None:
-                ms["imbalance"] = float(_ob_imb)
+            ob_imb = ob.get("imbalance")
+            if ob_imb is not None:
+                ms["imbalance"] = float(ob_imb)
+            ms["order_book_bids"] = ob.get("order_book_bids", ms.get("order_book_bids", []))
+            ms["order_book_asks"] = ob.get("order_book_asks", ms.get("order_book_asks", []))
             ms["has_real_sizes"] = ob.get("has_real_sizes", False)
             ms["qfi_update_count"] = ob.get("qfi_update_count", 0)
             ms["next_bar_close_utc"] = ob.get("next_bar_close_utc")
             ms["timeframe_minutes"] = ob.get("timeframe_minutes")
         except Exception:
-            LOG.debug("[HUD] Failed to load risk/orderbook data", exc_info=True)
+            LOG.debug("[HUD] Failed to load %s", debug_label, exc_info=True)
+
+    def _load_all_bots_panel_stats(self) -> None:
+        all_bots_by_key: dict[tuple[str, int], dict] = {}
+        for paper_stats_file in sorted(self.data_dir.glob("paper_stats_*.json")):
+            try:
+                paper_stats = json.loads(paper_stats_file.read_text())
+                sym = str(paper_stats.get("symbol", "") or "").upper()
+                tf = int(paper_stats.get("timeframe_minutes", 0) or 0)
+                if not sym or tf <= 0:
+                    continue
+                paper_stats["trading_mode"] = self._resolve_paper_stats_mode(paper_stats)
+                pos_file = self.data_dir / f"current_position_{sym}_M{tf}.json"
+                paper_stats["_position"] = json.loads(pos_file.read_text()) if pos_file.exists() else {}
+                all_bots_by_key[(sym, tf)] = paper_stats
+            except Exception:
+                LOG.debug("[HUD] Failed to load paper_stats %s", paper_stats_file, exc_info=True)
+        self.all_bots_stats = list(all_bots_by_key.values())
+
+    @staticmethod
+    def _resolve_paper_stats_mode(paper_stats: dict) -> str:
+        mode = str(paper_stats.get("trading_mode", "") or "").strip().lower()
+        if mode in ("paper", "live"):
+            return mode
+        return "paper" if bool(paper_stats.get("paper_mode", True)) else "live"
 
     def _refresh_data(self) -> None:
         """Refresh all data from bot exports."""
@@ -1665,192 +1819,27 @@ class TabbedHUD:
             return
 
         self._load_json(_BOT_CONFIG_FILE, "bot_config")
-
-        # ── Fallback: read live balance from Open API file if bot hasn't set it ──
-        if not self.bot_config.get("real_account_balance"):
-            _bal_file = self.data_dir / "account_balance.json"
-            if _bal_file.exists():
-                try:
-                    with open(_bal_file, encoding="utf-8") as _bf:
-                        _bal_data = json.load(_bf)
-                    _bal_val = _bal_data.get("balance")
-                    if _bal_val is not None:
-                        self.bot_config["real_account_balance"] = float(_bal_val)
-                except Exception:
-                    LOG.debug("[HUD] Failed to load account_balance.json", exc_info=True)
-
-        # Aggregate position files from all running bots (each writes a per-symbol file).
-        # Display the first non-FLAT position found; fall back to singleton file if none.
-        _pos_files = sorted(
-            [str(p) for p in self.data_dir.glob("current_position_*.json")],
-            key=lambda p: Path(p).stat().st_mtime if Path(p).exists() else 0,
-            reverse=True,
-        )
-        self.position = {}
-        self._active_pos_file = ""
-        for _pf in _pos_files:
-            try:
-                with open(_pf, encoding="utf-8") as _fh:
-                    _pd = json.load(_fh)
-                if _pd.get("direction", "FLAT") != "FLAT":
-                    self.position = _pd
-                    self._active_pos_file = _pf
-                    break
-            except Exception:
-                LOG.debug("[HUD] Failed to load position file %s", _pf, exc_info=True)
-        if not self.position:
-            self._load_json("current_position.json", "position")  # legacy fallback
-        # Identify which bot owns the active (non-FLAT) position for per-bot file loading
-        self.active_sym = self.position.get("symbol", "")
-        self.active_tf_min = int(self.position.get("timeframe_minutes", 0) or 0)
-        # Fallback: parse sym/tf from the filename when bots haven't yet written metadata
-        if not self.active_sym and self._active_pos_file:
-            _stem = Path(self._active_pos_file).stem  # e.g. "current_position_BTCUSD_M60"
-            _tail = _stem.removeprefix("current_position_")
-            if "_M" in _tail:
-                _sym_part, _, _tf_str = _tail.rpartition("_M")
-                self.active_sym = _sym_part
-                with contextlib.suppress(ValueError):
-                    self.active_tf_min = int(_tf_str)
-        if not self.active_sym or not self.active_tf_min:
-            _cfg_sym = str(self.bot_config.get("symbol", "") or "").upper()
-            try:
-                _cfg_tf = int(self.bot_config.get("timeframe_minutes", 0) or 0)
-            except (TypeError, ValueError):
-                _cfg_tf = 0
-            if _cfg_sym and _cfg_tf > 0:
-                self.active_sym = _cfg_sym
-                self.active_tf_min = _cfg_tf
+        self._load_account_balance_fallback()
+        self._load_active_position()
+        self._set_active_scope_from_position()
         self._load_performance_snapshot()
         self._load_health_report()
-
         self._load_json("training_stats.json", "training_stats")
         self._accumulate_loss_history()
-
         self._load_json("production_metrics.json", "production_metrics")
         self._load_json("offline_training_status.json", "offline_stats")
         self._enrich_offline_stats_from_champions()
         self._load_universe_stats()
         self._load_all_training_stats()
-
-        # Per-job live progress files (written by OfflineTrainer worker processes)
-        _prog: dict = {}
-        for _pf in self.data_dir.glob("offline_progress_*.json"):
-            try:
-                _d = json.loads(_pf.read_text())
-                _prog[(_d["symbol"], _d["timeframe_minutes"])] = _d
-            except Exception:
-                LOG.debug("[HUD] Failed to load offline progress %s", _pf, exc_info=True)
-        self.offline_job_progress = _prog
-
-        # trade_log is the authoritative source — always recompute
+        self._load_offline_job_progress()
         self._compute_metrics_from_trade_log()
         self._metrics_from_trade_log = bool(self.lifetime_metrics.get("total_trades"))
-
         self._load_risk_and_orderbook()
-
-        # Per-bot overrides: replace shared data with the active position's bot-specific files.
-        # In multi-bot setups each bot writes risk_metrics_SYM_MTF.json and
-        # training_stats_SYM_MTF.json so the HUD always shows the correct bot's data.
-        if self.active_sym and self.active_tf_min:
-            _sym, _tf = self.active_sym, self.active_tf_min
-            _per_train = f"training_stats_{_sym}_M{_tf}.json"
-            if (self.data_dir / _per_train).exists():
-                self._load_json(_per_train, "training_stats")
-                self._accumulate_loss_history()
-            _per_risk = f"risk_metrics_{_sym}_M{_tf}.json"
-            if (self.data_dir / _per_risk).exists():
-                self._load_json(_per_risk, "risk_stats")
-                self._apply_risk_stats_to_market_stats()
-        else:
-            if self.training_stats_all:
-                _active_item = max(self.training_stats_all, key=lambda _item: _item.get("mtime", 0))
-                self.training_stats = _active_item.get("stats", {})
-                self._accumulate_loss_history()
-                self.active_sym = _active_item.get("symbol", "")
-                self.active_tf_min = int(_active_item.get("timeframe_minutes", 0) or 0)
-            _rm_candidates = sorted(
-                self.data_dir.glob("risk_metrics_*_M*.json"),
-                key=lambda _p: _p.stat().st_mtime if _p.exists() else 0,
-                reverse=True,
-            )
-            if self.active_sym and self.active_tf_min:
-                _matched_risk = self.data_dir / f"risk_metrics_{self.active_sym}_M{self.active_tf_min}.json"
-                if _matched_risk.exists():
-                    self._load_json(_matched_risk.name, "risk_stats")
-                    self._apply_risk_stats_to_market_stats()
-                elif _rm_candidates:
-                    self._load_json(_rm_candidates[0].name, "risk_stats")
-                    self._apply_risk_stats_to_market_stats()
-            elif _rm_candidates:
-                self._load_json(_rm_candidates[0].name, "risk_stats")
-                self._apply_risk_stats_to_market_stats()
-
-        # production_metrics.json is written inside each paper_<SYMBOL>_M<TF>
-        # directory. Reload it after active_sym/active_tf_min are resolved so
-        # Tab 1 system-health counters do not borrow the freshest other bot.
-        if self.active_sym and self.active_tf_min:
-            self._load_json(_BOT_CONFIG_FILE, "bot_config")
-            self._load_json("production_metrics.json", "production_metrics")
-
-        # Self-test results (written at startup by run_self_test())
-        st_file = self.data_dir / "self_test.json"
-        if st_file.exists():
-            try:
-                with open(st_file) as f:
-                    self.self_test_results = json.load(f).get("results", [])
-            except Exception:
-                LOG.debug("[HUD] Failed to load self_test.json", exc_info=True)
-
-        # Re-apply order_book.json on top of any per-bot risk-file override.
-        # The per-bot risk_metrics_SYM_MTF.json is written at bar-close (every N minutes)
-        # while order_book.json is written per-tick, so it always has the freshest
-        # spread / bids / asks / vpin / imbalance.  Without this the market-structure
-        # tab shows stale bar-close values.
-        _ob_final = self._preferred_data_file(_ORDER_BOOK_FILE)
-        if _ob_final.exists():
-            try:
-                with open(_ob_final) as _f:
-                    _ob = json.load(_f)
-                _ms = self.market_stats
-                _ms["spread"] = _ob.get("spread", _ms.get("spread", 0.0))
-                _ms["depth_bid"] = _ob.get("depth_bid", _ms.get("depth_bid", 0.0))
-                _ms["depth_ask"] = _ob.get("depth_ask", _ms.get("depth_ask", 0.0))
-                _ms["vpin"] = _ob.get("vpin", _ms.get("vpin", 0.0))
-                _ms["vpin_z"] = _ob.get("vpin_zscore", _ms.get("vpin_z", 0.0))
-                _ob_imb = _ob.get("imbalance")
-                if _ob_imb is not None:
-                    _ms["imbalance"] = float(_ob_imb)
-                _ms["order_book_bids"] = _ob.get("order_book_bids", _ms.get("order_book_bids", []))
-                _ms["order_book_asks"] = _ob.get("order_book_asks", _ms.get("order_book_asks", []))
-                _ms["has_real_sizes"] = _ob.get("has_real_sizes", False)
-                _ms["qfi_update_count"] = _ob.get("qfi_update_count", 0)
-            except Exception:
-                LOG.debug("[HUD] Failed to load order_book.json overlay", exc_info=True)
-
-        # All-bots fleet panel: load every paper_stats_*.json + matching position file
-        _all_bots: list[dict] = []
-        _all_bots_by_key: dict[tuple[str, int], dict] = {}
-        for _psf in sorted(self.data_dir.glob("paper_stats_*.json")):
-            try:
-                _ps = json.loads(_psf.read_text())
-                _sym = str(_ps.get("symbol", "") or "").upper()
-                _tf = int(_ps.get("timeframe_minutes", 0) or 0)
-                if not _sym or _tf <= 0:
-                    continue
-                _mode = str(_ps.get("trading_mode", "") or "").strip().lower()
-                if _mode not in ("paper", "live"):
-                    _mode = "paper" if bool(_ps.get("paper_mode", True)) else "live"
-                _ps["trading_mode"] = _mode
-                _pos_f = self.data_dir / f"current_position_{_sym}_M{_tf}.json"
-                _ps["_position"] = json.loads(_pos_f.read_text()) if _pos_f.exists() else {}
-                _key = (_sym, _tf)
-                _all_bots_by_key[_key] = _ps
-            except Exception:
-                LOG.debug("[HUD] Failed to load paper_stats %s", _psf, exc_info=True)
-        _all_bots.extend(_all_bots_by_key.values())
-        self.all_bots_stats = _all_bots
-        # Trade history — cache-loaded (5s) for trades tab
+        self._load_active_scoped_stats()
+        self._reload_scoped_production_metrics()
+        self._load_self_test_results()
+        self._apply_orderbook_overlay()
+        self._load_all_bots_panel_stats()
         self._load_all_trades_cached()
 
     def _load_profile_options(self):
