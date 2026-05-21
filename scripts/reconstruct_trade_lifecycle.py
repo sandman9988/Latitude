@@ -322,6 +322,159 @@ def _build_bollinger(bars: list[list], lookback: int = 20) -> dict:
 # Main reconstruction
 # ---------------------------------------------------------------------------
 
+def _source_paths(symbol: str, tf_label: str, root: Path, lr: Path, hr: Path) -> dict[str, Path]:
+    scoped_audit = root / f"paper_{symbol}_{tf_label}" / "logs" / "audit"
+    scoped_decisions = scoped_audit / "decisions.jsonl"
+    scoped_transactions = scoped_audit / "transactions.jsonl"
+    return {
+        "csv": hr / f"{symbol}_{tf_label}.csv",
+        "cache": root / f"training_cache_{symbol}_{tf_label}.jsonl",
+        "trade_log": root / "trade_log.jsonl",
+        "decisions": scoped_decisions if scoped_decisions.exists() else lr / "decisions.jsonl",
+        "transactions": scoped_transactions if scoped_transactions.exists() else lr / "transactions.jsonl",
+    }
+
+
+def _build_cache_index(cache_records: list[dict]) -> dict[int, list[tuple[float, float, dict]]]:
+    cache_by_bucket: dict[int, list[tuple[float, float, dict]]] = defaultdict(list)
+    for record in cache_records:
+        entry_price = record.get("entry_price", 0.0) or 0.0
+        exit_price = record.get("exit_price", 0.0) or 0.0
+        if entry_price > 0 and exit_price > 0:
+            cache_by_bucket[round(entry_price * 100)].append((entry_price, exit_price, record))
+    return cache_by_bucket
+
+
+def _build_csv_index(csv_bars: list[list]) -> dict[int, list[list]]:
+    csv_by_bucket: dict[int, list[list]] = defaultdict(list)
+    for bar in csv_bars:
+        ts_s = round(_ts_key(bar[0]))
+        csv_by_bucket[(ts_s // 300) * 300].append(bar)
+    return csv_by_bucket
+
+
+def _build_decision_indices(decisions: list[dict]) -> dict[str, dict]:
+    indices = {
+        "trig_by_second": defaultdict(list),
+        "trig_by_tid": defaultdict(list),
+        "close_by_second": defaultdict(list),
+        "close_by_tid": {},
+        "hold_by_tid": defaultdict(list),
+    }
+    for decision in decisions:
+        ts_k = round(_ts_key(_ts_parse(decision.get("timestamp", ""))))
+        agent = decision.get("agent", "")
+        dec = decision.get("decision", "")
+        tid = decision.get("trade_id")
+        if agent == "TriggerAgent" and dec in ("LONG", "SHORT"):
+            indices["trig_by_second"][ts_k].append(decision)
+            if tid:
+                indices["trig_by_tid"][str(tid)].append(decision)
+        elif agent == "HarvesterAgent" and dec == "CLOSE":
+            indices["close_by_second"][ts_k].append(decision)
+            if tid:
+                indices["close_by_tid"][str(tid)] = decision
+        elif agent == "HarvesterAgent" and dec == "HOLD" and tid:
+            indices["hold_by_tid"][str(tid)].append(decision)
+    return indices
+
+
+def _build_txn_index(transactions: list[dict]) -> dict[int, list[dict]]:
+    txn_by_second: dict[int, list[dict]] = defaultdict(list)
+    for txn in transactions:
+        ts_k = round(_ts_key(_ts_parse(txn.get("timestamp", ""))))
+        txn_by_second[ts_k].append(txn)
+    return txn_by_second
+
+
+def _find_bucketed_entry(index: dict[int, list[dict]], ts: datetime | None, span: range) -> dict | None:
+    if not ts:
+        return None
+    ts_k = round(_ts_key(ts))
+    for offset in span:
+        candidates = index.get(ts_k + offset, [])
+        if candidates:
+            return candidates[0]
+    return None
+
+
+def _find_cache_record(
+    cache_by_bucket: dict[int, list[tuple[float, float, dict]]],
+    entry_price: float,
+    exit_price: float,
+) -> dict | None:
+    if entry_price <= 0:
+        return None
+    bucket = round(entry_price * 100)
+    candidates: list[tuple[float, float, dict]] = []
+    for adj in (bucket - 1, bucket, bucket + 1):
+        candidates.extend(cache_by_bucket.get(adj, []))
+    best_cache_dist = float("inf")
+    cache_record = None
+    for candidate_entry, candidate_exit, record in candidates:
+        dist = abs(candidate_entry - entry_price) + abs(candidate_exit - exit_price)
+        if dist < best_cache_dist:
+            best_cache_dist = dist
+            cache_record = record
+    return cache_record if best_cache_dist <= 1.0 else None
+
+
+def _find_trigger_entries(indices: dict[str, dict], trade_id: str | None, entry_time: datetime | None) -> list[dict]:
+    trig_entries = indices["trig_by_tid"].get(trade_id or "", [])
+    if trig_entries or not entry_time:
+        return trig_entries
+    entry_second = round(_ts_key(entry_time))
+    for offset in range(-120, 1):
+        trig_entries.extend(indices["trig_by_second"].get(entry_second + offset, []))
+    return trig_entries
+
+
+def _csv_context(csv_by_bucket: dict[int, list[list]], ts: datetime | None) -> list[list]:
+    if not ts:
+        return []
+    ts_s = round(_ts_key(ts))
+    bucket = (ts_s // 300) * 300
+    ctx: list[list] = []
+    for offset_b in range(-2, 3):
+        ctx.extend(csv_by_bucket.get(bucket + offset_b * 300, []))
+    return ctx
+
+
+def _harvester_quality(has_wtl: bool, derived_cap: float, mfe_val: float, pnl_pts: float) -> str:
+    if has_wtl:
+        return "POOR_WTL"
+    if derived_cap >= 0.85:
+        return "EXCELLENT"
+    if derived_cap >= 0.65:
+        return "GOOD"
+    if derived_cap >= 0.4:
+        return "FAIR"
+    if mfe_val > 0 and pnl_pts <= 0:
+        return "LOSS"
+    return "UNKNOWN"
+
+
+def _log_reconstruction_stats(stitched: list[dict], matched_count: int) -> None:
+    total = len(stitched)
+    matched_pct = matched_count / total * 100 if total > 0 else 0
+    cache_pct = sum(1 for r in stitched if r["source_cache"]) / total * 100 if total > 0 else 0
+    txn_pct = sum(1 for r in stitched if r["source_transactions"]) / total * 100 if total > 0 else 0
+    csv_pct = sum(1 for r in stitched if r["source_csv"]) / total * 100 if total > 0 else 0
+    qual_map = defaultdict(int)
+    for row in stitched:
+        qual_map[row["harvester_quality"]] += 1
+    LOG.info("")
+    LOG.info("=== RECONSTRUCTION RESULTS ===")
+    LOG.info("Total trades: %d", total)
+    LOG.info("Linked to decisions: %d (%.1f%%)", matched_count, matched_pct)
+    LOG.info("Linked to cache: %d (%.1f%%)", sum(1 for r in stitched if r["source_cache"]), cache_pct)
+    LOG.info("Linked to transactions: %d (%.1f%%)", sum(1 for r in stitched if r["source_transactions"]), txn_pct)
+    LOG.info("Linked to CSV context: %d (%.1f%%)", sum(1 for r in stitched if r["source_csv"]), csv_pct)
+    LOG.info("Harvester quality distribution:")
+    for quality, count in sorted(qual_map.items(), key=lambda x: -x[1]):
+        LOG.info("  %s: %d (%.1f%%)", quality, count, count / total * 100)
+
+
 def reconstruct(
     symbol: str = "XAUUSD",
     timeframe_minutes: int = 5,
@@ -337,74 +490,21 @@ def reconstruct(
 
     # 1. Load all sources
     tf_label = f"M{timeframe_minutes}"
-    csv_path = hr / f"{symbol}_{tf_label}.csv"
-    cache_path = root / f"training_cache_{symbol}_{tf_label}.jsonl"
-    trade_log_path = root / "trade_log.jsonl"
-    scoped_audit = root / f"paper_{symbol}_{tf_label}" / "logs" / "audit"
-    scoped_decisions = scoped_audit / "decisions.jsonl"
-    decisions_path = scoped_decisions if scoped_decisions.exists() else lr / "decisions.jsonl"
-    transactions_path = (
-        scoped_audit / "transactions.jsonl"
-        if (scoped_audit / "transactions.jsonl").exists()
-        else lr / "transactions.jsonl"
-    )
-
-    csv_bars = load_csv_bars(csv_path)
-    cache_records = load_cache(cache_path, month)
-    trade_log_entries = load_trade_log(trade_log_path, symbol, timeframe_minutes, month)
-    decisions = load_decisions(decisions_path, month)
-    transactions = load_transactions(transactions_path, month)
+    paths = _source_paths(symbol, tf_label, root, lr, hr)
+    csv_bars = load_csv_bars(paths["csv"])
+    cache_records = load_cache(paths["cache"], month)
+    trade_log_entries = load_trade_log(paths["trade_log"], symbol, timeframe_minutes, month)
+    decisions = load_decisions(paths["decisions"], month)
+    transactions = load_transactions(paths["transactions"], month)
 
     if not trade_log_entries:
         LOG.error("No trade_log entries found for %s M%d %s", symbol, timeframe_minutes, month)
         return []
 
-    # 2. Build indices
-    # Cache index: bucket by rounded entry_price for O(1) lookup
-    # Each bucket key = round(entry_price * 100) → all records within ~0.01 price
-    cache_by_bucket: dict[int, list[tuple[float, float, dict]]] = defaultdict(list)
-    for c in cache_records:
-        ep = c.get("entry_price", 0.0) or 0.0
-        xp = c.get("exit_price", 0.0) or 0.0
-        if ep > 0 and xp > 0:
-            bucket = round(ep * 100)
-            cache_by_bucket[bucket].append((ep, xp, c))
-
-    # CSV time index for O(1) context lookup: bucket timestamp to nearest M5 boundary
-    csv_by_bucket: dict[int, list[list]] = defaultdict(list)
-    for b in csv_bars:
-        ts_s = round(_ts_key(b[0]))
-        bucket = (ts_s // 300) * 300  # snap to M5: 0, 300, 600, ...
-        csv_by_bucket[bucket].append(b)
-
-    # Decision indices
-    trig_by_second: dict[int, list[dict]] = defaultdict(list)
-    trig_by_tid: dict[str, list[dict]] = defaultdict(list)
-    close_by_second: dict[int, list[dict]] = defaultdict(list)
-    close_by_tid: dict[str, dict] = {}
-    hold_by_tid: dict[str, list[dict]] = defaultdict(list)
-
-    for d in decisions:
-        ts_k = round(_ts_key(_ts_parse(d.get("timestamp", ""))))
-        ag = d.get("agent", "")
-        dec = d.get("decision", "")
-        tid = d.get("trade_id")
-        if ag == "TriggerAgent" and dec in ("LONG", "SHORT"):
-            trig_by_second[ts_k].append(d)
-            if tid:
-                trig_by_tid[str(tid)].append(d)
-        elif ag == "HarvesterAgent" and dec == "CLOSE":
-            close_by_second[ts_k].append(d)
-            if tid:
-                close_by_tid[str(tid)] = d
-        elif ag == "HarvesterAgent" and dec == "HOLD" and tid:
-            hold_by_tid[str(tid)].append(d)
-
-    # Transaction index by timestamp (rounded to nearest second for fast lookup)
-    txn_by_second: dict[int, list[dict]] = defaultdict(list)
-    for t in transactions:
-        ts_k = round(_ts_key(_ts_parse(t.get("timestamp", ""))))
-        txn_by_second[ts_k].append(t)
+    cache_by_bucket = _build_cache_index(cache_records)
+    csv_by_bucket = _build_csv_index(csv_bars)
+    decision_indices = _build_decision_indices(decisions)
+    txn_by_second = _build_txn_index(transactions)
 
     # 3. Stitch each trade_log entry
     stitched: list[dict] = []
@@ -419,72 +519,22 @@ def reconstruct(
         dtid = t.get("decision_trade_id")
         trade_id = str(dtid) if dtid else None
 
-        # --- Step A: Find closest CLOSE decision by timestamp (bucketed) ---
-        close_decision = close_by_tid.get(trade_id or "") if trade_id else None
-        if xt:
-            xt_k = round(_ts_key(xt))
-            if close_decision is None:
-                for offset in range(-10, 11):
-                    candidates = close_by_second.get(xt_k + offset, [])
-                    if candidates:
-                        close_decision = candidates[0]
-                        break
+        close_decision = (
+            decision_indices["close_by_tid"].get(trade_id or "")
+            if trade_id
+            else None
+        ) or _find_bucketed_entry(decision_indices["close_by_second"], xt, range(-10, 11))
 
         # --- Step B: Find trade_id from close decision ---
         if trade_id is None and close_decision:
             trade_id = close_decision.get("trade_id")
         trade_id = str(trade_id) if trade_id else None
 
-        # --- Step C: Find matching cache record by price bucket ---
-        cache_record = None
-        if ep > 0:
-            bucket = round(ep * 100)
-            candidates = cache_by_bucket.get(bucket, [])
-            # Also check adjacent buckets for price slip
-            for adj in (bucket - 1, bucket, bucket + 1):
-                candidates.extend(cache_by_bucket.get(adj, []))
-            best_cache_dist = float("inf")
-            for cep, cxp, cr in candidates:
-                dist = abs(cep - ep) + abs(cxp - xp)
-                if dist < best_cache_dist:
-                    best_cache_dist = dist
-                    cache_record = cr
-            # Accept cache match only if price distance is reasonable (<= 3 * spread)
-            if best_cache_dist > 1.0:
-                cache_record = None
-
-        # --- Step D: Find preceding trigger decisions (bucketed timestamp) ---
-        trig_entries = trig_by_tid.get(trade_id or "", [])
-        if not trig_entries and et:
-            et_k = round(_ts_key(et))
-            for offset in range(-120, 1):  # within 2 min before entry
-                candidates = trig_by_second.get(et_k + offset, [])
-                trig_entries.extend(candidates)
-
-        # --- Step E: Find matching transaction (bucketed timestamp lookup) ---
-        matching_txn = None
-        if xt:
-            xt_k = round(_ts_key(xt))
-            for offset in range(-5, 6):
-                candidates = txn_by_second.get(xt_k + offset, [])
-                if candidates:
-                    matching_txn = candidates[0]
-                    break
-
-        # --- Step F: CSV context around entry/exit (M5-bucketed lookup) ---
-        csv_entry_ctx: list[list] = []
-        csv_exit_ctx: list[list] = []
-        if csv_bars:
-            if et:
-                et_s = round(_ts_key(et))
-                et_bucket = (et_s // 300) * 300
-                for offset_b in range(-2, 3):  # ±2 M5 bars = ±10 min
-                    csv_entry_ctx.extend(csv_by_bucket.get(et_bucket + offset_b * 300, []))
-            if xt:
-                xt_s = round(_ts_key(xt))
-                xt_bucket = (xt_s // 300) * 300
-                for offset_b in range(-2, 3):
-                    csv_exit_ctx.extend(csv_by_bucket.get(xt_bucket + offset_b * 300, []))
+        cache_record = _find_cache_record(cache_by_bucket, ep, xp)
+        trig_entries = _find_trigger_entries(decision_indices, trade_id, et)
+        matching_txn = _find_bucketed_entry(txn_by_second, xt, range(-5, 6))
+        csv_entry_ctx = _csv_context(csv_by_bucket, et) if csv_bars else []
+        csv_exit_ctx = _csv_context(csv_by_bucket, xt) if csv_bars else []
 
         # --- Step G: Bollinger context at exit ---
         bb = {}
@@ -498,18 +548,7 @@ def reconstruct(
         derived_cap = (pnl_pts / mfe_val if mfe_val > 0 else 0.0) if mfe_val > 0 else 0.0
 
         has_wtl = t.get("winner_to_loser", False)
-        if has_wtl:
-            harv_qual = "POOR_WTL"
-        elif derived_cap >= 0.85:
-            harv_qual = "EXCELLENT"
-        elif derived_cap >= 0.65:
-            harv_qual = "GOOD"
-        elif derived_cap >= 0.4:
-            harv_qual = "FAIR"
-        elif mfe_val > 0 and pnl_pts <= 0:
-            harv_qual = "LOSS"
-        else:
-            harv_qual = "UNKNOWN"
+        harv_qual = _harvester_quality(has_wtl, derived_cap, mfe_val, pnl_pts)
 
         # --- Assemble ---
         record = {
@@ -594,14 +633,14 @@ def reconstruct(
 
             # Linked decisions
             "num_trigger_entries_before": len(trig_entries),
-            "num_hold_decisions": len(hold_by_tid.get(trade_id or "", [])),
+            "num_hold_decisions": len(decision_indices["hold_by_tid"].get(trade_id or "", [])),
             "trigger_confidence": [d.get("confidence", 0) for d in trig_entries],
             "trigger_regime": [d.get("context", {}).get("regime", "")
                                for d in trig_entries if d.get("context")],
             "close_decision_conf": close_decision.get("confidence") if close_decision else None,
             "close_decision_reasoning": (close_decision.get("reasoning") if close_decision else None),
             "trigger_entries": trig_entries,
-            "hold_decisions": hold_by_tid.get(trade_id or "", []),
+            "hold_decisions": decision_indices["hold_by_tid"].get(trade_id or "", []),
             "close_decision": close_decision,
             "trigger_data": t.get("trigger_data", {}),
             "exit_data": t.get("exit_data", {}),
@@ -645,28 +684,7 @@ def reconstruct(
         if close_decision:
             matched_count += 1
 
-    # Stats
-    total = len(stitched)
-    matched_pct = matched_count / total * 100 if total > 0 else 0
-    cache_pct = sum(1 for r in stitched if r["source_cache"]) / total * 100 if total > 0 else 0
-    txn_pct = sum(1 for r in stitched if r["source_transactions"]) / total * 100 if total > 0 else 0
-    csv_pct = sum(1 for r in stitched if r["source_csv"]) / total * 100 if total > 0 else 0
-
-    qual_map = defaultdict(int)
-    for r in stitched:
-        qual_map[r["harvester_quality"]] += 1
-
-    LOG.info("")
-    LOG.info("=== RECONSTRUCTION RESULTS ===")
-    LOG.info("Total trades: %d", total)
-    LOG.info("Linked to decisions: %d (%.1f%%)", matched_count, matched_pct)
-    LOG.info("Linked to cache: %d (%.1f%%)", sum(1 for r in stitched if r["source_cache"]), cache_pct)
-    LOG.info("Linked to transactions: %d (%.1f%%)", sum(1 for r in stitched if r["source_transactions"]), txn_pct)
-    LOG.info("Linked to CSV context: %d (%.1f%%)", sum(1 for r in stitched if r["source_csv"]), csv_pct)
-    LOG.info("Harvester quality distribution:")
-    for k, v in sorted(qual_map.items(), key=lambda x: -x[1]):
-        LOG.info("  %s: %d (%.1f%%)", k, v, v / total * 100)
-
+    _log_reconstruction_stats(stitched, matched_count)
     return stitched
 
 
