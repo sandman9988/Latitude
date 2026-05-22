@@ -6394,97 +6394,118 @@ class TabbedHUD:
     def _render_decision_log(self) -> None:
         """Render the Decision Log tab (Tab 6) — hierarchical level dispatch."""
         self._render_breadcrumb("DECISION LOG", 6)
-
-        # L4: decision detail card for selected entry
         if self._ctx_level >= 4 and self._dec_log_detail and self._dec_log_detail_entry:
             self._render_dec_log_detail(self._dec_log_detail_entry)
             return
-
-        _mode_filter = self._mixed_mode_view_filter()
-
-        # Determine scope from drill level
-        _sym_f = self._ctx_symbol.upper() if self._ctx_level >= 2 and self._ctx_symbol else ""
-        _tf_f = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
-
-        # Row count: more entries as we drill deeper (less noise, more context)
-        _n_rows = {1: 15, 2: 25, 3: 40}.get(self._ctx_level, 15)
-        _n_read = max(150, _n_rows * 4)
-
-        entries = self._load_decision_entries(sym_filter=_sym_f, tf_filter=_tf_f, n_per_file=_n_read)
-        if _mode_filter in ("paper", "live"):
-            entries = [e for e in entries if e.get("trading_mode") == _mode_filter]
-
-        # L3: update view list for cursor navigation + Enter → L4
+        mode_filter = self._mixed_mode_view_filter()
+        symbol_filter, tf_filter = self._decision_log_scope_filters()
+        n_rows = self._decision_log_row_count()
+        entries = self._decision_log_entries(symbol_filter, tf_filter, n_rows, mode_filter)
         if self._ctx_level >= 3:
-            self._dec_log_view = entries[:_n_rows]
+            self._dec_log_view = entries[:n_rows]
             self._dec_log_cursor = min(self._dec_log_cursor, max(0, len(self._dec_log_view) - 1))
-
         if not entries:
-            # Try legacy fallback
-            legacy_files = sorted(self.data_dir.glob("decision_log_*_M*.json"))
-            legacy_files.extend(sorted(self.data_dir.glob("paper_*_M*/decision_log_*_M*.json")))
-            root_legacy = self.data_dir / "decision_log.json"
-            if root_legacy.exists():
-                legacy_files.append(root_legacy)
-            if not legacy_files:
-                print("  ⚠️  No decision log found.")
-                print(f"\n  {_ANSI_DIM}Expected: paper_<SYM>_M<TF>/logs/audit/decisions.jsonl{_ANSI_RST}")
-                return
-            try:
-                _dec = json.JSONDecoder()
-                leg_entries: list = []
-                for log_file in legacy_files:
-                    raw_text = log_file.read_text(encoding="utf-8")
-                    _pos = 0
-                    while _pos < len(raw_text):
-                        _stripped = raw_text[_pos:].lstrip()
-                        if not _stripped:
-                            break
-                        _skip = len(raw_text[_pos:]) - len(_stripped)
-                        try:
-                            _obj, _idx = _dec.raw_decode(raw_text, _pos + _skip)
-                            _pos = _pos + _skip + _idx
-                            if isinstance(_obj, list):
-                                for _e in _obj:
-                                    if isinstance(_e, dict):
-                                        _e.setdefault("_source_path", str(log_file))
-                                    leg_entries.append(_e)
-                            elif isinstance(_obj, dict):
-                                _obj.setdefault("_source_path", str(log_file))
-                                leg_entries.append(_obj)
-                        except json.JSONDecodeError:
-                            break
-            except Exception as e:
-                print(f"  ❌ Error reading decision log: {e}")
-                return
-            if not leg_entries:
-                print("  No entries yet. Waiting for bot decisions...")
-                return
-            self._render_legacy_decision_entries(leg_entries, _mode_filter)
+            self._render_legacy_decision_log_fallback(mode_filter)
             return
+        self._render_decision_log_scope_header(symbol_filter, tf_filter, n_rows)
+        self._render_jsonl_decision_entries(
+            entries[:n_rows],
+            mode_filter,
+            cursor_idx=self._dec_log_cursor if self._ctx_level >= 3 else -1,
+        )
 
-        # ── Level-specific header ─────────────────────────────────────────
+    def _decision_log_scope_filters(self) -> tuple[str, int]:
+        symbol_filter = self._ctx_symbol.upper() if self._ctx_level >= 2 and self._ctx_symbol else ""
+        tf_filter = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
+        return symbol_filter, tf_filter
+
+    def _decision_log_row_count(self) -> int:
+        return {1: 15, 2: 25, 3: 40}.get(self._ctx_level, 15)
+
+    def _decision_log_entries(self, symbol_filter: str, tf_filter: int, n_rows: int, mode_filter: str) -> list[dict]:
+        entries = self._load_decision_entries(
+            sym_filter=symbol_filter,
+            tf_filter=tf_filter,
+            n_per_file=max(150, n_rows * 4),
+        )
+        return self._filtered_decision_entries(entries, mode_filter)
+
+    def _render_decision_log_scope_header(self, symbol_filter: str, tf_filter: int, n_rows: int) -> None:
         if self._ctx_level == 1:
-            print(f"\n  {_ANSI_DIM}Portfolio scope — all bots, {_n_rows} most recent signal decisions{_ANSI_RST}")
+            print(f"\n  {_ANSI_DIM}Portfolio scope — all bots, {n_rows} most recent signal decisions{_ANSI_RST}")
         elif self._ctx_level == 2:
             print(
-                f"\n  {_ANSI_DIM}Symbol scope — {_sym_f} all TFs, {_n_rows} most recent decisions  "
+                f"\n  {_ANSI_DIM}Symbol scope — {symbol_filter} all TFs, {n_rows} most recent decisions  "
                 f"[Enter] drill to TF{_ANSI_RST}"
             )
         elif self._ctx_level >= 3:
-            _tf_lbl = self._format_timeframe_minutes_label(_tf_f) if _tf_f else "?"
-            _nav = "[↑↓/jk] cursor  [Enter/d] detail card  [Esc] back"
+            tf_label = self._format_timeframe_minutes_label(tf_filter) if tf_filter else "?"
+            nav = "[↑↓/jk] cursor  [Enter/d] detail card  [Esc] back"
             print(
-                f"\n  {_ANSI_DIM}Bot scope — {_sym_f}/{_tf_lbl}, "
-                f"{len(self._dec_log_view)} decisions  {_nav}{_ANSI_RST}"
+                f"\n  {_ANSI_DIM}Bot scope — {symbol_filter}/{tf_label}, "
+                f"{len(self._dec_log_view)} decisions  {nav}{_ANSI_RST}"
             )
 
-        # ── Render entries list with cursor highlight at L3 ───────────────
-        self._render_jsonl_decision_entries(
-            entries[:_n_rows],
-            _mode_filter,
-            cursor_idx=self._dec_log_cursor if self._ctx_level >= 3 else -1,
-        )
+    def _legacy_decision_files(self) -> list[Path]:
+        legacy_files = sorted(self.data_dir.glob("decision_log_*_M*.json"))
+        legacy_files.extend(sorted(self.data_dir.glob("paper_*_M*/decision_log_*_M*.json")))
+        root_legacy = self.data_dir / "decision_log.json"
+        if root_legacy.exists():
+            legacy_files.append(root_legacy)
+        return legacy_files
+
+    def _render_legacy_decision_log_fallback(self, mode_filter: str) -> None:
+        legacy_files = self._legacy_decision_files()
+        if not legacy_files:
+            print("  ⚠️  No decision log found.")
+            print(f"\n  {_ANSI_DIM}Expected: paper_<SYM>_M<TF>/logs/audit/decisions.jsonl{_ANSI_RST}")
+            return
+        try:
+            leg_entries = self._load_legacy_decision_entries(legacy_files)
+        except Exception as exc:
+            print(f"  ❌ Error reading decision log: {exc}")
+            return
+        if not leg_entries:
+            print("  No entries yet. Waiting for bot decisions...")
+            return
+        self._render_legacy_decision_entries(leg_entries, mode_filter)
+
+    def _load_legacy_decision_entries(self, legacy_files: list[Path]) -> list:
+        decoder = json.JSONDecoder()
+        entries: list = []
+        for log_file in legacy_files:
+            entries.extend(self._load_legacy_decision_file(log_file, decoder))
+        return entries
+
+    @staticmethod
+    def _load_legacy_decision_file(log_file: Path, decoder: json.JSONDecoder) -> list:
+        entries: list = []
+        raw_text = log_file.read_text(encoding="utf-8")
+        pos = 0
+        while pos < len(raw_text):
+            stripped = raw_text[pos:].lstrip()
+            if not stripped:
+                break
+            skip = len(raw_text[pos:]) - len(stripped)
+            try:
+                obj, idx = decoder.raw_decode(raw_text, pos + skip)
+            except json.JSONDecodeError:
+                break
+            pos = pos + skip + idx
+            entries.extend(TabbedHUD._legacy_decision_objects(obj, log_file))
+        return entries
+
+    @staticmethod
+    def _legacy_decision_objects(obj: object, log_file: Path) -> list:
+        if isinstance(obj, list):
+            for entry in obj:
+                if isinstance(entry, dict):
+                    entry.setdefault("_source_path", str(log_file))
+            return obj
+        if isinstance(obj, dict):
+            obj.setdefault("_source_path", str(log_file))
+            return [obj]
+        return []
 
     def _render_risk(self) -> None:
         """Render risk management — dispatches by drill level."""
