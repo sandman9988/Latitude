@@ -6311,80 +6311,85 @@ class TabbedHUD:
 
     def _render_dec_log_detail(self, entry: dict) -> None:
         """L4 decision detail card — full context, reasoning, gated_conditions."""
-        def _f(v: object, d: float = 0.0) -> float:
-            try:
-                return float(v) if v is not None else d
-            except (TypeError, ValueError):
-                return d
-
-        ctx = entry.get("context") or {}
-        reasoning = entry.get("reasoning") or {}
-        decision = str(entry.get("decision") or "?").upper()
-        agent = str(entry.get("agent") or "?")
-        confidence = _f(entry.get("confidence"))
-        ts = str(entry.get("timestamp") or "?")
-        mode = str(entry.get("trading_mode") or "?")
-        sym = str(entry.get("symbol") or "?").upper()
-        tf_m = entry.get("timeframe_minutes")
-        tf_lbl = self._format_timeframe_minutes_label(int(tf_m)) if tf_m else "?"
-        trade_id = str(entry.get("trade_id") or "—")
-        position_id = entry.get("position_id") or []
-
-        if decision in ("BUY", "LONG", "ENTER"):
-            dec_color = _ANSI_G
-        elif decision in ("SELL", "SHORT", "EXIT", "CLOSE"):
-            dec_color = _ANSI_R
-        elif decision == "HOLD":
-            dec_color = _ANSI_Y
-        elif decision == "NO_ENTRY":
-            dec_color = _ANSI_DIM
-        else:
-            dec_color = _ANSI_RST
-
-        mode_str = (
-            f"{_ANSI_Y}PAPER{_ANSI_RST}"
-            if mode == "paper"
-            else (f"{_ANSI_G}LIVE{_ANSI_RST}" if mode == "live" else mode)
-        )
-
-        print("\n  ┌─ DECISION DETAIL ──────────────────────────────────────────────────")
-        print(f"  │  {ts}")
-        print(f"  │  Bot: {_ANSI_G}{sym}/{tf_lbl}{_ANSI_RST}   Mode: {mode_str}   Agent: {agent}")
-        print(f"  │  Decision: {dec_color}{decision}{_ANSI_RST}   Confidence: {confidence:.4f}")
-        print(f"  │  TradeID:  {_ANSI_DIM}{trade_id}{_ANSI_RST}")
-        if position_id:
-            _pids = ", ".join(str(p) for p in (position_id if isinstance(position_id, list) else [position_id]))
-            print(f"  │  PositionIDs: {_ANSI_DIM}{_pids}{_ANSI_RST}")
-        print("  ├─ CONTEXT ─────────────────────────────────────────────────────────")
-        if ctx:
-            for _k, _v in ctx.items():
-                if isinstance(_v, float):
-                    print(f"  │    {_k:<28} {_v:.6f}")
-                else:
-                    print(f"  │    {_k:<28} {_v}")
-        else:
-            print(f"  │    {_ANSI_DIM}(no context){_ANSI_RST}")
-
-        print("  ├─ REASONING ───────────────────────────────────────────────────────")
-        _gated = reasoning.get("gated_conditions") or []
-        for _k, _v in reasoning.items():
-            if _k == "gated_conditions":
-                continue
-            if isinstance(_v, float):
-                print(f"  │    {_k:<28} {_v:.6f}")
-            elif isinstance(_v, bool):
-                _vc = _ANSI_G if _v else _ANSI_R
-                print(f"  │    {_k:<28} {_vc}{_v}{_ANSI_RST}")
-            else:
-                print(f"  │    {_k:<28} {_v}")
-
-        if _gated and isinstance(_gated, list):
-            print(f"  ├─ GATED CONDITIONS ({len(_gated)}) ──────────────────────────────────────")
-            for _g in _gated:
-                print(f"  │    {_ANSI_R}✗ {_g}{_ANSI_RST}")
-
+        ctx = entry.get("context") if isinstance(entry.get("context"), dict) else {}
+        reasoning = entry.get("reasoning") if isinstance(entry.get("reasoning"), dict) else {}
+        self._render_dec_log_detail_header(entry)
+        self._render_dec_log_detail_mapping("CONTEXT", ctx)
+        self._render_dec_log_detail_reasoning(reasoning)
         print("  └───────────────────────────────────────────────────────────────────")
         print(f"\n  {_ANSI_DIM}[b] or [Esc] back to list{_ANSI_RST}")
+
+    def _render_dec_log_detail_header(self, entry: dict) -> None:
+        decision = str(entry.get("decision") or "?").upper()
+        print("\n  ┌─ DECISION DETAIL ──────────────────────────────────────────────────")
+        print(f"  │  {str(entry.get('timestamp') or '?')}")
+        print(
+            f"  │  Bot: {_ANSI_G}{self._decision_detail_symbol_tf(entry)}{_ANSI_RST}   "
+            f"Mode: {self._decision_detail_mode(entry)}   Agent: {str(entry.get('agent') or '?')}"
+        )
+        print(
+            f"  │  Decision: {self._decision_color(decision)}{decision}{_ANSI_RST}   "
+            f"Confidence: {self._dec_float(entry.get('confidence')):.4f}"
+        )
+        print(f"  │  TradeID:  {_ANSI_DIM}{str(entry.get('trade_id') or '—')}{_ANSI_RST}")
+        self._render_decision_position_ids(entry.get("position_id") or [])
+
+    def _decision_detail_symbol_tf(self, entry: dict) -> str:
+        symbol = str(entry.get("symbol") or "?").upper()
+        tf_m = entry.get("timeframe_minutes")
+        tf_lbl = self._format_timeframe_minutes_label(int(tf_m)) if tf_m else "?"
+        return f"{symbol}/{tf_lbl}"
+
+    @staticmethod
+    def _decision_detail_mode(entry: dict) -> str:
+        mode = str(entry.get("trading_mode") or "?")
+        if mode == "paper":
+            return f"{_ANSI_Y}PAPER{_ANSI_RST}"
+        if mode == "live":
+            return f"{_ANSI_G}LIVE{_ANSI_RST}"
+        return mode
+
+    @staticmethod
+    def _render_decision_position_ids(position_id: object) -> None:
+        if position_id:
+            position_ids = position_id if isinstance(position_id, list) else [position_id]
+            pids = ", ".join(str(pos_id) for pos_id in position_ids)
+            print(f"  │  PositionIDs: {_ANSI_DIM}{pids}{_ANSI_RST}")
+
+    @staticmethod
+    def _render_dec_log_detail_mapping(title: str, values: dict) -> None:
+        print(f"  ├─ {title} ─────────────────────────────────────────────────────────")
+        if values:
+            for key, value in values.items():
+                TabbedHUD._render_dec_log_detail_value(key, value)
+        else:
+            print(f"  │    {_ANSI_DIM}(no {title.lower()}){_ANSI_RST}")
+
+    @staticmethod
+    def _render_dec_log_detail_value(key: str, value: object) -> None:
+        if isinstance(value, float):
+            print(f"  │    {key:<28} {value:.6f}")
+        elif isinstance(value, bool):
+            value_color = _ANSI_G if value else _ANSI_R
+            print(f"  │    {key:<28} {value_color}{value}{_ANSI_RST}")
+        else:
+            print(f"  │    {key:<28} {value}")
+
+    def _render_dec_log_detail_reasoning(self, reasoning: dict) -> None:
+        print("  ├─ REASONING ───────────────────────────────────────────────────────")
+        gated = reasoning.get("gated_conditions") or []
+        for key, value in reasoning.items():
+            if key == "gated_conditions":
+                continue
+            self._render_dec_log_detail_value(key, value)
+        self._render_dec_log_gated_conditions(gated)
+
+    @staticmethod
+    def _render_dec_log_gated_conditions(gated: object) -> None:
+        if gated and isinstance(gated, list):
+            print(f"  ├─ GATED CONDITIONS ({len(gated)}) ──────────────────────────────────────")
+            for gate in gated:
+                print(f"  │    {_ANSI_R}✗ {gate}{_ANSI_RST}")
 
     def _render_decision_log(self) -> None:
         """Render the Decision Log tab (Tab 6) — hierarchical level dispatch."""
