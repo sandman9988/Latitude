@@ -7642,246 +7642,290 @@ class TabbedHUD:
 
     def _render_trades_list(self) -> None:
         """Level 3: Individual trade list scoped to symbol + timeframe."""
-        _sym = self._ctx_symbol.upper()
-        _tf = self._ctx_tf
+        symbol = self._ctx_symbol.upper()
+        timeframe = self._ctx_tf
         self._render_breadcrumb("TRADES", 7)
-
-        _mode_filter = self._mixed_mode_view_filter()
-        trades_view = self._all_trades
-        if _mode_filter:
-            trades_view = [t for t in trades_view if t.get("trading_mode") == _mode_filter]
-        # Scope to symbol + TF
-        trades_view = [
-            t for t in trades_view
-            if str(t.get("symbol", "")).upper() == _sym and t.get("timeframe_minutes") == _tf
-        ]
+        mode_filter = self._mixed_mode_view_filter()
+        trades_view = self._scoped_trades_view(symbol, timeframe, mode_filter)
         self._trades_view = trades_view
         if self._trades_detail and self._trades_detail_trade not in trades_view:
             self._trades_detail = False
             self._trades_detail_trade = {}
-
-        W = self._term_width()
         total = len(trades_view)
-        _scope_label = f"{_sym}/{self._format_timeframe_minutes_label(_tf)}"
+        scope_label = f"{symbol}/{self._format_timeframe_minutes_label(timeframe)}"
         if total == 0:
-            _empty_label = f" ({_mode_filter})" if _mode_filter else ""
-            print(f"\n\033[1m[T] TRADES › {_scope_label}\033[0m{_empty_label}  No trades recorded yet.")
+            empty_label = f" ({mode_filter})" if mode_filter else ""
+            print(f"\n\033[1m[T] TRADES › {scope_label}\033[0m{empty_label}  No trades recorded yet.")
             return
-        self._trades_per_page = self._trade_rows_per_page()
-        max_page = max(0, (total - 1) // self._trades_per_page)
-        self._trades_page = min(self._trades_page, max_page)
-        page_start = self._trades_page * self._trades_per_page
-        page_trades = trades_view[page_start : page_start + self._trades_per_page]
-        self._trades_cursor = min(self._trades_cursor, max(0, len(page_trades) - 1))
-
-        # Header
-        _all_for_header = self._trade_log_all_trades
-        _epoch_for_header = self._trade_log_metrics_trades
-        if _mode_filter:
-            _all_for_header = [t for t in _all_for_header if t.get("trading_mode") == _mode_filter]
-            _epoch_for_header = [t for t in _epoch_for_header if t.get("trading_mode") == _mode_filter]
-        lm = _hud_period_metrics(_all_for_header, self._universe_starting_equity())
-        epoch_lm = _hud_period_metrics(_epoch_for_header, self._universe_starting_equity())
-        total_pnl = lm.get("total_pnl", 0.0)
-        wins = lm.get("winning_trades", 0)
-        losses = lm.get("losing_trades", 0)
-        wr = lm.get("win_rate", 0.0) * 100
-        pg_str = f"Pg {self._trades_page + 1}/{max_page + 1}"
-        _tl_mode = getattr(self, "_trade_log_mode", "")
-        if _tl_mode == "mixed":
-            _mode_suffix = ""
-            if _mode_filter == "paper":
-                _mode_suffix = f"  {_ANSI_Y}📄 PAPER VIEW{_ANSI_RST}"
-            elif _mode_filter == "live":
-                _mode_suffix = f"  {_ANSI_G}💰 LIVE VIEW{_ANSI_RST}"
-            _mode_hdr = f"  {_ANSI_Y}⚠ MIXED{_ANSI_RST}{_mode_suffix}"
-        elif _tl_mode == "live":
-            _mode_hdr = f"  {_ANSI_G}💰 LIVE{_ANSI_RST}"
-        else:
-            _mode_hdr = f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}"
-        _bar = self._page_scrollbar(self._trades_page, max_page)
-        _compact = self._trades_per_page <= 6
-        if _compact:
-            print(
-                f"\033[1m[T] TRADES › {_scope_label}\033[0m "
-                f"[{total}] {pg_str} {_ANSI_DIM}{_bar}{_ANSI_RST} "
-                f"PnL {self._pnl_color(total_pnl)}{total_pnl:+.2f}{_ANSI_RST}{_mode_hdr}"
-            )
-        else:
-            print(
-                f"\033[1m[T] TRADES › {_scope_label}\033[0m  "
-                f"[{total} trades]  {pg_str}  {_ANSI_DIM}{_bar}{_ANSI_RST}{_mode_hdr}"
-            )
-
+        page_trades, page_start, max_page = self._prepare_trades_page(trades_view)
+        metrics, epoch_metrics = self._trade_list_header_metrics(mode_filter)
+        compact = self._trades_per_page <= 6
+        self._render_trades_list_header(scope_label, total, max_page, metrics, mode_filter, compact)
         if self._trades_detail:
             self._render_trade_detail(self._trades_detail_trade)
             return
+        self._render_trade_list_mode_warning(mode_filter)
+        self._render_trade_list_summary(metrics, epoch_metrics, compact)
+        cols = self._trade_list_columns()
+        sep = self._render_trade_table_header(cols)
+        price_decimals = self._price_decimals(float(page_trades[0].get("entry_price") or 0.0))
+        for row_idx, trade in enumerate(page_trades):
+            row = self._trade_table_row(trade, page_start + row_idx + 1, cols, price_decimals)
+            print(f"\033[7m{_strip_ansi(row)}\033[0m" if row_idx == self._trades_cursor else row)
+        if self._trades_per_page >= 8:
+            print(sep)
 
-        # Mixed-mode banner — operator must know metrics are contaminated
-        if _tl_mode == "mixed":
-            if _mode_filter:
-                _mode_lbl = "paper" if _mode_filter == "paper" else "live"
-                print(
-                    f"  {_ANSI_Y}⚠  MIXED MODE SOURCE — showing {_mode_lbl} trades only. "
-                    f"Use bot mode switch to view the other mode.{_ANSI_RST}"
-                )
+    def _scoped_trades_view(self, symbol: str, timeframe: int, mode_filter: str) -> list[dict]:
+        trades_view = self._all_trades
+        if mode_filter:
+            trades_view = [trade for trade in trades_view if trade.get("trading_mode") == mode_filter]
+        return [
+            trade for trade in trades_view
+            if str(trade.get("symbol", "")).upper() == symbol and trade.get("timeframe_minutes") == timeframe
+        ]
 
-        if not _compact:
-            # Summary bar
-            _pnl_c = _ANSI_G if total_pnl >= 0 else _ANSI_R
+    def _prepare_trades_page(self, trades_view: list[dict]) -> tuple[list[dict], int, int]:
+        self._trades_per_page = self._trade_rows_per_page()
+        max_page = max(0, (len(trades_view) - 1) // self._trades_per_page)
+        self._trades_page = min(self._trades_page, max_page)
+        page_start = self._trades_page * self._trades_per_page
+        page_trades = trades_view[page_start: page_start + self._trades_per_page]
+        self._trades_cursor = min(self._trades_cursor, max(0, len(page_trades) - 1))
+        return page_trades, page_start, max_page
+
+    def _trade_list_header_metrics(self, mode_filter: str) -> tuple[dict, dict]:
+        all_for_header = self._trade_log_all_trades
+        epoch_for_header = self._trade_log_metrics_trades
+        if mode_filter:
+            all_for_header = [trade for trade in all_for_header if trade.get("trading_mode") == mode_filter]
+            epoch_for_header = [trade for trade in epoch_for_header if trade.get("trading_mode") == mode_filter]
+        starting_equity = self._universe_starting_equity()
+        return (
+            _hud_period_metrics(all_for_header, starting_equity),
+            _hud_period_metrics(epoch_for_header, starting_equity),
+        )
+
+    def _render_trades_list_header(
+        self,
+        scope_label: str,
+        total: int,
+        max_page: int,
+        metrics: dict,
+        mode_filter: str,
+        compact: bool,
+    ) -> None:
+        pg_str = f"Pg {self._trades_page + 1}/{max_page + 1}"
+        bar = self._page_scrollbar(self._trades_page, max_page)
+        mode_hdr = self._trades_mode_header(mode_filter)
+        if compact:
+            total_pnl = metrics.get("total_pnl", 0.0)
             print(
-                f"  Lifetime PnL: {_pnl_c}{total_pnl:+.2f}{_ANSI_RST}  |  "
-                f"W/L: {_ANSI_G}{wins}{_ANSI_RST}/{_ANSI_R}{losses}{_ANSI_RST}  "
-                f"({_ANSI_G if wr >= 50 else _ANSI_R}{wr:.1f}%{_ANSI_RST} win rate)"
+                f"\033[1m[T] TRADES › {scope_label}\033[0m "
+                f"[{total}] {pg_str} {_ANSI_DIM}{bar}{_ANSI_RST} "
+                f"PnL {self._pnl_color(total_pnl)}{total_pnl:+.2f}{_ANSI_RST}{mode_hdr}"
             )
-        if self._stats_epoch and not _compact:
-            _ep_pnl = epoch_lm.get("total_pnl", 0.0)
-            _ep_tr = epoch_lm.get("total_trades", 0)
+            return
+        print(
+            f"\033[1m[T] TRADES › {scope_label}\033[0m  "
+            f"[{total} trades]  {pg_str}  {_ANSI_DIM}{bar}{_ANSI_RST}{mode_hdr}"
+        )
+
+    def _trades_mode_header(self, mode_filter: str) -> str:
+        trade_log_mode = getattr(self, "_trade_log_mode", "")
+        if trade_log_mode == "mixed":
+            suffix = ""
+            if mode_filter == "paper":
+                suffix = f"  {_ANSI_Y}📄 PAPER VIEW{_ANSI_RST}"
+            elif mode_filter == "live":
+                suffix = f"  {_ANSI_G}💰 LIVE VIEW{_ANSI_RST}"
+            return f"  {_ANSI_Y}⚠ MIXED{_ANSI_RST}{suffix}"
+        if trade_log_mode == "live":
+            return f"  {_ANSI_G}💰 LIVE{_ANSI_RST}"
+        return f"  {_ANSI_Y}📄 PAPER{_ANSI_RST}"
+
+    def _render_trade_list_mode_warning(self, mode_filter: str) -> None:
+        if getattr(self, "_trade_log_mode", "") == "mixed" and mode_filter:
+            mode_label = "paper" if mode_filter == "paper" else "live"
             print(
-                f"  Epoch: {self._pnl_color(_ep_pnl)}{_ep_pnl:+.2f}{_ANSI_RST} / {_ep_tr} trades"
+                f"  {_ANSI_Y}⚠  MIXED MODE SOURCE — showing {mode_label} trades only. "
+                f"Use bot mode switch to view the other mode.{_ANSI_RST}"
+            )
+
+    def _render_trade_list_summary(self, metrics: dict, epoch_metrics: dict, compact: bool) -> None:
+        if compact:
+            return
+        total_pnl = metrics.get("total_pnl", 0.0)
+        win_rate = metrics.get("win_rate", 0.0) * 100
+        print(
+            f"  Lifetime PnL: {self._pnl_color(total_pnl)}{total_pnl:+.2f}{_ANSI_RST}  |  "
+            f"W/L: {_ANSI_G}{metrics.get('winning_trades', 0)}{_ANSI_RST}/"
+            f"{_ANSI_R}{metrics.get('losing_trades', 0)}{_ANSI_RST}  "
+            f"({_ANSI_G if win_rate >= 50 else _ANSI_R}{win_rate:.1f}%{_ANSI_RST} win rate)"
+        )
+        if self._stats_epoch:
+            epoch_pnl = epoch_metrics.get("total_pnl", 0.0)
+            epoch_trades = epoch_metrics.get("total_trades", 0)
+            print(
+                f"  Epoch: {self._pnl_color(epoch_pnl)}{epoch_pnl:+.2f}{_ANSI_RST} / {epoch_trades} trades"
                 f"  {_ANSI_DIM}(excluded {self._stats_epoch_excluded}; source: trade_log.jsonl){_ANSI_RST}"
             )
 
-        # Column header — M = mode badge (P=paper / L=live)
-        _C_ID = 8
-        _C_DATE = 14
-        _C_DIR = 5
-        _C_SYM = 9
-        _C_TF = 4
-        _C_ENT = 9
-        _C_EXT = 9
-        _C_PNL = 12
-        _C_CAP = 7
-        _C_MFE = 9
-        _C_MAE = 9
-        _C_BRS = 5
-        _C_RSN = 18
-        _compact_table = W < 132
-        if _compact_table:
-            _C_ID = 5
-            _C_DATE = 11
-            _C_BOT = 12
-            _C_DIR = 1
-            _C_PNL = 9
-            _C_CAP = 6
-            _C_MFE = 8
-            _C_MAE = 8
-            _C_BRS = 4
-            _C_RSN = 12
-            _hdr_row = (
-                f"  {'#':<{_C_ID}} M {'Time':<{_C_DATE}} {'Bot':<{_C_BOT}} {'D':<{_C_DIR}} "
-                f"{'PnL $':>{_C_PNL}} {'Cap%':>{_C_CAP}} {'MFE $':>{_C_MFE}} {'MAE $':>{_C_MAE}} "
-                f"{'Bars':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
+    def _trade_list_columns(self) -> dict[str, int | bool]:
+        compact = self._term_width() < 132
+        if compact:
+            return {
+                "id": 5,
+                "date": 11,
+                "bot": 12,
+                "dir": 1,
+                "pnl": 9,
+                "cap": 6,
+                "mfe": 8,
+                "mae": 8,
+                "bars": 4,
+                "rsn": 12,
+                "compact": True,
+            }
+        return {
+            "id": 8,
+            "date": 14,
+            "dir": 5,
+            "sym": 9,
+            "tf": 4,
+            "ent": 9,
+            "ext": 9,
+            "pnl": 12,
+            "cap": 7,
+            "mfe": 9,
+            "mae": 9,
+            "bars": 5,
+            "rsn": 18,
+            "compact": False,
+        }
+
+    def _render_trade_table_header(self, cols: dict[str, int | bool]) -> str:
+        if cols["compact"]:
+            header = (
+                f"  {'#':<{cols['id']}} M {'Time':<{cols['date']}} {'Bot':<{cols['bot']}} {'D':<{cols['dir']}} "
+                f"{'PnL $':>{cols['pnl']}} {'Cap%':>{cols['cap']}} {'MFE $':>{cols['mfe']}} "
+                f"{'MAE $':>{cols['mae']}} {'Bars':>{cols['bars']}}  {'Reason':<{cols['rsn']}}"
             )
         else:
-            _hdr_row = (
-                f"  {'#':<{_C_ID}} M {'Date/Time':<{_C_DATE}} {'Dir':<{_C_DIR}} "
-                f"{'Sym':<{_C_SYM}} {'TF':<{_C_TF}} {'Entry':>{_C_ENT}} {'Exit':>{_C_EXT}} "
-                f"{'PnL $':>{_C_PNL}} {'Cap%':>{_C_CAP}} {'MFE $':>{_C_MFE}} {'MAE $':>{_C_MAE}} "
-                f"{'Bars':>{_C_BRS}}  {'Reason':<{_C_RSN}}"
+            header = (
+                f"  {'#':<{cols['id']}} M {'Date/Time':<{cols['date']}} {'Dir':<{cols['dir']}} "
+                f"{'Sym':<{cols['sym']}} {'TF':<{cols['tf']}} {'Entry':>{cols['ent']}} {'Exit':>{cols['ext']}} "
+                f"{'PnL $':>{cols['pnl']}} {'Cap%':>{cols['cap']}} {'MFE $':>{cols['mfe']}} "
+                f"{'MAE $':>{cols['mae']}} {'Bars':>{cols['bars']}}  {'Reason':<{cols['rsn']}}"
             )
-        # Plain-text header width (no ANSI) → matches the rendered row width.
-        _hdr_plain_len = len(_hdr_row)
-        _sep = "  " + "-" * max(10, min(W - 4, _hdr_plain_len - 2))
-        print(f"{_ANSI_DIM}{_hdr_row}{_ANSI_RST}")
-        print(_sep)
+        sep = "  " + "-" * max(10, min(self._term_width() - 4, len(header) - 2))
+        print(f"{_ANSI_DIM}{header}{_ANSI_RST}")
+        print(sep)
+        return sep
 
-        # Trade rows — derive decimal places from first trade's price so we
-        # never fall back to 5dp when bot_config is empty.
-        _sample_price = 0.0
-        if page_trades:
-            _sample_price = float(page_trades[0].get("entry_price") or 0.0)
-        _dec = self._price_decimals(_sample_price)
-        for _row_idx, _t in enumerate(page_trades):
-            _tid = _t.get("trade_id", page_start + _row_idx + 1)
-            _dir = (_t.get("direction") or "").upper()
-            _sym = _t.get("symbol", "?")
-            _tf = self._normalize_timeframe_label(_t)
-            _entry = float(_t.get("entry_price") or 0.0)
-            _exit = float(_t.get("exit_price") or 0.0)
-            _pnl = float(_t.get("pnl") or 0.0)
-            _mfe = self._excursion_usd_for_trade(_t, "mfe_points", "mfe")
-            _mae = self._excursion_usd_for_trade(_t, "mae_points", "mae")
-            _bars = int(_t.get("bars_held") or _t.get("ticks_held") or 0)
-            _rsn_raw = _t.get("close_reason") or _t.get("exit_reason") or ""
-            _rsn = ("-" if _rsn_raw in ("", "unknown") else _rsn_raw)[:_C_RSN]
-            _tid_s = str(_tid)
-            if len(_tid_s) > _C_ID:
-                _tid_s = _tid_s[: max(0, _C_ID - 1)] + "…"
-            _sym_s = str(_sym)
-            if len(_sym_s) > _C_SYM:
-                _sym_s = _sym_s[: max(0, _C_SYM - 1)] + "…"
-            _bot_s = f"{_sym}/{_tf}"
-            if len(_bot_s) > 12:
-                _bot_s = _bot_s[:11] + "…"
+    def _trade_table_row(self, trade: dict, row_number: int, cols: dict[str, int | bool], price_decimals: int) -> str:
+        row = self._trade_row_values(trade, row_number, cols, price_decimals)
+        if cols["compact"]:
+            return self._compact_trade_row(row, cols)
+        return self._full_trade_row(row, cols)
 
-            _ts = _t.get("exit_time") or _t.get("entry_time") or ""
-            try:
-                _dt = datetime.fromisoformat(_ts)
-                _date_str = _dt.strftime("%m-%d %H:%M") if _compact_table else _dt.strftime("%b-%d %H:%M")
-            except Exception:
-                _date_str = _ts[:13]
-            _date_s = _date_str[:_C_DATE] if _compact_table else _date_str
+    def _trade_row_values(
+        self,
+        trade: dict,
+        row_number: int,
+        cols: dict[str, int | bool],
+        price_decimals: int,
+    ) -> dict[str, object]:
+        direction = (trade.get("direction") or "").upper()
+        pnl = float(trade.get("pnl") or 0.0)
+        mfe = self._excursion_usd_for_trade(trade, "mfe_points", "mfe")
+        mae = self._excursion_usd_for_trade(trade, "mae_points", "mae")
+        cap_s, cap_c = self._trade_capture_cell(trade, pnl)
+        return {
+            "tid": self._clip_text(str(trade.get("trade_id", row_number)), int(cols["id"])),
+            "mode": self._trade_mode_badge(trade),
+            "date": self._trade_row_date(trade, bool(cols["compact"]))[: int(cols["date"])],
+            "direction": direction,
+            "dir_color": _ANSI_G if direction == "LONG" else (_ANSI_R if direction == "SHORT" else _ANSI_DIM),
+            "sym": self._clip_text(str(trade.get("symbol", "?")), int(cols.get("sym", 9))),
+            "tf": self._normalize_timeframe_label(trade),
+            "bot": self._clip_text(f"{trade.get('symbol', '?')}/{self._normalize_timeframe_label(trade)}", 12),
+            "entry": f"{float(trade.get('entry_price') or 0.0):.{price_decimals}f}"[-int(cols.get("ent", 9)):],
+            "exit": f"{float(trade.get('exit_price') or 0.0):.{price_decimals}f}"[-int(cols.get("ext", 9)):],
+            "pnl": _fmt_compact(pnl, int(cols["pnl"])),
+            "pnl_color": self._pnl_color(pnl),
+            "cap": cap_s,
+            "cap_color": cap_c,
+            "mfe": _fmt_compact(mfe, int(cols["mfe"])),
+            "mae": _fmt_compact(-abs(mae), int(cols["mae"])),
+            "bars": int(trade.get("bars_held") or trade.get("ticks_held") or 0),
+            "reason": self._trade_close_reason(trade, int(cols["rsn"])),
+        }
 
-            _dc = _ANSI_G if _dir == "LONG" else (_ANSI_R if _dir == "SHORT" else _ANSI_DIM)
-            _pc = self._pnl_color(_pnl)
-            _ep_s = f"{_entry:.{_dec}f}"[-_C_ENT:]
-            _xp_s = f"{_exit:.{_dec}f}"[-_C_EXT:]
+    @staticmethod
+    def _clip_text(value: str, width: int) -> str:
+        if len(value) > width:
+            return value[: max(0, width - 1)] + "…"
+        return value
 
-            _cap_ratio = self._capture_ratio_for_trade(_t)
-            if _cap_ratio is not None:
-                _cap_val = max(-999.0, min(999.0, _cap_ratio * 100.0))
-                _cap_s = f"{_cap_val:+.0f}%"
-                _cap_c = self._pnl_color(_cap_val)
-            elif float(_pnl or 0.0) < 0.0:
-                # No positive excursion => capture is undefined; flag losses red.
-                _cap_s = "n/a"
-                _cap_c = _ANSI_R
-            else:
-                _cap_s = "—"
-                _cap_c = _ANSI_DIM
+    @staticmethod
+    def _trade_row_date(trade: dict, compact: bool) -> str:
+        timestamp = trade.get("exit_time") or trade.get("entry_time") or ""
+        try:
+            dt_value = datetime.fromisoformat(timestamp)
+            return dt_value.strftime("%m-%d %H:%M") if compact else dt_value.strftime("%b-%d %H:%M")
+        except Exception:
+            return timestamp[:13]
 
-            # Mode badge — single char, always renders 1 column wide
-            _tmode = _t.get("trading_mode", "")
-            if _tmode == "paper":
-                _mb = f"{_ANSI_Y}P{_ANSI_RST}"
-            elif _tmode == "live":
-                _mb = f"{_ANSI_G}L{_ANSI_RST}"
-            else:
-                _mb = f"{_ANSI_DIM}?{_ANSI_RST}"
+    def _trade_capture_cell(self, trade: dict, pnl: float) -> tuple[str, str]:
+        cap_ratio = self._capture_ratio_for_trade(trade)
+        if cap_ratio is not None:
+            cap_val = max(-999.0, min(999.0, cap_ratio * 100.0))
+            return f"{cap_val:+.0f}%", self._pnl_color(cap_val)
+        if pnl < 0.0:
+            return "n/a", _ANSI_R
+        return "—", _ANSI_DIM
 
-            _pnl_s = _fmt_compact(_pnl, _C_PNL)
-            _mfe_s = _fmt_compact(_mfe, _C_MFE)
-            _mae_s = _fmt_compact(-abs(_mae), _C_MAE)
-            if _compact_table:
-                _dir_s = "L" if _dir == "LONG" else ("S" if _dir == "SHORT" else "?")
-                _row = (
-                    f"  {_tid_s:<{_C_ID}} {_mb} {_date_s:<{_C_DATE}} "
-                    f"{_bot_s:<{_C_BOT}} {_dc}{_dir_s:<{_C_DIR}}{_ANSI_RST} "
-                    f"{_ansi_cell(_pnl_s, _pc, _C_PNL)} "
-                    f"{_ansi_cell(_cap_s, _cap_c, _C_CAP)} "
-                    f"{_ansi_cell(_mfe_s, _ANSI_G, _C_MFE)} "
-                    f"{_ansi_cell(_mae_s, _ANSI_R, _C_MAE)} "
-                    f"{_bars:>{_C_BRS}}  {_ANSI_DIM}{_rsn:<{_C_RSN}}{_ANSI_RST}"
-                )
-            else:
-                _row = (
-                    f"  {_tid_s:<{_C_ID}} {_mb} {_date_s:<{_C_DATE}} "
-                    f"{_dc}{_dir:<{_C_DIR}}{_ANSI_RST} "
-                    f"{_sym_s:<{_C_SYM}} {_tf:<{_C_TF}} {_ep_s:>{_C_ENT}} {_xp_s:>{_C_EXT}} "
-                    f"{_ansi_cell(_pnl_s, _pc, _C_PNL)} "
-                    f"{_ansi_cell(_cap_s, _cap_c, _C_CAP)} "
-                    f"{_ansi_cell(_mfe_s, _ANSI_G, _C_MFE)} "
-                    f"{_ansi_cell(_mae_s, _ANSI_R, _C_MAE)} "
-                    f"{_bars:>{_C_BRS}}  {_ANSI_DIM}{_rsn:<{_C_RSN}}{_ANSI_RST}"
-                )
-            if _row_idx == self._trades_cursor:
-                print(f"\033[7m{_strip_ansi(_row)}\033[0m")
-            else:
-                print(_row)
+    @staticmethod
+    def _trade_mode_badge(trade: dict) -> str:
+        mode = trade.get("trading_mode", "")
+        if mode == "paper":
+            return f"{_ANSI_Y}P{_ANSI_RST}"
+        if mode == "live":
+            return f"{_ANSI_G}L{_ANSI_RST}"
+        return f"{_ANSI_DIM}?{_ANSI_RST}"
 
-        if self._trades_per_page >= 8:
-            print(_sep)
+    @staticmethod
+    def _trade_close_reason(trade: dict, width: int) -> str:
+        reason_raw = trade.get("close_reason") or trade.get("exit_reason") or ""
+        reason = "-" if reason_raw in ("", "unknown") else str(reason_raw)
+        return reason[:width]
+
+    @staticmethod
+    def _compact_trade_row(row: dict, cols: dict[str, int | bool]) -> str:
+        dir_s = "L" if row["direction"] == "LONG" else ("S" if row["direction"] == "SHORT" else "?")
+        return (
+            f"  {row['tid']:<{cols['id']}} {row['mode']} {row['date']:<{cols['date']}} "
+            f"{row['bot']:<{cols['bot']}} {row['dir_color']}{dir_s:<{cols['dir']}}{_ANSI_RST} "
+            f"{_ansi_cell(row['pnl'], row['pnl_color'], cols['pnl'])} "
+            f"{_ansi_cell(row['cap'], row['cap_color'], cols['cap'])} "
+            f"{_ansi_cell(row['mfe'], _ANSI_G, cols['mfe'])} "
+            f"{_ansi_cell(row['mae'], _ANSI_R, cols['mae'])} "
+            f"{row['bars']:>{cols['bars']}}  {_ANSI_DIM}{row['reason']:<{cols['rsn']}}{_ANSI_RST}"
+        )
+
+    @staticmethod
+    def _full_trade_row(row: dict, cols: dict[str, int | bool]) -> str:
+        return (
+            f"  {row['tid']:<{cols['id']}} {row['mode']} {row['date']:<{cols['date']}} "
+            f"{row['dir_color']}{row['direction']:<{cols['dir']}}{_ANSI_RST} "
+            f"{row['sym']:<{cols['sym']}} {row['tf']:<{cols['tf']}} "
+            f"{row['entry']:>{cols['ent']}} {row['exit']:>{cols['ext']}} "
+            f"{_ansi_cell(row['pnl'], row['pnl_color'], cols['pnl'])} "
+            f"{_ansi_cell(row['cap'], row['cap_color'], cols['cap'])} "
+            f"{_ansi_cell(row['mfe'], _ANSI_G, cols['mfe'])} "
+            f"{_ansi_cell(row['mae'], _ANSI_R, cols['mae'])} "
+            f"{row['bars']:>{cols['bars']}}  {_ANSI_DIM}{row['reason']:<{cols['rsn']}}{_ANSI_RST}"
+        )
 
     def _render_trades(self) -> None:
         """Trades tab — dispatches to the correct drill-down level renderer."""
