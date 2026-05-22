@@ -6858,33 +6858,12 @@ class TabbedHUD:
         gamma = rs.get("gamma", 0)
         runway = rs.get("runway", 0.5)
         feas = rs.get("feasibility", 0.5)
-
-        if feas > FEASIBILITY_HIGH_THRESHOLD:
-            feas_color = _ANSI_G
-        elif feas > FEASIBILITY_MEDIUM_THRESHOLD:
-            feas_color = _ANSI_Y
-        else:
-            feas_color = _ANSI_R
-        if eff > EFF_HIGH_THRESHOLD:
-            eff_col = _ANSI_G
-        elif eff > EFF_WARN_THRESHOLD:
-            eff_col = _ANSI_Y
-        else:
-            eff_col = _ANSI_R
-        gam_col = _ANSI_G if gamma > 0 else _ANSI_R
-        if runway > RUNWAY_OK_BARS:
-            rwy_col = _ANSI_G
-        elif runway > RUNWAY_WARN_BARS:
-            rwy_col = _ANSI_Y
-        else:
-            rwy_col = _ANSI_R
-
         print(
-            f"    Efficiency:        {eff_col}{eff:>10.3f}{_ANSI_RST}  "
+            f"    Efficiency:        {self._risk_efficiency_color(eff)}{eff:>10.3f}{_ANSI_RST}  "
             f"{_ANSI_DIM}(path directness; 1=straight trend){_ANSI_RST}"
         )
         print(
-            f"    Gamma (γ):         {gam_col}{gamma:>+10.3f}{_ANSI_RST}  "
+            f"    Gamma (γ):         {_ANSI_G if gamma > 0 else _ANSI_R}{gamma:>+10.3f}{_ANSI_RST}  "
             f"{_ANSI_DIM}(price acceleration; +ve favours longs){_ANSI_RST}"
         )
         jerk = rs.get("jerk", 0.0)
@@ -6894,35 +6873,66 @@ class TabbedHUD:
             f"{_ANSI_DIM}(rate of change of gamma){_ANSI_RST}"
         )
         print(
-            f"    Runway:            {rwy_col}{runway:>10.3f}{_ANSI_RST}  "
+            f"    Runway:            {self._risk_runway_color(runway)}{runway:>10.3f}{_ANSI_RST}  "
             f"{_ANSI_DIM}(vol headwind score; 1=smooth, 0=heavy){_ANSI_RST}"
         )
-        print(f"    Entry Feasibility: {feas_color}{feas:>10.3f}{_ANSI_RST}")
+        print(f"    Entry Feasibility: {self._risk_feasibility_color(feas)}{feas:>10.3f}{_ANSI_RST}")
+        self._render_risk_depth_metrics(rs)
+        self._render_feasibility_bar(feas)
 
-        # Depth metrics
-        _depth_ratio = rs.get("depth_ratio", 0.0)
-        _depth_levels = rs.get("depth_levels", 0)
-        _depth_buffer = rs.get("depth_buffer", 0.0)
-        _depth_gate = rs.get("depth_gate_active", False)
-        _has_l2 = _depth_levels > 0
-        if _has_l2 or _depth_ratio > 0:
-            print()
-            _gate_str = f"  {_ANSI_R}[GATE ACTIVE]{_ANSI_RST}" if _depth_gate else ""
-            if _has_l2:
-                _dr_col = _ANSI_G if _depth_ratio > 0.8 else (_ANSI_Y if _depth_ratio > 0.5 else _ANSI_R)
-                print(
-                    f"    Depth ratio:       {_dr_col}{_depth_ratio:>10.3f}{_ANSI_RST}  "
-                    f"{_ANSI_DIM}(bid_depth/ask_depth; 1=balanced){_ANSI_RST}{_gate_str}"
-                )
-            else:
-                # depth_ratio defaults to 1.0 when there is no real L2 feed.
-                # Display N/A so it does not look like a balanced live order book.
-                print(
-                    f"    Depth ratio:       {_ANSI_DIM}       N/A{_ANSI_RST}  "
-                    f"{_ANSI_DIM}(no L2 data){_ANSI_RST}{_gate_str}"
-                )
-            print(f"    Depth levels:      {_depth_levels:>10}    buffer: {_depth_buffer:.2f}")
+    @staticmethod
+    def _risk_feasibility_color(feas: float) -> str:
+        if feas > FEASIBILITY_HIGH_THRESHOLD:
+            return _ANSI_G
+        if feas > FEASIBILITY_MEDIUM_THRESHOLD:
+            return _ANSI_Y
+        return _ANSI_R
 
+    @staticmethod
+    def _risk_efficiency_color(efficiency: float) -> str:
+        if efficiency > EFF_HIGH_THRESHOLD:
+            return _ANSI_G
+        if efficiency > EFF_WARN_THRESHOLD:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _risk_runway_color(runway: float) -> str:
+        if runway > RUNWAY_OK_BARS:
+            return _ANSI_G
+        if runway > RUNWAY_WARN_BARS:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _depth_ratio_color(depth_ratio: float) -> str:
+        if depth_ratio > 0.8:
+            return _ANSI_G
+        if depth_ratio > 0.5:
+            return _ANSI_Y
+        return _ANSI_R
+
+    def _render_risk_depth_metrics(self, rs: dict) -> None:
+        depth_ratio = rs.get("depth_ratio", 0.0)
+        depth_levels = rs.get("depth_levels", 0)
+        if depth_levels <= 0 and depth_ratio <= 0:
+            return
+        print()
+        gate_str = f"  {_ANSI_R}[GATE ACTIVE]{_ANSI_RST}" if rs.get("depth_gate_active", False) else ""
+        if depth_levels > 0:
+            print(
+                f"    Depth ratio:       {self._depth_ratio_color(depth_ratio)}{depth_ratio:>10.3f}{_ANSI_RST}  "
+                f"{_ANSI_DIM}(bid_depth/ask_depth; 1=balanced){_ANSI_RST}{gate_str}"
+            )
+        else:
+            print(
+                f"    Depth ratio:       {_ANSI_DIM}       N/A{_ANSI_RST}  "
+                f"{_ANSI_DIM}(no L2 data){_ANSI_RST}{gate_str}"
+            )
+        print(f"    Depth levels:      {depth_levels:>10}    buffer: {rs.get('depth_buffer', 0.0):.2f}")
+
+    @staticmethod
+    def _render_feasibility_bar(feas: float) -> None:
         bar_len = 40
         feas_pct = max(0, min(1, feas))
         filled = int(bar_len * feas_pct)
