@@ -6579,114 +6579,139 @@ class TabbedHUD:
 
     def _render_risk_circuit_breaker(self, rs: dict) -> None:
         """Render circuit breaker status block with individual breaker details."""
+        self._render_circuit_breaker_banner(rs)
+        cb_data = self._load_circuit_breaker_data()
+        if not cb_data:
+            return
+        print("  \033[1m🔌 INDIVIDUAL BREAKERS\033[0m")
+        for key, label in self._breaker_labels().items():
+            self._render_circuit_breaker_row(key, label, cb_data, rs)
+        print()
+
+    def _render_circuit_breaker_banner(self, rs: dict) -> None:
         cb = rs.get("circuit_breaker", "INACTIVE")
-        kurt_gate = rs.get("kurtosis_gate_active", False)
-        _scope = self._risk_scope_label(rs)
         if cb == "ACTIVE":
             print(f"  {_ANSI_R}╔════════════════════════════════════════╗")
             print("  ║     ⚠️  CIRCUIT BREAKER ACTIVE ⚠️       ║")
             print(f"  ╚════════════════════════════════════════╝{_ANSI_RST}")
             print(f"  {_ANSI_Y}Press [r] to review and reset circuit breakers{_ANSI_RST}\n")
-        elif kurt_gate:
-            _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
-            _kurt_note = "entries BLOCKED" if _is_live_mode else "bypassed in paper mode"
-            _kurt_threshold = float(
-                rs.get("kurtosis_threshold")
-                or self.market_stats.get("kurtosis_threshold")
-                or KURTOSIS_FAT_TAIL_THRESHOLD
-            )
-            print(
-                f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE [{_scope}] "
-                f"(κ={rs.get('kurtosis', 0):.1f} excess > {_kurt_threshold:.1f}){_ANSI_RST}  "
-                f"{_ANSI_DIM}{_kurt_note}{_ANSI_RST}\n"
-            )
+        elif rs.get("kurtosis_gate_active", False):
+            self._render_kurtosis_gate_banner(rs)
         else:
             print(f"  {_ANSI_G}✓ Circuit Breaker: INACTIVE{_ANSI_RST}\n")
 
-        # Load individual breaker statuses from circuit_breakers.json
-        _cb_path = self._preferred_data_file("circuit_breakers.json")
-        _cb_data: dict = {}
-        if _cb_path.exists():
-            try:
-                with open(_cb_path, encoding="utf-8") as _f:
-                    _cb_data = json.load(_f)
-            except Exception:
-                pass
-        if not _cb_data:
-            return
+    def _render_kurtosis_gate_banner(self, rs: dict) -> None:
+        kurt_note = (
+            "entries BLOCKED"
+            if getattr(self, "_perf_snapshot_mode", "") == "live"
+            else "bypassed in paper mode"
+        )
+        threshold = self._risk_kurtosis_threshold(rs)
+        print(
+            f"  {_ANSI_Y}⚡ Kurtosis gate: ACTIVE [{self._risk_scope_label(rs)}] "
+            f"(κ={rs.get('kurtosis', 0):.1f} excess > {threshold:.1f}){_ANSI_RST}  "
+            f"{_ANSI_DIM}{kurt_note}{_ANSI_RST}\n"
+        )
 
-        _breaker_labels = {
+    def _load_circuit_breaker_data(self) -> dict:
+        cb_path = self._preferred_data_file("circuit_breakers.json")
+        if cb_path.exists():
+            try:
+                with open(cb_path, encoding="utf-8") as cb_file:
+                    return json.load(cb_file)
+            except Exception:
+                return {}
+        return {}
+
+    @staticmethod
+    def _breaker_labels() -> dict[str, str]:
+        return {
             "sortino": "Sortino",
             "kurtosis": "Kurtosis",
             "drawdown": "Drawdown",
             "consecutive_losses": "Consec Losses",
         }
-        print("  \033[1m🔌 INDIVIDUAL BREAKERS\033[0m")
-        _kurt_gate_active = bool(rs.get("kurtosis_gate_active", False))
-        _kurtosis_now = float(rs.get("kurtosis", 0.0) or 0.0)
-        _kurtosis_threshold = float(
+
+    def _risk_kurtosis_threshold(self, rs: dict) -> float:
+        return float(
             rs.get("kurtosis_threshold")
             or self.market_stats.get("kurtosis_threshold")
             or KURTOSIS_FAT_TAIL_THRESHOLD
         )
-        for _key, _label in _breaker_labels.items():
-            _b = _cb_data.get(_key)
-            if not isinstance(_b, dict):
-                _b = {}
-            _tripped = bool(_b.get("is_tripped", False))
-            _gate_only = False
-            if _key == "kurtosis" and _kurt_gate_active and not _tripped:
-                _tripped = True
-                _gate_only = True
-            if _tripped:
-                _trip_ts = _b.get("trip_time", "")
-                _ts_short = _trip_ts[11:19] if _trip_ts and len(_trip_ts) >= 19 else (_trip_ts or "?")
-                _icon = f"{_ANSI_R}✗ TRIPPED{_ANSI_RST}"
-                _detail = f"  {_ANSI_DIM}@ {_ts_short}{_ANSI_RST}" if _trip_ts else ""
 
-                _reason = _b.get("trip_reason", "")
-                if _gate_only:
-                    _reason = f"Kurtosis gate active [{_scope}] (entry gate)"
-                if _reason:
-                    _detail += f"  {_ANSI_Y}→ {_reason}{_ANSI_RST}"
+    def _render_circuit_breaker_row(self, key: str, label: str, cb_data: dict, rs: dict) -> None:
+        breaker = cb_data.get(key) if isinstance(cb_data.get(key), dict) else {}
+        tripped = bool(breaker.get("is_tripped", False))
+        gate_only = key == "kurtosis" and bool(rs.get("kurtosis_gate_active", False)) and not tripped
+        icon, detail = self._circuit_breaker_status_parts(breaker, rs, gate_only, tripped or gate_only)
+        extra = self._circuit_breaker_extra(key, breaker)
+        print(f"    {label:<15} {icon}{detail}{extra}")
 
-                _tv = _b.get("trip_value", 0.0)
-                _th = _b.get("threshold", 0.0)
-                if _gate_only:
-                    _tv = _kurtosis_now
-                    _th = _kurtosis_threshold
-                if _tv or _th:
-                    _detail += f"  {_ANSI_DIM}(val={_tv:.2f} thr={_th:.2f}){_ANSI_RST}"
+    def _circuit_breaker_status_parts(
+        self,
+        breaker: dict,
+        rs: dict,
+        gate_only: bool,
+        is_tripped: bool,
+    ) -> tuple[str, str]:
+        if not is_tripped:
+            return f"{_ANSI_G}✓ OK{_ANSI_RST}", ""
+        trip_ts = breaker.get("trip_time", "")
+        detail = self._circuit_breaker_trip_detail(breaker, rs, gate_only, trip_ts)
+        return f"{_ANSI_R}✗ TRIPPED{_ANSI_RST}", detail
 
-                _cd_mins = _b.get("cooldown_minutes", 60)
-                if _trip_ts:
-                    try:
-                        _trip_dt = datetime.fromisoformat(_trip_ts)
-                        _elapsed = (datetime.now(UTC) - _trip_dt).total_seconds() / 60.0
-                        _remaining = max(0, _cd_mins - _elapsed)
-                        if _remaining > 0:
-                            _detail += f"  {_ANSI_DIM}cooldown: {_remaining:.0f}m left{_ANSI_RST}"
-                        else:
-                            _detail += f"  {_ANSI_G}cooldown elapsed{_ANSI_RST}"
-                    except (ValueError, TypeError):
-                        pass
-            else:
-                _icon = f"{_ANSI_G}✓ OK{_ANSI_RST}"
-                _detail = ""
-            # Append breaker-specific live values
-            _extra = ""
-            if _key == "drawdown":
-                _dd = _b.get("current_drawdown", 0.0)
-                _peak = _b.get("peak_equity", 0.0)
-                _dd_pct = _dd * 100 if _dd < 1 else _dd  # handle both fraction and %
-                _dd_col = _ANSI_R if _dd_pct > DD_HIGH_PCT else (_ANSI_Y if _dd_pct > DD_WARN_PCT else _ANSI_G)
-                _extra = f"  {_dd_col}DD={_dd_pct:.2f}%{_ANSI_RST}  peak={_peak:.0f}"
-            elif _key == "consecutive_losses":
-                _streak = _b.get("consecutive_losses", 0)
-                _s_col = _ANSI_R if _streak >= 5 else (_ANSI_Y if _streak >= 3 else _ANSI_G)
-                _extra = f"  {_s_col}streak={_streak}{_ANSI_RST}"
-            print(f"    {_label:<15} {_icon}{_detail}{_extra}")
-        print()
+    def _circuit_breaker_trip_detail(self, breaker: dict, rs: dict, gate_only: bool, trip_ts: str) -> str:
+        detail = self._trip_timestamp_detail(trip_ts)
+        reason = breaker.get("trip_reason", "")
+        if gate_only:
+            reason = f"Kurtosis gate active [{self._risk_scope_label(rs)}] (entry gate)"
+        if reason:
+            detail += f"  {_ANSI_Y}→ {reason}{_ANSI_RST}"
+        detail += self._trip_value_detail(breaker, rs, gate_only)
+        detail += self._trip_cooldown_detail(breaker, trip_ts)
+        return detail
+
+    @staticmethod
+    def _trip_timestamp_detail(trip_ts: str) -> str:
+        if not trip_ts:
+            return ""
+        ts_short = trip_ts[11:19] if len(trip_ts) >= 19 else trip_ts
+        return f"  {_ANSI_DIM}@ {ts_short}{_ANSI_RST}"
+
+    def _trip_value_detail(self, breaker: dict, rs: dict, gate_only: bool) -> str:
+        trip_value = float(rs.get("kurtosis", 0.0) or 0.0) if gate_only else breaker.get("trip_value", 0.0)
+        threshold = self._risk_kurtosis_threshold(rs) if gate_only else breaker.get("threshold", 0.0)
+        if trip_value or threshold:
+            return f"  {_ANSI_DIM}(val={trip_value:.2f} thr={threshold:.2f}){_ANSI_RST}"
+        return ""
+
+    @staticmethod
+    def _trip_cooldown_detail(breaker: dict, trip_ts: str) -> str:
+        if not trip_ts:
+            return ""
+        try:
+            trip_dt = datetime.fromisoformat(trip_ts)
+            elapsed = (datetime.now(UTC) - trip_dt).total_seconds() / 60.0
+            remaining = max(0, breaker.get("cooldown_minutes", 60) - elapsed)
+        except (ValueError, TypeError):
+            return ""
+        if remaining > 0:
+            return f"  {_ANSI_DIM}cooldown: {remaining:.0f}m left{_ANSI_RST}"
+        return f"  {_ANSI_G}cooldown elapsed{_ANSI_RST}"
+
+    @staticmethod
+    def _circuit_breaker_extra(key: str, breaker: dict) -> str:
+        if key == "drawdown":
+            drawdown = breaker.get("current_drawdown", 0.0)
+            peak = breaker.get("peak_equity", 0.0)
+            dd_pct = drawdown * 100 if drawdown < 1 else drawdown
+            dd_color = _ANSI_R if dd_pct > DD_HIGH_PCT else (_ANSI_Y if dd_pct > DD_WARN_PCT else _ANSI_G)
+            return f"  {dd_color}DD={dd_pct:.2f}%{_ANSI_RST}  peak={peak:.0f}"
+        if key == "consecutive_losses":
+            streak = breaker.get("consecutive_losses", 0)
+            streak_color = _ANSI_R if streak >= 5 else (_ANSI_Y if streak >= 3 else _ANSI_G)
+            return f"  {streak_color}streak={streak}{_ANSI_RST}"
+        return ""
 
     def _risk_scope_label(self, rs: dict) -> str:
         """Return display scope for risk metrics."""
