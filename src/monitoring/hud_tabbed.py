@@ -5857,195 +5857,221 @@ class TabbedHUD:
         Columns:
           Date+Time | Bot | Mode | Agent | Decision | Conf | Detail (varies by decision type)
         """
-        # ── Pre-filter: keep only selected mode when mixed ───────────────────
+        entries = self._filtered_decision_entries(entries, mode_filter)
+        target_width = max(96, self._term_width())
+        collapsed = self._collapsed_close_pending_entries(entries)
+        self._render_decision_distribution(entries, collapsed)
+        header = f"  {'Time':<12} {'Bot':<13} {'Mode':<5} {'Agent':<10} {'Decision':<10} {'Conf':>5}  {'Detail'}"
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
+        self._render_collapsed_decision_rows(collapsed, cursor_idx, target_width)
+        print("  " + "─" * (_visible_width(header) - 2))
+
+    @staticmethod
+    def _filtered_decision_entries(entries: list, mode_filter: str) -> list:
         if mode_filter in ("paper", "live"):
-            entries = [e for e in entries if e.get("trading_mode") == mode_filter]
+            return [entry for entry in entries if entry.get("trading_mode") == mode_filter]
+        return entries
 
-        def _f(v: object, d: float = 0.0) -> float:
-            try:
-                return float(v) if v is not None else d
-            except (TypeError, ValueError):
-                return d
+    @staticmethod
+    def _dec_float(value: object, default: float = 0.0) -> float:
+        try:
+            return float(value) if value is not None else default
+        except (TypeError, ValueError):
+            return default
 
-        _target_width = max(96, self._term_width())
-
-        # ── Pre-pass: collapse CLOSE_PENDING runs ─────────────────────────
-        collapsed: list[dict | str] = []  # dict = normal entry, str = summary line
+    def _collapsed_close_pending_entries(self, entries: list) -> list[dict | str]:
+        collapsed: list[dict | str] = []
         i = 0
         while i < len(entries):
             e = entries[i]
             if e.get("decision", "").upper() == "CLOSE_PENDING":
-                run_start = i
-                tid = e.get("trade_id", "?")
-                while i < len(entries) and entries[i].get("decision", "").upper() == "CLOSE_PENDING":
-                    i += 1
-                run_len = i - run_start
-                last = entries[i - 1]
-                _rsn = last.get("reasoning", {})
-                _ctx = last.get("context", {})
-                _mfe = _f(_rsn.get("mfe"))
-                _mae = _f(_rsn.get("mae"))
-                _upnl = _f(_ctx.get("unrealized_pnl"))
-                _pnl_c = _ANSI_G if _upnl >= 0 else _ANSI_R
-                collapsed.append(
-                    f"  {_ANSI_DIM}   ... Harvester held {run_len} bars (TrdID:{tid[:8]})  "
-                    f"MFE:{_ANSI_G}+{_mfe:.2f}{_ANSI_DIM}  MAE:{_ANSI_R}-{_mae:.2f}{_ANSI_DIM}  "
-                    f"uPnL:{_pnl_c}{_upnl:+.2f}{_ANSI_DIM}{_ANSI_RST}"
-                )
+                i = self._append_close_pending_summary(entries, collapsed, i)
             else:
                 collapsed.append(e)
                 i += 1
+        return collapsed
 
-        # ── Distribution (only non-CLOSE_PENDING decisions) ───────────────
-        _counts: dict[str, int] = {}
-        _total_entries = 0
+    def _append_close_pending_summary(self, entries: list, collapsed: list[dict | str], start: int) -> int:
+        i = start
+        tid = entries[start].get("trade_id", "?")
+        while i < len(entries) and entries[i].get("decision", "").upper() == "CLOSE_PENDING":
+            i += 1
+        run_len = i - start
+        last = entries[i - 1]
+        reasoning = last.get("reasoning", {}) if isinstance(last.get("reasoning", {}), dict) else {}
+        context = last.get("context", {}) if isinstance(last.get("context", {}), dict) else {}
+        mfe = self._dec_float(reasoning.get("mfe"))
+        mae = self._dec_float(reasoning.get("mae"))
+        upnl = self._dec_float(context.get("unrealized_pnl"))
+        pnl_color = _ANSI_G if upnl >= 0 else _ANSI_R
+        collapsed.append(
+            f"  {_ANSI_DIM}   ... Harvester held {run_len} bars (TrdID:{tid[:8]})  "
+            f"MFE:{_ANSI_G}+{mfe:.2f}{_ANSI_DIM}  MAE:{_ANSI_R}-{mae:.2f}{_ANSI_DIM}  "
+            f"uPnL:{pnl_color}{upnl:+.2f}{_ANSI_DIM}{_ANSI_RST}"
+        )
+        return i
+
+    @staticmethod
+    def _decision_distribution(collapsed: list[dict | str]) -> tuple[dict[str, int], int]:
+        counts: dict[str, int] = {}
+        total_entries = 0
         for item in collapsed:
             if isinstance(item, dict):
-                _d = item.get("decision", "?").upper()
-                _counts[_d] = _counts.get(_d, 0) + 1
-                _total_entries += 1
-        _dist = "  ".join(f"{k}:{v}" for k, v in sorted(_counts.items()))
-        print(f"  Decisions: {_dist}  ({len(entries) - _total_entries} held bars collapsed)\n")
+                decision = item.get("decision", "?").upper()
+                counts[decision] = counts.get(decision, 0) + 1
+                total_entries += 1
+        return counts, total_entries
 
-        # ── Header ────────────────────────────────────────────────────────
-        header = f"  {'Time':<12} {'Bot':<13} {'Mode':<5} {'Agent':<10} {'Decision':<10} {'Conf':>5}  {'Detail'}"
-        print(header)
-        print("  " + "─" * (_visible_width(header) - 2))
+    def _render_decision_distribution(self, entries: list, collapsed: list[dict | str]) -> None:
+        counts, total_entries = self._decision_distribution(collapsed)
+        distribution = "  ".join(f"{key}:{value}" for key, value in sorted(counts.items()))
+        print(f"  Decisions: {distribution}  ({len(entries) - total_entries} held bars collapsed)\n")
 
-        _seen_sessions: set[str] = set()
-        _row_idx = 0  # tracks only dict entries for cursor matching
+    def _render_collapsed_decision_rows(
+        self,
+        collapsed: list[dict | str],
+        cursor_idx: int,
+        target_width: int,
+    ) -> None:
+        seen_sessions: set[str] = set()
+        row_idx = 0
         for item in collapsed:
-            # Collapsed CLOSE_PENDING summary line
             if isinstance(item, str):
                 print(item)
                 continue
+            is_cursor = cursor_idx >= 0 and row_idx == cursor_idx
+            row_idx += 1
+            self._render_decision_session_banner(item, seen_sessions)
+            self._render_decision_entry_row(item, is_cursor, target_width)
 
-            entry = item
-            _is_cursor = cursor_idx >= 0 and _row_idx == cursor_idx
-            _row_idx += 1
+    def _render_decision_session_banner(self, entry: dict, seen_sessions: set[str]) -> None:
+        session = entry.get("session", "")
+        if session and session not in seen_sessions:
+            seen_sessions.add(session)
+            print(f"  {_ANSI_DIM}── session {session} ──{_ANSI_RST}")
 
-            # ── Session break header ───────────────────────────────────────
-            # Only emit the separator the first time we encounter a session in
-            # this render (entries from multiple bot files may interleave by
-            # timestamp; without this guard the same session banner repeats).
-            _sess = entry.get("session", "")
-            if _sess and _sess not in _seen_sessions:
-                _seen_sessions.add(_sess)
-                print(f"  {_ANSI_DIM}── session {_sess} ──{_ANSI_RST}")
+    def _render_decision_entry_row(self, entry: dict, is_cursor: bool, target_width: int) -> None:
+        decision = entry.get("decision", "?").upper()
+        reasoning = entry.get("reasoning", {}) if isinstance(entry.get("reasoning", {}), dict) else {}
+        prefix = self._decision_entry_prefix(entry, decision, is_cursor)
+        detail = self._decision_entry_detail(entry, decision, reasoning)
+        detail = _truncate_visible(detail, max(12, target_width - _visible_width(prefix)))
+        print(f"{prefix}{detail}")
+        self._render_inline_decision_gates(decision, reasoning)
 
-            # ── Timestamp ──────────────────────────────────────────────────
-            ts_raw = entry.get("timestamp", "?")
-            try:
-                ts_str = ts_raw[5:16] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw[:11]
-            except Exception:
-                ts_str = str(ts_raw)[:11]
+    def _decision_entry_prefix(self, entry: dict, decision: str, is_cursor: bool) -> str:
+        cursor_prefix = f"{_ANSI_G}►{_ANSI_RST}" if is_cursor else " "
+        return (
+            f"{cursor_prefix} {self._decision_timestamp(entry):<12} "
+            f"{self._decision_entry_bot_label(entry)[:13]:<13} "
+            f"{self._decision_mode_tag(entry)} {entry.get('agent', '?')[:9]:<10} "
+            f"{self._decision_color(decision)}{decision:<10}{_ANSI_RST} "
+            f"{self._dec_float(entry.get('confidence')):>5.3f}  "
+        )
 
-            # ── Mode badge ─────────────────────────────────────────────────
-            # Fixed 5-cell tag (no emoji) so the column stays aligned regardless
-            # of the terminal's wide-character handling.
-            _mode = entry.get("trading_mode", "")
-            if _mode == "paper":
-                mode_str = f"{_ANSI_Y}{'PPR':<5}{_ANSI_RST}"
-            elif _mode == "live":
-                mode_str = f"{_ANSI_G}{'LIV':<5}{_ANSI_RST}"
-            else:
-                mode_str = f"{_ANSI_DIM}{'?':<5}{_ANSI_RST}"
+    @staticmethod
+    def _decision_timestamp(entry: dict) -> str:
+        ts_raw = entry.get("timestamp", "?")
+        try:
+            return ts_raw[5:16] if len(ts_raw) >= _DEC_LOG_TS_MIN_LEN else ts_raw[:11]
+        except Exception:
+            return str(ts_raw)[:11]
 
-            agent = entry.get("agent", "?")[:9]
-            decision = entry.get("decision", "?")
-            conf = _f(entry.get("confidence"))
-            bot_str = self._decision_entry_bot_label(entry)[:13]
-            ctx = entry.get("context", {})
-            if not isinstance(ctx, dict):
-                ctx = {}
-            reasoning = entry.get("reasoning", {})
-            if not isinstance(reasoning, dict):
-                reasoning = {}
+    @staticmethod
+    def _decision_mode_tag(entry: dict) -> str:
+        mode = entry.get("trading_mode", "")
+        if mode == "paper":
+            return f"{_ANSI_Y}{'PPR':<5}{_ANSI_RST}"
+        if mode == "live":
+            return f"{_ANSI_G}{'LIV':<5}{_ANSI_RST}"
+        return f"{_ANSI_DIM}{'?':<5}{_ANSI_RST}"
 
-            # ── Build decision-specific detail string ──────────────────────
-            dec_upper = decision.upper()
-            if dec_upper in ("LONG", "SHORT"):
-                # Entry: show regime, feasibility, predicted_runway, VPIN-z, Q-spread
-                regime = (ctx.get("regime") or "?")[:5]
-                feas = _f(reasoning.get("feasibility"))
-                runway = _f(reasoning.get("predicted_runway"))
-                vpin_z = _f(ctx.get("vpin_z"))
-                qs = _f(reasoning.get("q_spread"))
-                tid = entry.get("trade_id", "")[:8]
-                vpin_flag = f"{_ANSI_R}!{_ANSI_RST}" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
-                feas_c = _ANSI_G if feas >= 0.6 else (_ANSI_Y if feas >= 0.3 else _ANSI_R)
-                detail = (
-                    f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} "
-                    f"rwy:{runway:.4f} vz:{vpin_z:+.1f}{vpin_flag} "
-                    f"QΔ:{qs:.3f} [{tid}]"
-                )
-            elif dec_upper == "NO_ENTRY":
-                # Rejected entry: show WHY (feasibility, regime, VPIN-z, gated_conditions)
-                regime = (ctx.get("regime") or "?")[:5]
-                feas = _f(reasoning.get("feasibility"))
-                vpin_z = _f(ctx.get("vpin_z"))
-                cb_ok = reasoning.get("circuit_breakers_ok", True)
-                feas_c = _ANSI_R if feas < 0.3 else (_ANSI_Y if feas < 0.6 else _ANSI_G)
-                cb_str = f" {_ANSI_R}CB!{_ANSI_RST}" if not cb_ok else ""
-                gated = reasoning.get("gated_conditions") or []
-                if isinstance(gated, list) and gated:
-                    _gate_summary = f" [{_ANSI_R}{len(gated)}gate{'s' if len(gated) != 1 else ''}{_ANSI_RST}]"
-                else:
-                    _gate_summary = ""
-                detail = f"ζ:{regime} F:{feas_c}{feas:.2f}{_ANSI_RST} vz:{vpin_z:+.1f}{cb_str}{_gate_summary}"
-            elif dec_upper == "CLOSE":
-                # Exit: show capture_ratio, MFE, MAE, unrealized PnL, Q-spread
-                cap = _f(reasoning.get("capture_ratio"))
-                mfe = _f(reasoning.get("mfe"))
-                mae = _f(reasoning.get("mae"))
-                upnl = _f(ctx.get("unrealized_pnl"))
-                qs = _f(reasoning.get("q_spread"))
-                tid = entry.get("trade_id", "")[:8]
-                cap_c = _ANSI_G if cap >= 0.6 else (_ANSI_Y if cap >= 0.3 else _ANSI_R)
-                pnl_c = _ANSI_G if upnl >= 0 else _ANSI_R
-                detail = (
-                    f"cap:{cap_c}{cap:+.2f}{_ANSI_RST} "
-                    f"MFE:{_ANSI_G}+{mfe:.2f}{_ANSI_RST} "
-                    f"MAE:{_ANSI_R}-{mae:.2f}{_ANSI_RST} "
-                    f"uPnL:{pnl_c}{upnl:+.1f}{_ANSI_RST} Q\u0394:{qs:.3f} [{tid}]"
-                )
-            elif dec_upper == "HOLD":
-                # Hold: show ticks_held, capture_ratio trajectory
-                ticks = int(_f(reasoning.get("ticks_held")))
-                cap = _f(reasoning.get("capture_ratio"))
-                upnl = _f(ctx.get("unrealized_pnl"))
-                pnl_c = _ANSI_G if upnl >= 0 else _ANSI_R
-                detail = f"bars:{ticks} cap:{cap:+.2f} uPnL:{pnl_c}{upnl:+.1f}{_ANSI_RST}"
-            else:
-                price = _f(ctx.get("price"))
-                detail = f"@ {price:.2f}"
+    @staticmethod
+    def _decision_color(decision: str) -> str:
+        if decision in ("BUY", "LONG", "ENTER"):
+            return _ANSI_G
+        if decision in ("SELL", "SHORT", "EXIT", "CLOSE"):
+            return _ANSI_R
+        if decision == "HOLD":
+            return _ANSI_Y
+        if decision == "NO_ENTRY":
+            return _ANSI_DIM
+        return _ANSI_RST
 
-            # ── Color by decision type ─────────────────────────────────────
-            if dec_upper in ("BUY", "LONG", "ENTER"):
-                color = _ANSI_G
-            elif dec_upper in ("SELL", "SHORT", "EXIT", "CLOSE"):
-                color = _ANSI_R
-            elif dec_upper == "HOLD":
-                color = _ANSI_Y
-            elif dec_upper == "NO_ENTRY":
-                color = _ANSI_DIM
-            else:
-                color = _ANSI_RST
+    def _decision_entry_detail(self, entry: dict, decision: str, reasoning: dict) -> str:
+        context = entry.get("context", {}) if isinstance(entry.get("context", {}), dict) else {}
+        if decision in ("LONG", "SHORT"):
+            return self._decision_entry_entry_detail(entry, context, reasoning)
+        if decision == "NO_ENTRY":
+            return self._decision_entry_no_entry_detail(context, reasoning)
+        if decision == "CLOSE":
+            return self._decision_entry_close_detail(entry, context, reasoning)
+        if decision == "HOLD":
+            return self._decision_entry_hold_detail(context, reasoning)
+        return f"@ {self._dec_float(context.get('price')):.2f}"
 
-            _cursor_pfx = f"{_ANSI_G}►{_ANSI_RST}" if _is_cursor else " "
-            _prefix = (
-                f"{_cursor_pfx} {ts_str:<12} {bot_str:<13} {mode_str} {agent:<10} "
-                f"{color}{dec_upper:<10}{_ANSI_RST} {conf:>5.3f}  "
-            )
-            detail = _truncate_visible(detail, max(12, _target_width - _visible_width(_prefix)))
-            print(f"{_prefix}{detail}")
-            # Expand gated_conditions inline for NO_ENTRY at L3+ (symbol/TF scope)
-            if dec_upper == "NO_ENTRY" and getattr(self, "_ctx_level", 1) >= 3:
-                _gated = reasoning.get("gated_conditions") or []
-                if isinstance(_gated, list) and _gated:
-                    for _g in _gated[:6]:
-                        print(f"  {'':38}{_ANSI_R}  ✗ {_g}{_ANSI_RST}")
-        print("  " + "─" * (_visible_width(header) - 2))
+    def _decision_entry_entry_detail(self, entry: dict, context: dict, reasoning: dict) -> str:
+        regime = (context.get("regime") or "?")[:5]
+        feas = self._dec_float(reasoning.get("feasibility"))
+        vpin_z = self._dec_float(context.get("vpin_z"))
+        vpin_flag = f"{_ANSI_R}!{_ANSI_RST}" if abs(vpin_z) > _DEC_LOG_VPIN_WARN else " "
+        feas_color = _ANSI_G if feas >= 0.6 else (_ANSI_Y if feas >= 0.3 else _ANSI_R)
+        return (
+            f"ζ:{regime} F:{feas_color}{feas:.2f}{_ANSI_RST} "
+            f"rwy:{self._dec_float(reasoning.get('predicted_runway')):.4f} "
+            f"vz:{vpin_z:+.1f}{vpin_flag} "
+            f"QΔ:{self._dec_float(reasoning.get('q_spread')):.3f} [{entry.get('trade_id', '')[:8]}]"
+        )
+
+    def _decision_entry_no_entry_detail(self, context: dict, reasoning: dict) -> str:
+        regime = (context.get("regime") or "?")[:5]
+        feas = self._dec_float(reasoning.get("feasibility"))
+        feas_color = _ANSI_R if feas < 0.3 else (_ANSI_Y if feas < 0.6 else _ANSI_G)
+        cb_str = f" {_ANSI_R}CB!{_ANSI_RST}" if not reasoning.get("circuit_breakers_ok", True) else ""
+        gated = reasoning.get("gated_conditions") or []
+        gate_summary = self._decision_gate_summary(gated)
+        return (
+            f"ζ:{regime} F:{feas_color}{feas:.2f}{_ANSI_RST} "
+            f"vz:{self._dec_float(context.get('vpin_z')):+.1f}{cb_str}{gate_summary}"
+        )
+
+    @staticmethod
+    def _decision_gate_summary(gated: object) -> str:
+        if isinstance(gated, list) and gated:
+            suffix = "s" if len(gated) != 1 else ""
+            return f" [{_ANSI_R}{len(gated)}gate{suffix}{_ANSI_RST}]"
+        return ""
+
+    def _decision_entry_close_detail(self, entry: dict, context: dict, reasoning: dict) -> str:
+        cap = self._dec_float(reasoning.get("capture_ratio"))
+        upnl = self._dec_float(context.get("unrealized_pnl"))
+        cap_color = _ANSI_G if cap >= 0.6 else (_ANSI_Y if cap >= 0.3 else _ANSI_R)
+        pnl_color = _ANSI_G if upnl >= 0 else _ANSI_R
+        return (
+            f"cap:{cap_color}{cap:+.2f}{_ANSI_RST} "
+            f"MFE:{_ANSI_G}+{self._dec_float(reasoning.get('mfe')):.2f}{_ANSI_RST} "
+            f"MAE:{_ANSI_R}-{self._dec_float(reasoning.get('mae')):.2f}{_ANSI_RST} "
+            f"uPnL:{pnl_color}{upnl:+.1f}{_ANSI_RST} "
+            f"Q\u0394:{self._dec_float(reasoning.get('q_spread')):.3f} [{entry.get('trade_id', '')[:8]}]"
+        )
+
+    def _decision_entry_hold_detail(self, context: dict, reasoning: dict) -> str:
+        upnl = self._dec_float(context.get("unrealized_pnl"))
+        pnl_color = _ANSI_G if upnl >= 0 else _ANSI_R
+        return (
+            f"bars:{int(self._dec_float(reasoning.get('ticks_held')))} "
+            f"cap:{self._dec_float(reasoning.get('capture_ratio')):+.2f} "
+            f"uPnL:{pnl_color}{upnl:+.1f}{_ANSI_RST}"
+        )
+
+    def _render_inline_decision_gates(self, decision: str, reasoning: dict) -> None:
+        if decision != "NO_ENTRY" or getattr(self, "_ctx_level", 1) < 3:
+            return
+        gated = reasoning.get("gated_conditions") or []
+        if isinstance(gated, list) and gated:
+            for gate in gated[:6]:
+                print(f"  {'':38}{_ANSI_R}  ✗ {gate}{_ANSI_RST}")
 
     def _render_legacy_decision_entries(self, entries: list, mode_filter: str = "") -> None:
         """Render legacy JSON-format decision log entries — newest first."""
