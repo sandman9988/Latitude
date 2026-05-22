@@ -3503,133 +3503,155 @@ class TabbedHUD:
         print(f"    Trigger {trig_ok}  Harvester {harv_ok}   Total steps: {trig_steps + harv_steps:,}")
         print()
 
-    def _render_training(self) -> None:
-        """Render agent training status — dispatches by drill level."""
-        self._render_breadcrumb("TRAINING", 3)
-        # Level dispatch: L1 = fleet summary, L2 = symbol summary, L3+ = bot detail
-        _level_detail = self._ctx_level >= 3 or self._training_detail
-        ts = self.training_stats
-        print(f"  {_ANSI_DIM}(canonical source: training_stats_*.json; per-bot file preferred){_ANSI_RST}\n")
-        pm = self.production_metrics.get("metrics", {})
+    @staticmethod
+    def _offline_stats_stale(ofs: dict) -> bool:
+        if not ofs.get("completed_at"):
+            return False
+        try:
+            completed_at = datetime.fromisoformat(ofs["completed_at"])
+            if completed_at.tzinfo is None:
+                completed_at = completed_at.replace(tzinfo=UTC)
+            return (datetime.now(UTC) - completed_at).total_seconds() > 86400
+        except Exception:
+            return False
+
+    def _render_training_offline_status(self, *, detail: bool) -> None:
         ofs = self.offline_stats
-        if ofs:
-            _ofs_status = self._offline_status_normalized(ofs)
-            # Auto-prune completed offline training older than 24 h
-            _ofs_stale = False
-            if _ofs_status == "complete" and ofs.get("completed_at"):
-                try:
-                    _comp = datetime.fromisoformat(ofs["completed_at"])
-                    if _comp.tzinfo is None:
-                        _comp = _comp.replace(tzinfo=UTC)
-                    _ofs_stale = (datetime.now(UTC) - _comp).total_seconds() > 86400
-                except Exception:
-                    pass
-            if _ofs_stale:
-                # Silently discard stale offline training display + remove file
-                self.offline_stats = {}
-                with contextlib.suppress(Exception):
-                    (self.data_dir / "offline_training_status.json").unlink(missing_ok=True)
-            else:
-                self._render_offline_training(ofs, detail=_level_detail)
-        _mode = self.bot_config.get("trading_mode", "paper")
-        _mode_label = "PAPER" if _mode == "paper" else ("LIVE" if _mode == "live" else "OFFLINE")
+        if not ofs:
+            return
+        if self._offline_status_normalized(ofs) == "complete" and self._offline_stats_stale(ofs):
+            self.offline_stats = {}
+            with contextlib.suppress(Exception):
+                (self.data_dir / "offline_training_status.json").unlink(missing_ok=True)
+            return
+        self._render_offline_training(ofs, detail=detail)
 
-        _training_items = [_item for _item in self.training_stats_all if isinstance(_item.get("stats"), dict)]
-        # At L2/L3, filter to the drilled symbol/TF
-        if self._ctx_level >= 2 and self._ctx_symbol:
-            _sym_f = self._ctx_symbol.upper()
-            _tf_f = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
-            _filtered = [
-                _it for _it in _training_items
-                if str(_it.get("symbol", "")).upper() == _sym_f
-                and (not _tf_f or int(_it.get("timeframe_minutes", 0) or 0) == _tf_f)
-            ]
-            if _filtered:
-                _training_items = _filtered
+    def _training_items_for_context(self) -> list[dict]:
+        items = [item for item in self.training_stats_all if isinstance(item.get("stats"), dict)]
+        if self._ctx_level < 2 or not self._ctx_symbol:
+            return items
+        sym_filter = self._ctx_symbol.upper()
+        tf_filter = self._ctx_tf if self._ctx_level >= 3 and self._ctx_tf else 0
+        filtered = [
+            item
+            for item in items
+            if str(item.get("symbol", "")).upper() == sym_filter
+            and (not tf_filter or int(item.get("timeframe_minutes", 0) or 0) == tf_filter)
+        ]
+        return filtered or items
 
-        if not _training_items:
-            _ts_nonempty = any(v for v in ts.values() if v)
-            if not _ts_nonempty:
-                print(f"\033[1m🤖 {_mode_label} BOT TRAINING\033[0m  {_ANSI_DIM}(no live bot running){_ANSI_RST}\n")
-                return
-            _training_items = [
+    def _training_fallback_items(self, ts: dict, mode_label: str) -> list[dict] | None:
+        if any(value for value in ts.values() if value):
+            return [
                 {
                     "symbol": self.active_sym,
                     "timeframe_minutes": self.active_tf_min,
                     "stats": ts,
                 }
             ]
+        print(f"\033[1m🤖 {mode_label} BOT TRAINING\033[0m  {_ANSI_DIM}(no live bot running){_ANSI_RST}\n")
+        return None
 
-        if not _level_detail:
-            self._render_training_summary(_training_items)
-            return
+    @staticmethod
+    def _training_item_scope(item: dict, active_sym: str, active_tf_min: int) -> tuple[str, str, int]:
+        tf_value = int(item.get("timeframe_minutes") or active_tf_min or 0)
+        sym_value = str(item.get("symbol") or active_sym or "").upper()
+        if sym_value and tf_value:
+            return f"{sym_value} M{tf_value}", sym_value, tf_value
+        if tf_value:
+            return f"M{tf_value}", sym_value, tf_value
+        return "BOT", sym_value, tf_value
 
+    def _render_training_detail_items(self, items: list[dict], mode_label: str, pm: dict) -> None:
         if self.universe_stats:
             self._render_trading_pipeline()
-
-        for _idx, _item in enumerate(_training_items):
-            _its = _item.get("stats", {})
-            _tf_for_label = _item.get("timeframe_minutes") or self.active_tf_min
-            _sym_for_label = str(_item.get("symbol") or self.active_sym or "").upper()
-            _scope = (
-                f"{_sym_for_label} M{int(_tf_for_label)}"
-                if _sym_for_label and _tf_for_label
-                else (f"M{int(_tf_for_label)}" if _tf_for_label else "BOT")
-            )
-            _item_pm_payload = self._load_bot_production_metrics(_sym_for_label, int(_tf_for_label or 0))
-            _item_pm = _item_pm_payload.get("metrics", pm) if isinstance(_item_pm_payload, dict) else pm
-            _train_label = f"{_mode_label} {_scope} TRAINING" if _scope != "BOT" else f"{_mode_label} BOT TRAINING"
-            print(f"\033[1m🤖 {_train_label}\033[0m\n")
-            self._render_live_trigger_agent(_its, _item_pm)
-            self._render_live_harvester_agent(_its, _item_pm)
-            self._render_live_arena_and_health(_its)
-            if _idx < len(_training_items) - 1:
+        for idx, item in enumerate(items):
+            item_stats = item.get("stats", {})
+            scope, sym, tf_value = self._training_item_scope(item, self.active_sym, self.active_tf_min)
+            item_pm_payload = self._load_bot_production_metrics(sym, tf_value)
+            item_pm = item_pm_payload.get("metrics", pm) if isinstance(item_pm_payload, dict) else pm
+            train_label = f"{mode_label} {scope} TRAINING" if scope != "BOT" else f"{mode_label} BOT TRAINING"
+            print(f"\033[1m🤖 {train_label}\033[0m\n")
+            self._render_live_trigger_agent(item_stats, item_pm)
+            self._render_live_harvester_agent(item_stats, item_pm)
+            self._render_live_arena_and_health(item_stats)
+            if idx < len(items) - 1:
                 print("  " + "─" * (self._term_width() - 4))
                 print()
 
-        # Next-update hint — training stats only refresh on bar close
-        _nbc_raw = self.market_stats.get("next_bar_close_utc")
-        if not _nbc_raw and self.active_sym and self.active_tf_min:
-            _aps = self._load_bot_stats(self.active_sym, self.active_tf_min)
-            _nbc_raw = _aps.get("next_bar_close_utc")
-        if not _nbc_raw:
-            _nbc_raw = self.bot_config.get("next_bar_close_utc")
-        _tf_min = (
-            self.market_stats.get("timeframe_minutes") or self.bot_config.get("timeframe_minutes") or self.active_tf_min
+    @staticmethod
+    def _format_duration_hint(seconds: float) -> str:
+        if seconds < 0:
+            return "bar closing…"
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        if seconds < 3600:
+            mins, secs = divmod(int(seconds), 60)
+            return f"{mins}m {secs:02d}s"
+        if seconds < 86400:
+            hours, rem = divmod(int(seconds), 3600)
+            return f"{hours}h {rem // 60:02d}m"
+        days = int(seconds) // 86400
+        hours = (int(seconds) % 86400) // 3600
+        return f"{days}d {hours}h"
+
+    @staticmethod
+    def _format_timeframe_hint(tf_min: int) -> str:
+        if tf_min >= 1440:
+            return f"{tf_min // 1440}d"
+        if tf_min >= 60:
+            return f"{tf_min // 60}h"
+        return f"{tf_min}m"
+
+    def _next_training_bar_close_raw(self) -> Any:
+        nbc_raw = self.market_stats.get("next_bar_close_utc")
+        if not nbc_raw and self.active_sym and self.active_tf_min:
+            nbc_raw = self._load_bot_stats(self.active_sym, self.active_tf_min).get("next_bar_close_utc")
+        return nbc_raw or self.bot_config.get("next_bar_close_utc")
+
+    def _render_training_next_update_hint(self) -> None:
+        nbc_raw = self._next_training_bar_close_raw()
+        tf_min = (
+            self.market_stats.get("timeframe_minutes")
+            or self.bot_config.get("timeframe_minutes")
+            or self.active_tf_min
         )
-        if _nbc_raw:
+        if nbc_raw:
             try:
-                _nbc_dt = datetime.fromisoformat(_nbc_raw)
-                if _nbc_dt.tzinfo is None:
-                    _nbc_dt = _nbc_dt.replace(tzinfo=UTC)
-                _rem = (_nbc_dt - datetime.now(UTC)).total_seconds()
-                if _rem < 0:
-                    _hint = "bar closing…"
-                elif _rem < 60:
-                    _hint = f"{int(_rem)}s"
-                elif _rem < 3600:
-                    _m, _s = divmod(int(_rem), 60)
-                    _hint = f"{_m}m {_s:02d}s"
-                elif _rem < 86400:
-                    _h, _r = divmod(int(_rem), 3600)
-                    _m = _r // 60
-                    _hint = f"{_h}h {_m:02d}m"
-                else:
-                    _d = int(_rem) // 86400
-                    _h = (int(_rem) % 86400) // 3600
-                    _hint = f"{_d}d {_h}h"
-                print(f"  {_ANSI_DIM}ℹ️  Training stats update on bar close — next in {_hint}{_ANSI_RST}")
+                nbc_dt = datetime.fromisoformat(nbc_raw)
+                if nbc_dt.tzinfo is None:
+                    nbc_dt = nbc_dt.replace(tzinfo=UTC)
+                hint = self._format_duration_hint((nbc_dt - datetime.now(UTC)).total_seconds())
+                print(f"  {_ANSI_DIM}ℹ️  Training stats update on bar close — next in {hint}{_ANSI_RST}")
             except Exception:
                 pass
-        elif _tf_min:
-            # No bar building yet — just show the timeframe so user knows the cadence
-            if _tf_min >= 1440:
-                _lbl = f"{_tf_min // 1440}d"
-            elif _tf_min >= 60:
-                _lbl = f"{_tf_min // 60}h"
-            else:
-                _lbl = f"{_tf_min}m"
-            print(f"  {_ANSI_DIM}ℹ️  Training stats update every {_lbl} bar close (awaiting first tick){_ANSI_RST}")
+        elif tf_min:
+            label = self._format_timeframe_hint(int(tf_min))
+            print(f"  {_ANSI_DIM}ℹ️  Training stats update every {label} bar close (awaiting first tick){_ANSI_RST}")
+
+    def _render_training(self) -> None:
+        """Render agent training status — dispatches by drill level."""
+        self._render_breadcrumb("TRAINING", 3)
+        level_detail = self._ctx_level >= 3 or self._training_detail
+        ts = self.training_stats
+        print(f"  {_ANSI_DIM}(canonical source: training_stats_*.json; per-bot file preferred){_ANSI_RST}\n")
+        pm = self.production_metrics.get("metrics", {})
+        self._render_training_offline_status(detail=level_detail)
+        mode = self.bot_config.get("trading_mode", "paper")
+        mode_label = "PAPER" if mode == "paper" else ("LIVE" if mode == "live" else "OFFLINE")
+
+        training_items = self._training_items_for_context()
+        if not training_items:
+            training_items = self._training_fallback_items(ts, mode_label)
+            if training_items is None:
+                return
+
+        if not level_detail:
+            self._render_training_summary(training_items)
+            return
+
+        self._render_training_detail_items(training_items, mode_label, pm)
+        self._render_training_next_update_hint()
 
     def _render_header(self) -> None:
         """Render header."""
