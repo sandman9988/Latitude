@@ -6075,54 +6075,59 @@ class TabbedHUD:
 
     def _render_legacy_decision_entries(self, entries: list, mode_filter: str = "") -> None:
         """Render legacy JSON-format decision log entries — newest first."""
-        if mode_filter in ("paper", "live"):
-            entries = [e for e in entries if e.get("trading_mode") == mode_filter]
+        entries = self._filtered_decision_entries(entries, mode_filter)
         recent = list(reversed(entries[-20:]))
         print(f"  Showing {len(recent)} most recent decisions (legacy format):\n")
         print("  " + "─" * 76)
         for entry in recent:
-            ts = entry.get("timestamp", "?")
-            event = entry.get("event", "?")
-            # Trading mode badge
-            _mode = entry.get("trading_mode", "")
-            if _mode == "paper":
-                mode_badge = f"{_ANSI_Y}[PAPER]{_ANSI_RST}"
-            elif _mode == "live":
-                mode_badge = f"{_ANSI_G}[LIVE]{_ANSI_RST}"
-            else:
-                mode_badge = ""
-            details = entry.get("details", {})
-            bot_str = self._decision_entry_bot_label(entry)
-            if isinstance(details, dict):
-                pos = details.get("cur_pos", "?")
-                action = details.get("action", "?")
-                conf = details.get("confidence", "?")
-                # Real schema keys: exit_action / exit_conf — no bare "pnl" field
-                exit_conf = details.get("exit_conf")
-                exit_act = details.get("exit_action")
-                if exit_conf is not None:
-                    conf_str = f"{float(conf):.3f}" if conf not in ("?", None) else "?"
-                    exit_str = f" ExAct:{exit_act} ExConf:{exit_conf:.3f}"
-                else:
-                    conf_str = str(conf)
-                    exit_str = ""
-                # Show broker position_ids when present (added by newer bot builds)
-                pids = entry.get("position_ids")
-                pid_str = f" PIDs:{pids}" if pids else ""
-                details_str = f"Pos:{pos} Act:{action} Conf:{conf_str}{exit_str}{pid_str}"
-            else:
-                details_str = str(details)
-            if "OPEN" in event.upper() or "entry" in event.lower():
-                color = _ANSI_G
-            elif "CLOSE" in event.upper() or "exit" in event.lower():
-                color = _ANSI_R
-            elif "HOLD" in event.upper():
-                color = _ANSI_Y
-            else:
-                color = _ANSI_RST
-            print(f"  [{ts}] [{bot_str}] {mode_badge} {color}{event}{_ANSI_RST}: {details_str}")
+            self._render_legacy_decision_row(entry)
         print("  " + "─" * 76)
         print(f"\n  Total decisions logged: {len(entries)}")
+
+    def _render_legacy_decision_row(self, entry: dict) -> None:
+        event = entry.get("event", "?")
+        print(
+            f"  [{entry.get('timestamp', '?')}] [{self._decision_entry_bot_label(entry)}] "
+            f"{self._legacy_mode_badge(entry)} {self._legacy_event_color(event)}{event}{_ANSI_RST}: "
+            f"{self._legacy_decision_details(entry)}"
+        )
+
+    @staticmethod
+    def _legacy_mode_badge(entry: dict) -> str:
+        mode = entry.get("trading_mode", "")
+        if mode == "paper":
+            return f"{_ANSI_Y}[PAPER]{_ANSI_RST}"
+        if mode == "live":
+            return f"{_ANSI_G}[LIVE]{_ANSI_RST}"
+        return ""
+
+    @staticmethod
+    def _legacy_event_color(event: object) -> str:
+        event_text = str(event)
+        if "OPEN" in event_text.upper() or "entry" in event_text.lower():
+            return _ANSI_G
+        if "CLOSE" in event_text.upper() or "exit" in event_text.lower():
+            return _ANSI_R
+        if "HOLD" in event_text.upper():
+            return _ANSI_Y
+        return _ANSI_RST
+
+    @staticmethod
+    def _legacy_decision_details(entry: dict) -> str:
+        details = entry.get("details", {})
+        if not isinstance(details, dict):
+            return str(details)
+        conf = details.get("confidence", "?")
+        conf_str = f"{float(conf):.3f}" if conf not in ("?", None) else "?"
+        exit_str = ""
+        exit_conf = details.get("exit_conf")
+        if exit_conf is not None:
+            exit_str = f" ExAct:{details.get('exit_action')} ExConf:{exit_conf:.3f}"
+        pid_str = f" PIDs:{entry.get('position_ids')}" if entry.get("position_ids") else ""
+        return (
+            f"Pos:{details.get('cur_pos', '?')} Act:{details.get('action', '?')} "
+            f"Conf:{conf_str}{exit_str}{pid_str}"
+        )
 
     def _load_transaction_events(
         self,
