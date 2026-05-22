@@ -4135,113 +4135,131 @@ class TabbedHUD:
         self._render_position_excursions(direction)
         self._render_position_tracker(direction)
 
+    @staticmethod
+    def _sorted_all_bots(bots: list[dict]) -> list[dict]:
+        preferred_tf = {1: 0, 5: 1, 15: 2, 30: 3, 60: 4, 240: 5}
+        return sorted(
+            bots,
+            key=lambda b: (
+                str(b.get("symbol", "")).upper(),
+                preferred_tf.get(int(b.get("timeframe_minutes", 0) or 0), 999),
+                int(b.get("timeframe_minutes", 0) or 0),
+            ),
+        )
+
+    @staticmethod
+    def _all_bots_header() -> str:
+        return (
+            f"  {'Bot':<13}  {'Runtime':<7}  {'Bars':>4}  {'Position':<22}"
+            f"  {'T-buf':>5}  {'H-buf':>5}  {'SessTrd':>7}  {'SessPnL':>11}  {'SessWin':>7}"
+        )
+
+    def _bot_universe_entry(self, bot: dict) -> dict | None:
+        sym = str(bot.get("symbol", "")).upper()
+        tf = int(bot.get("timeframe_minutes", 0) or 0)
+        return next(
+            (
+                entry
+                for entry in self.universe_stats.values()
+                if isinstance(entry, dict)
+                and str(entry.get("symbol", "")).upper() == sym
+                and int(entry.get("timeframe_minutes", 0) or 0) == tf
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _bot_status_thresholds(tf_min: int) -> tuple[float, float]:
+        live_age = max(120.0, min(float(tf_min * 30), 3600.0)) if tf_min > 0 else 120.0
+        slow_age = max(180.0, min(float(tf_min * 120), 7200.0)) if tf_min > 0 else 180.0
+        return live_age, slow_age
+
+    @staticmethod
+    def _bot_awaiting_bar(bot: dict, tf_min: int, now: datetime) -> bool:
+        nbc_raw = bot.get("next_bar_close_utc")
+        if not nbc_raw or tf_min <= 0:
+            return False
+        try:
+            nbc_dt = datetime.fromisoformat(nbc_raw)
+            if nbc_dt.tzinfo is None:
+                nbc_dt = nbc_dt.replace(tzinfo=UTC)
+            return 0.0 <= (nbc_dt - now).total_seconds() <= (tf_min * 60 + 180)
+        except Exception:
+            return False
+
+    def _bot_runtime_status(self, bot: dict, now: datetime) -> str:
+        try:
+            updated_at = datetime.fromisoformat(bot.get("updated_at", ""))
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=UTC)
+            age = (now - updated_at).total_seconds()
+        except Exception:
+            age = 9999.0
+        conn = bot.get("connection_healthy", False) and bot.get("quote_ok", False)
+        entry = self._bot_universe_entry(bot)
+        pid_alive = bool(entry.get("_pid_alive", True)) if isinstance(entry, dict) else True
+        tf_min = int(bot.get("timeframe_minutes", 0) or 0)
+        live_age, slow_age = self._bot_status_thresholds(tf_min)
+        awaiting_bar = self._bot_awaiting_bar(bot, tf_min, now)
+        if not pid_alive or not conn:
+            status_vis, status_col = "● DOWN ", _ANSI_R
+        elif age <= live_age:
+            status_vis, status_col = "● RUN  ", _ANSI_G
+        elif age <= slow_age or awaiting_bar:
+            status_vis, status_col = "● SLOW ", _ANSI_Y
+        else:
+            status_vis, status_col = "● STALE", _ANSI_R
+        return f"{status_col}{status_vis:<7}{_ANSI_RST}"
+
+    def _bot_position_cell(self, bot: dict) -> tuple[str, str]:
+        pos = bot.get("_position", {})
+        direction = (pos.get("direction") or "FLAT").upper()
+        entry_px = pos.get("entry_price", 0.0)
+        unreal = pos.get("unrealized_pnl", 0.0)
+        if direction == "FLAT":
+            return "FLAT", f"{_ANSI_DIM}FLAT{_ANSI_RST}"
+        visible = f"{direction:<5}@{entry_px:.0f}({unreal:+.0f})"
+        dir_color = _ANSI_G if direction == "LONG" else _ANSI_R
+        colored = (
+            f"{dir_color}{direction:<5}{_ANSI_RST}"
+            f"@{entry_px:.0f}"
+            f"({self._pnl_color(unreal)}{unreal:+.0f}{_ANSI_RST})"
+        )
+        return visible, colored
+
+    def _render_all_bots_row(self, bot: dict, now: datetime) -> None:
+        sym = bot.get("symbol", "?")
+        tf = bot.get("timeframe_minutes", 0)
+        label = f"{sym}/{self._format_timeframe_minutes_label(tf)}"
+        label_cell = label if len(label) <= 13 else label[:12] + "…"
+        visible_pos, colored_pos = self._bot_position_cell(bot)
+        pos_pad = " " * max(0, 22 - len(visible_pos))
+        trades = int(bot.get("total_trades", 0) or 0)
+        pnl = float(bot.get("total_pnl", 0.0) or 0.0)
+        wr = float(bot.get("win_rate", 0.0) or 0.0) * 100
+        wr_str = f"{wr:>5.1f}%" if trades > 0 else "      -"
+        print(
+            f"  {label_cell:<13}  {self._bot_runtime_status(bot, now)}  {bot.get('bar_count', 0):>4}  "
+            f"{colored_pos}{pos_pad}  {bot.get('trigger_buffer', 0):>5}  {bot.get('harvester_buffer', 0):>5}  "
+            f"{trades:>7}  {self._pnl_color(pnl)}{pnl:>+11.2f}{_ANSI_RST}  {wr_str:>7}"
+        )
+
     def _render_all_bots_panel(self) -> None:
         """Render a compact one-row-per-bot fleet summary."""
         bots = self.all_bots_stats
         if not bots:
             print(f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}No bots currently running{_ANSI_RST}")
             return
-        _preferred_tf = {1: 0, 5: 1, 15: 2, 30: 3, 60: 4, 240: 5}
-        bots = sorted(
-            bots,
-            key=lambda b: (
-                str(b.get("symbol", "")).upper(),
-                _preferred_tf.get(int(b.get("timeframe_minutes", 0) or 0), 999),
-                int(b.get("timeframe_minutes", 0) or 0),
-            ),
-        )
+        bots = self._sorted_all_bots(bots)
         print(
             f"\n\033[1m🤖 ALL BOTS\033[0m  {_ANSI_DIM}session counters; runtime state, not trading mode{_ANSI_RST}"
         )
-        # Column widths — keep header, row, and separator in lock-step.
-        # Widths:  Bot=13  Runtime=7  Bars=4  Position=22  T-buf=5  H-buf=5
-        #          SessTrd=7  SessPnL=11  SessWin=7
-        _hdr = (
-            f"  {'Bot':<13}  {'Runtime':<7}  {'Bars':>4}  {'Position':<22}"
-            f"  {'T-buf':>5}  {'H-buf':>5}  {'SessTrd':>7}  {'SessPnL':>11}  {'SessWin':>7}"
-        )
-        print(f"\033[2m{_hdr}\033[0m")
-        print("  " + "─" * (_visible_width(_hdr) - 2))
-        _now = datetime.now(UTC)
+        header = self._all_bots_header()
+        print(f"\033[2m{header}\033[0m")
+        print("  " + "─" * (_visible_width(header) - 2))
+        now = datetime.now(UTC)
         for bot in bots:
-            sym = bot.get("symbol", "?")
-            tf = bot.get("timeframe_minutes", 0)
-            label = f"{sym}/{self._format_timeframe_minutes_label(tf)}"
-            try:
-                _updated_at = datetime.fromisoformat(bot.get("updated_at", ""))
-                if _updated_at.tzinfo is None:
-                    _updated_at = _updated_at.replace(tzinfo=UTC)
-                _age = (_now - _updated_at).total_seconds()
-            except Exception:
-                _age = 9999.0
-            conn = bot.get("connection_healthy", False) and bot.get("quote_ok", False)
-            _entry = next(
-                (
-                    _e
-                    for _e in self.universe_stats.values()
-                    if isinstance(_e, dict)
-                    and str(_e.get("symbol", "")).upper() == str(sym).upper()
-                    and int(_e.get("timeframe_minutes", 0) or 0) == int(tf or 0)
-                ),
-                None,
-            )
-            _pid_alive = bool(_entry.get("_pid_alive", True)) if isinstance(_entry, dict) else True
-            _tf_min = int(tf or 0)
-            _live_age = max(120.0, min(float(_tf_min * 30), 3600.0)) if _tf_min > 0 else 120.0
-            _slow_age = max(180.0, min(float(_tf_min * 120), 7200.0)) if _tf_min > 0 else 180.0
-            _awaiting_bar = False
-            _nbc_raw = bot.get("next_bar_close_utc")
-            if _nbc_raw and _tf_min > 0:
-                try:
-                    _nbc_dt = datetime.fromisoformat(_nbc_raw)
-                    if _nbc_dt.tzinfo is None:
-                        _nbc_dt = _nbc_dt.replace(tzinfo=UTC)
-                    _secs_to_bar = (_nbc_dt - _now).total_seconds()
-                    _awaiting_bar = 0.0 <= _secs_to_bar <= (_tf_min * 60 + 180)
-                except Exception:
-                    _awaiting_bar = False
-            # Runtime column — emit a fixed 7-visible-cell token regardless of
-            # colour codes so the padding below stays aligned.
-            if not _pid_alive or not conn:
-                status_vis, status_col = "● DOWN ", _ANSI_R
-            elif _age <= _live_age:
-                status_vis, status_col = "● RUN  ", _ANSI_G
-            elif _age <= _slow_age or _awaiting_bar:
-                status_vis, status_col = "● SLOW ", _ANSI_Y
-            else:
-                status_vis, status_col = "● STALE", _ANSI_R
-            status = f"{status_col}{status_vis:<7}{_ANSI_RST}"
-            bars = bot.get("bar_count", 0)
-            # Position — build visible and colored strings separately to keep columns aligned
-            pos = bot.get("_position", {})
-            direction = (pos.get("direction") or "FLAT").upper()
-            entry_px = pos.get("entry_price", 0.0)
-            unreal = pos.get("unrealized_pnl", 0.0)
-            if direction != "FLAT":
-                visible_pos = f"{direction:<5}@{entry_px:.0f}({unreal:+.0f})"
-                dir_c = _ANSI_G if direction == "LONG" else _ANSI_R
-                colored_pos = (
-                    f"{dir_c}{direction:<5}{_ANSI_RST}"
-                    f"@{entry_px:.0f}"
-                    f"({self._pnl_color(unreal)}{unreal:+.0f}{_ANSI_RST})"
-                )
-            else:
-                visible_pos = "FLAT"
-                colored_pos = f"{_ANSI_DIM}FLAT{_ANSI_RST}"
-            pos_pad = " " * max(0, 22 - len(visible_pos))
-            trig_buf = bot.get("trigger_buffer", 0)
-            harv_buf = bot.get("harvester_buffer", 0)
-            trades = int(bot.get("total_trades", 0) or 0)
-            pnl = float(bot.get("total_pnl", 0.0) or 0.0)
-            wr = float(bot.get("win_rate", 0.0) or 0.0) * 100
-            # Truncate bot label so it never spills beyond the 13-cell column.
-            label_cell = label if len(label) <= 13 else label[:12] + "…"
-            wr_str = f"{wr:>5.1f}%" if trades > 0 else "      -"
-            print(
-                f"  {label_cell:<13}  {status}  {bars:>4}  {colored_pos}{pos_pad}"
-                f"  {trig_buf:>5}  {harv_buf:>5}  {trades:>7}  "
-                f"{self._pnl_color(pnl)}{pnl:>+11.2f}{_ANSI_RST}  {wr_str:>7}"
-            )
+            self._render_all_bots_row(bot, now)
 
     def _render_mode_selector(self) -> None:
         """Level 0: Trading mode selection screen — shown when ctx_level == 0."""
