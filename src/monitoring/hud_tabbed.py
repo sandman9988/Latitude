@@ -4029,95 +4029,111 @@ class TabbedHUD:
         self._sync_ctx_to_legacy()
         self._force_redraw = True
 
-    def _render_position_block(self) -> None:
-        """Render the position header block (always fixed height to avoid layout jumps)."""
-        _mode = self.bot_config.get("trading_mode", "paper")
-        _mode_tag = (
-            f"  {_ANSI_Y}(paper){_ANSI_RST}"
-            if _mode == "paper"
-            else (f"  {_ANSI_G}(live){_ANSI_RST}" if _mode == "live" else "")
-        )
-        print(f"\n\033[1m📊 POSITION\033[0m{_mode_tag}")
-        _open_positions: list[tuple[str, dict]] = []
-        for _bot in self.all_bots_stats or []:
-            _pos = _bot.get("_position", {}) if isinstance(_bot, dict) else {}
-            if not isinstance(_pos, dict) or str(_pos.get("direction", "FLAT")).upper() == "FLAT":
+    def _position_mode_tag(self) -> str:
+        mode = self.bot_config.get("trading_mode", "paper")
+        if mode == "paper":
+            return f"  {_ANSI_Y}(paper){_ANSI_RST}"
+        if mode == "live":
+            return f"  {_ANSI_G}(live){_ANSI_RST}"
+        return ""
+
+    def _open_position_rows(self) -> list[tuple[str, dict]]:
+        rows: list[tuple[str, dict]] = []
+        for bot in self.all_bots_stats or []:
+            pos = bot.get("_position", {}) if isinstance(bot, dict) else {}
+            if not isinstance(pos, dict) or str(pos.get("direction", "FLAT")).upper() == "FLAT":
                 continue
-            _sym = str(_bot.get("symbol") or _pos.get("symbol") or "?").upper()
+            sym = str(bot.get("symbol") or pos.get("symbol") or "?").upper()
             try:
-                _tf = int(_bot.get("timeframe_minutes") or _pos.get("timeframe_minutes") or 0)
+                tf = int(bot.get("timeframe_minutes") or pos.get("timeframe_minutes") or 0)
             except (TypeError, ValueError):
-                _tf = 0
-            _label = f"{_sym}/{self._format_timeframe_minutes_label(_tf)}" if _tf > 0 else _sym
-            _open_positions.append((_label, _pos))
-        if not _open_positions and str(self.position.get("direction", "FLAT")).upper() != "FLAT":
-            _sym = str(self.position.get("symbol") or self.active_sym or "?").upper()
-            _tf = int(self.position.get("timeframe_minutes") or self.active_tf_min or 0)
-            _label = f"{_sym}/{self._format_timeframe_minutes_label(_tf)}" if _tf > 0 else _sym
-            _open_positions.append((_label, self.position))
-        if len(_open_positions) > 1:
-            _total_unreal = sum(float(_p.get("unrealized_pnl", 0.0) or 0.0) for _, _p in _open_positions)
-            print(
-                f"  {_ANSI_B}{len(_open_positions)} open positions{_ANSI_RST}  |  "
-                f"Unrealized: {self._pnl_color(_total_unreal)}{_total_unreal:+.2f}{_ANSI_RST}"
-            )
-            for _label, _p in sorted(_open_positions, key=lambda kv: (kv[0], str(kv[1].get("position_id", ""))))[:8]:
-                _direction = str(_p.get("direction", "FLAT")).upper()
-                _dc = _ANSI_G if _direction == "LONG" else (_ANSI_R if _direction == "SHORT" else _ANSI_DIM)
-                _entry = float(_p.get("entry_price", 0.0) or 0.0)
-                _current = float(_p.get("current_price", 0.0) or 0.0)
-                _pnl = float(_p.get("unrealized_pnl", 0.0) or 0.0)
-                _ticks = _p.get("ticks_held", _p.get("bars_held", 0))
-                _dec = self._price_decimals(max(_entry, _current, 0.0))
-                print(
-                    f"  {_label:<13} {_dc}{_direction:<5}{_ANSI_RST} "
-                    f"{_entry:.{_dec}f} → {_current:.{_dec}f}  "
-                    f"{self._pnl_color(_pnl)}{_pnl:+.2f}{_ANSI_RST}  ticks:{_ticks}"
-                )
-            if len(_open_positions) > 8:
-                print(f"  {_ANSI_DIM}… {len(_open_positions) - 8} more open positions{_ANSI_RST}")
-            return
+                tf = 0
+            label = f"{sym}/{self._format_timeframe_minutes_label(tf)}" if tf > 0 else sym
+            rows.append((label, pos))
+        if not rows and str(self.position.get("direction", "FLAT")).upper() != "FLAT":
+            sym = str(self.position.get("symbol") or self.active_sym or "?").upper()
+            tf = int(self.position.get("timeframe_minutes") or self.active_tf_min or 0)
+            label = f"{sym}/{self._format_timeframe_minutes_label(tf)}" if tf > 0 else sym
+            rows.append((label, self.position))
+        return rows
+
+    def _render_multi_position_block(self, open_positions: list[tuple[str, dict]]) -> bool:
+        if len(open_positions) <= 1:
+            return False
+        total_unreal = sum(float(pos.get("unrealized_pnl", 0.0) or 0.0) for _, pos in open_positions)
+        print(
+            f"  {_ANSI_B}{len(open_positions)} open positions{_ANSI_RST}  |  "
+            f"Unrealized: {self._pnl_color(total_unreal)}{total_unreal:+.2f}{_ANSI_RST}"
+        )
+        for label, pos in sorted(open_positions, key=lambda kv: (kv[0], str(kv[1].get("position_id", ""))))[:8]:
+            self._render_open_position_row(label, pos)
+        if len(open_positions) > 8:
+            print(f"  {_ANSI_DIM}… {len(open_positions) - 8} more open positions{_ANSI_RST}")
+        return True
+
+    def _render_open_position_row(self, label: str, pos: dict) -> None:
+        direction = str(pos.get("direction", "FLAT")).upper()
+        direction_col = _ANSI_G if direction == "LONG" else (_ANSI_R if direction == "SHORT" else _ANSI_DIM)
+        entry = float(pos.get("entry_price", 0.0) or 0.0)
+        current = float(pos.get("current_price", 0.0) or 0.0)
+        pnl = float(pos.get("unrealized_pnl", 0.0) or 0.0)
+        ticks = pos.get("ticks_held", pos.get("bars_held", 0))
+        decimals = self._price_decimals(max(entry, current, 0.0))
+        print(
+            f"  {label:<13} {direction_col}{direction:<5}{_ANSI_RST} "
+            f"{entry:.{decimals}f} → {current:.{decimals}f}  "
+            f"{self._pnl_color(pnl)}{pnl:+.2f}{_ANSI_RST}  ticks:{ticks}"
+        )
+
+    def _position_direction_color(self, direction: str) -> str:
+        if direction == "LONG":
+            return _ANSI_G
+        if direction == "SHORT":
+            return _ANSI_R
+        return _ANSI_Y
+
+    def _render_single_position_line(self) -> str:
         direction = self.position.get("direction", "FLAT")
         entry = self.position.get("entry_price", 0)
         current = self.position.get("current_price", 0)
         pnl = self.position.get("unrealized_pnl", 0)
-        bars = self.position.get("bars_held", 0)
-        ticks = self.position.get("ticks_held", bars)
-        if direction == "LONG":
-            dir_color = _ANSI_G
-        elif direction == "SHORT":
-            dir_color = _ANSI_R
-        else:
-            dir_color = _ANSI_Y
-        pnl_color = self._pnl_color(pnl)
-        _dec = self._price_decimals(max(entry, current, 0.0))
-        # Line 1: direction / entry / price
+        ticks = self.position.get("ticks_held", self.position.get("bars_held", 0))
+        dir_color = self._position_direction_color(direction)
         if direction == "FLAT":
-            print(f"  {dir_color}FLAT{_ANSI_RST}  (no open position)")
+            return f"  {dir_color}FLAT{_ANSI_RST}  (no open position)"
+        decimals = self._price_decimals(max(entry, current, 0.0))
+        return (
+            f"  {dir_color}{direction}{_ANSI_RST} @ {entry:.{decimals}f} → {current:.{decimals}f}  |  "
+            f"PnL: {self._pnl_color(pnl)}{pnl:+.2f}{_ANSI_RST}  |  Ticks: {ticks}"
+        )
+
+    def _render_position_excursions(self, direction: str) -> None:
+        if direction == "FLAT":
+            print()
+            return
+        mfe = self.position.get("mfe", 0.0)
+        mae = self.position.get("mae", 0.0)
+        mfe_color = _ANSI_G if mfe > 0 else _ANSI_Y
+        mae_color = _ANSI_R if mae > 0 else _ANSI_Y
+        print(f"  MFE: {mfe_color}+{mfe:.2f}{_ANSI_RST}  |  MAE: {mae_color}-{mae:.2f}{_ANSI_RST}  (USD, excl. spread)")
+
+    def _render_position_tracker(self, direction: str) -> None:
+        pid = self.position.get("position_id", "") if direction != "FLAT" else ""
+        tracker_key = self.position.get("tracker_key", "") if direction != "FLAT" else ""
+        if pid:
+            print(f"  {_ANSI_DIM}PID: {pid}  tracker: {tracker_key}{_ANSI_RST}")
         else:
-            print(
-                f"  {dir_color}{direction}{_ANSI_RST} @ {entry:.{_dec}f} → {current:.{_dec}f}  |  "
-                f"PnL: {pnl_color}{pnl:+.2f}{_ANSI_RST}  |  Ticks: {ticks}"
-            )
-        # Line 2: MFE/MAE (always printed — blank spacer when FLAT for stable layout)
-        if direction != "FLAT":
-            mfe = self.position.get("mfe", 0.0)
-            mae = self.position.get("mae", 0.0)
-            mfe_color = _ANSI_G if mfe > 0 else _ANSI_Y
-            mae_color = _ANSI_R if mae > 0 else _ANSI_Y
-            print(
-                f"  MFE: {mfe_color}+{mfe:.2f}{_ANSI_RST}  |  "
-                f"MAE: {mae_color}-{mae:.2f}{_ANSI_RST}  (USD, excl. spread)"
-            )
-        else:
-            print()  # stable height spacer
-        # Line 3: PID / tracker (always printed — blank spacer when not available)
-        _pid = self.position.get("position_id", "") if direction != "FLAT" else ""
-        _tkey = self.position.get("tracker_key", "") if direction != "FLAT" else ""
-        if _pid:
-            print(f"  {_ANSI_DIM}PID: {_pid}  tracker: {_tkey}{_ANSI_RST}")
-        else:
-            print()  # stable height spacer
+            print()
+
+    def _render_position_block(self) -> None:
+        """Render the position header block (always fixed height to avoid layout jumps)."""
+        print(f"\n\033[1m📊 POSITION\033[0m{self._position_mode_tag()}")
+        if self._render_multi_position_block(self._open_position_rows()):
+            return
+        direction = self.position.get("direction", "FLAT")
+        print(self._render_single_position_line())
+        self._render_position_excursions(direction)
+        self._render_position_tracker(direction)
 
     def _render_all_bots_panel(self) -> None:
         """Render a compact one-row-per-bot fleet summary."""
