@@ -5453,101 +5453,123 @@ class TabbedHUD:
         """Render trade quality & edge quality tables per period."""
         if not rows:
             return
+        self._render_trade_quality_table(rows)
+        self._render_edge_quality_table(rows)
+
+    def _render_trade_quality_table(self, rows: list[tuple[str, dict]]) -> None:
         print(f"\n\033[1m📊 TRADE QUALITY\033[0m  {_ANSI_DIM}(per period){_ANSI_RST}\n")
-        _tq_hdr = (
+        header = (
             f"  {'Period':<9} {'Trades':>7} {'Payoff':>8} {'PF':>7} {'Expect':>10} "
             f"{'Sortino':>8} {'Streak':>7} {'W→L':>8}"
         )
-        print(_tq_hdr)
-        print("  " + "─" * (_visible_width(_tq_hdr) - 2))
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
         for label, lt in rows:
-            total = lt.get("total_trades", 0)
-            avg_win = lt.get("avg_win", 0.0)
-            avg_loss = lt.get("avg_loss", 0.0)
-            profit_f = lt.get("profit_factor", 0.0)
-            expect = lt.get("expectancy", 0.0)
-            sortino = lt.get("sortino_ratio", 0.0)
-            max_cw = lt.get("max_consec_wins", 0)
-            max_cl = lt.get("max_consec_losses", 0)
-            w2l = lt.get("winner_to_loser_count", 0)
-
-            abs_loss = abs(avg_loss)
-            payoff = avg_win / abs_loss if abs_loss > _PAYOFF_FLOOR else 0.0
-            if payoff >= PAYOFF_GOOD_MIN:
-                pay_col = _ANSI_G
-            elif payoff >= 1.0:
-                pay_col = _ANSI_Y
-            else:
-                pay_col = _ANSI_R
-            if profit_f >= PROFIT_FACTOR_GOOD_MIN:
-                pf_col = _ANSI_G
-            elif profit_f >= 1.0:
-                pf_col = _ANSI_Y
-            else:
-                pf_col = _ANSI_R
-            exp_col = _ANSI_G if expect > 0 else _ANSI_R
-            streak_col = _ANSI_R if max_cl >= 5 else (_ANSI_G if max_cw >= 3 else _ANSI_Y)
-            w2l_pct = (w2l / total * 100) if total > 0 else 0.0
-            if total > 0 and w2l > 0:
-                w2l_col = _ANSI_R if w2l_pct > 15 else (_ANSI_Y if w2l_pct > 5 else _ANSI_G)
-                w2l_str = f"{w2l}/{w2l_pct:.0f}%"
-            else:
-                w2l_col = _ANSI_DIM
-                w2l_str = "-"
-            streak_str = f"{max_cw}/{max_cl}"
-            print(
-                f"  {label:<9} {total:>7} "
-                f"{pay_col}{payoff:>7.2f}x{_ANSI_RST} "
-                f"{pf_col}{profit_f:>7.2f}{_ANSI_RST} "
-                f"{exp_col}{expect:>+10.3f}{_ANSI_RST} "
-                f"{sortino:>8.3f} "
-                f"{streak_col}{streak_str:>7}{_ANSI_RST} "
-                f"{w2l_col}{w2l_str:>8}{_ANSI_RST}"
-            )
+            self._render_trade_quality_row(label, lt)
         print(
             f"  {_ANSI_DIM}(Payoff target ≥1.5; PF target ≥1.2; Streak shows max wins/losses){_ANSI_RST}"
         )
 
+    def _render_trade_quality_row(self, label: str, metrics: dict) -> None:
+        total = metrics.get("total_trades", 0)
+        profit_f = metrics.get("profit_factor", 0.0)
+        expect = metrics.get("expectancy", 0.0)
+        payoff = self._quality_payoff(metrics)
+        w2l_color, w2l_str = self._winner_loser_signal(total, metrics.get("winner_to_loser_count", 0))
+        max_wins = metrics.get("max_consec_wins", 0)
+        max_losses = metrics.get("max_consec_losses", 0)
+        streak_color = _ANSI_R if max_losses >= 5 else (_ANSI_G if max_wins >= 3 else _ANSI_Y)
+        print(
+            f"  {label:<9} {total:>7} "
+            f"{self._payoff_color(payoff)}{payoff:>7.2f}x{_ANSI_RST} "
+            f"{self._profit_factor_color(profit_f)}{profit_f:>7.2f}{_ANSI_RST} "
+            f"{_ANSI_G if expect > 0 else _ANSI_R}{expect:>+10.3f}{_ANSI_RST} "
+            f"{metrics.get('sortino_ratio', 0.0):>8.3f} "
+            f"{streak_color}{f'{max_wins}/{max_losses}':>7}{_ANSI_RST} "
+            f"{w2l_color}{w2l_str:>8}{_ANSI_RST}"
+        )
+
+    @staticmethod
+    def _quality_payoff(metrics: dict) -> float:
+        abs_loss = abs(metrics.get("avg_loss", 0.0))
+        if abs_loss <= _PAYOFF_FLOOR:
+            return 0.0
+        return metrics.get("avg_win", 0.0) / abs_loss
+
+    @staticmethod
+    def _payoff_color(payoff: float) -> str:
+        if payoff >= PAYOFF_GOOD_MIN:
+            return _ANSI_G
+        if payoff >= 1.0:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _profit_factor_color(profit_factor: float) -> str:
+        if profit_factor >= PROFIT_FACTOR_GOOD_MIN:
+            return _ANSI_G
+        if profit_factor >= 1.0:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _winner_loser_signal(total: int, w2l: int) -> tuple[str, str]:
+        if total <= 0 or w2l <= 0:
+            return _ANSI_DIM, "-"
+        w2l_pct = w2l / total * 100
+        color = _ANSI_R if w2l_pct > 15 else (_ANSI_Y if w2l_pct > 5 else _ANSI_G)
+        return color, f"{w2l}/{w2l_pct:.0f}%"
+
+    def _render_edge_quality_table(self, rows: list[tuple[str, dict]]) -> None:
         print(f"\n\033[1m🔬 EDGE QUALITY\033[0m  {_ANSI_DIM}(model tuning signals; per period){_ANSI_RST}\n")
-        _eq_hdr = (
+        header = (
             f"  {'Period':<10} {'Capture':>8} {'AvgMFE':>10} {'AvgMAE':>10} {'Edge':>10} "
             f"{'Bars':>6} {'ConfW':>7} {'ConfL':>7} {'Gap':>8}"
         )
-        print(_eq_hdr)
-        print("  " + "─" * (_visible_width(_eq_hdr) - 2))
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
         for label, lt in rows:
-            _avg_mfe = lt.get("avg_mfe", 0.0)
-            _avg_mae = lt.get("avg_mae", 0.0)
-            _cap_ratio = lt.get("avg_capture_ratio", 0.0)
-            _avg_bars = lt.get("avg_bars_held", 0.0)
-            _conf_w = lt.get("avg_conf_win", 0.0)
-            _conf_l = lt.get("avg_conf_loss", 0.0)
-            _edge = _avg_mfe - _avg_mae if _avg_mfe > 0 else 0.0
-            _cal_gap = _conf_w - _conf_l
-            if _cap_ratio >= 0.60:
-                _cap_col = _ANSI_G
-            elif _cap_ratio >= 0.40:
-                _cap_col = _ANSI_Y
-            else:
-                _cap_col = _ANSI_R
-            _edge_col = _ANSI_G if _edge > 0 else _ANSI_R
-            if _conf_w > 0 or _conf_l > 0:
-                _cal_col = _ANSI_G if _cal_gap > 0.05 else (_ANSI_Y if _cal_gap > 0 else _ANSI_R)
-            else:
-                _cal_col = _ANSI_DIM
-            print(
-                f"  {label:<10} "
-                f"{_cap_col}{_cap_ratio:>7.1%}{_ANSI_RST} "
-                f"${_avg_mfe:>+9.2f} ${_avg_mae:>9.2f} "
-                f"{_edge_col}${_edge:>+9.2f}{_ANSI_RST} "
-                f"{_avg_bars:>6.1f} "
-                f"{_conf_w:>7.3f} {_conf_l:>7.3f} "
-                f"{_cal_col}{_cal_gap:>+8.3f}{_ANSI_RST}"
-            )
+            self._render_edge_quality_row(label, lt)
         print(
             f"  {_ANSI_DIM}(Capture exit_pnl/MFE target ≥60%; Edge MFE-MAE; "
             f"Gap conf_win-conf_loss +ve=calibrated){_ANSI_RST}"
         )
+
+    def _render_edge_quality_row(self, label: str, metrics: dict) -> None:
+        avg_mfe = metrics.get("avg_mfe", 0.0)
+        avg_mae = metrics.get("avg_mae", 0.0)
+        cap_ratio = metrics.get("avg_capture_ratio", 0.0)
+        conf_w = metrics.get("avg_conf_win", 0.0)
+        conf_l = metrics.get("avg_conf_loss", 0.0)
+        edge = avg_mfe - avg_mae if avg_mfe > 0 else 0.0
+        cal_gap = conf_w - conf_l
+        print(
+            f"  {label:<10} "
+            f"{self._capture_color(cap_ratio)}{cap_ratio:>7.1%}{_ANSI_RST} "
+            f"${avg_mfe:>+9.2f} ${avg_mae:>9.2f} "
+            f"{_ANSI_G if edge > 0 else _ANSI_R}${edge:>+9.2f}{_ANSI_RST} "
+            f"{metrics.get('avg_bars_held', 0.0):>6.1f} "
+            f"{conf_w:>7.3f} {conf_l:>7.3f} "
+            f"{self._calibration_gap_color(conf_w, conf_l, cal_gap)}{cal_gap:>+8.3f}{_ANSI_RST}"
+        )
+
+    @staticmethod
+    def _capture_color(capture_ratio: float) -> str:
+        if capture_ratio >= 0.60:
+            return _ANSI_G
+        if capture_ratio >= 0.40:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _calibration_gap_color(conf_w: float, conf_l: float, gap: float) -> str:
+        if conf_w <= 0 and conf_l <= 0:
+            return _ANSI_DIM
+        if gap > 0.05:
+            return _ANSI_G
+        if gap > 0:
+            return _ANSI_Y
+        return _ANSI_R
 
     def _compute_trade_log_convergence_metrics(self, trades: list[dict] | None = None) -> dict:
         trades = list(trades) if trades is not None else self._trade_log_metrics_trades
