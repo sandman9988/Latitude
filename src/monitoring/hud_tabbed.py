@@ -6137,46 +6137,83 @@ class TabbedHUD:
         tf_filter: int = 0,
     ) -> list[dict]:
         """Load recent transaction events from all bots' transactions.jsonl files."""
-        _tx_files: list[Path] = sorted(self.data_dir.glob("paper_*_M*/logs/audit/transactions.jsonl"))
-        _primary = self.data_dir / "logs" / "audit" / "transactions.jsonl"
-        if _primary.exists():
-            _tx_files.append(_primary)
-
+        tx_files = self._transaction_event_files()
         entries: list[dict] = []
         try:
-            for _jf in _tx_files:
-                try:
-                    lines = _jf.read_text(encoding="utf-8").splitlines()
-                except OSError:
-                    continue
-                for raw in reversed(lines):
-                    line = raw.strip()
-                    if not line:
-                        continue
-                    try:
-                        e = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if event_types and e.get("event_type") not in event_types:
-                        continue
-                    _d = e.get("data") or {}
-                    if sym_filter:
-                        _esym = str(_d.get("symbol") or "").upper()
-                        if _esym and _esym != sym_filter:
-                            continue
-                    if tf_filter:
-                        _etf = int(_d.get("timeframe_minutes") or 0)
-                        if _etf and _etf != tf_filter:
-                            continue
-                    e.setdefault("_source_path", str(_jf))
-                    entries.append(e)
-                    if len(entries) >= n * len(_tx_files):
-                        break
+            for tx_file in tx_files:
+                self._append_transaction_events_from_file(
+                    entries,
+                    tx_file,
+                    event_types=event_types,
+                    sym_filter=sym_filter,
+                    tf_filter=tf_filter,
+                    limit=n * len(tx_files),
+                )
         except Exception:
             pass
-
         entries.sort(key=lambda e: str(e.get("timestamp") or ""), reverse=True)
         return entries[:n]
+
+    def _transaction_event_files(self) -> list[Path]:
+        tx_files: list[Path] = sorted(self.data_dir.glob("paper_*_M*/logs/audit/transactions.jsonl"))
+        primary = self.data_dir / "logs" / "audit" / "transactions.jsonl"
+        if primary.exists():
+            tx_files.append(primary)
+        return tx_files
+
+    def _append_transaction_events_from_file(
+        self,
+        entries: list[dict],
+        tx_file: Path,
+        *,
+        event_types: frozenset | None,
+        sym_filter: str,
+        tf_filter: int,
+        limit: int,
+    ) -> None:
+        try:
+            lines = tx_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return
+        for raw in reversed(lines):
+            event = self._parse_transaction_event_line(raw, tx_file)
+            if not event or not self._transaction_event_matches(event, event_types, sym_filter, tf_filter):
+                continue
+            entries.append(event)
+            if len(entries) >= limit:
+                break
+
+    @staticmethod
+    def _parse_transaction_event_line(raw: str, tx_file: Path) -> dict | None:
+        line = raw.strip()
+        if not line:
+            return None
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        event.setdefault("_source_path", str(tx_file))
+        return event
+
+    @staticmethod
+    def _transaction_event_matches(
+        event: dict,
+        event_types: frozenset | None,
+        sym_filter: str,
+        tf_filter: int,
+    ) -> bool:
+        if event_types and event.get("event_type") not in event_types:
+            return False
+        data = event.get("data") or {}
+        if sym_filter:
+            event_symbol = str(data.get("symbol") or "").upper()
+            if event_symbol and event_symbol != sym_filter:
+                return False
+        if tf_filter:
+            event_tf = int(data.get("timeframe_minutes") or 0)
+            if event_tf and event_tf != tf_filter:
+                return False
+        return True
 
     def _load_transactions_for_position(self, position_id: str, sym: str = "", tf_m: int = 0) -> list[dict]:
         """Load POSITION_OPEN/CLOSE events matching a given position_id."""
