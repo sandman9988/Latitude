@@ -3653,118 +3653,105 @@ class TabbedHUD:
         self._render_training_detail_items(training_items, mode_label, pm)
         self._render_training_next_update_hint()
 
+    @staticmethod
+    def _print_centered_box(text: str, inner: int, *, prefix: str = "", suffix: str = "") -> None:
+        pad_total = max(0, inner - len(text))
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        print(f"{prefix}╔" + "═" * inner + f"╗{suffix}")
+        print(f"{prefix}║" + " " * pad_left + text + " " * pad_right + f"║{suffix}")
+        print(f"{prefix}╚" + "═" * inner + f"╝{suffix}")
+
+    def _render_header_banner(self, inner: int) -> None:
+        cb_active = self.risk_stats.get("circuit_breaker", "INACTIVE") == "ACTIVE"
+        if cb_active:
+            self._print_centered_box(
+                "⚠️  CIRCUIT BREAKER ACTIVE - TRADING HALTED ⚠️",
+                inner,
+                prefix="\033[41;97m",
+                suffix="\033[0m",
+            )
+            return
+        if self.risk_stats.get("kurtosis_gate_active", False):
+            is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
+            kurt_note = "entries BLOCKED" if is_live_mode else "entries bypassed in paper mode"
+            self._print_centered_box(
+                f"⚡ KURTOSIS GATE ACTIVE — {kurt_note}",
+                inner,
+                prefix="\033[43;30m",
+                suffix="\033[0m",
+            )
+            return
+        self._print_centered_box("ADAPTIVE RL TRADING BOT - TABBED HUD", inner)
+
+    def _active_header_stats(self) -> tuple[str, str, int]:
+        active_stats = (
+            self._load_bot_stats(self.active_sym, self.active_tf_min)
+            if self.active_sym and self.active_tf_min
+            else {}
+        )
+        symbol = active_stats.get("symbol") or self.bot_config.get("symbol", "UNKNOWN")
+        tf_min = active_stats.get("timeframe_minutes") or self.bot_config.get("timeframe_minutes")
+        uptime = active_stats.get("uptime_seconds") or self.bot_config.get("uptime_seconds", 0)
+        return str(symbol), self._format_timeframe_minutes_label(tf_min), int(uptime)
+
+    def _header_price_str(self) -> str:
+        price = self.position.get("current_price", 0)
+        if not price or self.position.get("direction", "FLAT") == "FLAT":
+            return "—"
+        return f"{price:.{self._price_decimals(price)}f}"
+
+    def _header_next_bar_str(self) -> str:
+        nbc_raw = self.market_stats.get("next_bar_close_utc") or self.bot_config.get("next_bar_close_utc")
+        if not nbc_raw:
+            return ""
+        try:
+            nbc_dt = datetime.fromisoformat(nbc_raw)
+            if nbc_dt.tzinfo is None:
+                nbc_dt = nbc_dt.replace(tzinfo=UTC)
+            return f"  📊 next bar {self._format_duration_hint((nbc_dt - datetime.now(UTC)).total_seconds())}"
+        except Exception:
+            return ""
+
+    def _header_mode_badge(self) -> str:
+        mode = self.bot_config.get("trading_mode", "paper")
+        if mode == "live":
+            return f"{_ANSI_G}● LIVE{_ANSI_RST}"
+        if mode == "paper":
+            return f"{_ANSI_Y}● PAPER{_ANSI_RST}"
+        return f"{_ANSI_DIM}● OFFLINE{_ANSI_RST}"
+
+    def _header_fleet_chunks(self) -> list[str]:
+        fleet: dict[str, list[int]] = {}
+        for bot in self.all_bots_stats:
+            sym = str(bot.get("symbol", "") or "").upper()
+            try:
+                tfm = int(bot.get("timeframe_minutes", 0) or 0)
+            except (TypeError, ValueError):
+                tfm = 0
+            if sym and tfm > 0:
+                fleet.setdefault(sym, []).append(tfm)
+        chunks: list[str] = []
+        for sym in sorted(fleet):
+            tf_labels = ",".join(self._format_timeframe_minutes_label(value) for value in sorted(set(fleet[sym])))
+            chunks.append(f"{sym}[{tf_labels}]")
+        return chunks
+
     def _render_header(self) -> None:
         """Render header."""
         heartbeat = self.heartbeat_chars[self.heartbeat_idx]
-        W = self._term_width()
-        inner = W - 2  # space inside the box borders
-
-        # Check for circuit breaker alert
-        cb_active = self.risk_stats.get("circuit_breaker", "INACTIVE") == "ACTIVE"
-        kurt_gate = self.risk_stats.get("kurtosis_gate_active", False)
-        title = "ADAPTIVE RL TRADING BOT - TABBED HUD"
-        pad_total = inner - len(title)
-        pad_l = pad_total // 2
-        pad_r = pad_total - pad_l
-
-        if cb_active:
-            alert = "⚠️  CIRCUIT BREAKER ACTIVE - TRADING HALTED ⚠️"
-            alert_pad = inner - len(alert)
-            al = alert_pad // 2
-            ar = alert_pad - al
-            print("\033[41;97m╔" + "═" * inner + "╗\033[0m")
-            print("\033[41;97m║" + " " * al + alert + " " * ar + "║\033[0m")
-            print("\033[41;97m╚" + "═" * inner + "╝\033[0m")
-        elif kurt_gate:
-            _is_live_mode = getattr(self, "_perf_snapshot_mode", "") == "live"
-            _kurt_note = "entries BLOCKED" if _is_live_mode else "entries bypassed in paper mode"
-            alert = f"⚡ KURTOSIS GATE ACTIVE — {_kurt_note}"
-            alert_pad = inner - len(alert)
-            al = alert_pad // 2
-            ar = alert_pad - al
-            print("\033[43;30m╔" + "═" * inner + "╗\033[0m")
-            print("\033[43;30m║" + " " * al + alert + " " * ar + "║\033[0m")
-            print("\033[43;30m╚" + "═" * inner + "╝\033[0m")
-        else:
-            print("╔" + "═" * inner + "╗")
-            print("║" + " " * pad_l + title + " " * pad_r + "║")
-            print("╚" + "═" * inner + "╝")
-
-        # Bot info
-        # Use the active-position bot's paper_stats for correct symbol/tf/uptime
-        # in multi-bot setups where bot_config.json is shared (last writer wins).
-        _aps = (
-            self._load_bot_stats(self.active_sym, self.active_tf_min) if self.active_sym and self.active_tf_min else {}
-        )
-        symbol = _aps.get("symbol") or self.bot_config.get("symbol", "UNKNOWN")
-        _tf_min = _aps.get("timeframe_minutes") or self.bot_config.get("timeframe_minutes")
-        tf = self._format_timeframe_minutes_label(_tf_min)
-        uptime = _aps.get("uptime_seconds") or self.bot_config.get("uptime_seconds", 0)
+        self._render_header_banner(self._term_width() - 2)
+        symbol, tf, uptime = self._active_header_stats()
         hours = int(uptime // 3600)
         minutes = int((uptime % 3600) // 60)
-
-        price = self.position.get("current_price", 0)
         now = self.last_update or datetime.now(UTC)
-        # When FLAT the bot writes current_price=0.0 — show "—" instead of 0.00000
-        _direction = self.position.get("direction", "FLAT")
-        _pdec = self._price_decimals(price)
-        price_str = f"{price:.{_pdec}f}" if (price and _direction != "FLAT") else "—"
-
-        # Next-bar countdown — computed from next_bar_close_utc (updated every tick)
-        _nbc_str = ""
-        _nbc_raw = self.market_stats.get("next_bar_close_utc")
-        if not _nbc_raw:
-            _nbc_raw = self.bot_config.get("next_bar_close_utc")
-        if _nbc_raw:
-            try:
-                _nbc_dt = datetime.fromisoformat(_nbc_raw)
-                if _nbc_dt.tzinfo is None:
-                    _nbc_dt = _nbc_dt.replace(tzinfo=UTC)
-                _rem = (_nbc_dt - datetime.now(UTC)).total_seconds()
-                if _rem < 0:
-                    _nbc_str = "  📊 bar closing…"
-                elif _rem < 60:
-                    _nbc_str = f"  📊 next bar {int(_rem)}s"
-                elif _rem < 3600:
-                    _m, _s = divmod(int(_rem), 60)
-                    _nbc_str = f"  📊 next bar {_m}m {_s:02d}s"
-                elif _rem < 86400:
-                    _h, _r = divmod(int(_rem), 3600)
-                    _m = _r // 60
-                    _nbc_str = f"  📊 next bar {_h}h {_m:02d}m"
-                else:
-                    _d = int(_rem) // 86400
-                    _h = (int(_rem) % 86400) // 3600
-                    _nbc_str = f"  📊 next bar {_d}d {_h}h"
-            except Exception:
-                pass
-
-        # Phase badge — OFFLINE / PAPER / LIVE
-        _mode = self.bot_config.get("trading_mode", "paper")
-        if _mode == "live":
-            _mode_badge = f"{_ANSI_G}● LIVE{_ANSI_RST}"
-        elif _mode == "paper":
-            _mode_badge = f"{_ANSI_Y}● PAPER{_ANSI_RST}"
-        else:
-            _mode_badge = f"{_ANSI_DIM}● OFFLINE{_ANSI_RST}"
-
-        print(f"\n🎯 {symbol} @ {tf}  {_mode_badge}    💲 {price_str}    ⏱  {hours:02d}h {minutes:02d}m{_nbc_str}")
-        _fleet: dict[str, list[int]] = {}
-        for _bot in self.all_bots_stats:
-            _sym = str(_bot.get("symbol", "") or "").upper()
-            try:
-                _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
-            except (TypeError, ValueError):
-                _tfm = 0
-            if _sym and _tfm > 0:
-                _fleet.setdefault(_sym, []).append(_tfm)
-        if _fleet:
-            _chunks: list[str] = []
-            for _sym in sorted(_fleet.keys()):
-                _tfs = sorted(set(_fleet[_sym]))
-                _tf_labels = ",".join([self._format_timeframe_minutes_label(_v) for _v in _tfs])
-                _chunks.append(f"{_sym}[{_tf_labels}]")
-            print(f"{_ANSI_DIM}🧭 Active paper TFs: {' | '.join(_chunks)}{_ANSI_RST}")
+        print(
+            f"\n🎯 {symbol} @ {tf}  {self._header_mode_badge()}    💲 {self._header_price_str()}    "
+            f"⏱  {hours:02d}h {minutes:02d}m{self._header_next_bar_str()}"
+        )
+        fleet_chunks = self._header_fleet_chunks()
+        if fleet_chunks:
+            print(f"{_ANSI_DIM}🧭 Active paper TFs: {' | '.join(fleet_chunks)}{_ANSI_RST}")
         print(f"{heartbeat} {now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
     def _render_tab_bar(self) -> None:
