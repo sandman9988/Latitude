@@ -4818,6 +4818,92 @@ class TabbedHUD:
             detail = f"  {_ANSI_DIM}{r['detail']}{_ANSI_RST}" if r.get("detail") else ""
             print(f"  {col}{icon} {r['name']}{_ANSI_RST}{detail}")
 
+    @staticmethod
+    def _health_status_style(overall: str) -> tuple[str, str]:
+        if overall == "HEALTHY":
+            return _ANSI_G, "🟢"
+        if overall in ("DEGRADED", "WARNING"):
+            return _ANSI_Y, "🟡"
+        if overall == "NO_DATA":
+            return _ANSI_DIM, "⬜"
+        return _ANSI_R, "🔴"
+
+    @staticmethod
+    def _health_report_age(report: dict) -> str:
+        generated = report.get("generated_at", "")
+        if not generated:
+            return ""
+        try:
+            generated_at = (
+                datetime.fromisoformat(generated).replace(tzinfo=UTC)
+                if generated.endswith("Z")
+                else datetime.fromisoformat(generated)
+            )
+            age_s = (datetime.now(UTC) - generated_at).total_seconds()
+            return f"{age_s / 60:.0f}m ago" if age_s < 3600 else f"{age_s / 3600:.1f}h ago"
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _health_list(value: Any) -> list:
+        return value if isinstance(value, list) else []
+
+    @staticmethod
+    def _health_dict(value: Any) -> dict:
+        return value if isinstance(value, dict) else {}
+
+    def _render_health_fleet_summary(self, fleet: dict) -> None:
+        n_trades = int(fleet.get("total_trades", fleet.get("n_trades", 0)) or 0)
+        win_rate = float(fleet.get("win_rate", 0)) * 100
+        profit_factor = float(fleet.get("profit_factor", 0))
+        emergency_rate = float(fleet.get("emergency_rate", 0)) * 100
+        wr_col = _ANSI_G if win_rate >= 50 else (_ANSI_Y if win_rate >= 35 else _ANSI_R)
+        pf_col = _ANSI_G if profit_factor >= 1.2 else (_ANSI_Y if profit_factor >= 1.0 else _ANSI_R)
+        emg_col = _ANSI_R if emergency_rate > 5 else (_ANSI_Y if emergency_rate > 2 else _ANSI_G)
+        print(
+            f"  Fleet: {n_trades} trades │ "
+            f"WR {wr_col}{win_rate:.0f}%{_ANSI_RST} │ "
+            f"PF {pf_col}{profit_factor:.2f}{_ANSI_RST} │ "
+            f"Emg {emg_col}{emergency_rate:.1f}%{_ANSI_RST}"
+        )
+
+    @staticmethod
+    def _health_anomaly_label(anomaly: Any) -> str:
+        if isinstance(anomaly, dict):
+            bot = f"{anomaly.get('symbol', '?')} {anomaly.get('timeframe', '?')}"
+            code = anomaly.get("code", "?")
+        else:
+            bot = "fleet"
+            code = str(anomaly)
+        return f"{_ANSI_Y}⚡ {bot} {code}{_ANSI_RST}"
+
+    def _render_health_anomalies(self, anomalies: list) -> None:
+        if not anomalies:
+            print(f"  {_ANSI_G}✓ No anomalies detected{_ANSI_RST}")
+            return
+        labels = [self._health_anomaly_label(anomaly) for anomaly in anomalies[:4]]
+        print(f"  Anomalies: {'  '.join(labels)}")
+        if len(anomalies) > 4:
+            print(f"  {_ANSI_DIM}  … and {len(anomalies) - 4} more{_ANSI_RST}")
+
+    @staticmethod
+    def _health_correction_label(correction: Any) -> str:
+        if not isinstance(correction, dict):
+            return _truncate_visible(str(correction), 72)
+        bot = f"{correction.get('symbol', '?')} {correction.get('timeframe', '?')}"
+        param = correction.get("parameter", "?").replace("_", " ")
+        old = correction.get("old_value")
+        new = correction.get("new_value")
+        if old is not None and new is not None:
+            return f"{bot} {param} {old:.3f}→{new:.3f}"
+        return f"{bot} {param}"
+
+    def _render_health_corrections(self, corrections: list) -> None:
+        if not corrections:
+            return
+        parts = [self._health_correction_label(correction) for correction in corrections[:3]]
+        print(f"  Applied: {_ANSI_G}{', '.join(parts)}{_ANSI_RST}")
+
     def _render_health_analyzer(self) -> None:
         """Render self-healing performance analyzer status row."""
         hr = self._health_report
@@ -4826,95 +4912,14 @@ class TabbedHUD:
             return
 
         overall = hr.get("overall_health", "UNKNOWN")
-        if overall == "HEALTHY":
-            _h_col, _h_icon = _ANSI_G, "🟢"
-        elif overall in ("DEGRADED", "WARNING"):
-            _h_col, _h_icon = _ANSI_Y, "🟡"
-        elif overall == "NO_DATA":
-            _h_col, _h_icon = _ANSI_DIM, "⬜"
-        else:
-            _h_col, _h_icon = _ANSI_R, "🔴"
-
-        # Age of last run
-        _gen = hr.get("generated_at", "")
-        _age_str = ""
-        if _gen:
-            try:
-                _dt = (
-                    datetime.fromisoformat(_gen).replace(tzinfo=UTC)
-                    if _gen.endswith("Z")
-                    else datetime.fromisoformat(_gen)
-                )
-                _age_s = (datetime.now(UTC) - _dt).total_seconds()
-                if _age_s < 3600:
-                    _age_str = f"{_age_s/60:.0f}m ago"
-                else:
-                    _age_str = f"{_age_s/3600:.1f}h ago"
-            except Exception:
-                _age_str = ""
-
-        _window = hr.get("analysis_window_hours", 4)
-        _header_age = f"  {_ANSI_DIM}({_window:.0f}h window{', ' + _age_str if _age_str else ''}){_ANSI_RST}"
-        print(f"\n\033[1m🔄 SELF-HEAL\033[0m  {_h_icon} {_h_col}{overall}{_ANSI_RST}{_header_age}")
-
-        anomalies = hr.get("anomalies", [])
-        if not isinstance(anomalies, list):
-            anomalies = []
-        corrections = hr.get("corrections_applied", [])
-        if not isinstance(corrections, list):
-            corrections = []
-        fleet = hr.get("fleet", {})
-        if not isinstance(fleet, dict):
-            fleet = {}
-
-        # Fleet summary row
-        _n_trades = int(fleet.get("total_trades", fleet.get("n_trades", 0)) or 0)
-        _wr = float(fleet.get("win_rate", 0)) * 100
-        _pf = float(fleet.get("profit_factor", 0))
-        _emg = float(fleet.get("emergency_rate", 0)) * 100
-        _wr_col = _ANSI_G if _wr >= 50 else (_ANSI_Y if _wr >= 35 else _ANSI_R)
-        _pf_col = _ANSI_G if _pf >= 1.2 else (_ANSI_Y if _pf >= 1.0 else _ANSI_R)
-        _emg_col = _ANSI_R if _emg > 5 else (_ANSI_Y if _emg > 2 else _ANSI_G)
-        print(
-            f"  Fleet: {_n_trades} trades │ "
-            f"WR {_wr_col}{_wr:.0f}%{_ANSI_RST} │ "
-            f"PF {_pf_col}{_pf:.2f}{_ANSI_RST} │ "
-            f"Emg {_emg_col}{_emg:.1f}%{_ANSI_RST}"
-        )
-
-        # Anomalies
-        if anomalies:
-            _a_strs = []
-            for _a in anomalies[:4]:
-                if isinstance(_a, dict):
-                    _bot = f"{_a.get('symbol','?')} {_a.get('timeframe','?')}"
-                    _code = _a.get("code", "?")
-                else:
-                    _bot = "fleet"
-                    _code = str(_a)
-                _a_strs.append(f"{_ANSI_Y}⚡ {_bot} {_code}{_ANSI_RST}")
-            print(f"  Anomalies: {'  '.join(_a_strs)}")
-            if len(anomalies) > 4:
-                print(f"  {_ANSI_DIM}  … and {len(anomalies) - 4} more{_ANSI_RST}")
-        else:
-            print(f"  {_ANSI_G}✓ No anomalies detected{_ANSI_RST}")
-
-        # Last corrections
-        if corrections:
-            _c_parts = []
-            for _c in corrections[:3]:
-                if not isinstance(_c, dict):
-                    _c_parts.append(_truncate_visible(str(_c), 72))
-                    continue
-                _bot = f"{_c.get('symbol','?')} {_c.get('timeframe','?')}"
-                _param = _c.get("parameter", "?").replace("_", " ")
-                _old = _c.get("old_value")
-                _new = _c.get("new_value")
-                if _old is not None and _new is not None:
-                    _c_parts.append(f"{_bot} {_param} {_old:.3f}→{_new:.3f}")
-                else:
-                    _c_parts.append(f"{_bot} {_param}")
-            print(f"  Applied: {_ANSI_G}{', '.join(_c_parts)}{_ANSI_RST}")
+        health_col, health_icon = self._health_status_style(overall)
+        age_str = self._health_report_age(hr)
+        window = hr.get("analysis_window_hours", 4)
+        header_age = f"  {_ANSI_DIM}({window:.0f}h window{', ' + age_str if age_str else ''}){_ANSI_RST}"
+        print(f"\n\033[1m🔄 SELF-HEAL\033[0m  {health_icon} {health_col}{overall}{_ANSI_RST}{header_age}")
+        self._render_health_fleet_summary(self._health_dict(hr.get("fleet", {})))
+        self._render_health_anomalies(self._health_list(hr.get("anomalies", [])))
+        self._render_health_corrections(self._health_list(hr.get("corrections_applied", [])))
 
     def _render_health_session_events(self) -> None:
         """Render per-bot last session start and recent connection events from transactions.jsonl."""
