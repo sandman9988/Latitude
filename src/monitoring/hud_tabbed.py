@@ -5033,16 +5033,14 @@ class TabbedHUD:
                 _row += f"  {_c}"
             print(_row)
 
-    def _render_performance(self) -> None:
-        """Render summary-first performance metrics — dispatches by drill level."""
-        self._render_breadcrumb("PERFORMANCE", 2)
-        # Resolve trading mode: prefer trade_log-derived mode (covers all trades),
-        # fall back to snapshot mode, then bot_config.
-        _mode = (
+    def _performance_mode(self) -> str:
+        return (
             getattr(self, "_trade_log_mode", "")
             or getattr(self, "_perf_snapshot_mode", "")
             or self.bot_config.get("trading_mode", "paper")
         )
+
+    def _render_performance_intro(self) -> None:
         src = (
             f"  {_ANSI_DIM}(source: trade_log.jsonl; modes never blended){_ANSI_RST}"
             if self._metrics_from_trade_log
@@ -5059,225 +5057,264 @@ class TabbedHUD:
                 f"  {_ANSI_Y}ℹ M? = legacy trades missing timeframe metadata "
                 f"({self._trade_log_unknown_timeframe_count} trades).{_ANSI_RST}"
             )
-
-        # Stats epoch banner
         if self._stats_epoch:
-            _epoch_str = self._stats_epoch.strftime("%Y-%m-%d %H:%M")
-            _exc_n = self._stats_epoch_excluded
-            _exc_pnl = self._stats_epoch_excluded_pnl
-            _pnl_c = self._pnl_color(_exc_pnl)
+            epoch_str = self._stats_epoch.strftime("%Y-%m-%d %H:%M")
+            excluded_pnl = self._stats_epoch_excluded_pnl
             print(
-                f"  {_ANSI_DIM}📅 Epoch {_epoch_str} UTC; excluded {_exc_n} trades "
-                f"({_pnl_c}{_exc_pnl:+.2f}{_ANSI_RST}{_ANSI_DIM}); [e] edit{_ANSI_RST}"
+                f"  {_ANSI_DIM}📅 Epoch {epoch_str} UTC; excluded {self._stats_epoch_excluded} trades "
+                f"({self._pnl_color(excluded_pnl)}{excluded_pnl:+.2f}{_ANSI_RST}{_ANSI_DIM}); [e] edit{_ANSI_RST}"
             )
 
-        def _render_period_rows(rows: list[tuple[str, dict]], *, indent: str = "  ") -> None:
-            _per_hdr = (
-                f"{indent}{'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL $':>12} "
-                f"{'TQ':>7} {'PF':>7} {'MaxDD':>7}"
-            )
-            print(_per_hdr)
-            print(f"{indent}" + "─" * (_visible_width(_per_hdr) - len(indent)))
-            for label, metrics in rows:
-                trades = metrics.get("total_trades", 0)
-                wr = metrics.get("win_rate", 0) * 100
-                pnl = metrics.get("total_pnl", 0)
-                trade_quality = metrics.get("sharpe_ratio", 0)
-                pf = metrics.get("profit_factor", 0)
-                maxdd = metrics.get("max_drawdown", 0.0)
-                pnl_color = self._pnl_color(pnl)
-                if maxdd > DD_HIGH_PCT:
-                    dd_color = _ANSI_R
-                elif maxdd > DD_WARN_PCT:
-                    dd_color = _ANSI_Y
-                else:
-                    dd_color = _ANSI_G
-                print(
-                    f"{indent}{label:<9} {trades:>7} {wr:>6.1f}% {pnl_color}{pnl:>+12.2f}{_ANSI_RST} "
-                    f"{trade_quality:>7.2f} {pf:>7.2f} {dd_color}{maxdd:>6.2f}%{_ANSI_RST}"
-                )
+    def _render_perf_period_rows(self, rows: list[tuple[str, dict]], *, indent: str = "  ") -> None:
+        header = (
+            f"{indent}{'Period':<9} {'Trades':>7} {'Win%':>7} {'PnL $':>12} "
+            f"{'TQ':>7} {'PF':>7} {'MaxDD':>7}"
+        )
+        print(header)
+        print(f"{indent}" + "─" * (_visible_width(header) - len(indent)))
+        for label, metrics in rows:
+            self._render_perf_period_row(label, metrics, indent=indent)
 
-        _portfolio_trades = list(self._trade_log_metrics_trades)
-        _portfolio_all_trades = list(self._trade_log_all_trades)
-        _portfolio_by_mode = {
-            _mk: list(self._trade_log_metrics_trades_by_mode.get(_mk, [])) for _mk in ("paper", "live")
-        }
-        _portfolio_all_by_mode = {
-            _mk: list(self._trade_log_all_trades_by_mode.get(_mk, [])) for _mk in ("paper", "live")
-        }
-        _active_trades = self._active_scope_trades(self._trade_log_metrics_trades)
-        _active_all_trades = self._active_scope_trades(self._trade_log_all_trades)
-        _active_by_mode = {
-            _mk: self._active_scope_trades(self._trade_log_metrics_trades_by_mode.get(_mk, []))
-            for _mk in ("paper", "live")
-        }
-        _active_all_by_mode = {
-            _mk: self._active_scope_trades(self._trade_log_all_trades_by_mode.get(_mk, []))
-            for _mk in ("paper", "live")
-        }
+    def _render_perf_period_row(self, label: str, metrics: dict, *, indent: str) -> None:
+        pnl = metrics.get("total_pnl", 0)
+        maxdd = metrics.get("max_drawdown", 0.0)
+        if maxdd > DD_HIGH_PCT:
+            dd_color = _ANSI_R
+        elif maxdd > DD_WARN_PCT:
+            dd_color = _ANSI_Y
+        else:
+            dd_color = _ANSI_G
+        print(
+            f"{indent}{label:<9} {metrics.get('total_trades', 0):>7} "
+            f"{metrics.get('win_rate', 0) * 100:>6.1f}% "
+            f"{self._pnl_color(pnl)}{pnl:>+12.2f}{_ANSI_RST} "
+            f"{metrics.get('sharpe_ratio', 0):>7.2f} {metrics.get('profit_factor', 0):>7.2f} "
+            f"{dd_color}{maxdd:>6.2f}%{_ANSI_RST}"
+        )
 
-        # ── Period-column summary (L1: portfolio, L2: symbol, L3: symbol/TF) ──────
-        if self._ctx_level == 1:
-            # Portfolio: one row per (symbol, mode) with period columns side-by-side
-            _col_rows: list[tuple[str, str, list[dict], list[dict]]] = []
-            _l1 = self._l1_rows()
-            _all_syms = sorted({s for s, _ in _l1}) if _l1 else self._available_symbols()
-            for _lsym, _lmode in _l1:
-                _ep = [
-                    t for t in self._trade_log_metrics_trades
-                    if str(t.get("symbol", "")).upper() == _lsym and t.get("trading_mode") == _lmode
-                ]
-                _al = [
-                    t for t in self._trade_log_all_trades
-                    if str(t.get("symbol", "")).upper() == _lsym and t.get("trading_mode") == _lmode
-                ]
-                if not _al:
-                    continue
-                _mode_badge = "PPR" if _lmode == "paper" else "LIV"
-            _col_rows.append((f"{_lsym} {_mode_badge}", _lmode, _ep, _al))
-            if _col_rows:
-                print(
-                    "  \033[1mPORTFOLIO SUMMARY\033[0m  "
-                    + _ANSI_DIM
-                    + "period columns; [Enter] to drill"
-                    + _ANSI_RST
-                )
-                self._render_perf_period_columns(_col_rows)
-                print()
-        elif self._ctx_level >= 2:
-            # Symbol or Symbol/TF: one row per TF for this symbol
-            _sym_filter = self._ctx_symbol.upper()
-            _tf_filter = self._ctx_tf if self._ctx_level >= 3 else 0
-            _col_rows = []
-            _tfs = sorted({
-                int(t.get("timeframe_minutes", 0) or 0)
-                for t in self._trade_log_all_trades
-                if str(t.get("symbol", "")).upper() == _sym_filter and t.get("timeframe_minutes")
-            })
-            for _mode_key in ("live", "paper"):
-                _mode_c = _ANSI_G if _mode_key == "live" else _ANSI_Y
-                _mode_badge = "LIV" if _mode_key == "live" else "PPR"
-                for _tfm in _tfs:
-                    if _tf_filter and _tfm != _tf_filter:
-                        continue
-                    _tf_lbl = self._format_timeframe_minutes_label(_tfm)
-                    _ep = [
-                        t for t in self._trade_log_metrics_trades
-                        if str(t.get("symbol", "")).upper() == _sym_filter
-                        and int(t.get("timeframe_minutes", 0) or 0) == _tfm
-                        and t.get("trading_mode") == _mode_key
-                    ]
-                    _al = [
-                        t for t in self._trade_log_all_trades
-                        if str(t.get("symbol", "")).upper() == _sym_filter
-                        and int(t.get("timeframe_minutes", 0) or 0) == _tfm
-                        and t.get("trading_mode") == _mode_key
-                    ]
-                    if not _al:
-                        continue
-                    _col_rows.append((f"{_sym_filter}/{_tf_lbl} {_mode_badge}", _mode_key, _ep, _al))
-            if _col_rows:
-                _scope_lbl = (
-                    f"{_sym_filter}/{self._format_timeframe_minutes_label(_tf_filter)}"
-                    if _tf_filter else _sym_filter
-                )
-                print(f"  \033[1m{_scope_lbl} SUMMARY\033[0m  " + _ANSI_DIM + "period columns" + _ANSI_RST)
-                self._render_perf_period_columns(_col_rows)
-                print()
-
-        # Column headers — 'TQR' = Trade Quality Ratio (mean/σ of trade PnL in USD).
-        # This is NOT an annualised return-based Sharpe ratio.
-        print("  \033[1mTRADING RESULTS BY MODE\033[0m  " + _ANSI_DIM + "Portfolio scope; no blended rows" + _ANSI_RST)
-        _mode_blocks = [
-            ("paper", "PAPER", _ANSI_Y, _portfolio_by_mode["paper"], _portfolio_all_by_mode["paper"]),
-            ("live", "LIVE", _ANSI_G, _portfolio_by_mode["live"], _portfolio_all_by_mode["live"]),
+    @staticmethod
+    def _symbol_mode_tf_trades(trades: list[dict], symbol: str, mode: str, tfm: int) -> list[dict]:
+        return [
+            trade for trade in trades
+            if str(trade.get("symbol", "")).upper() == symbol
+            and int(trade.get("timeframe_minutes", 0) or 0) == tfm
+            and trade.get("trading_mode") == mode
         ]
-        _printed_mode = False
-        for _mode_key, _label, _color, _trades, _all_trades in _mode_blocks:
-            if not _trades and _mode != _mode_key:
+
+    def _perf_portfolio_period_rows(self) -> list[tuple[str, str, list[dict], list[dict]]]:
+        rows: list[tuple[str, str, list[dict], list[dict]]] = []
+        for symbol, mode in self._l1_rows():
+            epoch_trades = [
+                trade for trade in self._trade_log_metrics_trades
+                if str(trade.get("symbol", "")).upper() == symbol and trade.get("trading_mode") == mode
+            ]
+            all_trades = [
+                trade for trade in self._trade_log_all_trades
+                if str(trade.get("symbol", "")).upper() == symbol and trade.get("trading_mode") == mode
+            ]
+            if all_trades:
+                mode_badge = "PPR" if mode == "paper" else "LIV"
+                rows.append((f"{symbol} {mode_badge}", mode, epoch_trades, all_trades))
+        return rows
+
+    def _perf_symbol_period_rows(self) -> list[tuple[str, str, list[dict], list[dict]]]:
+        symbol = self._ctx_symbol.upper()
+        tf_filter = self._ctx_tf if self._ctx_level >= 3 else 0
+        rows: list[tuple[str, str, list[dict], list[dict]]] = []
+        for mode in ("live", "paper"):
+            for tfm in self._perf_symbol_timeframes(symbol):
+                if tf_filter and tfm != tf_filter:
+                    continue
+                epoch_trades = self._symbol_mode_tf_trades(self._trade_log_metrics_trades, symbol, mode, tfm)
+                all_trades = self._symbol_mode_tf_trades(self._trade_log_all_trades, symbol, mode, tfm)
+                if all_trades:
+                    tf_label = self._format_timeframe_minutes_label(tfm)
+                    mode_badge = "LIV" if mode == "live" else "PPR"
+                    rows.append((f"{symbol}/{tf_label} {mode_badge}", mode, epoch_trades, all_trades))
+        return rows
+
+    def _perf_symbol_timeframes(self, symbol: str) -> list[int]:
+        return sorted({
+            int(trade.get("timeframe_minutes", 0) or 0)
+            for trade in self._trade_log_all_trades
+            if str(trade.get("symbol", "")).upper() == symbol and trade.get("timeframe_minutes")
+        })
+
+    def _render_performance_period_summary(self) -> None:
+        if self._ctx_level == 1:
+            self._render_portfolio_period_summary()
+            return
+        if self._ctx_level >= 2:
+            self._render_symbol_period_summary()
+
+    def _render_portfolio_period_summary(self) -> None:
+        rows = self._perf_portfolio_period_rows()
+        if not rows:
+            return
+        print("  \033[1mPORTFOLIO SUMMARY\033[0m  " + _ANSI_DIM + "period columns; [Enter] to drill" + _ANSI_RST)
+        self._render_perf_period_columns(rows)
+        print()
+
+    def _render_symbol_period_summary(self) -> None:
+        rows = self._perf_symbol_period_rows()
+        if not rows:
+            return
+        tf_filter = self._ctx_tf if self._ctx_level >= 3 else 0
+        scope = (
+            f"{self._ctx_symbol.upper()}/{self._format_timeframe_minutes_label(tf_filter)}"
+            if tf_filter
+            else self._ctx_symbol.upper()
+        )
+        print(f"  \033[1m{scope} SUMMARY\033[0m  " + _ANSI_DIM + "period columns" + _ANSI_RST)
+        self._render_perf_period_columns(rows)
+        print()
+
+    def _performance_mode_blocks(
+        self,
+        by_mode: dict[str, list[dict]],
+        all_by_mode: dict[str, list[dict]],
+    ) -> list[tuple[str, str, str, list[dict], list[dict]]]:
+        return [
+            ("paper", "PAPER", _ANSI_Y, by_mode["paper"], all_by_mode["paper"]),
+            ("live", "LIVE", _ANSI_G, by_mode["live"], all_by_mode["live"]),
+        ]
+
+    def _render_performance_mode_results(self, mode: str, mode_blocks: list[tuple]) -> None:
+        print("  \033[1mTRADING RESULTS BY MODE\033[0m  " + _ANSI_DIM + "Portfolio scope; no blended rows" + _ANSI_RST)
+        printed_mode = False
+        for mode_key, label, color, trades, all_trades in mode_blocks:
+            if not trades and mode != mode_key:
                 continue
-            print(f"\n  {_color}{_label}{_ANSI_RST}")
-            _render_period_rows(self._period_rows_for_trades(_trades, _all_trades), indent="    ")
-            _printed_mode = True
-        if not _printed_mode:
+            print(f"\n  {color}{label}{_ANSI_RST}")
+            self._render_perf_period_rows(self._period_rows_for_trades(trades, all_trades), indent="    ")
+            printed_mode = True
+        if not printed_mode:
             print(f"    {_ANSI_DIM}No paper/live trade rows available.{_ANSI_RST}")
 
-        self._render_offline_improvement_summary()
-
-        self._render_current_session_performance()
-
-        # Per-symbol breakdown (only when multiple symbols exist)
-        if len(self.per_symbol_metrics) > 1:
-            print("\n  \033[1mPER SYMBOL / MODE\033[0m")
-            _ps_hdr = f"  {'Symbol':<10} {'Mode':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'PF':>7} {'MaxDD':>7}"
-            print(_ps_hdr)
-            print("  " + "─" * (_visible_width(_ps_hdr) - 2))
-            _by_sym_mode: dict[tuple[str, str], list[dict]] = {}
-            for (_sym, _tf, _mk), _trades in self.metrics_cube.items():
-                _by_sym_mode.setdefault((_sym, _mk), []).extend(_trades)
-            for (_sym, _mk), _trades in sorted(_by_sym_mode.items(), key=lambda item: (item[0][0], item[0][1])):
-                _sm = _hud_period_metrics(_trades, self._universe_starting_equity())
-                _tr = int(_sm.get("total_trades", 0) or 0)
-                if _tr <= 0:
-                    continue
-                _wr = _sm.get("win_rate", 0) * 100
-                _pnl = _sm.get("total_pnl", 0)
-                _pf = _sm.get("profit_factor", 0)
-                _mdd = _sm.get("max_drawdown", 0)
-                _pc = self._pnl_color(_pnl)
-                _dc = _ANSI_R if _mdd > DD_HIGH_PCT else (_ANSI_Y if _mdd > DD_WARN_PCT else _ANSI_G)
-                _mc = _ANSI_Y if _mk == "paper" else _ANSI_G
-                print(
-                    f"  {_sym:<10} {_mc}{_mk.upper():<6}{_ANSI_RST} {_tr:>7} {_wr:>6.1f}% "
-                    f"{_pc}{_pnl:>+11.2f}{_ANSI_RST} {_pf:>7.2f} {_dc}{_mdd:>6.2f}%{_ANSI_RST}"
-                )
-
-        self._render_mode_breakdown()
-        self._render_timeframe_mode_breakdown()
-
-        if not self._performance_detail:
-            print(
-                f"\n  {_ANSI_DIM}Detail collapsed: [d] quality, edge, active bot, prediction.{_ANSI_RST}"
-            )
+    def _render_per_symbol_mode_performance(self) -> None:
+        if len(self.per_symbol_metrics) <= 1:
             return
+        print("\n  \033[1mPER SYMBOL / MODE\033[0m")
+        header = f"  {'Symbol':<10} {'Mode':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11} {'PF':>7} {'MaxDD':>7}"
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
+        by_sym_mode: dict[tuple[str, str], list[dict]] = {}
+        for (symbol, _tf, mode), trades in self.metrics_cube.items():
+            by_sym_mode.setdefault((symbol, mode), []).extend(trades)
+        for (symbol, mode), trades in sorted(by_sym_mode.items(), key=lambda item: (item[0][0], item[0][1])):
+            self._render_per_symbol_mode_row(symbol, mode, trades)
 
+    def _render_per_symbol_mode_row(self, symbol: str, mode: str, trades: list[dict]) -> None:
+        metrics = _hud_period_metrics(trades, self._universe_starting_equity())
+        trade_count = int(metrics.get("total_trades", 0) or 0)
+        if trade_count <= 0:
+            return
+        pnl = metrics.get("total_pnl", 0)
+        maxdd = metrics.get("max_drawdown", 0)
+        dd_color = _ANSI_R if maxdd > DD_HIGH_PCT else (_ANSI_Y if maxdd > DD_WARN_PCT else _ANSI_G)
+        mode_color = _ANSI_Y if mode == "paper" else _ANSI_G
+        print(
+            f"  {symbol:<10} {mode_color}{mode.upper():<6}{_ANSI_RST} {trade_count:>7} "
+            f"{metrics.get('win_rate', 0) * 100:>6.1f}% "
+            f"{self._pnl_color(pnl)}{pnl:>+11.2f}{_ANSI_RST} "
+            f"{metrics.get('profit_factor', 0):>7.2f} {dd_color}{maxdd:>6.2f}%{_ANSI_RST}"
+        )
+
+    def _render_performance_quality_detail(self, mode: str, mode_blocks: list[tuple]) -> None:
         print(
             f"\n  \033[1mDETAIL DRILL-DOWN\033[0m  "
             f"{_ANSI_DIM}(same live trade source; still separated by mode){_ANSI_RST}"
         )
-        for _mode_key, _label, _color, _trades, _all_trades in _mode_blocks:
-            if not _trades and _mode != _mode_key:
+        for mode_key, label, color, trades, all_trades in mode_blocks:
+            if not trades and mode != mode_key:
                 continue
-            print(f"\n  {_color}{_label} DETAIL{_ANSI_RST}")
-            self._render_trade_quality(self._period_rows_for_trades(_trades, _all_trades))
+            print(f"\n  {color}{label} DETAIL{_ANSI_RST}")
+            self._render_trade_quality(self._period_rows_for_trades(trades, all_trades))
 
-        pm = self.production_metrics.get("metrics", {})
-        if self._has_active_scope():
-            _scope = self._active_scope_label()
-            print(
-                f"\n  \033[1mACTIVE BOT DETAIL [{_scope}]\033[0m  "
-                f"{_ANSI_DIM}(per-bot decision-learning scope){_ANSI_RST}"
-            )
-            _active_mode_trades = []
-            for _mode_key, _label, _color, _trades, _all_trades in [
-                ("paper", "PAPER", _ANSI_Y, _active_by_mode["paper"], _active_all_by_mode["paper"]),
-                ("live", "LIVE", _ANSI_G, _active_by_mode["live"], _active_all_by_mode["live"]),
-            ]:
-                if not _trades and _mode != _mode_key:
-                    continue
-                print(f"  {_color}{_label}{_ANSI_RST}")
-                _render_period_rows(self._period_rows_for_trades(_trades, _all_trades), indent="    ")
-                self._render_trade_quality(self._period_rows_for_trades(_trades, _all_trades))
-                if not _active_mode_trades:
-                    _active_mode_trades = _trades
-            _quality_metrics = _hud_period_metrics(_active_mode_trades, self._universe_starting_equity())
-        else:
-            _quality_metrics = _hud_period_metrics(
-                _portfolio_by_mode.get("paper", []),
-                self._universe_starting_equity(),
-            )
-        # Prediction convergence is scoped to the active bot when available.
-        self._render_trade_timing(_quality_metrics, pm)
+    def _active_performance_quality_metrics(
+        self,
+        mode: str,
+        active_by_mode: dict[str, list[dict]],
+        active_all_by_mode: dict[str, list[dict]],
+        portfolio_by_mode: dict[str, list[dict]],
+    ) -> dict:
+        if not self._has_active_scope():
+            return _hud_period_metrics(portfolio_by_mode.get("paper", []), self._universe_starting_equity())
+        print(
+            f"\n  \033[1mACTIVE BOT DETAIL [{self._active_scope_label()}]\033[0m  "
+            f"{_ANSI_DIM}(per-bot decision-learning scope){_ANSI_RST}"
+        )
+        active_mode_trades = []
+        for mode_key, label, color, trades, all_trades in self._performance_mode_blocks(
+            active_by_mode,
+            active_all_by_mode,
+        ):
+            if not trades and mode != mode_key:
+                continue
+            print(f"  {color}{label}{_ANSI_RST}")
+            rows = self._period_rows_for_trades(trades, all_trades)
+            self._render_perf_period_rows(rows, indent="    ")
+            self._render_trade_quality(rows)
+            if not active_mode_trades:
+                active_mode_trades = trades
+        return _hud_period_metrics(active_mode_trades, self._universe_starting_equity())
+
+    def _render_performance_detail(
+        self,
+        mode: str,
+        mode_blocks: list[tuple],
+        active_by_mode: dict[str, list[dict]],
+        active_all_by_mode: dict[str, list[dict]],
+        portfolio_by_mode: dict[str, list[dict]],
+    ) -> None:
+        if not self._performance_detail:
+            print(f"\n  {_ANSI_DIM}Detail collapsed: [d] quality, edge, active bot, prediction.{_ANSI_RST}")
+            return
+        self._render_performance_quality_detail(mode, mode_blocks)
+        quality_metrics = self._active_performance_quality_metrics(
+            mode,
+            active_by_mode,
+            active_all_by_mode,
+            portfolio_by_mode,
+        )
+        self._render_trade_timing(quality_metrics, self.production_metrics.get("metrics", {}))
+
+    def _render_performance(self) -> None:
+        """Render summary-first performance metrics — dispatches by drill level."""
+        self._render_breadcrumb("PERFORMANCE", 2)
+        mode = self._performance_mode()
+        self._render_performance_intro()
+        portfolio_by_mode = {
+            mode_key: list(self._trade_log_metrics_trades_by_mode.get(mode_key, []))
+            for mode_key in ("paper", "live")
+        }
+        portfolio_all_by_mode = {
+            mode_key: list(self._trade_log_all_trades_by_mode.get(mode_key, []))
+            for mode_key in ("paper", "live")
+        }
+        active_by_mode = {
+            mode_key: self._active_scope_trades(self._trade_log_metrics_trades_by_mode.get(mode_key, []))
+            for mode_key in ("paper", "live")
+        }
+        active_all_by_mode = {
+            mode_key: self._active_scope_trades(self._trade_log_all_trades_by_mode.get(mode_key, []))
+            for mode_key in ("paper", "live")
+        }
+        mode_blocks = self._performance_mode_blocks(portfolio_by_mode, portfolio_all_by_mode)
+        self._render_performance_period_summary()
+        self._render_performance_mode_results(mode, mode_blocks)
+        self._render_offline_improvement_summary()
+        self._render_current_session_performance()
+        self._render_per_symbol_mode_performance()
+        self._render_mode_breakdown()
+        self._render_timeframe_mode_breakdown()
+        self._render_performance_detail(
+            mode,
+            mode_blocks,
+            active_by_mode,
+            active_all_by_mode,
+            portfolio_by_mode,
+        )
 
     def _render_offline_improvement_summary(self) -> None:
         """Render offline training/champion evidence without mixing it into account PnL."""
