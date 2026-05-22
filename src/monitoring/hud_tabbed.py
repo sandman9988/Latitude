@@ -4285,225 +4285,232 @@ class TabbedHUD:
             )
         print(f"\n  {_ANSI_DIM}↑/↓ select mode  |  Enter confirm  |  1-7 switch tabs after selection{_ANSI_RST}")
 
-    def _render_overview(self) -> None:
-        """Render overview tab — dispatches by drill level (max L2)."""
-        self._render_breadcrumb("OVERVIEW", 1)
+    def _render_symbol_overview(self, symbol: str) -> None:
+        print(f"\n\033[1m🔍 {symbol} — SYMBOL OVERVIEW\033[0m  {_ANSI_DIM}[Esc] back to portfolio{_ANSI_RST}\n")
+        sym_bots = [bot for bot in (self.all_bots_stats or []) if str(bot.get("symbol", "")).upper() == symbol]
+        if sym_bots:
+            self._render_symbol_overview_bots(sym_bots)
+        else:
+            print(f"  {_ANSI_DIM}No running bots for {symbol}{_ANSI_RST}")
+        self._render_system_health_block()
 
-        # L2: symbol-focused fleet card (all TFs for selected symbol)
-        if self._ctx_level >= 2 and self._ctx_symbol:
-            _sym_f = self._ctx_symbol.upper()
-            print(f"\n\033[1m🔍 {_sym_f} — SYMBOL OVERVIEW\033[0m  {_ANSI_DIM}[Esc] back to portfolio{_ANSI_RST}\n")
-            _sym_bots = [
-                b for b in (self.all_bots_stats or [])
-                if str(b.get("symbol", "")).upper() == _sym_f
-            ]
-            if _sym_bots:
-                _hdr = (
-                    f"  {'TF':<6} {'Mode':<5} {'Pos':<6} {'ε':>6} {'Buf%':>5} "
-                    f"{'ZΩ':>6} {'24h Trades':>10} {'24h PnL':>10}"
-                )
-                print(_hdr)
-                print("  " + "─" * (_visible_width(_hdr) - 2))
-                for _bot in sorted(_sym_bots, key=lambda b: int(b.get("timeframe_minutes", 0) or 0)):
-                    _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
-                    _tf_lbl = self._format_timeframe_minutes_label(_tfm)
-                    _mode = str(_bot.get("trading_mode", "paper") or "paper").upper()[:5]
-                    _pos_dir = str(_bot.get("position_direction", "FLAT") or "FLAT").upper()[:6]
-                    _eps = float(_bot.get("epsilon", 0.0) or 0.0)
-                    _buf_fill = float(_bot.get("buffer_fill_pct", 0.0) or 0.0)
-                    _zo = float(_bot.get("z_omega", 0.0) or 0.0)
-                    _d24 = _bot.get("daily_stats", {}) or {}
-                    _d24_tr = int(_d24.get("total_trades", 0) or 0)
-                    _d24_pnl = float(_d24.get("total_pnl", 0.0) or 0.0)
-                    _mc = _ANSI_Y if _mode == "PAPER" else _ANSI_G
-                    _pc = self._pnl_color(_d24_pnl)
-                    print(
-                        f"  {_tf_lbl:<6} {_mc}{_mode:<5}{_ANSI_RST} {_pos_dir:<6} "
-                        f"{_eps:>6.3f} {_buf_fill:>4.0f}% {_zo:>6.3f} "
-                        f"{_d24_tr:>10} {_pc}{_d24_pnl:>+10.2f}{_ANSI_RST}"
-                    )
-            else:
-                print(f"  {_ANSI_DIM}No running bots for {_sym_f}{_ANSI_RST}")
-            self._render_system_health_block()
-            return
+    def _render_symbol_overview_bots(self, bots: list[dict]) -> None:
+        header = (
+            f"  {'TF':<6} {'Mode':<5} {'Pos':<6} {'ε':>6} {'Buf%':>5} "
+            f"{'ZΩ':>6} {'24h Trades':>10} {'24h PnL':>10}"
+        )
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
+        for bot in sorted(bots, key=lambda item: int(item.get("timeframe_minutes", 0) or 0)):
+            self._render_symbol_overview_bot_row(bot)
 
-        self._render_all_bots_panel()
-        self._render_position_block()
+    def _render_symbol_overview_bot_row(self, bot: dict) -> None:
+        tfm = int(bot.get("timeframe_minutes", 0) or 0)
+        mode = str(bot.get("trading_mode", "paper") or "paper").upper()[:5]
+        day_stats = bot.get("daily_stats", {}) or {}
+        day_pnl = float(day_stats.get("total_pnl", 0.0) or 0.0)
+        mode_col = _ANSI_Y if mode == "PAPER" else _ANSI_G
         print(
-            f"  {_ANSI_DIM}(performance source: trade_log.jsonl; paper/live rows stay mode-separated){_ANSI_RST}"
+            f"  {self._format_timeframe_minutes_label(tfm):<6} {mode_col}{mode:<5}{_ANSI_RST} "
+            f"{str(bot.get('position_direction', 'FLAT') or 'FLAT').upper()[:6]:<6} "
+            f"{float(bot.get('epsilon', 0.0) or 0.0):>6.3f} "
+            f"{float(bot.get('buffer_fill_pct', 0.0) or 0.0):>4.0f}% "
+            f"{float(bot.get('z_omega', 0.0) or 0.0):>6.3f} "
+            f"{int(day_stats.get('total_trades', 0) or 0):>10} "
+            f"{self._pnl_color(day_pnl)}{day_pnl:>+10.2f}{_ANSI_RST}"
         )
 
-        # Account balance / equity
-        _mode = (
+    def _overview_mode(self) -> str:
+        return (
             getattr(self, "_trade_log_mode", "")
             or getattr(self, "_perf_snapshot_mode", "")
             or self.bot_config.get("trading_mode", "paper")
         )
-        if _mode == "paper":
-            _acct_tag = f"  {_ANSI_Y}(paper){_ANSI_RST}"
-        elif _mode == "live":
-            _acct_tag = f"  {_ANSI_G}(live){_ANSI_RST}"
-        elif _mode == "mixed":
-            _acct_tag = f"  {_ANSI_Y}(mixed source; no blended estimate){_ANSI_RST}"
+
+    @staticmethod
+    def _overview_account_tag(mode: str) -> str:
+        if mode == "paper":
+            return f"  {_ANSI_Y}(paper){_ANSI_RST}"
+        if mode == "live":
+            return f"  {_ANSI_G}(live){_ANSI_RST}"
+        if mode == "mixed":
+            return f"  {_ANSI_Y}(mixed source; no blended estimate){_ANSI_RST}"
+        return ""
+
+    def _overview_balance_values(
+        self,
+        mode: str,
+        starting: float,
+        lifetime_pnl: float,
+    ) -> tuple[float, float, str, str]:
+        unreal = float(self.position.get("unrealized_pnl", 0.0))
+        real_bal = self.bot_config.get("real_account_balance")
+        real_eq = self.bot_config.get("real_account_equity")
+        real_margin = self.bot_config.get("real_margin_free")
+        if real_bal is not None:
+            balance = float(real_bal)
+            live_tag = "  \033[32m✓ live\033[0m"
+        elif mode == "mixed":
+            balance = starting
+            live_tag = f"  {_ANSI_Y}~ est withheld: mixed modes{_ANSI_RST}"
         else:
-            _acct_tag = ""
-        print(f"\n\033[1m💰 ACCOUNT\033[0m{_acct_tag}")
-        # Prefer starting_equity from universe.json for the active symbol.
-        # bot_config.json is shared across bots; the last writer may reflect a
-        # different instrument's equity baseline.
-        _starting = self._universe_starting_equity()
-        _lifetime_pnl = float(self.all_time_metrics.get("total_pnl", self.lifetime_metrics.get("total_pnl", 0.0)))
-        _unreal = float(self.position.get("unrealized_pnl", 0.0))
-        # Prefer real broker values (from CollateralReport BA) when available
-        _real_bal = self.bot_config.get("real_account_balance")
-        _real_eq = self.bot_config.get("real_account_equity")
-        _real_mfr = self.bot_config.get("real_margin_free")
-        if _real_bal is not None:
-            _balance = float(_real_bal)
-            _live_tag = "  \033[32m✓ live\033[0m"
-        elif _mode == "mixed":
-            _balance = _starting
-            _live_tag = f"  {_ANSI_Y}~ est withheld: mixed modes{_ANSI_RST}"
-        else:
-            _balance = _starting + _lifetime_pnl
-            _live_tag = "  \033[33m~ est.\033[0m"
-        _equity = float(_real_eq) if _real_eq is not None else _balance + _unreal
-        _margin_str = f"  |  Free margin: \033[36m{float(_real_mfr):>10.2f}\033[0m" if _real_mfr is not None else ""
-        _direction = (self.position.get("direction") or "FLAT").upper()
-        if _direction == "FLAT":
-            _unreal_str = f"{_ANSI_DIM}—{_ANSI_RST}"
-        else:
-            _unreal_str = f"{self._pnl_color(_unreal)}{_unreal:+.2f}\033[0m"
+            balance = starting + lifetime_pnl
+            live_tag = "  \033[33m~ est.\033[0m"
+        equity = float(real_eq) if real_eq is not None else balance + unreal
+        margin_str = f"  |  Free margin: \033[36m{float(real_margin):>10.2f}\033[0m" if real_margin is not None else ""
+        return balance, equity, live_tag, margin_str
+
+    def _render_overview_account(self) -> None:
+        mode = self._overview_mode()
+        print(f"\n\033[1m💰 ACCOUNT\033[0m{self._overview_account_tag(mode)}")
+        starting = self._universe_starting_equity()
+        lifetime_pnl = float(self.all_time_metrics.get("total_pnl", self.lifetime_metrics.get("total_pnl", 0.0)))
+        balance, equity, live_tag, margin_str = self._overview_balance_values(mode, starting, lifetime_pnl)
+        unreal = float(self.position.get("unrealized_pnl", 0.0))
+        direction = (self.position.get("direction") or "FLAT").upper()
+        unreal_str = (
+            f"{_ANSI_DIM}—{_ANSI_RST}"
+            if direction == "FLAT"
+            else f"{self._pnl_color(unreal)}{unreal:+.2f}\033[0m"
+        )
         print(
-            f"  Balance: {self._pnl_color(_balance - _starting)}{_balance:>10.2f}\033[0m{_live_tag}  |  "
-            f"Equity:  {self._pnl_color(_equity - _starting)}{_equity:>10.2f}\033[0m  |  "
-            f"Unrealized: {_unreal_str}"
-            f"{_margin_str}"
+            f"  Balance: {self._pnl_color(balance - starting)}{balance:>10.2f}\033[0m{live_tag}  |  "
+            f"Equity:  {self._pnl_color(equity - starting)}{equity:>10.2f}\033[0m  |  "
+            f"Unrealized: {unreal_str}{margin_str}"
         )
 
-        # Quick metrics
+    def _render_overview_24h(self) -> None:
         print(f"\n\033[1m📈 LAST 24H\033[0m  {_ANSI_DIM}(rolling 24-hour window from trade_log.jsonl){_ANSI_RST}")
-        _mode = (
-            getattr(self, "_trade_log_mode", "")
-            or getattr(self, "_perf_snapshot_mode", "")
-            or self.bot_config.get("trading_mode", "paper")
+        if self._overview_mode() == "mixed":
+            self._render_overview_24h_mode("Paper", self.daily_metrics_by_mode.get("paper", {}))
+            self._render_overview_24h_mode("Live ", self.daily_metrics_by_mode.get("live", {}))
+            return
+        metrics = self.daily_metrics
+        trades = metrics.get("total_trades", 0)
+        win_rate = metrics.get("win_rate", 0) * 100
+        day_pnl = metrics.get("total_pnl", 0)
+        print(
+            f"  Trades: {trades}  |  Win Rate: {win_rate:.1f}%  |  "
+            f"PnL: {self._pnl_color(day_pnl)}{day_pnl:+.2f}\033[0m"
         )
-        if _mode == "mixed":
-            _paper = self.daily_metrics_by_mode.get("paper", {})
-            _live = self.daily_metrics_by_mode.get("live", {})
-            _p_trades = _paper.get("total_trades", 0)
-            _p_wr = _paper.get("win_rate", 0) * 100
-            _p_pnl = _paper.get("total_pnl", 0)
-            _l_trades = _live.get("total_trades", 0)
-            _l_wr = _live.get("win_rate", 0) * 100
-            _l_pnl = _live.get("total_pnl", 0)
-            print(f"  Paper: {_p_trades} trades | WR {_p_wr:.1f}% | PnL {self._pnl_color(_p_pnl)}{_p_pnl:+.2f}\033[0m")
-            print(f"  Live:  {_l_trades} trades | WR {_l_wr:.1f}% | PnL {self._pnl_color(_l_pnl)}{_l_pnl:+.2f}\033[0m")
-        else:
-            d = self.daily_metrics
-            trades = d.get("total_trades", 0)
-            wr = d.get("win_rate", 0) * 100
-            day_pnl = d.get("total_pnl", 0)
+        recent_pnl = metrics.get("recent_pnl_sequence", [])
+        if recent_pnl and len(recent_pnl) > 1:
+            print(f"  Recent: {self._create_sparkline(recent_pnl[-20:])}")
+
+    def _render_overview_24h_mode(self, label: str, metrics: dict) -> None:
+        trades = metrics.get("total_trades", 0)
+        win_rate = metrics.get("win_rate", 0) * 100
+        pnl = metrics.get("total_pnl", 0)
+        print(f"  {label}: {trades} trades | WR {win_rate:.1f}% | PnL {self._pnl_color(pnl)}{pnl:+.2f}\033[0m")
+
+    def _overview_symbol_tf_keys(self) -> set:
+        tf_keys: set = set(self.metrics_by_symbol_tf.keys())
+        for bot in self.all_bots_stats or []:
+            symbol = self._normalize_symbol(bot.get("symbol"))
+            tfm = int(bot.get("timeframe_minutes", 0) or 0)
+            if symbol and tfm > 0:
+                tf_keys.add((symbol, f"M{tfm}"))
+        return tf_keys
+
+    def _render_overview_symbol_tf_snapshot(self) -> None:
+        tf_keys = self._overview_symbol_tf_keys()
+        if not tf_keys:
+            return
+        scope = self._epoch_scope_label().upper()
+        print(
+            f"\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m  "
+            f"{_ANSI_DIM}— {scope} closed trades from trade_log.jsonl{_ANSI_RST}"
+        )
+        header = f"  {'Symbol':<9} {'TF':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11}"
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
+        for symbol, tf in sorted(tf_keys, key=lambda kv: (kv[0], self._timeframe_sort_key(kv[1]))):
+            metrics = self.metrics_by_symbol_tf.get((symbol, tf), {})
+            trades = metrics.get("total_trades", 0)
+            pnl = metrics.get("total_pnl", 0.0)
+            pnl_col = self._pnl_color(pnl) if trades > 0 else _ANSI_DIM
             print(
-                f"  Trades: {trades}  |  Win Rate: {wr:.1f}%  |  PnL: {self._pnl_color(day_pnl)}{day_pnl:+.2f}\033[0m"
+                f"  {symbol:<9} {tf:<6} {trades:>7} "
+                f"{metrics.get('win_rate', 0) * 100:>6.1f}% {pnl_col}{pnl:>+11.2f}{_ANSI_RST}"
             )
 
-            recent_pnl = d.get("recent_pnl_sequence", [])
-            if recent_pnl and len(recent_pnl) > 1:
-                sparkline = self._create_sparkline(recent_pnl[-20:])
-                print(f"  Recent: {sparkline}")
-
-        # Build the TF snapshot using union of (a) trade_log metrics and
-        # (b) running bots — so zero-trade bots still appear rather than
-        # silently dropping TFs.
-        _tf_keys: set = set(self.metrics_by_symbol_tf.keys())
-        for _bot in self.all_bots_stats or []:
-            _s = self._normalize_symbol(_bot.get("symbol"))
-            _tfm = int(_bot.get("timeframe_minutes", 0) or 0)
-            if _s and _tfm > 0:
-                _tf_keys.add((_s, f"M{_tfm}"))
-        if _tf_keys:
-            _scope = self._epoch_scope_label().upper()
-            print(
-                f"\n\033[1m🧩 SYMBOL / TF SNAPSHOT\033[0m  "
-                f"{_ANSI_DIM}— {_scope} closed trades from trade_log.jsonl{_ANSI_RST}"
-            )
-            _sn_hdr = f"  {'Symbol':<9} {'TF':<6} {'Trades':>7} {'Win%':>7} {'PnL $':>11}"
-            print(_sn_hdr)
-            print("  " + "─" * (_visible_width(_sn_hdr) - 2))
-            for _sym, _tf in sorted(_tf_keys, key=lambda kv: (kv[0], self._timeframe_sort_key(kv[1]))):
-                _sm = self.metrics_by_symbol_tf.get((_sym, _tf), {})
-                _tr = _sm.get("total_trades", 0)
-                _wr = _sm.get("win_rate", 0) * 100
-                _pnl = _sm.get("total_pnl", 0.0)
-                _pc = self._pnl_color(_pnl) if _tr > 0 else _ANSI_DIM
-                print(f"  {_sym:<9} {_tf:<6} {_tr:>7} {_wr:>6.1f}% {_pc}{_pnl:>+11.2f}{_ANSI_RST}")
-
-        # Risk snapshot
+    def _render_overview_risk(self) -> None:
         print("\n\033[1m⚠️  RISK STATUS\033[0m")
         cb = self.risk_stats.get("circuit_breaker", "INACTIVE")
         regime = self.risk_stats.get("regime", "UNKNOWN")
         zeta = self.risk_stats.get("regime_zeta", 1.0)
         vol = self.risk_stats.get("realized_vol", 0) * 100
         feas = self.risk_stats.get("feasibility", 0.5)
-
-        kurt_gate = self.risk_stats.get("kurtosis_gate_active", False)
-        if cb == "ACTIVE":
-            cb_status = f"{_ANSI_R}● ACTIVE{_ANSI_RST}"
-        elif kurt_gate:
-            cb_status = f"{_ANSI_Y}● κ-gate{_ANSI_RST}"
-        else:
-            cb_status = f"{_ANSI_G}● OK{_ANSI_RST}"
-        if feas > FEASIBILITY_HIGH_THRESHOLD:
-            feas_color = _ANSI_G
-        elif feas > FEASIBILITY_MEDIUM_THRESHOLD:
-            feas_color = _ANSI_Y
-        else:
-            feas_color = _ANSI_R
-        _regime_colors = {
+        cb_status = self._overview_cb_status(cb, bool(self.risk_stats.get("kurtosis_gate_active", False)))
+        feas_color = (
+            _ANSI_G
+            if feas > FEASIBILITY_HIGH_THRESHOLD
+            else (_ANSI_Y if feas > FEASIBILITY_MEDIUM_THRESHOLD else _ANSI_R)
+        )
+        regime_color = {
             "TRENDING": _ANSI_G,
             "MEAN_REVERTING": _ANSI_Y,
             "TRANSITIONAL": _ANSI_B,
             "UNKNOWN": _ANSI_DIM,
-        }
-        regime_color = _regime_colors.get(regime, _ANSI_DIM)
-
+        }.get(regime, _ANSI_DIM)
         print(
-            f"  Circuit: {cb_status}  |  Regime: {regime_color}{regime}\033[0m (ζ={zeta:.2f})  |  Vol: {vol:.2f}%  |  "
-            f"Feasibility: {feas_color}{feas:.2f}\033[0m"
+            f"  Circuit: {cb_status}  |  Regime: {regime_color}{regime}\033[0m (ζ={zeta:.2f})  |  "
+            f"Vol: {vol:.2f}%  |  Feasibility: {feas_color}{feas:.2f}\033[0m"
         )
 
-        self._render_agent_status_block()
+    @staticmethod
+    def _overview_cb_status(cb: str, kurt_gate: bool) -> str:
+        if cb == "ACTIVE":
+            return f"{_ANSI_R}● ACTIVE{_ANSI_RST}"
+        if kurt_gate:
+            return f"{_ANSI_Y}● κ-gate{_ANSI_RST}"
+        return f"{_ANSI_G}● OK{_ANSI_RST}"
 
-        # Market snapshot
-        _market_scope = self._risk_scope_label(self.risk_stats)
-        print(f"\n\033[1m🔬 MARKET [{_market_scope}]\033[0m")
+    def _render_overview_market(self) -> None:
+        market_scope = self._risk_scope_label(self.risk_stats)
+        print(f"\n\033[1m🔬 MARKET [{market_scope}]\033[0m")
         spread = self.market_stats.get("spread", 0)
         vpin = self.market_stats.get("vpin", 0)
         vpin_z = self.market_stats.get("vpin_z", 0)
         imb = self.market_stats.get("imbalance", 0)
-
         vpin_status = (
-            f"{_ANSI_R}⚠️ HIGH{_ANSI_RST}" if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD else f"{_ANSI_G}✓{_ANSI_RST}"
+            f"{_ANSI_R}⚠️ HIGH{_ANSI_RST}"
+            if abs(vpin_z) > VPIN_HIGH_TOXICITY_THRESHOLD
+            else f"{_ANSI_G}✓{_ANSI_RST}"
         )
-        _has_real = self.market_stats.get("has_real_sizes", False)
-        _imb_label = "Imb" if _has_real else "QFI"
-        _sp_bps = self._spread_bps()
-        _sp_col = self._spread_color()
+        imb_label = "Imb" if self.market_stats.get("has_real_sizes", False) else "QFI"
         print(
-            f"  Spread: {_sp_col}{spread:.5f} ({_sp_bps:.1f}bp){_ANSI_RST}  |  "
-            f"VPIN: {vpin:.3f} (z={vpin_z:+.1f}) {vpin_status}  |  {_imb_label}: {imb:+.3f}"
+            f"  Spread: {self._spread_color()}{spread:.5f} ({self._spread_bps():.1f}bp){_ANSI_RST}  |  "
+            f"VPIN: {vpin:.3f} (z={vpin_z:+.1f}) {vpin_status}  |  {imb_label}: {imb:+.3f}"
         )
 
-        self._render_system_health_block()
+    def _render_overview_alerts(self) -> None:
+        alerts = self.production_metrics.get("alerts", [])
+        if not alerts:
+            return
+        print("\n\033[1m🚨 ALERTS\033[0m")
+        for alert in alerts:
+            print(f"  {_ANSI_Y}⚠ {alert}{_ANSI_RST}")
 
-        # Alerts from production_metrics.json (e.g. "No trades for 77.4 hours")
-        _pm = self.production_metrics.get("metrics", {})
-        _alerts = self.production_metrics.get("alerts", [])
-        if _alerts:
-            print("\n\033[1m🚨 ALERTS\033[0m")
-            for _a in _alerts:
-                print(f"  {_ANSI_Y}⚠ {_a}{_ANSI_RST}")
+    def _render_overview(self) -> None:
+        """Render overview tab — dispatches by drill level (max L2)."""
+        self._render_breadcrumb("OVERVIEW", 1)
+
+        if self._ctx_level >= 2 and self._ctx_symbol:
+            self._render_symbol_overview(self._ctx_symbol.upper())
+            return
+
+        self._render_all_bots_panel()
+        self._render_position_block()
+        print(f"  {_ANSI_DIM}(performance source: trade_log.jsonl; paper/live rows stay mode-separated){_ANSI_RST}")
+        self._render_overview_account()
+        self._render_overview_24h()
+        self._render_overview_symbol_tf_snapshot()
+        self._render_overview_risk()
+        self._render_agent_status_block()
+        self._render_overview_market()
+        self._render_system_health_block()
+        self._render_overview_alerts()
 
     def _render_agent_status_block(self) -> None:
         """Render the agent status (training snapshot) block."""
