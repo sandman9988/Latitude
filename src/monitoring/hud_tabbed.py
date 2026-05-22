@@ -7946,123 +7946,165 @@ class TabbedHUD:
 
     def _render_trade_detail(self, t: dict) -> None:
         """Render full detail card for a single trade."""
-        W = self._term_width()
-        _sep = "  " + "-" * min(W - 4, 74)
-        _tid = t.get("trade_id", "?")
-        _tick = t.get("ticket", "-")
-        _pid = t.get("position_id", "-")
-        _sym = t.get("symbol", "?")
-        _mode = t.get("trading_mode", "?")
-        _dir = (t.get("direction") or "").upper()
-        _entry = float(t.get("entry_price") or 0.0)
-        _exit = float(t.get("exit_price") or 0.0)
-        _pnl = float(t.get("pnl") or 0.0)
-        _mfe = self._excursion_usd_for_trade(t, "mfe_points", "mfe")
-        _mae = self._excursion_usd_for_trade(t, "mae_points", "mae")
-        _bars = int(t.get("bars_held") or t.get("ticks_held") or 0)
-        _rsn_raw = t.get("close_reason") or t.get("exit_reason") or ""
-        _rsn = "-" if _rsn_raw in ("", "unknown") else _rsn_raw
-        _w2l = t.get("winner_to_loser", False)
-
-        _entry_ts = t.get("entry_time", "")
-        _exit_ts = t.get("exit_time", "")
-        try:
-            _edt = datetime.fromisoformat(_entry_ts)
-            _entry_str = _edt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        except Exception:
-            _entry_str = _entry_ts[:19]
-        try:
-            _xdt = datetime.fromisoformat(_exit_ts)
-            _exit_str = _xdt.strftime("%Y-%m-%d %H:%M:%S UTC")
-            _edt2 = datetime.fromisoformat(_entry_ts)
-            _dur = (_xdt - _edt2).total_seconds()
-            _dm, _ds = divmod(int(_dur), 60)
-            _dh, _dm = divmod(_dm, 60)
-            _dur_str = (f"{_dh}h " if _dh else "") + f"{_dm}m {_ds}s"
-        except Exception:
-            _exit_str = _exit_ts[:19]
-            _dur_str = "-"
-
-        _dc = _ANSI_G if _dir == "LONG" else (_ANSI_R if _dir == "SHORT" else _ANSI_DIM)
-        _pc = self._pnl_color(_pnl)
-        _dec = self._price_decimals(max(_entry, _exit, 0.0))
-        _ratio_str = f"  (MFE/MAE: {_mfe / _mae:.2f}x)" if _mae > 0 else ""
-
-        print(_sep)
-        print(f"\n  \033[1mTRADE #{_tid}\033[0m  {_dc}{_dir}{_ANSI_RST}  {_sym}  ({_mode})")
-        print(_sep)
-        print(f"  {'Ticket:':<16} {_ANSI_DIM}{_tick}{_ANSI_RST}")
-        print(f"  {'Position ID:':<16} {_ANSI_DIM}{_pid}{_ANSI_RST}")
-        print(f"  {'Entry:':<16} {_entry:.{_dec}f}  @  {_entry_str}")
-        print(f"  {'Exit:':<16} {_exit:.{_dec}f}  @  {_exit_str}")
-        print(f"  {'Duration:':<16} {_dur_str}  ({_bars} bars)")
+        detail = self._trade_detail_values(t)
+        sep = "  " + "-" * min(self._term_width() - 4, 74)
+        self._render_trade_detail_header(detail, sep)
+        self._render_trade_detail_result(t, detail)
+        self._render_trade_detail_training(t)
+        self._render_trade_broker_events(t, detail["position_id"], detail["price_decimals"])
         print()
-        _result = f"  {_ANSI_G}[+] WIN{_ANSI_RST}" if _pnl > 0 else f"  {_ANSI_R}[-] LOSS{_ANSI_RST}"
-        print(f"  {'PnL:':<16} {_pc}{_pnl:+.4f} USD{_ANSI_RST}{_result}")
-        _cap_ratio = self._capture_ratio_for_trade(t)
-        if _cap_ratio is not None:
-            _cap_pct = max(-999.0, min(999.0, _cap_ratio * 100.0))
-            _cc = self._pnl_color(_cap_pct)
-            print(f"  {'%MFE captured:':<16} {_cc}{_cap_pct:+.1f}%{_ANSI_RST}  (normalized capture_ratio)")
-        elif float(_pnl or 0.0) < 0.0:
+
+    def _trade_detail_values(self, trade: dict) -> dict[str, object]:
+        entry = float(trade.get("entry_price") or 0.0)
+        exit_price = float(trade.get("exit_price") or 0.0)
+        entry_str, exit_str, duration_str = self._trade_detail_times(trade)
+        return {
+            "trade_id": trade.get("trade_id", "?"),
+            "ticket": trade.get("ticket", "-"),
+            "position_id": trade.get("position_id", "-"),
+            "symbol": trade.get("symbol", "?"),
+            "mode": trade.get("trading_mode", "?"),
+            "direction": (trade.get("direction") or "").upper(),
+            "entry": entry,
+            "exit": exit_price,
+            "pnl": float(trade.get("pnl") or 0.0),
+            "mfe": self._excursion_usd_for_trade(trade, "mfe_points", "mfe"),
+            "mae": self._excursion_usd_for_trade(trade, "mae_points", "mae"),
+            "bars": int(trade.get("bars_held") or trade.get("ticks_held") or 0),
+            "reason": self._trade_detail_reason(trade),
+            "entry_str": entry_str,
+            "exit_str": exit_str,
+            "duration": duration_str,
+            "price_decimals": self._price_decimals(max(entry, exit_price, 0.0)),
+        }
+
+    @staticmethod
+    def _trade_detail_times(trade: dict) -> tuple[str, str, str]:
+        entry_ts = trade.get("entry_time", "")
+        exit_ts = trade.get("exit_time", "")
+        try:
+            entry_dt = datetime.fromisoformat(entry_ts)
+            entry_str = entry_dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+        except Exception:
+            entry_str = entry_ts[:19]
+        try:
+            exit_dt = datetime.fromisoformat(exit_ts)
+            entry_dt2 = datetime.fromisoformat(entry_ts)
+            duration = (exit_dt - entry_dt2).total_seconds()
+            duration_mins, duration_secs = divmod(int(duration), 60)
+            duration_hours, duration_mins = divmod(duration_mins, 60)
+            duration_str = (f"{duration_hours}h " if duration_hours else "") + f"{duration_mins}m {duration_secs}s"
+            return entry_str, exit_dt.strftime("%Y-%m-%d %H:%M:%S UTC"), duration_str
+        except Exception:
+            return entry_str, exit_ts[:19], "-"
+
+    @staticmethod
+    def _trade_detail_reason(trade: dict) -> str:
+        reason_raw = trade.get("close_reason") or trade.get("exit_reason") or ""
+        return "-" if reason_raw in ("", "unknown") else reason_raw
+
+    def _render_trade_detail_header(self, detail: dict, sep: str) -> None:
+        direction = str(detail["direction"])
+        direction_color = _ANSI_G if direction == "LONG" else (_ANSI_R if direction == "SHORT" else _ANSI_DIM)
+        dec = int(detail["price_decimals"])
+        print(sep)
+        print(
+            f"\n  \033[1mTRADE #{detail['trade_id']}\033[0m  "
+            f"{direction_color}{direction}{_ANSI_RST}  {detail['symbol']}  ({detail['mode']})"
+        )
+        print(sep)
+        print(f"  {'Ticket:':<16} {_ANSI_DIM}{detail['ticket']}{_ANSI_RST}")
+        print(f"  {'Position ID:':<16} {_ANSI_DIM}{detail['position_id']}{_ANSI_RST}")
+        print(f"  {'Entry:':<16} {float(detail['entry']):.{dec}f}  @  {detail['entry_str']}")
+        print(f"  {'Exit:':<16} {float(detail['exit']):.{dec}f}  @  {detail['exit_str']}")
+        print(f"  {'Duration:':<16} {detail['duration']}  ({detail['bars']} bars)")
+
+    def _render_trade_detail_result(self, trade: dict, detail: dict) -> None:
+        pnl = float(detail["pnl"])
+        mfe = float(detail["mfe"])
+        mae = float(detail["mae"])
+        ratio_str = f"  (MFE/MAE: {mfe / mae:.2f}x)" if mae > 0 else ""
+        print()
+        result = f"  {_ANSI_G}[+] WIN{_ANSI_RST}" if pnl > 0 else f"  {_ANSI_R}[-] LOSS{_ANSI_RST}"
+        print(f"  {'PnL:':<16} {self._pnl_color(pnl)}{pnl:+.4f} USD{_ANSI_RST}{result}")
+        self._render_trade_detail_capture(trade, pnl)
+        print(f"  {'MFE:':<16} {_ANSI_G}+{mfe:.4f} USD{_ANSI_RST}  (max favorable excursion, account currency)")
+        print(
+            f"  {'MAE:':<16} {_ANSI_R}-{mae:.4f} USD{_ANSI_RST}  "
+            f"(max adverse excursion, account currency){ratio_str}"
+        )
+        print(f"  {'Close reason:':<16} {detail['reason']}")
+        if trade.get("winner_to_loser", False):
+            print(f"  {_ANSI_Y}[!] Winner-to-Loser: trade reversed into a loss after reaching MFE{_ANSI_RST}")
+
+    def _render_trade_detail_capture(self, trade: dict, pnl: float) -> None:
+        cap_ratio = self._capture_ratio_for_trade(trade)
+        if cap_ratio is not None:
+            cap_pct = max(-999.0, min(999.0, cap_ratio * 100.0))
+            print(
+                f"  {'%MFE captured:':<16} {self._pnl_color(cap_pct)}{cap_pct:+.1f}%{_ANSI_RST}  "
+                f"(normalized capture_ratio)"
+            )
+        elif pnl < 0.0:
             print(f"  {'%MFE captured:':<16} {_ANSI_R}n/a{_ANSI_RST}  (loss with zero MFE)")
         else:
             print(f"  {'%MFE captured:':<16} {_ANSI_DIM}—{_ANSI_RST}")
-        print(f"  {'MFE:':<16} {_ANSI_G}+{_mfe:.4f} USD{_ANSI_RST}  (max favorable excursion, account currency)")
-        print(
-            f"  {'MAE:':<16} {_ANSI_R}-{_mae:.4f} USD{_ANSI_RST}  (max adverse excursion, account currency){_ratio_str}"
+
+    def _render_trade_detail_training(self, trade: dict) -> None:
+        training_stats = self.training_stats if isinstance(self.training_stats, dict) else {}
+        runway_total = int(training_stats.get("trigger_runway_cal_total_samples", 0) or 0)
+        runway_reliable = bool(training_stats.get("trigger_runway_predictor_reliable", False))
+        runway_color = _ANSI_G if runway_reliable else _ANSI_Y
+        runway_label = "RELIABLE (gate active)" if runway_reliable else "LEARNING (gate bypass)"
+        cap_decay = float(training_stats.get("harvester_capture_decay_threshold", 0.0) or 0.0)
+        micro_winner = float(training_stats.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
+        print(f"  {'Runway model:':<16} {runway_color}{runway_label}{_ANSI_RST}  (samples={runway_total})")
+        print(f"  {'WTL protection:':<16} capture_decay<{cap_decay:.2f}  micro_giveback>{micro_winner:.2f}×MFE")
+
+    def _render_trade_broker_events(self, trade: dict, position_id: object, price_decimals: int) -> None:
+        tx_events = self._load_transactions_for_position(
+            str(position_id),
+            sym=str(trade.get("symbol") or ""),
+            tf_m=int(trade.get("timeframe_minutes") or 0),
         )
-        print(f"  {'Close reason:':<16} {_rsn}")
-        _ts = self.training_stats if isinstance(self.training_stats, dict) else {}
-        _rw_total = int(_ts.get("trigger_runway_cal_total_samples", 0) or 0)
-        _rw_reliable = bool(_ts.get("trigger_runway_predictor_reliable", False))
-        _rw_col = _ANSI_G if _rw_reliable else _ANSI_Y
-        _rw_lbl = "RELIABLE (gate active)" if _rw_reliable else "LEARNING (gate bypass)"
-        _cd = float(_ts.get("harvester_capture_decay_threshold", 0.0) or 0.0)
-        _mw = float(_ts.get("harvester_micro_winner_giveback_pct", 0.0) or 0.0)
-        print(f"  {'Runway model:':<16} {_rw_col}{_rw_lbl}{_ANSI_RST}  (samples={_rw_total})")
-        print(f"  {'WTL protection:':<16} capture_decay<{_cd:.2f}  micro_giveback>{_mw:.2f}×MFE")
-        if _w2l:
-            print(f"  {_ANSI_Y}[!] Winner-to-Loser: trade reversed into a loss after reaching MFE{_ANSI_RST}")
+        if not tx_events:
+            return
+        print(f"\n  {'BROKER EVENTS':─<68}")
+        for tx_event in tx_events:
+            self._render_trade_broker_event(tx_event, price_decimals)
 
-        # Broker transaction events linked by position_id
-        _sym_t = str(t.get("symbol") or "")
-        _tf_t = int(t.get("timeframe_minutes") or 0)
-        _tx_events = self._load_transactions_for_position(_pid, sym=_sym_t, tf_m=_tf_t)
-        if _tx_events:
-            print(f"\n  {'BROKER EVENTS':─<68}")
-            for _tx in _tx_events:
-                _tx_ts = str(_tx.get("timestamp") or "?")[:19]
-                _tx_et = _tx.get("event_type", "?")
-                _tx_d = _tx.get("data") or {}
-                if _tx_et == "POSITION_OPEN":
-                    _ep = float(_tx_d.get("entry_price") or 0.0)
-                    _dr = str(_tx_d.get("direction") or "?").upper()
-                    _qty = float(_tx_d.get("quantity") or 0.0)
-                    _conf = float(_tx_d.get("entry_confidence") or 0.0)
-                    _dc2 = _ANSI_G if _dr == "LONG" else _ANSI_R
-                    print(
-                        f"  {_ANSI_G}OPEN {_ANSI_RST} {_tx_ts}  {_dc2}{_dr}{_ANSI_RST}"
-                        f"  {_ep:.{_dec}f}  qty={_qty}  conf={_conf:.4f}"
-                    )
-                    _eg = _tx_d.get("entry_trigger_data") or {}
-                    _eg_gates = _eg.get("entry_gated_conditions") or []
-                    if _eg_gates:
-                        for _g in _eg_gates:
-                            print(f"  {'':6}{_ANSI_R}✗ {_g}{_ANSI_RST}")
-                elif _tx_et == "POSITION_CLOSE":
-                    _xp = float(_tx_d.get("exit_price") or 0.0)
-                    _xpnl = float(_tx_d.get("pnl") or 0.0)
-                    _xrsn = str(_tx_d.get("close_reason") or "?")
-                    _xcap = _tx_d.get("capture_ratio")
-                    _xcap_str = f"  cap={_xcap:.3f}" if _xcap is not None else ""
-                    _pc2 = self._pnl_color(_xpnl)
-                    print(
-                        f"  {_ANSI_R}CLOSE{_ANSI_RST} {_tx_ts}  {_xp:.{_dec}f}"
-                        f"  {_pc2}PnL={_xpnl:+.4f}{_ANSI_RST}{_xcap_str}  [{_xrsn}]"
-                    )
+    def _render_trade_broker_event(self, tx_event: dict, price_decimals: int) -> None:
+        event_type = tx_event.get("event_type", "?")
+        data = tx_event.get("data") or {}
+        if event_type == "POSITION_OPEN":
+            self._render_trade_broker_open(tx_event, data, price_decimals)
+        elif event_type == "POSITION_CLOSE":
+            self._render_trade_broker_close(tx_event, data, price_decimals)
 
-        print()
+    def _render_trade_broker_open(self, tx_event: dict, data: dict, price_decimals: int) -> None:
+        direction = str(data.get("direction") or "?").upper()
+        direction_color = _ANSI_G if direction == "LONG" else _ANSI_R
+        print(
+            f"  {_ANSI_G}OPEN {_ANSI_RST} {str(tx_event.get('timestamp') or '?')[:19]}  "
+            f"{direction_color}{direction}{_ANSI_RST}  "
+            f"{float(data.get('entry_price') or 0.0):.{price_decimals}f}  "
+            f"qty={float(data.get('quantity') or 0.0)}  "
+            f"conf={float(data.get('entry_confidence') or 0.0):.4f}"
+        )
+        entry_gates = (data.get("entry_trigger_data") or {}).get("entry_gated_conditions") or []
+        for gate in entry_gates:
+            print(f"  {'':6}{_ANSI_R}✗ {gate}{_ANSI_RST}")
+
+    def _render_trade_broker_close(self, tx_event: dict, data: dict, price_decimals: int) -> None:
+        pnl = float(data.get("pnl") or 0.0)
+        cap_ratio = data.get("capture_ratio")
+        cap_str = f"  cap={cap_ratio:.3f}" if cap_ratio is not None else ""
+        print(
+            f"  {_ANSI_R}CLOSE{_ANSI_RST} {str(tx_event.get('timestamp') or '?')[:19]}  "
+            f"{float(data.get('exit_price') or 0.0):.{price_decimals}f}"
+            f"  {self._pnl_color(pnl)}PnL={pnl:+.4f}{_ANSI_RST}{cap_str}  "
+            f"[{str(data.get('close_reason') or '?')}]"
+        )
         print(f"  {_ANSI_DIM}[d] or [b] - return to trade list{_ANSI_RST}")
 
     def _pnl_color(self, pnl: float) -> str:
