@@ -5736,53 +5736,64 @@ class TabbedHUD:
 
     def _render_prediction_convergence_table(self, rows: list[tuple[str, dict]]) -> None:
         """Render a per-period convergence table for the provided rows."""
-        _hdr = f"  {'Period':<10} {'n':>5} {'rwΔ pts':>10} {'Accuracy':>9} {'Brier':>8} {'Util':>8} {'Err %':>8}"
-        print(_hdr)
-        print("  " + "─" * (_visible_width(_hdr) - 2))
+        header = f"  {'Period':<10} {'n':>5} {'rwΔ pts':>10} {'Accuracy':>9} {'Brier':>8} {'Util':>8} {'Err %':>8}"
+        print(header)
+        print("  " + "─" * (_visible_width(header) - 2))
         for label, conv in rows:
-            rw_delta = conv["avg_runway_delta"]
-            rw_acc = conv["avg_runway_accuracy"]
-            cc_err = conv["avg_conf_brier"]
-            rw_n = conv["runway_samples"]
-            cc_n = conv["conf_samples"]
-            util = conv["avg_runway_utilization"]
-            err_pct = conv["avg_runway_error_pct"]
-            if rw_n == 0 and cc_n == 0:
-                print(f"  {label:<10} {_ANSI_DIM}{0:>5}      —         —        —        —        —{_ANSI_RST}")
-                continue
-            if abs(rw_delta) < RUNWAY_DELTA_OK_MAX:
-                d_col = _ANSI_G
-            elif abs(rw_delta) < RUNWAY_DELTA_WARN_MAX:
-                d_col = _ANSI_Y
-            else:
-                d_col = _ANSI_R
-            if rw_acc > RUNWAY_ACCURACY_GOOD:
-                a_col = _ANSI_G
-            elif rw_acc > RUNWAY_ACCURACY_WARN:
-                a_col = _ANSI_Y
-            else:
-                a_col = _ANSI_R
-            if cc_err < CONF_CALIB_OK_MAX:
-                b_col = _ANSI_G
-            elif cc_err < CONF_CALIB_WARN_MAX:
-                b_col = _ANSI_Y
-            else:
-                b_col = _ANSI_R
-            if rw_n == 0:
-                u_col = _ANSI_DIM
-                e_col = _ANSI_DIM
-            else:
-                u_col = _ANSI_G if util >= 1.0 else (_ANSI_Y if util >= 0.7 else _ANSI_R)
-                e_col = _ANSI_G if err_pct <= 25.0 else (_ANSI_Y if err_pct <= 50.0 else _ANSI_R)
-            _n_cell = f"{max(rw_n, cc_n)}"
-            print(
-                f"  {label:<10} {_n_cell:>5} "
-                f"{d_col}{rw_delta:>+9.2f}{_ANSI_RST} "
-                f"{a_col}{rw_acc:>9.3f}{_ANSI_RST} "
-                f"{b_col}{cc_err:>8.3f}{_ANSI_RST} "
-                f"{u_col}{util:>7.3f}x{_ANSI_RST} "
-                f"{e_col}{err_pct:>7.1f}%{_ANSI_RST}"
-            )
+            self._render_prediction_convergence_row(label, conv)
+
+    def _render_prediction_convergence_row(self, label: str, conv: dict) -> None:
+        rw_n = conv["runway_samples"]
+        cc_n = conv["conf_samples"]
+        if rw_n == 0 and cc_n == 0:
+            print(f"  {label:<10} {_ANSI_DIM}{0:>5}      —         —        —        —        —{_ANSI_RST}")
+            return
+        rw_delta = conv["avg_runway_delta"]
+        rw_acc = conv["avg_runway_accuracy"]
+        cc_err = conv["avg_conf_brier"]
+        util = conv["avg_runway_utilization"]
+        err_pct = conv["avg_runway_error_pct"]
+        util_color, err_color = self._runway_util_error_colors(rw_n, util, err_pct)
+        print(
+            f"  {label:<10} {max(rw_n, cc_n):>5} "
+            f"{self._runway_delta_color(rw_delta)}{rw_delta:>+9.2f}{_ANSI_RST} "
+            f"{self._runway_accuracy_color(rw_acc)}{rw_acc:>9.3f}{_ANSI_RST} "
+            f"{self._confidence_brier_color(cc_err)}{cc_err:>8.3f}{_ANSI_RST} "
+            f"{util_color}{util:>7.3f}x{_ANSI_RST} "
+            f"{err_color}{err_pct:>7.1f}%{_ANSI_RST}"
+        )
+
+    @staticmethod
+    def _runway_delta_color(delta: float) -> str:
+        if abs(delta) < RUNWAY_DELTA_OK_MAX:
+            return _ANSI_G
+        if abs(delta) < RUNWAY_DELTA_WARN_MAX:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _runway_accuracy_color(accuracy: float) -> str:
+        if accuracy > RUNWAY_ACCURACY_GOOD:
+            return _ANSI_G
+        if accuracy > RUNWAY_ACCURACY_WARN:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _confidence_brier_color(brier: float) -> str:
+        if brier < CONF_CALIB_OK_MAX:
+            return _ANSI_G
+        if brier < CONF_CALIB_WARN_MAX:
+            return _ANSI_Y
+        return _ANSI_R
+
+    @staticmethod
+    def _runway_util_error_colors(rw_n: int, util: float, err_pct: float) -> tuple[str, str]:
+        if rw_n == 0:
+            return _ANSI_DIM, _ANSI_DIM
+        util_color = _ANSI_G if util >= 1.0 else (_ANSI_Y if util >= 0.7 else _ANSI_R)
+        err_color = _ANSI_G if err_pct <= 25.0 else (_ANSI_Y if err_pct <= 50.0 else _ANSI_R)
+        return util_color, err_color
 
     def _render_prediction_convergence(self, pm: dict) -> None:
         """Render prediction convergence metrics as per-period tables."""
