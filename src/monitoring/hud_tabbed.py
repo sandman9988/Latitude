@@ -3857,72 +3857,80 @@ class TabbedHUD:
         self._sync_ctx_to_legacy()
         self._force_redraw = True
 
+    def _complete_drill_down(self, level: int) -> None:
+        self._ctx_level = level
+        self._ctx_cursor = 0
+        self._sync_ctx_to_legacy()
+        self._force_redraw = True
+
+    def _drill_to_portfolio(self) -> None:
+        modes = ["live", "paper", "offline"]
+        self._ctx_mode = modes[min(self._ctx_cursor, len(modes) - 1)]
+        self._complete_drill_down(1)
+
+    def _drill_to_symbol(self) -> None:
+        rows = self._l1_rows()
+        if not rows:
+            return
+        self._ctx_symbol, self._ctx_mode = rows[min(self._ctx_cursor, len(rows) - 1)]
+        self._complete_drill_down(2)
+
+    def _drill_to_timeframe(self) -> None:
+        timeframes = self._available_timeframes()
+        if not timeframes:
+            return
+        self._ctx_tf = timeframes[min(self._ctx_cursor, len(timeframes) - 1)]
+        self._trades_page = 0
+        self._complete_drill_down(3)
+
+    def _drill_to_trade_detail(self) -> None:
+        idx = self._trades_page * self._trades_per_page + self._trades_cursor
+        if 0 <= idx < len(self._trades_view):
+            self._trades_detail_trade = self._trades_view[idx]
+            self._trades_detail = True
+            self._ctx_level = 4
+            self._sync_ctx_to_legacy()
+            self._force_redraw = True
+
+    def _drill_to_decision_detail(self) -> None:
+        if not self._dec_log_view:
+            return
+        idx = min(self._dec_log_cursor, len(self._dec_log_view) - 1)
+        self._dec_log_detail_entry = self._dec_log_view[idx]
+        self._dec_log_detail = True
+        self._ctx_level = 4
+        self._sync_ctx_to_legacy()
+        self._force_redraw = True
+
+    def _drill_to_period_detail(self) -> None:
+        self._ctx_period = self._ctx_periods[min(self._ctx_cursor, len(self._ctx_periods) - 1)]
+        self._ctx_level = 4
+        self._sync_ctx_to_legacy()
+        self._force_redraw = True
+
+    def _drill_from_symbol_timeframe(self) -> None:
+        if self.current_tab == "trades":
+            self._drill_to_trade_detail()
+        elif self.current_tab == "log":
+            self._drill_to_decision_detail()
+        else:
+            self._drill_to_period_detail()
+
     def _drill_down(self) -> None:
         """Move down one drill level. Uses cursor to select row. Works for ALL tabs."""
         if self._ctx_level >= 4:
             return
-
-        # ── Level 0 → 1: Mode → Portfolio ─────────────────────────────
         if self._ctx_level == 0:
-            _modes = ["live", "paper", "offline"]
-            self._ctx_mode = _modes[min(self._ctx_cursor, len(_modes) - 1)]
-            self._ctx_level = 1
-            self._ctx_cursor = 0
-            self._sync_ctx_to_legacy()
-            self._force_redraw = True
+            self._drill_to_portfolio()
             return
-
-        # ── Level 1 → 2: Portfolio → Instrument ───────────────────────
         if self._ctx_level == 1:
-            _rows = self._l1_rows()
-            if _rows:
-                _sym, _mode = _rows[min(self._ctx_cursor, len(_rows) - 1)]
-                self._ctx_symbol = _sym
-                self._ctx_mode = _mode
-                self._ctx_level = 2
-                self._ctx_cursor = 0
-                self._sync_ctx_to_legacy()
-                self._force_redraw = True
+            self._drill_to_symbol()
             return
-
-        # ── Level 2 → 3: Instrument → Instrument/TF ───────────────────
         if self._ctx_level == 2:
-            _tfs = self._available_timeframes()
-            if _tfs:
-                self._ctx_tf = _tfs[min(self._ctx_cursor, len(_tfs) - 1)]
-                self._ctx_level = 3
-                self._ctx_cursor = 0
-                self._trades_page = 0
-                self._sync_ctx_to_legacy()
-                self._force_redraw = True
+            self._drill_to_timeframe()
             return
-
-        # ── Level 3 → 4: Instrument/TF → Period Detail ────────────────
         if self._ctx_level == 3:
-            if self.current_tab == "trades":
-                _idx = self._trades_page * self._trades_per_page + self._trades_cursor
-                if 0 <= _idx < len(self._trades_view):
-                    self._trades_detail_trade = self._trades_view[_idx]
-                    self._trades_detail = True
-                    self._ctx_level = 4
-                    self._sync_ctx_to_legacy()
-                    self._force_redraw = True
-            elif self.current_tab == "log":
-                if self._dec_log_view:
-                    _idx = min(self._dec_log_cursor, len(self._dec_log_view) - 1)
-                    self._dec_log_detail_entry = self._dec_log_view[_idx]
-                    self._dec_log_detail = True
-                    self._ctx_level = 4
-                    self._sync_ctx_to_legacy()
-                    self._force_redraw = True
-            else:
-                # For other tabs, drill into the selected period
-                _periods = self._ctx_periods
-                self._ctx_period = _periods[min(self._ctx_cursor, len(_periods) - 1)]
-                self._ctx_level = 4
-                self._sync_ctx_to_legacy()
-                self._force_redraw = True
-            return
+            self._drill_from_symbol_timeframe()
 
     def _available_symbols(self) -> list[str]:
         """Return sorted list of unique symbols across all trade_log trades."""
