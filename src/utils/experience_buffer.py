@@ -699,25 +699,53 @@ class ExperienceBuffer:
         return npz_path if npz_path.exists() else None
 
     def _restore_loaded_experiences(self, data, filepath: str) -> int:
-        states = data["states"]
-        n = min(len(states), self.capacity)
-        if len(states) > self.capacity:
-            LOG.warning("[BUFFER] Saved buffer (%d) exceeds capacity (%d), truncating", len(states), self.capacity)
+        saved_count = len(data["states"])
+        n = min(saved_count, self.capacity)
+        if saved_count > self.capacity:
+            LOG.warning("[BUFFER] Saved buffer (%d) exceeds capacity (%d), truncating", saved_count, self.capacity)
         self.tree = SumTree(self.capacity, seed=None)
         self.data = [None] * self.capacity
+        if n == 0:
+            return 0
+
+        states = np.asarray(data["states"][:n], dtype=np.float32)
+        next_states = np.asarray(data["next_states"][:n], dtype=np.float32)
+        actions = np.asarray(data["actions"][:n])
+        rewards = np.asarray(data["rewards"][:n], dtype=np.float32)
+        dones = np.asarray(data["dones"][:n])
+        timestamps = np.asarray(data["timestamps"][:n], dtype=np.float64)
+        regimes = np.asarray(data["regimes"][:n])
+        priorities = np.asarray(data["priorities"][:n], dtype=np.float64)
+
         canonical_state_size: int | None = None
         dropped = 0
         slot = 0
         for i in range(n):
-            state_flat = states[i].astype(np.float32).ravel()
-            next_flat = data["next_states"][i].astype(np.float32).ravel()
+            state_flat = np.ravel(states[i])
+            next_flat = np.ravel(next_states[i])
             if canonical_state_size is None:
                 canonical_state_size = state_flat.size
             if state_flat.size != canonical_state_size or next_flat.size != canonical_state_size:
                 dropped += 1
                 continue
-            self._restore_loaded_experience_slot(data, i, slot, state_flat, next_flat)
+            self._restore_loaded_experience_slot(
+                actions=actions,
+                rewards=rewards,
+                dones=dones,
+                timestamps=timestamps,
+                regimes=regimes,
+                priorities=priorities,
+                index=i,
+                slot=slot,
+                state_flat=state_flat,
+                next_flat=next_flat,
+            )
             slot += 1
+        if slot:
+            leaf_start = self.tree.capacity - 1
+            self.tree.tree[leaf_start : leaf_start + slot] = priorities[:slot]
+            self.tree.n_entries = slot
+            self.tree.write_index = slot % self.capacity
         if dropped:
             LOG.warning(
                 "[BUFFER] Dropped %d/%d experiences with mismatched state size (canonical=%s) from %s",
@@ -728,7 +756,13 @@ class ExperienceBuffer:
 
     def _restore_loaded_experience_slot(
         self,
-        data,
+        *,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        dones: np.ndarray,
+        timestamps: np.ndarray,
+        regimes: np.ndarray,
+        priorities: np.ndarray,
         index: int,
         slot: int,
         state_flat: np.ndarray,
@@ -736,19 +770,17 @@ class ExperienceBuffer:
     ) -> None:
         exp = Experience(
             state=state_flat,
-            action=int(data["actions"][index]),
-            reward=float(data["rewards"][index]),
+            action=int(actions[index]),
+            reward=float(rewards[index]),
             next_state=next_flat,
-            done=bool(data["dones"][index]),
-            timestamp=float(data["timestamps"][index]),
-            regime=int(data["regimes"][index]),
-            priority=float(data["priorities"][index]),
+            done=bool(dones[index]),
+            timestamp=float(timestamps[index]),
+            regime=int(regimes[index]),
+            priority=float(priorities[index]),
         )
         self.data[slot] = exp
-        tree_idx = slot + self.tree.capacity - 1
-        self.tree.tree[tree_idx] = float(data["priorities"][index])
-        self.tree.n_entries = slot + 1
-        self.tree.write_index = (slot + 1) % self.capacity
+        if slot != index:
+            priorities[slot] = priorities[index]
 
     def _rebuild_tree_sums(self) -> None:
         for i in range(self.tree.capacity - 2, -1, -1):
