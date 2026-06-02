@@ -1993,6 +1993,7 @@ class TFAgent:
             "entry_drawdown_pct": drawdown_pct,
             "entry_confidence": conf,
             "entry_vpin_z": self._vpin_z,
+            "entry_shadow_gates": dict(getattr(getattr(self.policy, "trigger", None), "last_shadow_gates", {}) or {}),
         }
 
     def _handle_flat(self, bar: tuple, half_spread: float) -> None:

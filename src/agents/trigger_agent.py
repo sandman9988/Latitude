@@ -197,21 +197,26 @@ class TriggerAgent(AgentTrainingMixin):
         self.last_predicted_runway_gross: float = 0.0
         self.last_predicted_runway_net: float = 0.0
         self._current_zeta: float = 0.5  # Regime damping ratio, updated each decide()
+        self.last_shadow_gates: dict = {}  # Shadow-gate verdicts from last decide()
 
         # Phase 2: Gating strategy
         # Paper mode is the exploration baseline: model confidence/risk gates are
         # audit signals there, not execution blockers. Hard market-safety gates
         # are enforced by the hub before order placement.
+        # Live threshold values are always resolved (even in paper) so the shadow-gate
+        # recorder can report what the live gates *would* have decided.
+        self._live_feasibility_threshold, _ = self._resolve_gate_value(
+            env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5,
+        )
+        self._live_confidence_floor, _ = self._resolve_gate_value(
+            env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55,
+        )
         if self.disable_gates or self.paper_mode:
             self.feasibility_threshold = 0.0
             self.confidence_floor = 0.0
         else:
-            self.feasibility_threshold, _ = self._resolve_gate_value(
-                env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5,
-            )
-            self.confidence_floor, _ = self._resolve_gate_value(
-                env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55,
-            )
+            self.feasibility_threshold = self._live_feasibility_threshold
+            self.confidence_floor = self._live_confidence_floor
 
         self.entry_conf_deadzone_low, _ = self._resolve_gate_value(
             env_key="ENTRY_CONF_DEADZONE_LOW", param_name="entry_conf_deadzone_low", fallback=0.45,
@@ -488,19 +493,68 @@ class TriggerAgent(AgentTrainingMixin):
 
         if self._should_block_for_position(current_position):
             self.bars_since_trade = 0
+            self.last_shadow_gates = {}
             return 0, 0.0, 0.0
 
         result = self._maybe_training_decision()
-        if result is not None:
-            return result
+        if result is None:
+            if self._feasibility_gate_blocked(feasibility):
+                result = (0, 0.0, 0.0)
+            elif not self._use_torch_inference():
+                result = self._decide_numpy_path(state, regime_threshold_adj, friction_cost)
+            else:
+                result = self._decide_torch_path(state, expected_gain, expected_loss, friction_cost)
 
-        if self._feasibility_gate_blocked(feasibility):
-            return 0, 0.0, 0.0
+        self._record_shadow_gates(result, state, feasibility, expected_gain, expected_loss, friction_cost)
+        return result
 
-        if not self._use_torch_inference():
-            return self._decide_numpy_path(state, regime_threshold_adj, friction_cost)
+    def _record_shadow_gates(
+        self,
+        result: tuple[int, float, float],
+        state: np.ndarray,
+        feasibility: float,
+        expected_gain: float,
+        expected_loss: float,
+        friction_cost: float,
+    ) -> None:
+        """Evaluate every live entry gate against the decision and record verdicts.
 
-        return self._decide_torch_path(state, expected_gain, expected_loss, friction_cost)
+        Shadow-gate observability: paper mode executes all trades (preserving RL
+        exploration), but every live gate is still evaluated here and the
+        ``would_block`` verdicts are stored on ``last_shadow_gates`` so the
+        paper/live execution gap is recorded for telemetry and learning. This
+        does not change what paper executes nor live enforcement.
+        """
+        try:
+            action, confidence, predicted_runway = result
+            breakeven_prob = self._calc_breakeven_prob(expected_gain, expected_loss, friction_cost)
+            econ_params = _EconomicsGateParams(
+                expected_gain=expected_gain,
+                expected_loss=expected_loss,
+                friction_cost=friction_cost,
+                breakeven_prob=breakeven_prob,
+            )
+            verdicts = {
+                "feasibility": self._feasibility_would_block(feasibility),
+                "confidence": self._confidence_would_block(confidence),
+                "entry_risk": self._entry_risk_would_block(action, confidence, state),
+                "runway_length": self._runway_length_would_block(predicted_runway),
+                "economics": self._economics_would_block(action, confidence, econ_params),
+            }
+            reasons = [name for name, blocked in verdicts.items() if blocked]
+            self.last_shadow_gates = {
+                **verdicts,
+                "would_block_any": bool(reasons),
+                "reasons": reasons,
+                "action": int(action),
+                "decided_confidence": float(confidence),
+                "decided_runway": float(predicted_runway),
+                "decided_feasibility": float(feasibility),
+                "breakeven_prob": float(breakeven_prob),
+            }
+        except Exception:
+            LOG.debug("[TRIGGER] shadow-gate recording failed", exc_info=True)
+            self.last_shadow_gates = {}
 
     def _should_block_for_position(self, current_position: int) -> bool:
         """Return True if a position is already open."""
@@ -518,6 +572,10 @@ class TriggerAgent(AgentTrainingMixin):
             return False
         LOG.debug("[TRIGGER] BLOCKED by feasibility gate: %.3f < %.3f", feasibility, self.feasibility_threshold)
         return True
+
+    def _feasibility_would_block(self, feasibility: float) -> bool:
+        """Pure predicate: would the live feasibility threshold block this entry?"""
+        return feasibility < self._live_feasibility_threshold
 
     def _use_torch_inference(self) -> bool:
         """Return True when torch inference is available and enabled."""
@@ -586,7 +644,7 @@ class TriggerAgent(AgentTrainingMixin):
             return action, calibrated_prob, predicted_runway
 
     def _confidence_gate_blocked(self, calibrated_prob: float) -> bool:
-        """Return True if confidence floor blocks entry."""
+        """Return True if confidence floor blocks entry (live enforcement)."""
         if self.disable_gates or self.paper_mode:
             return False
         if not self._is_runway_predictor_reliable():
@@ -596,14 +654,34 @@ class TriggerAgent(AgentTrainingMixin):
                 self._runway_cal_active_buckets(),
             )
             return False
-        if calibrated_prob >= self.confidence_floor:
+        blocked = self._confidence_would_block(calibrated_prob)
+        if blocked:
+            LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self._live_confidence_floor)
+        return blocked
+
+    def _confidence_would_block(self, calibrated_prob: float) -> bool:
+        """Pure predicate: would the live confidence floor block this entry?
+
+        Mode-independent; uses the resolved live floor so paper/live parity
+        can be measured even when the active floor is relaxed to 0.0.
+        """
+        if not self._is_runway_predictor_reliable():
             return False
-        LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self.confidence_floor)
-        return True
+        return calibrated_prob < self._live_confidence_floor
+
 
     def _entry_risk_gate_blocked(self, action: int, confidence: float, state: np.ndarray) -> bool:
-        """Return True when adaptive confidence/risk pockets should block entry."""
+        """Return True when adaptive confidence/risk pockets should block entry (live)."""
         if self.disable_gates or self.paper_mode or action == 0:
+            return False
+        return self._entry_risk_would_block(action, confidence, state)
+
+    def _entry_risk_would_block(self, action: int, confidence: float, state: np.ndarray) -> bool:
+        """Pure predicate: would adaptive confidence/risk pockets block this entry?
+
+        Mode-independent dead-zone + high-confidence risk-pocket logic.
+        """
+        if action == 0:
             return False
         dead_low = min(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
         dead_high = max(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
@@ -652,6 +730,10 @@ class TriggerAgent(AgentTrainingMixin):
         """Return True when predicted runway is too short for live entry."""
         if self.paper_mode or self.disable_gates:
             return False
+        return self._runway_length_would_block(predicted_runway)
+
+    def _runway_length_would_block(self, predicted_runway: float) -> bool:
+        """Pure predicate: would the runway-length gate block this entry?"""
         if not self._is_runway_predictor_reliable():
             return False
         min_runway_frac = self._get_param("runway_gate_min_fraction", 0.40)
@@ -674,8 +756,19 @@ class TriggerAgent(AgentTrainingMixin):
         calibrated_prob: float,
         params: _EconomicsGateParams,
     ) -> bool:
-        """Return True if economics gate blocks entry."""
-        if self.paper_mode or action == 0 or calibrated_prob >= params.breakeven_prob:
+        """Return True if economics gate blocks entry (live enforcement)."""
+        if self.paper_mode:
+            return False
+        return self._economics_would_block(action, calibrated_prob, params)
+
+    def _economics_would_block(
+        self,
+        action: int,
+        calibrated_prob: float,
+        params: _EconomicsGateParams,
+    ) -> bool:
+        """Pure predicate: would the economics gate block this entry?"""
+        if action == 0 or calibrated_prob >= params.breakeven_prob:
             return False
         LOG.debug(
             "[TRIGGER] BLOCKED by economics: p=%.3f < breakeven=%.3f (G=%.4f, L=%.4f, K=%.4f)",
