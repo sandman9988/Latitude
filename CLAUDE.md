@@ -177,6 +177,30 @@ shaped reward is only applied when `abs(shaped_tr) < 2.99`; otherwise falls back
 4-component reward (`accuracy + magnitude − false_positive − toxic_flow`). This prevents
 73%-at-rail gradient collapse when the runway predictor is uncalibrated.
 
+## Runway Forecaster (as of 2026-06-02 — full cutover, legacy Q→runway retired)
+
+Runway is now predicted by a dedicated quantile model, not the Q-value heuristic.
+
+- `src/features/runway_labels.py` — ATR-normalized forward favorable-excursion labels
+  (Wilder ATR, per-TF horizon `DEFAULT_HORIZON_BARS={1:60,5:36,15:24,30:16,60:12,240:6}`).
+- `src/agents/runway_forecaster.py` — `RunwayForecaster` quantile model (q=0.1/0.5/0.9)
+  anchored on ATR, 9 market-state features via `extract_features(...)`. `predict_runway`
+  returns **price units** (`quantile_multiple × ATR`). All 12 bots train `use_residual=False`
+  (volatility dominates; pure ATR-anchor wins). Saved/loaded as JSON.
+- Trained per `(symbol, timeframe)` by `scripts/training/train_runway.py` →
+  `data/paper_{SYMBOL}_{TF}/runway_forecaster.json` (artifact, **not committed**).
+- Integration (`trigger_agent.py`): forecaster is **primary** on numpy+torch+fallback paths.
+  `decide(..., bars=...)` threads raw closed bars (from `dual_policy.py`). `_forecast_runway`
+  returns a gross price **fraction** (`predict_runway/close`), clipped
+  `[RUNWAY_FORECAST_FLOOR=0.0002, RUNWAY_FORECAST_CEIL=0.05]`; needs ≥`RUNWAY_FORECAST_MIN_BARS=36`.
+  Legacy `_q_to_runway` retained ONLY as degraded no-model fallback.
+- Validation (`scripts/analysis/runway_eval.py`): mean corr 0.30 vs legacy 0.19, zero
+  negative corrs, utilization 0.93–1.01 (legacy ≈0.1). No reward-constant changes needed —
+  bands were already calibrated for util≈1.0.
+- Hub bias EMAs (`runway_delta_ema`, `runway_accuracy_ema`) reset to 0 for all 12 bots via
+  `scripts/training/reset_runway_bias.py` so the self-adapting layer re-learns from clean signal.
+- New instrument? retrain with `train_runway.py` before paper/live start.
+
 ## Downloading History Data
 
 Credentials in `.env.openapi` lack `export` — must load with `set -a`:

@@ -1,9 +1,33 @@
 # cTrader DDQN Bot - Current State
 
-**Last Updated:** May 21, 2026 (paper-training telemetry and scoped CB self-heal)
+**Last Updated:** Jun 2, 2026 (runway forecaster full cutover)
 **Branch:** `update-1.1-mfe-mae-tracking-v2`\
 **Status:** ✅ Operational — targeted runtime/HUD validation green\
 **Audience:** All
+
+______________________________________________________________________
+
+## 🛬 Runway Forecaster Full Cutover (Jun 2, 2026)
+
+Runway prediction was redesigned in totality. The legacy Q-value→runway heuristic
+(perpetually uncalibrated, utilization ≈0.1) is **retired**; runway is now produced by a
+dedicated quantile model.
+
+- **New modules:** `src/features/runway_labels.py` (ATR-normalized forward favorable-excursion
+  labels, per-TF horizons) and `src/agents/runway_forecaster.py` (`RunwayForecaster`,
+  ATR-anchored quantile model, 9 market-state features, `use_residual=False` for all 12 bots).
+- **Training:** `scripts/training/train_runway.py` fits per `(symbol, timeframe)` from
+  `data/history/{SYMBOL}_{TF}.csv` → `data/paper_{SYMBOL}_{TF}/runway_forecaster.json`
+  (artifact, not committed).
+- **Integration:** forecaster is primary in `trigger_agent.decide(..., bars=...)` across
+  numpy/torch/fallback paths; returns a gross price fraction clipped `[0.0002, 0.05]`,
+  requires ≥36 bars. `_q_to_runway` retained only as a no-model fallback.
+- **Validation** (`scripts/analysis/runway_eval.py`): mean MFE correlation 0.30 vs legacy 0.19,
+  zero negative correlations, utilization 0.93–1.01.
+- **Reward:** no constant changes — bands were already calibrated for util≈1.0. Hub bias EMAs
+  (`runway_delta_ema`, `runway_accuracy_ema`) reset to 0 for all 12 bots via
+  `scripts/training/reset_runway_bias.py`.
+- **Tests:** trigger/runway/reward/dual-policy + hub-lifecycle/HUD/harvester suites green.
 
 ______________________________________________________________________
 

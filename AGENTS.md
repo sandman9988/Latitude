@@ -85,6 +85,16 @@ current whenever training, promotion, HUD telemetry, or runtime topology changes
   and run the configured retrain rounds instead of degrading the live pipeline.
 - Focused replay should use the 10 best and 10 worst recent capture records per
   symbol/timeframe by default, without contaminating another timeframe.
+- Runway is predicted by a dedicated quantile model (`src/agents/runway_forecaster.py`),
+  NOT the legacy Q-value heuristic (retired 2026-06-02). Fit per `(symbol, timeframe)`
+  with `scripts/training/train_runway.py` from `data/history/{SYMBOL}_{TF}.csv` →
+  `data/paper_{SYMBOL}_{TF}/runway_forecaster.json` (artifact, not committed). The model
+  is an ATR-anchored quantile predictor (`use_residual=False`); `predict_runway` returns
+  price units. `trigger_agent.decide(..., bars=...)` uses it as primary; `_q_to_runway`
+  remains only as a no-model fallback. Retrain before starting any new instrument.
+  After a cutover/retrain, reset the hub bias EMAs with
+  `scripts/training/reset_runway_bias.py` so `runway_delta_ema`/`runway_accuracy_ema`
+  re-learn from clean signal.
 
 ## Runtime And HUD Rules
 

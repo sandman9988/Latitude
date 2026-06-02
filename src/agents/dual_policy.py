@@ -322,6 +322,7 @@ class DualPolicy:
             expected_loss=expected_loss,
             friction_cost=friction_cost,  # Phase 2: Actual broker friction (commission + swap + spread + slippage)
             zeta=self.current_zeta,  # Regime ζ for adaptive epsilon scheduling
+            bars=bars,  # Raw closed bars for the runway forecaster
         )
 
         self._record_predicted_runway(action, confidence, predicted_runway)

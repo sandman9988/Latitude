@@ -28,6 +28,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence
+from src.agents.runway_forecaster import RunwayForecaster, extract_features
 from src.constants import (
     GAMMA,
     GRAD_CLIP_NORM,
@@ -64,6 +65,9 @@ _UTILIZATION_OUTLIER_HIGH: float = 2.0  # above this is an outlier (excessive)
 _RUNWAY_ERROR_HUBER_K: float = 1.0
 _ZERO_MFE_FLOOR_FRAC: float = 1e-7
 PREDICTED_RUNWAY_FALLBACK = 0.0015
+RUNWAY_FORECAST_FLOOR = 0.0002
+RUNWAY_FORECAST_CEIL = 0.05
+RUNWAY_FORECAST_MIN_BARS = 36
 Q_RUNWAY_MIN = 0.0010
 Q_RUNWAY_MAX = 0.0050
 Q_RUNWAY_MAX_Q = 3.0
@@ -256,6 +260,85 @@ class TriggerAgent(AgentTrainingMixin):
         if model_path:
             self._load_model(model_path)
 
+        # Decoupled runway forecaster (ATR-anchored quantile model). Replaces the
+        # legacy Q→runway mapping when a fitted model is available for this
+        # (symbol, timeframe). Falls back to _q_to_runway() otherwise.
+        self._current_bars: Any = None
+        self.runway_forecaster: RunwayForecaster | None = None
+        self._load_runway_forecaster()
+
+    def _load_runway_forecaster(self) -> None:
+        """Load the persisted RunwayForecaster for this (symbol, timeframe)."""
+        from pathlib import Path
+
+        override = os.environ.get("RUNWAY_FORECASTER_MODEL", "").strip()
+        if override:
+            candidates = [Path(override)]
+        else:
+            data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
+            candidates = [
+                data_dir / f"paper_{self.symbol}_{self.timeframe}" / "runway_forecaster.json",
+            ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                self.runway_forecaster = RunwayForecaster.load(path)
+                LOG.info("[TRIGGER] Loaded runway forecaster: %s", path)
+                return
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("[TRIGGER] Failed to load runway forecaster %s: %s", path, exc)
+        LOG.info(
+            "[TRIGGER] No runway forecaster for %s_%s; using Q→runway fallback",
+            self.symbol,
+            self.timeframe,
+        )
+
+    def _forecast_runway(self, action: int) -> float | None:
+        """Forecast GROSS runway as a price fraction from raw bars.
+
+        Returns None when the forecaster is unavailable, bars are insufficient,
+        or the feature window cannot be built — caller falls back to legacy
+        Q→runway mapping.
+        """
+        forecaster = self.runway_forecaster
+        bars = self._current_bars
+        if forecaster is None or not getattr(forecaster, "fitted", False):
+            return None
+        if action not in (1, 2) or bars is None or len(bars) < RUNWAY_FORECAST_MIN_BARS:
+            return None
+        try:
+            from src.features.runway_labels import wilder_atr
+
+            opens = np.asarray([b[1] for b in bars], dtype=np.float64)
+            highs = np.asarray([b[2] for b in bars], dtype=np.float64)
+            lows = np.asarray([b[3] for b in bars], dtype=np.float64)
+            closes = np.asarray([b[4] for b in bars], dtype=np.float64)
+        except (IndexError, TypeError, ValueError):
+            return None
+        atr = wilder_atr(highs, lows, closes)
+        idx = len(closes) - 1
+        if atr[idx] <= 0 or closes[idx] <= 0:
+            return None
+        side = 1 if action == 1 else -1
+        feat = extract_features(opens, highs, lows, closes, atr, idx, side=side)
+        if feat is None:
+            return None
+        runway_price = forecaster.predict_runway(feat, float(atr[idx]), quantile=0.5)
+        if not np.isfinite(runway_price) or runway_price <= 0:
+            return None
+        gross = float(runway_price) / float(closes[idx])
+        return float(np.clip(gross, RUNWAY_FORECAST_FLOOR, RUNWAY_FORECAST_CEIL))
+
+    def _predict_gross_runway(self, action: int, q_value: float | None) -> float:
+        """Predict gross runway, preferring the forecaster over the Q→runway map."""
+        forecast = self._forecast_runway(action)
+        if forecast is not None:
+            return forecast
+        if q_value is not None:
+            return self._q_to_runway(q_value)
+        return PREDICTED_RUNWAY_FALLBACK
+
     def _resolve_gate_value(self, env_key: str, param_name: str, fallback: float) -> tuple[float, str]:
         """Resolve gate thresholds via env override → learned params → fallback."""
         env_val = os.environ.get(env_key)
@@ -299,7 +382,7 @@ class TriggerAgent(AgentTrainingMixin):
             self.last_action = action
             if action == 0:
                 return 0, 0.0, 0.0
-            return action, 0.5, PREDICTED_RUNWAY_FALLBACK
+            return action, 0.5, self._predict_gross_runway(action, None)
 
         # Forced entry when idle for too many bars
         if self.force_exploration and self.bars_since_trade >= self.max_bars_inactive:
@@ -307,7 +390,7 @@ class TriggerAgent(AgentTrainingMixin):
             LOG.debug("[TRIGGER] FORCED ENTRY after %d bars flat: action=%d", self.bars_since_trade, action)
             self.bars_since_trade = 0
             self.last_action = action
-            return action, 0.5, PREDICTED_RUNWAY_FALLBACK
+            return action, 0.5, self._predict_gross_runway(action, None)
 
         return None  # Carry on to normal model decision
 
@@ -322,7 +405,7 @@ class TriggerAgent(AgentTrainingMixin):
             confidence = compute_confidence(q_values, self.training_steps)
             sorted_q = np.sort(q_values)[::-1]
             self._last_q_spread = float(sorted_q[0] - sorted_q[1]) if len(sorted_q) >= 2 else 0.0
-            gross_runway = self._q_to_runway(float(q_values[action]))
+            gross_runway = self._predict_gross_runway(action, float(q_values[action]))
             predicted_runway = max(0.0, gross_runway - friction_cost)
             self.last_predicted_runway_gross = float(gross_runway)
             self.last_predicted_runway_net = float(predicted_runway)
@@ -340,6 +423,9 @@ class TriggerAgent(AgentTrainingMixin):
                 self.last_predicted_runway_gross = 0.0
                 self.last_predicted_runway_net = 0.0
                 return 0, 0.0, 0.0
+            forecast = self._forecast_runway(action)
+            if forecast is not None:
+                gross_runway = forecast
             predicted_runway = max(0.0, gross_runway - friction_cost)
             self.last_predicted_runway_gross = float(gross_runway)
             self.last_predicted_runway_net = float(predicted_runway)
@@ -367,6 +453,7 @@ class TriggerAgent(AgentTrainingMixin):
         expected_loss: float = 0.001,  # Phase 2: Expected loss (L)
         friction_cost: float = 0.0002,  # Phase 2: Friction costs (K) - spread + slippage
         zeta: float = 0.5,  # Regime damping ratio for adaptive epsilon
+        bars: Any = None,  # Raw (t,o,h,l,c) closed bars for runway forecasting
     ) -> tuple[int, float, float]:
         """Decide entry action based on current market state.
 
@@ -389,6 +476,7 @@ class TriggerAgent(AgentTrainingMixin):
         """
         self.bars_since_trade += 1
         self._current_zeta = zeta  # Store for regime-aware epsilon decay
+        self._current_bars = bars  # Raw bars for the runway forecaster
 
         # Always record the state we see — needed for experience replay
         # regardless of which gate or decision path fires.
@@ -475,7 +563,7 @@ class TriggerAgent(AgentTrainingMixin):
                 return 0, 0.0, 0.0
 
             q_max = q_values[action]
-            gross_runway = self._q_to_runway(q_max)
+            gross_runway = self._predict_gross_runway(action, float(q_max))
             predicted_runway = max(0.0, gross_runway - friction_cost)
             if self._runway_length_gate_blocked(predicted_runway):
                 return 0, calibrated_prob, 0.0
