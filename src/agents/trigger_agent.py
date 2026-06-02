@@ -1154,6 +1154,15 @@ class TriggerAgent(AgentTrainingMixin):
                     timeframe=self.timeframe,
                     broker=self.broker,
                 )
+            else:
+                feas_decay = self._get_param("feasibility_decay_step", 0.01)
+                self.param_manager.update(
+                    self.symbol,
+                    "feasibility_threshold",
+                    -max(0.0, float(feas_decay)),
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
 
             if utilization < _UTILIZATION_OUTLIER_LOW or utilization > _UTILIZATION_OUTLIER_HIGH:
                 self.param_manager.update(

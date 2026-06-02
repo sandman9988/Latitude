@@ -539,6 +539,9 @@ class TFAgent:
         # Dynamic entry confidence floor — updated by calibration and runway accuracy.
         # RL-adjusted floor converges separately and is capped relative to the base floor.
         self._entry_conf_dynamic_floor: float = 0.0
+        # Stable base floor for the risk tuner — cached once from persisted params and
+        # never re-read from the mutated value, so the adaptive cap cannot ratchet upward.
+        self._risk_tuner_base_floor: float | None = None
         # Exit floor is persisted to param_manager and loaded here so it survives restarts.
         self._exit_conf_dynamic_floor = self._get_learned_float("exit_confidence_threshold", 0.0)
         # Rolling win-rate EMA for adaptive floor nudging (simplified risk tuner)
@@ -2567,14 +2570,22 @@ class TFAgent:
     _RISK_TUNER_MIN_TRADES: dict = {1: 30, 5: 20, 15: 15, 30: 10, 60: 8, 240: 6}
     # Save interval for learned params (every N trades)
     _RISK_TUNER_SAVE_INTERVAL: int = 10
+    # Stable-base clamp range — the cached base floor is bounded to this band so a
+    # previously-runaway persisted value cannot seed an ever-rising adaptive cap.
+    _RISK_TUNER_BASE_MIN: float = 0.30
+    _RISK_TUNER_BASE_MAX: float = 0.60
+    # Hard absolute cap on the adaptive entry floor regardless of base — the tuner can
+    # raise the floor by at most +0.10 above base and never beyond this ceiling.
+    _RISK_TUNER_FLOOR_ABS_CAP: float = 0.70
 
     def _update_risk_feedback_thresholds(self, pnl_usd: float) -> None:
         """Simplified adaptive floor tuner — no full RiskManager required.
 
         Tracks a per-TF win-rate EMA and nudges _entry_conf_dynamic_floor up/down:
-        - Win rate consistently < 40% → raise floor by 0.02 (cap at base + 0.10)
-        - Win rate consistently > 65% → lower floor by 0.01 (floor at 0.0)
-        Persists both floors to param_manager every _RISK_TUNER_SAVE_INTERVAL trades.
+        - Win rate consistently < 40% → raise floor by 0.02 (cap at min(base + 0.10, abs cap))
+        - Win rate consistently > 65% → lower floor by 0.01 (floor at 0.0 → reverts to base)
+        The base floor is cached once (stable) so the adaptive cap cannot ratchet upward
+        across restarts/persistence. Persists both floors every _RISK_TUNER_SAVE_INTERVAL trades.
         """
         try:
             win = pnl_usd > 0.0
@@ -2586,10 +2597,16 @@ class TFAgent:
             if self._win_rate_ema_n < min_trades:
                 return
 
-            _base_floor = float(self._param_manager.get(
-                self.symbol, "entry_confidence_threshold",
-                timeframe=self.tf_label, broker="default", default=0.55) or 0.55)
-            _floor_max = _base_floor + 0.10
+            if self._risk_tuner_base_floor is None:
+                _persisted = float(self._param_manager.get(
+                    self.symbol, "entry_confidence_threshold",
+                    timeframe=self.tf_label, broker="default", default=0.55) or 0.55)
+                self._risk_tuner_base_floor = float(min(
+                    max(_persisted, self._RISK_TUNER_BASE_MIN),
+                    self._RISK_TUNER_BASE_MAX,
+                ))
+            _base_floor = self._risk_tuner_base_floor
+            _floor_max = min(_base_floor + 0.10, self._RISK_TUNER_FLOOR_ABS_CAP)
             _floor_min = 0.0
 
             if self._win_rate_ema < 0.40:
