@@ -19,22 +19,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.persistence.json_io import append_jsonl_durable as _append_jsonl_durable
+
 LOG = logging.getLogger(__name__)
 
 
 def append_jsonl_durable(path: Path, entry: dict[str, Any], *, default: Any = str) -> None:
     """Append one JSONL record as a single durable O_APPEND write."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = (json.dumps(entry, default=default, separators=(",", ":")) + "\n").encode("utf-8")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    try:
-        view = memoryview(line)
-        while view:
-            written = os.write(fd, view)
-            view = view[written:]
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    _append_jsonl_durable(path, entry, default=default)
 
 
 class TransactionLogger:

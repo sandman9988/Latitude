@@ -197,17 +197,11 @@ def _probe_endpoints(primary: str, port: int, alt_raw: str = "", timeout: float 
 # Atomic JSON writer
 # ---------------------------------------------------------------------------
 
+from src.persistence.json_io import save_json_atomic as _save_json_atomic
+
+
 def _write_json_atomic(path: Path, payload: dict, indent: int | None = None) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}_")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=indent, default=_json_default)
-        os.replace(tmp_path, path)
-    except OSError:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+    _save_json_atomic(path, payload, indent=indent, default=_json_default)
 
 
 def _json_default(obj: Any) -> Any:

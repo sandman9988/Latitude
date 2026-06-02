@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from src.persistence.json_io import save_json_atomic as save_json_atomic_impl
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -370,14 +372,4 @@ def save_json_atomic(path: str | Path, data: dict | list, *, indent: int = 2) ->
         indent: Pretty-print indent (default 2).
 
     """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=indent)
-        os.replace(tmp_path, str(path))
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp_path)
-        raise
+    save_json_atomic_impl(path, data, indent=indent)
