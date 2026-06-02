@@ -80,6 +80,8 @@ _DEFAULT_DIGITS = 5
 _DEFAULT_CONTRACT_SIZE = 100.0
 _DEFAULT_STARTING_EQUITY = 10_000.0
 _MIN_BARS_BEFORE_TRADE = 30
+_ENTRY_STALE_DRIFT_VOL_MULT = 1.5
+_ENTRY_STALE_MAX_AGE_TF_MULT = 3.0
 _GAP_FILL_MIN_SECONDS = 60.0  # only fetch history if gap > this
 _INITIAL_BACKFILL_BARS = 100  # bars to pre-fetch on cold start per TF
 _CTRL_KILL_SWITCH = "kill_switch.json"
@@ -2017,6 +2019,17 @@ class TFAgent:
         action, dyn_floor = self._apply_entry_dynamic_floor(action, conf, gated)
         action = self._apply_paper_entry_guard(action, conf, gated)
 
+        live_mid, live_ts, drift_frac, age_s = self._entry_execution_context(ts, bar_close)
+        self._entry_exec_drift_frac = drift_frac
+        self._entry_exec_age_s = age_s
+        if action != 0 and self._entry_staleness_blocks(drift_frac, age_s, vol):
+            LOG.info(
+                "[%s %s] Entry blocked (stale): drift=%.4f%% age=%.1fs bar_close=%.5f live_mid=%.5f",
+                self.symbol, self.tf_label, drift_frac * 100.0, age_s, bar_close, live_mid,
+            )
+            gated = [*gated, "entry_stale"]
+            action = 0
+
         if action != 0:
             self._snapshot_entry_lifecycle(
                 action=action,
@@ -2035,8 +2048,37 @@ class TFAgent:
             return
 
         direction = 1 if action == 1 else -1
-        fill_price = bar_close + direction * half_spread
-        self._open_position(ts, direction, fill_price, conf, conf, action)
+        fill_price = live_mid + direction * half_spread
+        self._open_position(live_ts, direction, fill_price, conf, conf, action)
+
+    def _entry_execution_context(
+        self, bar_ts: dt.datetime, bar_close: float,
+    ) -> tuple[float, dt.datetime, float, float]:
+        """Resolve the live execution price/time for a flat entry.
+
+        Entries are decided on completed-bar features but a real fill happens at
+        the current market, so execution uses the live mid/timestamp rather than
+        the (possibly stale) just-closed bar close. Returns
+        (live_mid, live_ts, drift_frac, age_seconds).
+        """
+        live_mid = float(getattr(self, "last_mid", 0.0) or 0.0)
+        if live_mid <= 0:
+            live_mid = bar_close
+        live_ts = getattr(self, "last_ts", None) or bar_ts
+        drift_frac = abs(live_mid - bar_close) / bar_close if bar_close > 0 else 0.0
+        try:
+            age_s = max(0.0, (live_ts - bar_ts).total_seconds())
+        except Exception:
+            age_s = 0.0
+        return live_mid, live_ts, drift_frac, age_s
+
+    def _entry_staleness_blocks(self, drift_frac: float, age_s: float, vol: float) -> bool:
+        """Return True when live execution context is too stale for a flat entry."""
+        max_drift = _ENTRY_STALE_DRIFT_VOL_MULT * max(float(vol), 0.0)
+        if max_drift > 0 and drift_frac > max_drift:
+            return True
+        max_age_s = _ENTRY_STALE_MAX_AGE_TF_MULT * self.timeframe_minutes * 60.0
+        return age_s > max_age_s
 
     def _force_close_price(self, mid: float, half_spread: float) -> float:
         if self.position is None:
