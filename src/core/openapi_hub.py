@@ -224,6 +224,27 @@ def _json_default(obj: Any) -> Any:
     return str(obj)
 
 
+_ASYNC_WRITER = None
+
+
+def _async_writer():
+    global _ASYNC_WRITER
+    if _ASYNC_WRITER is None:
+        from src.persistence.async_writer import AsyncJsonWriter
+        _ASYNC_WRITER = AsyncJsonWriter(_write_json_atomic)
+        _ASYNC_WRITER.start()
+    return _ASYNC_WRITER
+
+
+def _write_json_async(path: Path, payload: dict, indent: int | None = None) -> None:
+    """Offload a latest-wins snapshot write to the background writer thread.
+
+    Use only for recoverable snapshot files (telemetry/HUD state); never for
+    durability-critical append logs.
+    """
+    _async_writer().submit(path, payload, indent)
+
+
 # ---------------------------------------------------------------------------
 # BarBuilder (copy from ctrader_ddqn_paper to avoid circular import)
 # ---------------------------------------------------------------------------
@@ -509,6 +530,9 @@ class TFAgent:
         self._last_event_feats: dict = {}
         self._last_var_95: float = 0.0
         self._last_kurtosis: float = 0.0
+
+        from src.persistence.trade_log_reader import CachedTradeLogReader
+        self._trade_log_reader = CachedTradeLogReader()
 
         # Confidence tracking (updated from decide_entry/decide_exit results)
         self._last_trigger_conf: float = 0.5
@@ -3660,6 +3684,37 @@ class TFAgent:
         except Exception:
             return {}
 
+    def _compute_trade_log_metrics(self, now: dt.datetime) -> tuple[dict, dict, dict]:
+        """Compute self-healing / period / decision-quality metrics from the trade log.
+
+        Reads via the mtime-cached reader so the reactor thread re-parses the
+        (unbounded) trade_log.jsonl only when a new trade has actually been
+        appended, rather than on every telemetry flush. Returns
+        (self_healing, period_comparison, decision_quality); empty dicts on error.
+        """
+        try:
+            from datetime import timedelta
+
+            from src.utils.metrics_calculator import (
+                decision_quality,
+                period_comparison,
+                self_healing_metrics,
+            )
+
+            _all = self._trade_log_reader.trades
+            _bot_trades = [t for t in _all if t.get("symbol") == self.symbol
+                           and t.get("timeframe_minutes") == self.timeframe_minutes]
+            _cut_24h = (now - timedelta(hours=24)).isoformat()
+            _cut_7d = (now - timedelta(days=7)).isoformat()
+            _24h = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_24h]
+            _7d = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_7d]
+            _self_heal = self_healing_metrics(_bot_trades, self.starting_equity)
+            _comparison = period_comparison(_24h, _7d, self.starting_equity) if _24h and _7d else {}
+            _dec_qual = decision_quality(_bot_trades)
+            return _self_heal, _comparison, _dec_qual
+        except Exception:
+            return {}, {}, {}
+
     def _write_paper_stats(self) -> None:
         now = dt.datetime.now(dt.UTC)
         uptime = (now - self.start_time).total_seconds()
@@ -3676,30 +3731,7 @@ class TFAgent:
         avg_mae = float(np.mean(list(self._rolling_mae))) if self._rolling_mae else 0.0
 
         # Derive cross-period self-healing metrics from trade_log (single source of truth)
-        try:
-            from datetime import timedelta
-
-            from src.persistence.trade_log_reader import read_all_trades
-            from src.utils.metrics_calculator import (
-                decision_quality,
-                period_comparison,
-                self_healing_metrics,
-            )
-
-            _all = read_all_trades()
-            _bot_trades = [t for t in _all if t.get("symbol") == self.symbol
-                           and t.get("timeframe_minutes") == self.timeframe_minutes]
-            _cut_24h = (now - timedelta(hours=24)).isoformat()
-            _cut_7d = (now - timedelta(days=7)).isoformat()
-            _24h = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_24h]
-            _7d = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_7d]
-            _self_heal = self_healing_metrics(_bot_trades, self.starting_equity)
-            _comparison = period_comparison(_24h, _7d, self.starting_equity) if _24h and _7d else {}
-            _dec_qual = decision_quality(_bot_trades)
-        except Exception:
-            _self_heal = {}
-            _comparison = {}
-            _dec_qual = {}
+        _self_heal, _comparison, _dec_qual = self._compute_trade_log_metrics(now)
 
         stats = {
             "symbol": self.symbol,
@@ -3739,8 +3771,8 @@ class TFAgent:
         }
         shared = Path("data")
         shared.mkdir(exist_ok=True)
-        _write_json_atomic(shared / f"paper_stats_{self.symbol}_M{self.timeframe_minutes}.json", stats)
-        _write_json_atomic(self.data_dir / "paper_stats.json", stats)
+        _write_json_async(shared / f"paper_stats_{self.symbol}_M{self.timeframe_minutes}.json", stats)
+        _write_json_async(self.data_dir / "paper_stats.json", stats)
 
     def _write_current_position(self) -> None:
         now = dt.datetime.now(dt.UTC)
@@ -3790,8 +3822,8 @@ class TFAgent:
 
         shared = Path("data")
         shared.mkdir(exist_ok=True)
-        _write_json_atomic(shared / f"current_position_{self.symbol}_M{self.timeframe_minutes}.json", data)
-        _write_json_atomic(self.data_dir / "current_position.json", data)
+        _write_json_async(shared / f"current_position_{self.symbol}_M{self.timeframe_minutes}.json", data)
+        _write_json_async(self.data_dir / "current_position.json", data)
 
     def _write_training_stats(self) -> None:
         ts_raw = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
@@ -3843,8 +3875,8 @@ class TFAgent:
             "updated_at": dt.datetime.now(dt.UTC).isoformat(),
         }
         shared = Path("data")
-        _write_json_atomic(self.data_dir / "training_stats.json", stats)
-        _write_json_atomic(shared / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json", stats)
+        _write_json_async(self.data_dir / "training_stats.json", stats)
+        _write_json_async(shared / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json", stats)
 
     def _compute_var_kurtosis(self) -> tuple[float, float]:
         """Return (var_95, excess_kurtosis) from last 200 bar log-returns."""
@@ -3976,7 +4008,7 @@ class TFAgent:
             "updated_at": dt.datetime.now(dt.UTC).isoformat(),
         }
         shared = Path("data")
-        _write_json_atomic(shared / f"risk_metrics_{self.symbol}_M{self.timeframe_minutes}.json", metrics)
+        _write_json_async(shared / f"risk_metrics_{self.symbol}_M{self.timeframe_minutes}.json", metrics)
 
     def _flush_production_metrics(self) -> None:
         wins = sum(1 for p in self.trades_pnl if p > 0)
@@ -4808,12 +4840,12 @@ class OpenAPIHub:
             "updated_at": dt.datetime.now(dt.UTC).isoformat(),
         }
         base = Path("data")
-        _write_json_atomic(base / "order_book.json", data)
-        _write_json_atomic(base / f"order_book_{self.symbol}.json", data)
+        _write_json_async(base / "order_book.json", data)
+        _write_json_async(base / f"order_book_{self.symbol}.json", data)
         # Write per-TF scoped files so _preferred_data_file finds fresh data
         # regardless of which TF is active in the HUD.
         for tf in self.agents:
-            _write_json_atomic(base / f"order_book_{self.symbol}_M{tf}.json", data)
+            _write_json_async(base / f"order_book_{self.symbol}_M{tf}.json", data)
 
     def _l2_snapshot(self) -> dict:
         depth_bid, depth_ask = self._order_book.depth_sum()
@@ -4943,6 +4975,10 @@ class OpenAPIHub:
         if self._client and hasattr(self._client, "stopService"):
             with contextlib.suppress(Exception):
                 self._client.stopService()
+        global _ASYNC_WRITER
+        if _ASYNC_WRITER is not None:
+            with contextlib.suppress(Exception):
+                _ASYNC_WRITER.stop()
 
     # ---- start -----------------------------------------------------------
 
