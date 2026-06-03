@@ -57,6 +57,9 @@ import numpy as np
 
 from src.utils.safe_math import SAFE_DIV_MIN, SAFE_EPSILON, SAFE_SMALL, SafeMath
 from src.core.tf_agent_preseed import TFAgentPreseedMixin
+from src.core.tf_agent_capture_health import TFAgentCaptureHealthMixin
+from src.core.tf_agent_trade_log import TFAgentTradeLogMixin
+from src.core.tf_agent_telemetry import TFAgentTelemetryMixin
 
 LOG = logging.getLogger("openapi_hub")
 
@@ -90,9 +93,18 @@ _CTRL_CB_RESET = "circuit_breaker_reset.json"
 _CTRL_KG_RESET = "kurtosis_gate_reset.json"
 _CTRL_EPSILON_OVERRIDE = "epsilon_override.json"
 _CTRL_PARAM_RELOAD = "learned_parameters_reload.json"
-_RUNWAY_BIAS_LIMIT_POINTS = 12.0
-_RUNWAY_ADJUST_MIN_SCALE = 0.35
-_RUNWAY_ADJUST_MAX_SCALE = 1.5
+
+# cTrader error codes that signal an expired or invalid access token.
+# On any of these the hub sends ProtoOARefreshTokenReq (payload 2173) and
+# replays the full auth sequence when the response (2174) arrives.
+_AUTH_ERROR_CODES = frozenset({
+    "OA_AUTH_TOKEN_EXPIRED",
+    "CH_CLIENT_AUTH_FAILURE",
+    "CH_ACCESS_TOKEN_INVALID",
+    "ACCOUNT_NOT_AUTHORIZED",
+    "ACCESS_TOKEN_INVALID",
+    "INVALID_ACCESS_TOKEN",
+})
 
 # cTrader PERIOD enum → timeframe minutes
 _PERIOD_TO_TF: dict[int, int] = {
@@ -150,6 +162,7 @@ def _load_creds() -> dict[str, str]:
         "client_id":     _get("CTRADER_CLIENT_ID"),
         "client_secret": _get("CTRADER_CLIENT_SECRET"),
         "access_token":  _get("CTRADER_ACCESS_TOKEN"),
+        "refresh_token": _get("CTRADER_REFRESH_TOKEN"),
         "account_id":    _get("CTRADER_ACCOUNT_ID") or _get("CTRADER_USERNAME"),
     }
 
@@ -195,49 +208,15 @@ def _probe_endpoints(primary: str, port: int, alt_raw: str = "", timeout: float 
 
 
 # ---------------------------------------------------------------------------
-# Atomic JSON writer
+# JSON writers (shared with TFAgent mixins via persistence layer)
 # ---------------------------------------------------------------------------
 
-from src.persistence.json_io import save_json_atomic as _save_json_atomic
-
-
-def _write_json_atomic(path: Path, payload: dict, indent: int | None = None) -> None:
-    _save_json_atomic(path, payload, indent=indent, default=_json_default)
-
-
-def _json_default(obj: Any) -> Any:
-    if isinstance(obj, float) and not math.isfinite(obj):
-        return None
-    if isinstance(obj, dt.datetime):
-        return obj.isoformat()
-    if isinstance(obj, np.integer):
-        return int(obj)
-    if isinstance(obj, np.floating):
-        return float(obj)
-    if isinstance(obj, np.bool_):
-        return bool(obj)
-    return str(obj)
-
-
-_ASYNC_WRITER = None
-
-
-def _async_writer():
-    global _ASYNC_WRITER
-    if _ASYNC_WRITER is None:
-        from src.persistence.async_writer import AsyncJsonWriter
-        _ASYNC_WRITER = AsyncJsonWriter(_write_json_atomic)
-        _ASYNC_WRITER.start()
-    return _ASYNC_WRITER
-
-
-def _write_json_async(path: Path, payload: dict, indent: int | None = None) -> None:
-    """Offload a latest-wins snapshot write to the background writer thread.
-
-    Use only for recoverable snapshot files (telemetry/HUD state); never for
-    durability-critical append logs.
-    """
-    _async_writer().submit(path, payload, indent)
+from src.persistence.json_io import (
+    json_default as _json_default,
+    save_json_atomic as _save_json_atomic,
+    write_json_async as _write_json_async,
+    write_json_atomic as _write_json_atomic,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +268,7 @@ class BarBuilder:
 # TFAgent – per-timeframe paper trading loop
 # ---------------------------------------------------------------------------
 
-class TFAgent(TFAgentPreseedMixin):
+class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMixin, TFAgentTelemetryMixin):
     """Manages one timeframe for a single symbol."""
 
     def __init__(
@@ -2408,160 +2387,6 @@ class TFAgent(TFAgentPreseedMixin):
         except Exception as e:
             LOG.debug("[%s %s] param_manager.update error: %s", self.symbol, self.tf_label, e)
 
-    # ── Capture health monitoring ─────────────────────────────────────────────
-
-    # Minimum trades per TF before rolling EMA intervention fires.
-    # Large-delta path bypasses this entirely and acts immediately.
-    _CAPTURE_MIN_SAMPLES: dict = {1: 15, 5: 10, 15: 7, 30: 5, 60: 4, 240: 3}
-
-    def _check_capture_health(self, capture_ratio: float, mfe: float, entry_price: float) -> None:
-        """Two-tier capture intervention.
-
-        Tier 1 — large delta (big MFE, low capture): act immediately, no gates.
-        Tier 2 — rolling EMA: act after TF-adaptive minimum samples + 1-bar cooldown.
-        Stable: relax slowly (3% per trade) only after 2× min samples to prevent whipsawing.
-        """
-        from src.constants import (
-            CAPTURE_ALERT_THRESHOLD,
-            CAPTURE_CRITICAL_THRESHOLD,
-            CAPTURE_EMA_ALPHA,
-            CAPTURE_LARGE_DELTA_CAP_MAX,
-            CAPTURE_LARGE_DELTA_MFE_MULT,
-            CAPTURE_RELAX_FACTOR,
-            CAPTURE_STABLE_THRESHOLD,
-            CAPTURE_TIGHTEN_ALERT,
-            CAPTURE_TIGHTEN_IMMEDIATE,
-        )
-
-        self._capture_ema = (
-            (1.0 - CAPTURE_EMA_ALPHA) * self._capture_ema
-            + CAPTURE_EMA_ALPHA * max(-1.0, min(1.0, capture_ratio))
-        )
-        self._capture_ema_n += 1
-
-        harv = getattr(getattr(self, "policy", None), "harvester", None)
-        if harv is None:
-            return
-
-        mfe_pct = (mfe / max(abs(entry_price), 1.0)) * 100.0
-        now = time.time()
-        tf_cooldown = max(60.0, self.timeframe_minutes * 60.0)
-
-        # ── Tier 1: IMMEDIATE — large delta wastes a significant move ──────────
-        significant_mfe = (
-            getattr(harv, "trailing_stop_activation_pct", 0.15) * CAPTURE_LARGE_DELTA_MFE_MULT
-        )
-        if mfe_pct > significant_mfe and capture_ratio < CAPTURE_LARGE_DELTA_CAP_MAX:
-            LOG.warning(
-                "[%s %s] CAPTURE DELTA: MFE=%.3f%% capture=%.1f%% "
-                "(threshold=2×trail_act=%.3f%%) — immediate tighten",
-                self.symbol, self.tf_label, mfe_pct, capture_ratio * 100, significant_mfe,
-            )
-            self._apply_capture_tighten(harv, factor=CAPTURE_TIGHTEN_IMMEDIATE)
-            self._capture_last_intervention = now
-            return
-
-        # ── Tier 2: ROLLING EMA — needs min samples + cooldown ────────────────
-        min_samples = self._CAPTURE_MIN_SAMPLES.get(self.timeframe_minutes, 5)
-        if self._capture_ema_n < min_samples:
-            return
-        if now - self._capture_last_intervention < tf_cooldown:
-            return
-
-        if self._capture_ema < CAPTURE_CRITICAL_THRESHOLD:
-            LOG.warning(
-                "[%s %s] CAPTURE CRITICAL: rolling=%.1f%% — emergency reset",
-                self.symbol, self.tf_label, self._capture_ema * 100,
-            )
-            self._apply_capture_emergency_reset(harv)
-            self._capture_last_intervention = now
-        elif self._capture_ema < CAPTURE_ALERT_THRESHOLD:
-            LOG.warning(
-                "[%s %s] CAPTURE ALERT: rolling=%.1f%% — tightening thresholds",
-                self.symbol, self.tf_label, self._capture_ema * 100,
-            )
-            self._apply_capture_tighten(harv, factor=CAPTURE_TIGHTEN_ALERT)
-            self._capture_last_intervention = now
-        elif self._capture_ema > CAPTURE_STABLE_THRESHOLD and self._capture_ema_n >= min_samples * 2:
-            # Stable performance: small relax, larger sample base to prevent whipsawing
-            self._apply_capture_relax(harv, factor=CAPTURE_RELAX_FACTOR)
-
-    def _apply_capture_tighten(self, harv: Any, factor: float) -> None:
-        """Tighten trailing activation, stop distance, and capture decay threshold."""
-        from src.constants import (
-            TRAILING_STOP_ACTIVATION_PCT,
-            TRAILING_STOP_DISTANCE_PCT,
-        )
-        tf_scale = harv._get_timeframe_scale() if hasattr(harv, "_get_timeframe_scale") else 1.0
-        trail_floor = max(0.03, TRAILING_STOP_ACTIVATION_PCT * tf_scale * 0.40)
-        dist_floor = max(0.01, TRAILING_STOP_DISTANCE_PCT * tf_scale * 0.30)
-
-        harv.trailing_stop_activation_pct = max(
-            trail_floor, harv.trailing_stop_activation_pct * factor,
-        )
-        harv.trailing_stop_distance_pct = max(
-            dist_floor, harv.trailing_stop_distance_pct * factor,
-        )
-        # Raise capture_decay_threshold so capture-decay fires sooner on giveback
-        harv.capture_decay_threshold = min(
-            0.70, harv.capture_decay_threshold + (1.0 - factor) * 0.40,
-        )
-        LOG.info(
-            "[%s %s] CAPTURE TIGHTEN (×%.2f): trail_act=%.3f%% dist=%.3f%% cd_thresh=%.3f",
-            self.symbol, self.tf_label, factor,
-            harv.trailing_stop_activation_pct,
-            harv.trailing_stop_distance_pct,
-            harv.capture_decay_threshold,
-        )
-
-    def _apply_capture_emergency_reset(self, harv: Any) -> None:
-        """Emergency: reset harvester thresholds to tightest safe values (50% of default)."""
-        from src.constants import (
-            CAPTURE_DECAY_MIN_MFE_PCT,
-            TRAILING_STOP_ACTIVATION_PCT,
-            TRAILING_STOP_DISTANCE_PCT,
-        )
-        tf_scale = harv._get_timeframe_scale() if hasattr(harv, "_get_timeframe_scale") else 1.0
-        harv.trailing_stop_activation_pct = TRAILING_STOP_ACTIVATION_PCT * tf_scale * 0.50
-        harv.trailing_stop_distance_pct = TRAILING_STOP_DISTANCE_PCT * tf_scale * 0.50
-        harv.capture_decay_threshold = 0.50
-        harv.capture_decay_min_mfe_pct = CAPTURE_DECAY_MIN_MFE_PCT * tf_scale
-        LOG.warning(
-            "[%s %s] CAPTURE EMERGENCY RESET: trail_act=%.3f%% dist=%.3f%% cd_thresh=%.3f",
-            self.symbol, self.tf_label,
-            harv.trailing_stop_activation_pct,
-            harv.trailing_stop_distance_pct,
-            harv.capture_decay_threshold,
-        )
-
-    def _apply_capture_relax(self, harv: Any, factor: float) -> None:
-        """Gently relax thresholds when capture is stably healthy (prevents over-tightening)."""
-        from src.constants import (
-            CAPTURE_DECAY_THRESHOLD,
-            TRAILING_STOP_ACTIVATION_PCT,
-            TRAILING_STOP_DISTANCE_PCT,
-        )
-        tf_scale = harv._get_timeframe_scale() if hasattr(harv, "_get_timeframe_scale") else 1.0
-        trail_ceil = TRAILING_STOP_ACTIVATION_PCT * tf_scale * 1.50
-        dist_ceil = TRAILING_STOP_DISTANCE_PCT * tf_scale * 1.50
-
-        harv.trailing_stop_activation_pct = min(
-            trail_ceil, harv.trailing_stop_activation_pct / factor,
-        )
-        harv.trailing_stop_distance_pct = min(
-            dist_ceil, harv.trailing_stop_distance_pct / factor,
-        )
-        # Never relax capture_decay below original default
-        harv.capture_decay_threshold = max(
-            CAPTURE_DECAY_THRESHOLD, harv.capture_decay_threshold * factor,
-        )
-        LOG.debug(
-            "[%s %s] CAPTURE RELAX (×%.3f): trail_act=%.3f%% dist=%.3f%%",
-            self.symbol, self.tf_label, factor,
-            harv.trailing_stop_activation_pct,
-            harv.trailing_stop_distance_pct,
-        )
-
     # ── Position close ────────────────────────────────────────────────────────
 
     def _detach_position_for_close(self) -> tuple[dict[str, Any] | None, str | None]:
@@ -3050,689 +2875,6 @@ class TFAgent(TFAgentPreseedMixin):
             "ts": _ts,
         })
 
-    # ---- trade log -------------------------------------------------------
-
-    @staticmethod
-    def _classify_trigger_quality(predicted_runway_pts: float, actual_mfe_pts: float) -> str:
-        if predicted_runway_pts <= 0:
-            return "N/A"
-        utilization = SafeMath.safe_div(actual_mfe_pts, predicted_runway_pts, 0.0)
-        if actual_mfe_pts > 0 and 0.9 <= utilization <= 1.2:
-            return "EXCELLENT"
-        if utilization >= 1.2:
-            return "UNDERPREDICTED"
-        if utilization >= 0.7:
-            return "GOOD"
-        return "OVERPREDICTED"
-
-    @staticmethod
-    def _classify_harvester_quality(
-        pnl_usd: float,
-        mfe_usd: float,
-        winner_to_loser: bool,
-        bars_from_mfe_to_exit: int,
-    ) -> str:
-        if winner_to_loser:
-            return "POOR_WTL"
-        if pnl_usd <= 0:
-            return "STOPPED_OUT"
-        if mfe_usd <= 0:
-            return "N/A"
-        capture = SafeMath.safe_div(pnl_usd, mfe_usd, 0.0)
-        if capture >= 0.8 and bars_from_mfe_to_exit <= 2:
-            return "EXCELLENT"
-        if capture >= 0.6:
-            return "GOOD"
-        if capture >= 0.35:
-            return "FAIR"
-        return "POOR"
-
-    def _write_trade_log(
-        self,
-        direction: int,
-        entry_price: float,
-        exit_price: float,
-        entry_time: dt.datetime,
-        exit_time: dt.datetime,
-        pnl_usd: float,
-        mfe: float,
-        mae: float,
-        quantity: float | None = None,
-        pnl_pts: float = 0.0,
-        trigger_reward: float = 0.0,
-        capture_reward: float = 0.0,
-        regime: str = "UNKNOWN",
-        predicted_runway_gross: float = 0.0,
-        predicted_runway_net: float = 0.0,
-        was_winner_to_loser: bool = False,
-        reward_wtl_net_flag: bool = False,
-        entry_vpin_z: float = 0.0,
-        entry_var_95: float = 0.0,
-        capture_ratio: float = 0.0,
-        diag_cb_active: bool = False,
-        diag_cb_tripped: list | None = None,
-        trade_id: str | None = None,
-        ticks_held: int = 0,
-        exit_regime: str = "UNKNOWN",
-        exit_vol: float = 0.0,
-        exit_depth_ratio: float = 0.0,
-        entry_dynamic_floor: float = 0.0,
-        entry_conf_margin: float = 0.0,
-        win_rate_ema_at_entry: float = 0.5,
-        total_trades_at_entry: int = 0,
-        equity_at_entry: float = 0.0,
-        conf_calib_err_at_entry: float = 0.0,
-        runway_accuracy_at_entry: float = 0.0,
-        # New reward component breakdown fields
-        reward_capture_efficiency: float = 0.0,
-        reward_wtl_penalty: float = 0.0,
-        reward_opportunity_cost: float = 0.0,
-        reward_session_quality: float = 1.0,
-        reward_harvester_total: float = 0.0,
-        reward_trigger_breakdown: dict | None = None,
-        reward_harvester_breakdown: dict | None = None,
-        # Trigger entry reasoning snapshot
-        trigger_data: dict | None = None,
-        # Risk state at close
-        close_drawdown_pct: float = 0.0,
-        close_cb_size_mult: float = 1.0,
-        # Exit-side lifecycle reasoning snapshot
-        exit_data: dict | None = None,
-        close_reason: str = "",
-    ) -> bool:
-        with self._trade_sequence_lock:
-            self._trade_sequence += 1
-            _seq = self._trade_sequence
-            ticket = f"PAPER_{self._epoch_ts}_{_seq}"
-        if isinstance(entry_time, str):
-            entry_time = dt.datetime.fromisoformat(entry_time)
-        hold_secs = (exit_time - entry_time).total_seconds() if entry_time else 0.0
-        bars_held = round(hold_secs / max(self.timeframe_minutes * 60, 1))
-        _price_ref = max(abs(entry_price), 1.0)
-        entry_half_spread = float((trigger_data or {}).get("entry_half_spread", self.last_half_spread) or 0.0)
-        spread_cost_pts = entry_half_spread + float(self.last_half_spread or 0.0)
-        pnl_net = pnl_pts - spread_cost_pts
-        trade_qty = float(quantity if quantity is not None else self.qty)
-        contract_size = float(getattr(self, "contract_size", 1.0) or 1.0)
-        lot_value = trade_qty * contract_size
-        mfe_usd = float(mfe) * lot_value
-        mae_usd = float(mae) * lot_value
-        predicted_runway_net_points_raw = max(0.0, float(predicted_runway_net or 0.0)) * _price_ref
-        predicted_runway_gross_points = max(0.0, float(predicted_runway_gross or 0.0)) * _price_ref
-        runway_bias_ema_points = float(getattr(self, "_runway_delta_ema", 0.0) or 0.0)
-        tf_gain = float(np.clip(15.0 / float(max(int(self.timeframe_minutes or 1), 1)), 0.6, 2.5))
-        bias_clip = min(_RUNWAY_BIAS_LIMIT_POINTS, max(_price_ref * 0.003, 1.0))
-        clipped_bias = float(np.clip(runway_bias_ema_points * tf_gain, -bias_clip, bias_clip))
-        adjusted_runway_points = max(0.0, predicted_runway_net_points_raw - clipped_bias)
-        runway_adjustment_scale = SafeMath.safe_div(
-            adjusted_runway_points,
-            max(predicted_runway_net_points_raw, 1e-6),
-            1.0,
-        )
-        runway_adjustment_scale = float(
-            np.clip(runway_adjustment_scale, _RUNWAY_ADJUST_MIN_SCALE, _RUNWAY_ADJUST_MAX_SCALE),
-        )
-        predicted_runway_net_points = predicted_runway_net_points_raw * runway_adjustment_scale
-        runway_utilization = SafeMath.safe_div(float(mfe), predicted_runway_net_points, 0.0)
-        runway_delta_points = predicted_runway_net_points - float(mfe)
-        runway_error_pct = (
-            abs(runway_delta_points) / max(predicted_runway_net_points, 1.0) * 100.0
-            if predicted_runway_net_points > 0
-            else 0.0
-        )
-        bars_from_mfe_to_exit = int((exit_data or {}).get("bars_from_mfe_to_exit", -1) or -1)
-        mfe_bar_offset = int((exit_data or {}).get("mfe_bar_offset", -1) or -1)
-        mae_bar_offset = int((exit_data or {}).get("mae_bar_offset", -1) or -1)
-        trigger_quality = self._classify_trigger_quality(predicted_runway_net_points, float(mfe))
-        harvester_quality = self._classify_harvester_quality(
-            pnl_usd=pnl_usd,
-            mfe_usd=mfe_usd,
-            winner_to_loser=was_winner_to_loser,
-            bars_from_mfe_to_exit=bars_from_mfe_to_exit,
-        )
-        diag_zero_mfe_loss = pnl_usd < 0 and mfe_usd <= SAFE_EPSILON
-        diag_close_spread = float(self.last_half_spread or 0.0) * 2.0
-        close_mid = float((exit_data or {}).get("exit_mid", exit_price) or exit_price)
-        diag_close_spread_bps = (diag_close_spread / close_mid * 10_000.0) if close_mid > 0 else 0.0
-        record = {
-            "trade_id": _seq,
-            "ticket": ticket,
-            "position_id": f"{self.symbol_id}_ticket_{ticket}",
-            "symbol": self.symbol,
-            "timeframe": self.tf_label,
-            "timeframe_minutes": self.timeframe_minutes,
-            "trading_mode": "paper",
-            "direction": "LONG" if direction == 1 else "SHORT",
-            "quantity": trade_qty,
-            "contract_size": contract_size,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "entry_time": entry_time.isoformat() if hasattr(entry_time, "isoformat") else str(entry_time),
-            "exit_time": exit_time.isoformat() if hasattr(exit_time, "isoformat") else str(exit_time),
-            "pnl": pnl_usd,
-            "pnl_points": pnl_pts,
-            "pnl_net_points": pnl_net,
-            "mfe": mfe_usd,
-            "mae": mae_usd,
-            "mfe_points": mfe,
-            "mae_points": mae,
-            "close_reason": close_reason or "",
-            "capture_ratio": float(capture_ratio),
-            "ticks_held": ticks_held,
-            "bars_held": bars_held,
-            "hold_seconds": hold_secs,
-            "entry_confidence": self._entry_conf,
-            # Reward signals
-            "trigger_reward": trigger_reward,
-            "capture_reward": capture_reward,
-            # Runway prediction accuracy
-            "predicted_runway_gross": predicted_runway_gross,
-            "predicted_runway_net": predicted_runway_net,
-            "predicted_runway_gross_points": predicted_runway_gross_points,
-            "predicted_runway_net_points": predicted_runway_net_points,
-            "predicted_runway_net_points_raw": predicted_runway_net_points_raw,
-            "runway_bias_ema_points": runway_bias_ema_points,
-            "runway_adjustment_scale": runway_adjustment_scale,
-            "runway_delta_points": runway_delta_points,
-            "runway_utilization": float(np.clip(runway_utilization, -2.0, 2.0)),
-            "runway_error_pct": runway_error_pct,
-            "runway_delta_ema": self._runway_delta_ema,
-            "runway_accuracy_ema": self._runway_accuracy_ema,
-            "trigger_quality": trigger_quality,
-            "harvester_quality": harvester_quality,
-            "mfe_bar_offset": mfe_bar_offset,
-            "mae_bar_offset": mae_bar_offset,
-            "bars_from_mfe_to_exit": bars_from_mfe_to_exit,
-            # Trade quality flags
-            "winner_to_loser": was_winner_to_loser,
-            "reward_wtl_net_flag": reward_wtl_net_flag,
-            "regime": regime,
-            # Entry conditions at trade open
-            "entry_vpin_z": entry_vpin_z,
-            "entry_var_95": entry_var_95,
-            "entry_imbalance": self._entry_imbalance,
-            # Entry-time calibration & floor snapshots (for regression detection)
-            "entry_dynamic_floor": entry_dynamic_floor,
-            "entry_conf_margin": entry_conf_margin,
-            "win_rate_ema_at_entry": win_rate_ema_at_entry,
-            "total_trades_at_entry": total_trades_at_entry,
-            "equity_at_entry": equity_at_entry,
-            "conf_calib_err_at_entry": conf_calib_err_at_entry,
-            "runway_accuracy_at_entry": runway_accuracy_at_entry,
-            # Exit-time conditions (for entry vs exit regime comparison)
-            "exit_regime": exit_regime,
-            "exit_vol": exit_vol,
-            "exit_depth_ratio": exit_depth_ratio,
-            # Diagnostics
-            "diag_circuit_breaker_active": diag_cb_active,
-            "diag_circuit_breakers_tripped": diag_cb_tripped or [],
-            "diag_zero_mfe_loss": diag_zero_mfe_loss,
-            "diag_close_spread": diag_close_spread,
-            "diag_close_spread_bps": diag_close_spread_bps,
-            "spread_cost_points": spread_cost_pts,
-            "balance_after": self.equity,
-            "decision_trade_id": trade_id,
-            # Reward component breakdown
-            "reward_capture_efficiency": reward_capture_efficiency,
-            "reward_wtl_penalty": reward_wtl_penalty,
-            "reward_opportunity_cost": reward_opportunity_cost,
-            "reward_session_quality": reward_session_quality,
-            "reward_harvester_total": reward_harvester_total,
-            "reward_trigger_breakdown": reward_trigger_breakdown or {},
-            "reward_harvester_breakdown": reward_harvester_breakdown or {},
-            # Trigger entry reasoning snapshot — all context from _log_entry_decision
-            "trigger_data": trigger_data or {},
-            "exit_data": exit_data or {},
-            # Risk state at close
-            "close_drawdown_pct": close_drawdown_pct,
-            "close_cb_size_mult": close_cb_size_mult,
-        }
-        try:
-            from src.monitoring.audit_logger import append_jsonl_durable
-
-            log_path = Path("data") / "trade_log.jsonl"
-            append_jsonl_durable(log_path, record, default=_json_default)
-            return True
-        except Exception as e:
-            LOG.debug("[%s %s] trade_log write error: %s", self.symbol, self.tf_label, e)
-            return False
-
-    # ---- telemetry -------------------------------------------------------
-
-    def _write_telemetry(self) -> None:
-        try:
-            self._write_paper_stats()
-            self._write_current_position()
-            self._write_training_stats()
-            self._write_risk_metrics()
-            self._save_cb_state()
-            self._flush_production_metrics()
-        except Exception as e:
-            LOG.debug("[%s %s] telemetry write error: %s", self.symbol, self.tf_label, e)
-        self._check_cb_reset()
-
-    def _save_cb_state(self) -> None:
-        if self.circuit_breakers is None:
-            return
-        try:
-            self.circuit_breakers.save_state(str(self.data_dir / "circuit_breakers.json"))
-        except Exception as e:
-            LOG.debug("[%s %s] cb save_state error: %s", self.symbol, self.tf_label, e)
-
-    def _check_cb_reset(self) -> None:
-        if self.circuit_breakers is None:
-            return
-        for _reset_path in (
-            self.data_dir / _CTRL_CB_RESET,
-            Path("data") / _CTRL_CB_RESET,
-        ):
-            if not _reset_path.exists():
-                continue
-            try:
-                _reset_path.unlink(missing_ok=True)
-                self.circuit_breakers.reset_all()
-                LOG.info("[%s %s] Circuit breakers reset via HUD request", self.symbol, self.tf_label)
-            except Exception as e:
-                LOG.debug("[%s %s] cb reset error: %s", self.symbol, self.tf_label, e)
-            break
-
-    def _build_reward_shaping_block(self) -> dict:
-        try:
-            cs = self.reward_shaper.component_stats
-            components: dict = {}
-            for name, d in cs.items():
-                count = int(d.get("count", 0) or 0)
-                total = float(d.get("sum", 0.0) or 0.0)
-                components[name] = {"count": count, "sum": total, "avg": (total / count) if count > 0 else 0.0}
-            stats = self.reward_shaper.get_statistics()
-            return {
-                "total_rewards_calculated": stats.get("total_rewards_calculated", 0),
-                "weights": stats.get("weights", {}),
-                "parameters": stats.get("parameters", {}),
-                "components": components,
-            }
-        except Exception:
-            return {}
-
-    def _compute_trade_log_metrics(self, now: dt.datetime) -> tuple[dict, dict, dict]:
-        """Compute self-healing / period / decision-quality metrics from the trade log.
-
-        Reads via the mtime-cached reader so the reactor thread re-parses the
-        (unbounded) trade_log.jsonl only when a new trade has actually been
-        appended, rather than on every telemetry flush. Returns
-        (self_healing, period_comparison, decision_quality); empty dicts on error.
-        """
-        try:
-            from datetime import timedelta
-
-            from src.utils.metrics_calculator import (
-                decision_quality,
-                period_comparison,
-                self_healing_metrics,
-            )
-
-            _all = self._trade_log_reader.trades
-            _bot_trades = [t for t in _all if t.get("symbol") == self.symbol
-                           and t.get("timeframe_minutes") == self.timeframe_minutes]
-            _cut_24h = (now - timedelta(hours=24)).isoformat()
-            _cut_7d = (now - timedelta(days=7)).isoformat()
-            _24h = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_24h]
-            _7d = [t for t in _bot_trades if (t.get("exit_time") or "") >= _cut_7d]
-            _self_heal = self_healing_metrics(_bot_trades, self.starting_equity)
-            _comparison = period_comparison(_24h, _7d, self.starting_equity) if _24h and _7d else {}
-            _dec_qual = decision_quality(_bot_trades)
-            return _self_heal, _comparison, _dec_qual
-        except Exception:
-            return {}, {}, {}
-
-    def _write_paper_stats(self) -> None:
-        now = dt.datetime.now(dt.UTC)
-        uptime = (now - self.start_time).total_seconds()
-
-        ts_raw = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
-        trig = ts_raw.get("trigger") or {}
-        harv = ts_raw.get("harvester") or {}
-
-        wins = sum(1 for p in self.trades_pnl if p > 0)
-        win_rate = wins / max(1, len(self.trades_pnl))
-        total_pnl = sum(self.trades_pnl)
-
-        avg_mfe = float(np.mean(list(self._rolling_mfe))) if self._rolling_mfe else 0.0
-        avg_mae = float(np.mean(list(self._rolling_mae))) if self._rolling_mae else 0.0
-
-        # Derive cross-period self-healing metrics from trade_log (single source of truth)
-        _self_heal, _comparison, _dec_qual = self._compute_trade_log_metrics(now)
-
-        stats = {
-            "symbol": self.symbol,
-            "timeframe": self.tf_label,
-            "timeframe_minutes": self.timeframe_minutes,
-            "trading_mode": "paper",
-            "uptime_seconds": uptime,
-            "bar_count": self.bar_count,
-            "quote_ok": True,
-            "trade_ok": True,
-            "connection_healthy": True,
-            "total_reconnects": 0,
-            "trigger_steps": trig.get("training_steps", 0),
-            "trigger_epsilon": trig.get("epsilon", 1.0),
-            "trigger_buffer": trig.get("buffer_size", 0),
-            "trigger_loss": trig.get("loss", 0.0),
-            "trigger_ready": trig.get("ready_to_train", False),
-            "harvester_steps": harv.get("training_steps", 0),
-            "harvester_beta": harv.get("beta", 0.4),
-            "harvester_buffer": harv.get("buffer_size", 0),
-            "harvester_loss": harv.get("loss", 0.0),
-            "harvester_ready": harv.get("ready_to_train", False),
-            "total_trades": self.total_trades,
-            "total_pnl": total_pnl,
-            "win_rate": win_rate,
-            "real_account_balance": self._broker_balance,
-            "real_account_equity": self._broker_equity,
-            "real_margin_free": self._broker_margin_free,
-            "next_bar_close_utc": self.bar_builder.next_bar_close_utc(),
-            "reward_shaping": self._build_reward_shaping_block(),
-            "mfe_mae": {"avg_mfe": avg_mfe, "avg_mae": avg_mae, "samples": len(self._rolling_mfe)},
-            # Self-healing metrics derived from audit log (trade_log.jsonl)
-            "self_healing": _self_heal,
-            "period_comparison": _comparison,
-            "decision_quality": _dec_qual,
-            "updated_at": now.isoformat(),
-        }
-        shared = Path("data")
-        shared.mkdir(exist_ok=True)
-        _write_json_async(shared / f"paper_stats_{self.symbol}_M{self.timeframe_minutes}.json", stats)
-        _write_json_async(self.data_dir / "paper_stats.json", stats)
-
-    def _write_current_position(self) -> None:
-        now = dt.datetime.now(dt.UTC)
-        mid = self.last_mid
-        pos = self.position
-
-        if pos is not None:
-            direction = pos["direction"]
-            entry_price = pos["entry_price"]
-            unrealized = (mid - entry_price) * direction * self.qty * self.contract_size
-            pos_metrics = self.policy.get_position_metrics() if hasattr(self.policy, "get_position_metrics") else {}
-            mfe = float(pos_metrics.get("mfe", 0.0) or 0.0)
-            mae = float(pos_metrics.get("mae", 0.0) or 0.0)
-            data = {
-                "symbol": self.symbol,
-                "timeframe": self.tf_label,
-                "timeframe_minutes": self.timeframe_minutes,
-                "direction": "LONG" if direction == 1 else "SHORT",
-                "position": direction,
-                "entry_price": entry_price,
-                "current_price": mid,
-                "unrealized_pnl": unrealized,
-                "mfe": mfe,
-                "mae": mae,
-                "qty": self.qty,
-                "equity": self.equity + unrealized,
-                "entry_time": pos["entry_time"].isoformat() if pos["entry_time"] else None,
-                "updated_at": now.isoformat(),
-            }
-        else:
-            data = {
-                "symbol": self.symbol,
-                "timeframe": self.tf_label,
-                "timeframe_minutes": self.timeframe_minutes,
-                "direction": "FLAT",
-                "position": 0,
-                "entry_price": 0.0,
-                "current_price": mid,
-                "unrealized_pnl": 0.0,
-                "mfe": 0.0,
-                "mae": 0.0,
-                "qty": 0.0,
-                "equity": self.equity,
-                "entry_time": None,
-                "updated_at": now.isoformat(),
-            }
-
-        shared = Path("data")
-        shared.mkdir(exist_ok=True)
-        _write_json_async(shared / f"current_position_{self.symbol}_M{self.timeframe_minutes}.json", data)
-        _write_json_async(self.data_dir / "current_position.json", data)
-
-    def _write_training_stats(self) -> None:
-        ts_raw = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
-        trig = ts_raw.get("trigger") or {}
-        harv = ts_raw.get("harvester") or {}
-        last_train = trig.get("last_training_time") or harv.get("last_training_time") or "Never"
-        stats = {
-            "symbol": self.symbol,
-            "timeframe": self.tf_label,
-            "timeframe_minutes": self.timeframe_minutes,
-            "trading_mode": "paper",
-            # Buffer state
-            "trigger_buffer_size": trig.get("buffer_size", 0),
-            "harvester_buffer_size": harv.get("buffer_size", 0),
-            "trigger_total_added": trig.get("total_added", 0),
-            "harvester_total_added": harv.get("total_added", 0),
-            # Training progress
-            "trigger_training_steps": trig.get("training_steps", 0),
-            "harvester_training_steps": harv.get("training_steps", 0),
-            "trigger_ready": trig.get("ready_to_train", False),
-            "harvester_ready": harv.get("ready_to_train", False),
-            "last_training_time": last_train,
-            # Loss and network stats (now sourced correctly from mixin)
-            "trigger_loss": trig.get("loss", 0.0),
-            "harvester_loss": harv.get("loss", 0.0),
-            "trigger_tau": self._last_trigger_tau or trig.get("tau", 0.005),
-            "harvester_tau": self._last_harvester_tau or harv.get("tau", 0.005),
-            "trigger_grad_norm": self._last_trigger_grad_norm,
-            "harvester_grad_norm": self._last_harvester_grad_norm,
-            # Exploration
-            "trigger_epsilon": trig.get("epsilon", 1.0),
-            "harvester_beta": harv.get("beta", 0.4),
-            "trigger_epsilon_regime_factor": trig.get("epsilon_regime_factor", 1.0),
-            # Confidence (tracked from most recent decide() results)
-            "trigger_confidence": self._last_trigger_conf,
-            "harvester_confidence": self._last_harvester_conf,
-            # Runway calibration
-            "trigger_runway_cal_total_samples": trig.get("runway_cal_total_samples", 0),
-            "trigger_runway_cal_active_buckets": trig.get("runway_cal_active_buckets", 0),
-            "trigger_runway_predictor_reliable": trig.get("runway_predictor_reliable", False),
-            # Harvester adaptive exit params
-            "harvester_min_hold_ticks": harv.get("min_hold_ticks", 10),
-            "harvester_regime_hold_mult": harv.get("regime_hold_mult", 1.0),
-            "harvester_capture_decay_threshold": harv.get("capture_decay_threshold", 0.0),
-            "harvester_micro_winner_giveback_pct": harv.get("micro_winner_giveback_pct", 0.0),
-            # Position state (used by HUD to annotate buffer fill direction)
-            "is_in_position": self.position is not None,
-            "total_agents": 0,
-            "updated_at": dt.datetime.now(dt.UTC).isoformat(),
-        }
-        shared = Path("data")
-        _write_json_async(self.data_dir / "training_stats.json", stats)
-        _write_json_async(shared / f"training_stats_{self.symbol}_M{self.timeframe_minutes}.json", stats)
-
-    def _compute_var_kurtosis(self) -> tuple[float, float]:
-        """Return (var_95, excess_kurtosis) from last 200 bar log-returns."""
-        if len(self.bars) < 20:
-            return 0.0, 0.0
-        closes = np.array([b[4] for b in list(self.bars)[-200:]], dtype=float)
-        try:
-            rets = np.diff(np.log(closes))
-            if len(rets) < 10:
-                return 0.0, 0.0
-            var_95 = float(abs(np.percentile(rets, 5)))
-            mu, sigma = np.mean(rets), np.std(rets)
-            kurt = float(np.mean(((rets - mu) / sigma) ** 4) - 3.0) if sigma > 1e-10 else 0.0
-            return var_95, kurt
-        except Exception:
-            return 0.0, 0.0
-
-    def _log_lifecycle_events(self) -> None:
-        """Detect and log circuit breaker and regime transitions to the decision log."""
-        current_regime = str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN")
-        cb_tripped: list[str] = []
-        if self.circuit_breakers is not None and self.circuit_breakers.is_any_tripped():
-            cb_tripped = [b.name for b in self.circuit_breakers.get_tripped_breakers()]
-
-        # Regime transition
-        if current_regime != self._prev_regime:
-            LOG.info("[%s %s] Regime change: %s → %s", self.symbol, self.tf_label,
-                     self._prev_regime, current_regime)
-            with contextlib.suppress(Exception):
-                self.decision_log.log_decision(
-                    agent="System",
-                    decision="REGIME_CHANGE",
-                    confidence=1.0,
-                    context={"prev_regime": self._prev_regime, "new_regime": current_regime},
-                    reasoning={},
-                )
-            self._prev_regime = current_regime
-
-        # Circuit breaker state change
-        if set(cb_tripped) != set(self._prev_cb_tripped):
-            newly_tripped = [b for b in cb_tripped if b not in self._prev_cb_tripped]
-            cleared = [b for b in self._prev_cb_tripped if b not in cb_tripped]
-            LOG.info("[%s %s] CB state change: tripped=%s cleared=%s",
-                     self.symbol, self.tf_label, newly_tripped, cleared)
-            with contextlib.suppress(Exception):
-                self.decision_log.log_decision(
-                    agent="System",
-                    decision="CIRCUIT_BREAKER" if newly_tripped else "CB_CLEARED",
-                    confidence=1.0,
-                    context={
-                        "newly_tripped": newly_tripped,
-                        "cleared": cleared,
-                        "active_breakers": cb_tripped,
-                    },
-                    reasoning={},
-                )
-            self._prev_cb_tripped = cb_tripped
-
-    def _write_risk_metrics(self) -> None:
-        self._log_lifecycle_events()
-        regime = str(getattr(self.policy, "current_regime", "UNKNOWN") or "UNKNOWN")
-        zeta = float(getattr(self.policy, "current_zeta", 1.0) or 1.0)
-        realized_vol = self._realized_vol()
-        depth_ratio = self._depth_ratio()
-        ts_raw = self.policy.get_training_stats() if hasattr(self.policy, "get_training_stats") else {}
-        trig = ts_raw.get("trigger") or {}
-        runway = float(trig.get("last_predicted_runway_net", 0.0) or 0.0)
-
-        kurtosis_threshold = self._active_kurtosis_threshold()
-        var_95, kurtosis = self._last_var_95, self._last_kurtosis
-        # HUD contract: "ACTIVE" = tripped/halted (red), "INACTIVE" = all-clear (green).
-        cb_status = "INACTIVE"
-        cb_tripped_names: list[str] = []
-        cb_enabled = self.circuit_breakers is not None
-        if cb_enabled and self.circuit_breakers.is_any_tripped():
-            cb_status = "ACTIVE"
-            cb_tripped_names = [b.name for b in self.circuit_breakers.get_tripped_breakers()]
-
-        rs_vol_s = self._compute_rs_vol(10)
-        rs_vol_l = self._compute_rs_vol(50)
-        rs_vol_ratio = (rs_vol_s / rs_vol_l) if rs_vol_l > 0 else 1.0
-
-        metrics = {
-            "symbol": self.symbol,
-            "timeframe": self.tf_label,
-            "timeframe_minutes": self.timeframe_minutes,
-            "circuit_breaker": cb_status,
-            "circuit_breaker_enabled": cb_enabled,
-            "circuit_breaker_tripped": cb_tripped_names,
-            "kurtosis_gate_active": kurtosis > kurtosis_threshold,
-            "kurtosis": kurtosis,
-            "kurtosis_threshold": kurtosis_threshold,
-            "depth_gate_active": (
-                getattr(self.friction_calc, "depth_buffer", 0.0) > 0
-                and self._last_depth_bid > 0 and self._last_depth_ask > 0
-                and min(self._last_depth_bid, self._last_depth_ask)
-                    < getattr(self.friction_calc, "depth_buffer", 0.0)
-            ),
-            "depth_floor": getattr(self.friction_calc, "depth_buffer", 0.0),
-            "var": var_95,
-            "realized_vol": realized_vol,
-            "rs_vol_short": rs_vol_s,
-            "rs_vol_long": rs_vol_l,
-            "rs_vol_ratio": rs_vol_ratio,
-            "regime": regime,
-            "regime_zeta": zeta,
-            "feasibility": zeta,
-            "runway": runway,
-            "path_geometry": self.path_geometry.last,
-            "spread": self.last_half_spread * 2.0,
-            "imbalance": self._entry_imbalance,
-            "depth_bid": self._last_depth_bid,
-            "depth_ask": self._last_depth_ask,
-            "has_real_sizes": self._has_real_sizes,
-            "depth_ratio": depth_ratio,
-            "vpin": self._vpin_z,
-            "vpin_zscore": self._vpin_z,
-            "vpin_threshold": float(self._param_manager.get(
-                self.symbol, "vpin_z_threshold",
-                timeframe=self.tf_label, broker="default", default=2.5) or 2.5),
-            "vol_cap": float(self._param_manager.get(
-                self.symbol, "vol_cap", timeframe=self.tf_label, broker="default", default=0.05) or 0.05),
-            "runway_delta_ema": self._runway_delta_ema,
-            "runway_accuracy_ema": self._runway_accuracy_ema,
-            "conf_calib_err_ema": self._conf_calib_err_ema,
-            "entry_conf_dynamic_floor": self._entry_conf_dynamic_floor,
-            "exit_conf_dynamic_floor": self._exit_conf_dynamic_floor,
-            "win_rate_ema": self._win_rate_ema,
-            "updated_at": dt.datetime.now(dt.UTC).isoformat(),
-        }
-        shared = Path("data")
-        _write_json_async(shared / f"risk_metrics_{self.symbol}_M{self.timeframe_minutes}.json", metrics)
-
-    def _flush_production_metrics(self) -> None:
-        wins = sum(1 for p in self.trades_pnl if p > 0)
-        total_pnl = sum(self.trades_pnl)
-        win_rate = wins / max(1, len(self.trades_pnl))
-        drawdown_current = max(0.0, (self.starting_equity - self.equity) / max(abs(self.starting_equity), 1.0))
-        drawdown_max = max(0.0, 1.0 - min((self.equity / self.starting_equity), 1.0)) if self.trades_pnl else 0.0
-        cb_tripped_names: list[str] = []
-        if self.circuit_breakers is not None and self.circuit_breakers.is_any_tripped():
-            cb_tripped_names = [b.name for b in self.circuit_breakers.get_tripped_breakers()]
-        mins_since_trade = (
-            (time.time() - self._last_trade_close_ts) / 60.0
-            if self._last_trade_close_ts is not None else 0.0
-        )
-        regime = str(getattr(self.policy, "current_regime", "UNKNOWN"))
-        try:
-            self.prod_monitor.update_metrics(
-                symbol=self.symbol,
-                timeframe=self.tf_label,
-                timeframe_minutes=self.timeframe_minutes,
-                broker="default",
-                trading_mode="paper",
-                realized_pnl_day=total_pnl,
-                realized_pnl_total=total_pnl,
-                unrealized_pnl=0.0,
-                drawdown_current=drawdown_current,
-                drawdown_max=drawdown_max,
-                trades_today=self.total_trades,
-                trades_total=self.total_trades,
-                win_rate=win_rate,
-                avg_profit=float(
-                    np.mean([p for p in self.trades_pnl if p > 0])
-                    if any(p > 0 for p in self.trades_pnl)
-                    else 0.0,
-                ),
-                avg_loss=float(
-                    abs(np.mean([p for p in self.trades_pnl if p < 0]))
-                    if any(p < 0 for p in self.trades_pnl)
-                    else 0.0,
-                ),
-                last_trade_mins_ago=mins_since_trade,
-                trigger_confidence_avg=self._last_trigger_conf,
-                harvester_confidence_avg=self._last_harvester_conf,
-                circuit_breakers_tripped=len(cb_tripped_names),
-                circuit_breaker_names=cb_tripped_names,
-                fix_connected=True,
-                current_regime=regime,
-                runway_delta_ema=self._runway_delta_ema,
-                runway_accuracy_ema=self._runway_accuracy_ema,
-                conf_calib_err_ema=self._conf_calib_err_ema,
-            )
-        except Exception as e:
-            LOG.debug("[%s %s] prod_monitor error: %s", self.symbol, self.tf_label, e)
-
     # ---- persistence -----------------------------------------------------
 
     def _save_checkpoint(self) -> None:
@@ -4062,6 +3204,7 @@ class OpenAPIHub:
             2142: self._handle_error,
             2155: self._handle_depth_event,
             2157: self._handle_depth_sub_res,
+            2174: self._handle_refresh_token_res,
         }
         handler = handlers.get(pt)
         if handler:
@@ -4573,10 +3716,93 @@ class OpenAPIHub:
         try:
             from ctrader_open_api import Protobuf
             res = Protobuf.extract(message)
-            LOG.error("[HUB] Error from API: code=%s desc=%s",
-                      getattr(res, "errorCode", "?"), getattr(res, "description", "?"))
+            code = str(getattr(res, "errorCode", "") or "")
+            desc = str(getattr(res, "description", "") or "")
+            LOG.error("[HUB] Error from API: code=%s desc=%s", code, desc)
+            if code in _AUTH_ERROR_CODES:
+                LOG.warning("[HUB] Auth error '%s' — attempting token refresh", code)
+                self._refresh_access_token()
         except Exception:
             LOG.exception("[HUB] Received error message (payloadType=2142)")
+
+    def _refresh_access_token(self) -> None:
+        """Send ProtoOARefreshTokenReq over the existing TCP connection.
+
+        The response (payload 2174) is handled by _handle_refresh_token_res,
+        which updates self.creds and replays the full auth sequence.
+        Refresh tokens have no expiry per the cTrader docs.
+        """
+        from ctrader_open_api.messages.OpenApiMessages_pb2 import ProtoOARefreshTokenReq
+
+        refresh_token = self.creds.get("refresh_token", "")
+        if not refresh_token:
+            LOG.error(
+                "[HUB] Token refresh impossible — CTRADER_REFRESH_TOKEN not set in credentials. "
+                "Obtain a new access_token and refresh_token via the OAuth flow and restart."
+            )
+            return
+        req = ProtoOARefreshTokenReq()
+        req.refreshToken = refresh_token
+        self._send(req)
+        LOG.info("[HUB] → ProtoOARefreshTokenReq")
+
+    def _handle_refresh_token_res(self, message: Any) -> None:
+        """Process ProtoOARefreshTokenRes (payload 2174).
+
+        The response carries accessToken and refreshToken (camelCase per cTrader API).
+        Access tokens last 2,628,000 s (~30 days); refresh tokens do not expire.
+        """
+        try:
+            from ctrader_open_api import Protobuf
+            res = Protobuf.extract(message)
+        except Exception as exc:
+            LOG.error("[HUB] Failed to parse ProtoOARefreshTokenRes: %s", exc)
+            return
+
+        new_access = str(getattr(res, "accessToken", "") or "")
+        new_refresh = str(getattr(res, "refreshToken", "") or "") or self.creds.get("refresh_token", "")
+        expires_in = int(getattr(res, "expiresIn", 0) or 0)
+        if not new_access:
+            LOG.error("[HUB] ProtoOARefreshTokenRes missing accessToken — cannot re-auth")
+            return
+
+        self.creds["access_token"] = new_access
+        self.creds["refresh_token"] = new_refresh
+        LOG.info("[HUB] Access token refreshed (expires in %dd) — replaying account auth",
+                 expires_in // 86400 if expires_in else 30)
+        self._persist_refreshed_tokens(new_access, new_refresh)
+        self._state = _S_ACC_AUTH
+        self._send_acc_auth()
+
+    def _persist_refreshed_tokens(self, access_token: str, refresh_token: str) -> None:
+        """Overwrite CTRADER_ACCESS_TOKEN and CTRADER_REFRESH_TOKEN in the credentials file."""
+        _root = Path(__file__).resolve().parent.parent.parent
+        for cred_path in (_root / ".env.openapi",):
+            if not cred_path.exists():
+                continue
+            try:
+                lines = cred_path.read_text(encoding="utf-8").splitlines()
+                updated: list[str] = []
+                found_access = found_refresh = False
+                for line in lines:
+                    key = line.partition("=")[0].strip().removeprefix("export").strip()
+                    if key == "CTRADER_ACCESS_TOKEN":
+                        updated.append(f"CTRADER_ACCESS_TOKEN={access_token}")
+                        found_access = True
+                    elif key == "CTRADER_REFRESH_TOKEN":
+                        updated.append(f"CTRADER_REFRESH_TOKEN={refresh_token}")
+                        found_refresh = True
+                    else:
+                        updated.append(line)
+                if not found_access:
+                    updated.append(f"CTRADER_ACCESS_TOKEN={access_token}")
+                if not found_refresh:
+                    updated.append(f"CTRADER_REFRESH_TOKEN={refresh_token}")
+                cred_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+                LOG.info("[HUB] Persisted refreshed tokens to %s", cred_path)
+            except Exception as exc:
+                LOG.warning("[HUB] Could not persist tokens to %s: %s", cred_path, exc)
+            break
 
     # ---- spot event handler ---------------------------------------------
 

@@ -34,11 +34,9 @@ class TestDataclasses:
             uptime_hours=2.0,
             memory_usage_pct=0.4,
             error_count_1h=1,
-            fix_connected=True,
-            timestamp=time.time(),
-        )
+            timestamp=time.time())
         assert m.realized_pnl_day == pytest.approx(100.0)
-        assert m.fix_connected is True
+        assert not hasattr(m, "fix_connected")
 
     def test_alert_fields(self):
         a = Alert(
@@ -47,8 +45,7 @@ class TestDataclasses:
             message="No trades",
             metric_value=5.0,
             threshold=4.0,
-            timestamp=time.time(),
-        )
+            timestamp=time.time())
         assert a.severity == "warning"
         assert a.category == "trade"
 
@@ -63,8 +60,7 @@ class TestProductionMonitor:
     def monitor(self, tmp_path):
         return ProductionMonitor(
             http_enabled=False,
-            metrics_file=tmp_path / "metrics.json",
-        )
+            metrics_file=tmp_path / "metrics.json")
 
     # -- init --
     def test_init_defaults(self, monitor):
@@ -88,10 +84,8 @@ class TestProductionMonitor:
         monitor.update_metrics(
             last_trade_mins_ago=10,
             drawdown_current=0.01,
-            fix_connected=True,
             memory_usage_pct=0.3,
-            error_count_1h=0,
-        )
+            error_count_1h=0)
         assert len(monitor.active_alerts) == 0
 
     def test_no_trade_alert(self):
@@ -114,13 +108,6 @@ class TestProductionMonitor:
         alerts = [a for a in m.active_alerts if "circuit" in a.message.lower()]
         assert len(alerts) == 1
 
-    def test_fix_disconnect_alert(self):
-        m = ProductionMonitor(http_enabled=False)
-        m.update_metrics(fix_connected=False)
-        alerts = [a for a in m.active_alerts if a.severity == "critical"]
-        assert len(alerts) == 1
-        assert alerts[0].category == "connection"
-
     def test_memory_alert(self):
         m = ProductionMonitor(alert_memory_pct=0.5, http_enabled=False)
         m.update_metrics(memory_usage_pct=0.85)
@@ -137,10 +124,9 @@ class TestProductionMonitor:
         m = ProductionMonitor(
             alert_drawdown_pct=0.05,
             alert_memory_pct=0.5,
-            http_enabled=False,
-        )
-        m.update_metrics(drawdown_current=0.10, memory_usage_pct=0.9, fix_connected=False)
-        assert len(m.active_alerts) >= 3
+            http_enabled=False)
+        m.update_metrics(drawdown_current=0.10, memory_usage_pct=0.9)
+        assert len(m.active_alerts) >= 2
 
     # -- metrics persistence --
     def test_save_metrics_creates_file(self, monitor, tmp_path):
@@ -156,8 +142,7 @@ class TestProductionMonitor:
             timeframe="M5",
             timeframe_minutes=5,
             broker="default",
-            trading_mode="paper",
-        )
+            trading_mode="paper")
         data = json.loads((tmp_path / "metrics.json").read_text())
         assert data["metrics"]["symbol"] == "XAUUSD"
         assert data["metrics"]["timeframe"] == "M5"
@@ -182,16 +167,15 @@ class TestProductionMonitor:
         assert result["status"] == "ok"
 
     def test_status_alerts_when_present(self):
-        m = ProductionMonitor(http_enabled=False)
-        m.update_metrics(fix_connected=False)
+        m = ProductionMonitor(alert_drawdown_pct=0.05, http_enabled=False)
+        m.update_metrics(drawdown_current=0.10)
         result = json.loads(m.get_metrics_json())
         assert result["status"] == "alerts"
 
     # -- alerts cleared on next update --
     def test_alerts_cleared_when_resolved(self):
-        m = ProductionMonitor(http_enabled=False)
-        m.update_metrics(fix_connected=False)
+        m = ProductionMonitor(alert_drawdown_pct=0.05, http_enabled=False)
+        m.update_metrics(drawdown_current=0.10)
         assert len(m.active_alerts) >= 1
-        m.update_metrics(fix_connected=True)
-        fix_alerts = [a for a in m.active_alerts if a.category == "connection"]
-        assert len(fix_alerts) == 0
+        m.update_metrics(drawdown_current=0.01)
+        assert len(m.active_alerts) == 0

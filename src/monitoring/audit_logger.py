@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Audit Logger - Transaction & Decision Logging.
 ==============================================
-GAP 10.1 FIX: Comprehensive audit trail for debugging and compliance.
+Comprehensive audit trail for debugging and compliance.
 
 Features:
 - Transaction log: Append-only event log for audit trail
@@ -30,10 +30,10 @@ def append_jsonl_durable(path: Path, entry: dict[str, Any], *, default: Any = st
 
 
 class TransactionLogger:
-    """GAP 10.1 FIX: Append-only transaction log for audit trail.
+    """Append-only transaction log for audit trail.
 
     Records all significant events in chronological order:
-    - Session events (logon/logout)
+    - Session events (connect/disconnect)
     - Order submissions
     - Order fills/rejects
     - Position updates
@@ -158,7 +158,7 @@ class TransactionLogger:
         )
 
     def log_session_event(self, session_type: str, event: str, details: dict[str, Any] | None = None) -> None:
-        """Log FIX session event (logon/logout/disconnect)."""
+        """Log Open API session event (connect/disconnect/auth)."""
         self.log_event(
             "SESSION_EVENT",
             {

@@ -65,7 +65,6 @@ class TradingMetrics:
     uptime_hours: float
     memory_usage_pct: float
     error_count_1h: int
-    fix_connected: bool
 
     # Timestamp
     timestamp: float
@@ -185,7 +184,6 @@ class ProductionMonitor:
             uptime_hours=uptime_hours,
             memory_usage_pct=kwargs.get("memory_usage_pct", 0.0),
             error_count_1h=kwargs.get("error_count_1h", 0),
-            fix_connected=kwargs.get("fix_connected", True),
             timestamp=time.time(),
             # Runtime scope
             symbol=str(kwargs.get("symbol", "") or ""),
@@ -257,19 +255,6 @@ class ProductionMonitor:
                     ),
                     metric_value=self.metrics.circuit_breakers_tripped,
                     threshold=0,
-                    timestamp=time.time(),
-                ),
-            )
-
-        # Alert: FIX disconnected
-        if not self.metrics.fix_connected:
-            new_alerts.append(
-                Alert(
-                    severity="critical",
-                    category="connection",
-                    message="FIX connection lost",
-                    metric_value=0.0,
-                    threshold=1.0,
                     timestamp=time.time(),
                 ),
             )
@@ -446,17 +431,7 @@ if __name__ == "__main__":
     else:
         pass
 
-    # Test 5: FIX connection alert
-    monitor5 = ProductionMonitor(http_enabled=False)
-    monitor5.update_metrics(fix_connected=False)
-
-    fix_alerts = [a for a in monitor5.active_alerts if a.severity == "critical"]
-    if fix_alerts:
-        pass
-    else:
-        pass
-
-    # Test 6: Metrics file persistence
+    # Test 5: Metrics file persistence
     import tempfile
 
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as _tmp:

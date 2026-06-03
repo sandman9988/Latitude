@@ -3208,7 +3208,7 @@ class TabbedHUD:
         )
         recon = ps.get("total_reconnects", 0)
         r_col = _ANSI_G if recon == 0 else (_ANSI_Y if recon < 5 else _ANSI_R)
-        print(f"    FIX: {q_str}  {t_str}  {h_str}  │  reconnects: {r_col}{recon}{_ANSI_RST}")
+        print(f"    API: {q_str}  {t_str}  {h_str}  │  reconnects: {r_col}{recon}{_ANSI_RST}")
 
     @staticmethod
     def _print_pipeline_activity(ps: dict) -> None:
@@ -4764,8 +4764,19 @@ class TabbedHUD:
             f"Runway: {_runway_col}{_runway:.2f}{_ANSI_RST}"
         )
 
+    def _any_paper_stat(self, key: str) -> object:
+        """Return the first non-None value of *key* across all loaded paper_stats snapshots."""
+        for ps_file in sorted(self.data_dir.glob("paper_stats_*.json")):
+            try:
+                val = json.loads(ps_file.read_text()).get(key)
+                if val is not None:
+                    return val
+            except Exception:
+                pass
+        return None
+
     def _render_health_system_metrics(self) -> None:
-        """Render memory, error count, uptime, FIX connectivity from production_metrics."""
+        """Render memory, error count, uptime, Open API connectivity from production_metrics."""
         _pm = self.production_metrics.get("metrics", {})
         if not _pm:
             return
@@ -4783,11 +4794,12 @@ class TabbedHUD:
         _up = _pm.get("uptime_hours")
         if _up is not None:
             _items.append(f"Up: {float(_up):.1f}h")
-        _fix = _pm.get("fix_connected")
-        if _fix is not None:
-            _fix_c = _ANSI_G if _fix else _ANSI_R
-            _fix_s = "✓" if _fix else "✗"
-            _items.append(f"FIX: {_fix_c}{_fix_s}{_ANSI_RST}")
+        # API connectivity — read connection_healthy from the first available paper_stats snapshot
+        _api_ok = self._any_paper_stat("connection_healthy")
+        if _api_ok is not None:
+            _api_c = _ANSI_G if _api_ok else _ANSI_R
+            _api_s = "✓" if _api_ok else "✗"
+            _items.append(f"API: {_api_c}{_api_s}{_ANSI_RST}")
         if _items:
             print(f"  {'  │  '.join(_items)}")
 
@@ -6643,7 +6655,7 @@ class TabbedHUD:
         breaker = cb_data.get(key) if isinstance(cb_data.get(key), dict) else {}
         tripped = bool(breaker.get("is_tripped", False))
         gate_only = key == "kurtosis" and bool(rs.get("kurtosis_gate_active", False)) and not tripped
-        icon, detail = self._circuit_breaker_status_parts(breaker, rs, gate_only, tripped or gate_only)
+        icon, detail = self._circuit_breaker_status_parts(breaker, rs, gate_only)
         extra = self._circuit_breaker_extra(key, breaker)
         print(f"    {label:<15} {icon}{detail}{extra}")
 
@@ -6652,8 +6664,8 @@ class TabbedHUD:
         breaker: dict,
         rs: dict,
         gate_only: bool,
-        is_tripped: bool,
     ) -> tuple[str, str]:
+        is_tripped = bool(breaker.get("is_tripped", False)) or gate_only
         if not is_tripped:
             return f"{_ANSI_G}✓ OK{_ANSI_RST}", ""
         trip_ts = breaker.get("trip_time", "")
@@ -7666,11 +7678,12 @@ class TabbedHUD:
             return
         self._render_trade_list_mode_warning(mode_filter)
         self._render_trade_list_summary(metrics, epoch_metrics, compact)
-        cols = self._trade_list_columns()
-        sep = self._render_trade_table_header(cols)
+        term_w = self._term_width()
+        cols, narrow = self._trade_list_columns(term_w)
+        sep = self._render_trade_table_header(cols, narrow, term_w)
         price_decimals = self._price_decimals(float(page_trades[0].get("entry_price") or 0.0))
         for row_idx, trade in enumerate(page_trades):
-            row = self._trade_table_row(trade, page_start + row_idx + 1, cols, price_decimals)
+            row = self._trade_table_row(trade, page_start + row_idx + 1, cols, narrow, price_decimals)
             print(f"\033[7m{_strip_ansi(row)}\033[0m" if row_idx == self._trades_cursor else row)
         if self._trades_per_page >= 8:
             print(sep)
@@ -7770,41 +7783,14 @@ class TabbedHUD:
                 f"  {_ANSI_DIM}(excluded {self._stats_epoch_excluded}; source: trade_log.jsonl){_ANSI_RST}"
             )
 
-    def _trade_list_columns(self) -> dict[str, int | bool]:
-        compact = self._term_width() < 132
-        if compact:
-            return {
-                "id": 5,
-                "date": 11,
-                "bot": 12,
-                "dir": 1,
-                "pnl": 9,
-                "cap": 6,
-                "mfe": 8,
-                "mae": 8,
-                "bars": 4,
-                "rsn": 12,
-                "compact": True,
-            }
-        return {
-            "id": 8,
-            "date": 14,
-            "dir": 5,
-            "sym": 9,
-            "tf": 4,
-            "ent": 9,
-            "ext": 9,
-            "pnl": 12,
-            "cap": 7,
-            "mfe": 9,
-            "mae": 9,
-            "bars": 5,
-            "rsn": 18,
-            "compact": False,
-        }
+    def _trade_list_columns(self, term_w: int) -> tuple[dict[str, int], bool]:
+        narrow = term_w < 132
+        if narrow:
+            return {"id": 5, "date": 11, "bot": 12, "dir": 1, "pnl": 9, "cap": 6, "mfe": 8, "mae": 8, "bars": 4, "rsn": 12}, True
+        return {"id": 8, "date": 14, "dir": 5, "sym": 9, "tf": 4, "ent": 9, "ext": 9, "pnl": 12, "cap": 7, "mfe": 9, "mae": 9, "bars": 5, "rsn": 18}, False
 
-    def _render_trade_table_header(self, cols: dict[str, int | bool]) -> str:
-        if cols["compact"]:
+    def _render_trade_table_header(self, cols: dict[str, int], narrow: bool, term_w: int) -> str:
+        if narrow:
             header = (
                 f"  {'#':<{cols['id']}} M {'Time':<{cols['date']}} {'Bot':<{cols['bot']}} {'D':<{cols['dir']}} "
                 f"{'PnL $':>{cols['pnl']}} {'Cap%':>{cols['cap']}} {'MFE $':>{cols['mfe']}} "
@@ -7817,14 +7803,14 @@ class TabbedHUD:
                 f"{'PnL $':>{cols['pnl']}} {'Cap%':>{cols['cap']}} {'MFE $':>{cols['mfe']}} "
                 f"{'MAE $':>{cols['mae']}} {'Bars':>{cols['bars']}}  {'Reason':<{cols['rsn']}}"
             )
-        sep = "  " + "-" * max(10, min(self._term_width() - 4, len(header) - 2))
+        sep = "  " + "-" * max(10, min(term_w - 4, len(header) - 2))
         print(f"{_ANSI_DIM}{header}{_ANSI_RST}")
         print(sep)
         return sep
 
-    def _trade_table_row(self, trade: dict, row_number: int, cols: dict[str, int | bool], price_decimals: int) -> str:
-        row = self._trade_row_values(trade, row_number, cols, price_decimals)
-        if cols["compact"]:
+    def _trade_table_row(self, trade: dict, row_number: int, cols: dict[str, int], narrow: bool, price_decimals: int) -> str:
+        row = self._trade_row_values(trade, row_number, cols, narrow, price_decimals)
+        if narrow:
             return self._compact_trade_row(row, cols)
         return self._full_trade_row(row, cols)
 
@@ -7832,7 +7818,8 @@ class TabbedHUD:
         self,
         trade: dict,
         row_number: int,
-        cols: dict[str, int | bool],
+        cols: dict[str, int],
+        narrow: bool,
         price_decimals: int,
     ) -> dict[str, object]:
         direction = (trade.get("direction") or "").upper()
@@ -7841,24 +7828,24 @@ class TabbedHUD:
         mae = self._excursion_usd_for_trade(trade, "mae_points", "mae")
         cap_s, cap_c = self._trade_capture_cell(trade, pnl)
         return {
-            "tid": self._clip_text(str(trade.get("trade_id", row_number)), int(cols["id"])),
+            "tid": self._clip_text(str(trade.get("trade_id", row_number)), cols["id"]),
             "mode": self._trade_mode_badge(trade),
-            "date": self._trade_row_date(trade, bool(cols["compact"]))[: int(cols["date"])],
+            "date": self._trade_row_date(trade, narrow)[: cols["date"]],
             "direction": direction,
             "dir_color": _ANSI_G if direction == "LONG" else (_ANSI_R if direction == "SHORT" else _ANSI_DIM),
-            "sym": self._clip_text(str(trade.get("symbol", "?")), int(cols.get("sym", 9))),
+            "sym": self._clip_text(str(trade.get("symbol", "?")), cols.get("sym", 9)),
             "tf": self._normalize_timeframe_label(trade),
             "bot": self._clip_text(f"{trade.get('symbol', '?')}/{self._normalize_timeframe_label(trade)}", 12),
-            "entry": f"{float(trade.get('entry_price') or 0.0):.{price_decimals}f}"[-int(cols.get("ent", 9)):],
-            "exit": f"{float(trade.get('exit_price') or 0.0):.{price_decimals}f}"[-int(cols.get("ext", 9)):],
-            "pnl": _fmt_compact(pnl, int(cols["pnl"])),
+            "entry": f"{float(trade.get('entry_price') or 0.0):.{price_decimals}f}"[-cols.get("ent", 9):],
+            "exit": f"{float(trade.get('exit_price') or 0.0):.{price_decimals}f}"[-cols.get("ext", 9):],
+            "pnl": _fmt_compact(pnl, cols["pnl"]),
             "pnl_color": self._pnl_color(pnl),
             "cap": cap_s,
             "cap_color": cap_c,
-            "mfe": _fmt_compact(mfe, int(cols["mfe"])),
-            "mae": _fmt_compact(-abs(mae), int(cols["mae"])),
+            "mfe": _fmt_compact(mfe, cols["mfe"]),
+            "mae": _fmt_compact(-abs(mae), cols["mae"]),
             "bars": int(trade.get("bars_held") or trade.get("ticks_held") or 0),
-            "reason": self._trade_close_reason(trade, int(cols["rsn"])),
+            "reason": self._trade_close_reason(trade, cols["rsn"]),
         }
 
     @staticmethod
@@ -7901,7 +7888,7 @@ class TabbedHUD:
         return reason[:width]
 
     @staticmethod
-    def _compact_trade_row(row: dict, cols: dict[str, int | bool]) -> str:
+    def _compact_trade_row(row: dict, cols: dict[str, int]) -> str:
         dir_s = "L" if row["direction"] == "LONG" else ("S" if row["direction"] == "SHORT" else "?")
         return (
             f"  {row['tid']:<{cols['id']}} {row['mode']} {row['date']:<{cols['date']}} "
@@ -7914,7 +7901,7 @@ class TabbedHUD:
         )
 
     @staticmethod
-    def _full_trade_row(row: dict, cols: dict[str, int | bool]) -> str:
+    def _full_trade_row(row: dict, cols: dict[str, int]) -> str:
         return (
             f"  {row['tid']:<{cols['id']}} {row['mode']} {row['date']:<{cols['date']}} "
             f"{row['dir_color']}{row['direction']:<{cols['dir']}}{_ANSI_RST} "
@@ -7953,6 +7940,7 @@ class TabbedHUD:
         self._render_trade_detail_training(t)
         self._render_trade_broker_events(t, detail["position_id"], detail["price_decimals"])
         print()
+        print(f"  {_ANSI_DIM}[d] or [b] - return to trade list{_ANSI_RST}")
 
     def _trade_detail_values(self, trade: dict) -> dict[str, object]:
         entry = float(trade.get("entry_price") or 0.0)
@@ -7971,7 +7959,7 @@ class TabbedHUD:
             "mfe": self._excursion_usd_for_trade(trade, "mfe_points", "mfe"),
             "mae": self._excursion_usd_for_trade(trade, "mae_points", "mae"),
             "bars": int(trade.get("bars_held") or trade.get("ticks_held") or 0),
-            "reason": self._trade_detail_reason(trade),
+            "reason": self._trade_close_reason(trade, 9999),
             "entry_str": entry_str,
             "exit_str": exit_str,
             "duration": duration_str,
@@ -7997,11 +7985,6 @@ class TabbedHUD:
             return entry_str, exit_dt.strftime("%Y-%m-%d %H:%M:%S UTC"), duration_str
         except Exception:
             return entry_str, exit_ts[:19], "-"
-
-    @staticmethod
-    def _trade_detail_reason(trade: dict) -> str:
-        reason_raw = trade.get("close_reason") or trade.get("exit_reason") or ""
-        return "-" if reason_raw in ("", "unknown") else reason_raw
 
     def _render_trade_detail_header(self, detail: dict, sep: str) -> None:
         direction = str(detail["direction"])
@@ -8105,7 +8088,6 @@ class TabbedHUD:
             f"  {self._pnl_color(pnl)}PnL={pnl:+.4f}{_ANSI_RST}{cap_str}  "
             f"[{str(data.get('close_reason') or '?')}]"
         )
-        print(f"  {_ANSI_DIM}[d] or [b] - return to trade list{_ANSI_RST}")
 
     def _pnl_color(self, pnl: float) -> str:
         """Return color code for PnL."""

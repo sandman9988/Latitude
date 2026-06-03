@@ -114,10 +114,29 @@ When diagnosing failures across the whole suite, run one directory at a time:
 | `run.sh` | Shell launcher (sources env + ROCm config) |
 | `data/universe.json` | Fleet registry — weights paths, symbol/TF config |
 | `.env` | Runtime flags (PAPER_MODE, EPSILON, etc.) |
-| `/home/renierdejager/Projects/Kinetra/.env.openapi` | OAuth credentials |
+| `.env.openapi` | OAuth credentials (authoritative — local to this project) |
 | `data/history/` | Downloaded OHLCV CSVs for offline training |
 | `train_offline.py` | Offline tournament trainer (6 variants, auto-promote) |
 | `scripts/performance_analyzer.py` | Self-healing fleet analyzer — detects anomalies, applies corrections via `LearnedParametersManager`, writes `data/performance_health.json` |
+
+## OAuth / Token Management
+
+Credentials live in `.env.openapi` (project root) — this is the **authoritative** file.
+`run.sh` sources it automatically; `_load_creds()` in `openapi_hub.py` reads it directly.
+
+**Auto-refresh (built-in):** When the hub receives `CH_ACCESS_TOKEN_INVALID` or any error
+in `_AUTH_ERROR_CODES`, it sends `ProtoOARefreshTokenReq` over the live TCP connection,
+updates `self.creds`, persists the new tokens back to `.env.openapi`, then replays account
+auth — all without reconnecting. Refresh tokens do not expire.
+
+**Manual refresh** (only needed after a very long outage or first-time setup):
+```bash
+python3 scripts/ctrader_oauth_bootstrap.py   # opens browser, writes tokens to .env.openapi
+bash run.sh universe                          # restart hubs to pick up the new token
+```
+
+`scripts/ctrader_oauth_bootstrap.py` reads and writes `.env.openapi` in this project.
+Never point it at the Kinetra directory — the project is self-contained.
 
 ## Architecture Rules
 
@@ -203,11 +222,12 @@ Runway is now predicted by a dedicated quantile model, not the Q-value heuristic
 
 ## Downloading History Data
 
-Credentials in `.env.openapi` lack `export` — must load with `set -a`:
+Credentials are in the project-local `.env.openapi`. Scripts that need them
+auto-load the file, but if sourcing manually use `set -a`:
 
 ```bash
-cd /home/renierdejager/Projects/Kinetra && set -a && source .env.openapi && set +a
 cd /home/renierdejager/Projects/ctrader_trading_bot
+set -a && source .env.openapi && set +a
 python3 scripts/download_ctrader_history.py \
   --symbol XAUUSD --start-date 2024-01-01 \
   --timeframes M1 M5 M15 M30 M60 M240 \

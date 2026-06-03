@@ -51,6 +51,11 @@ import logging
 import math
 import multiprocessing
 import os
+
+# Must be set before any torch/HIP import — maps gfx1102 → gfx1100 libs.
+# Inherited by ProcessPoolExecutor subprocesses via spawn context.
+os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+
 import re
 import shutil
 import sys

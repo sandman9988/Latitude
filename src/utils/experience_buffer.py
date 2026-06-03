@@ -779,6 +779,8 @@ class ExperienceBuffer:
             priority=float(priorities[index]),
         )
         self.data[slot] = exp
+        # Compact the priorities array so priorities[:slot_count] is contiguous
+        # after drops; the caller does a single bulk leaf write using that slice.
         if slot != index:
             priorities[slot] = priorities[index]
 

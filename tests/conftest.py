@@ -7,11 +7,22 @@ Data sourced from data/training_cache_XAUUSD_M5.jsonl (real paper-trading captur
 from __future__ import annotations
 
 import json
+import os
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _rocm_gfx_override():
+    """Pin ROCm to gfx1100 ISA for the RX 7600 (gfx1102 has no TensileLibrary).
+
+    Must be set before any torch import so every xdist worker and every
+    ProcessPoolExecutor subprocess spawned during training tests inherits it.
+    """
+    os.environ.setdefault("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
 
 _CACHE_DIR = Path(__file__).parent.parent / "data"
 _XAUUSD_M5_CACHE = _CACHE_DIR / "training_cache_XAUUSD_M5.jsonl"

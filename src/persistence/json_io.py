@@ -9,14 +9,19 @@ here so behaviour stays consistent across the codebase.
   original file untouched.
 - ``append_jsonl_durable``: append one JSON Lines record with a single
   ``O_APPEND`` write followed by ``fsync`` for durability.
+- ``write_json_async``: submit a latest-wins snapshot to a background writer thread.
 """
 
 import contextlib
+import datetime as dt
 import json
+import math
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+import numpy as np
 
 
 def save_json_atomic(
@@ -59,3 +64,43 @@ def append_jsonl_durable(
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def json_default(obj: Any) -> Any:
+    """JSON serialiser for types not handled by the stdlib encoder."""
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, dt.datetime):
+        return obj.isoformat()
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    return str(obj)
+
+
+def write_json_atomic(path: Path, payload: dict, indent: int | None = None) -> None:
+    save_json_atomic(path, payload, indent=indent, default=json_default)
+
+
+_ASYNC_WRITER = None
+
+
+def _async_writer_instance():
+    global _ASYNC_WRITER
+    if _ASYNC_WRITER is None:
+        from src.persistence.async_writer import AsyncJsonWriter
+        _ASYNC_WRITER = AsyncJsonWriter(write_json_atomic)
+        _ASYNC_WRITER.start()
+    return _ASYNC_WRITER
+
+
+def write_json_async(path: Path, payload: dict, indent: int | None = None) -> None:
+    """Offload a latest-wins snapshot write to the background writer thread.
+
+    Use only for recoverable snapshot files (telemetry/HUD state); never for
+    durability-critical append logs.
+    """
+    _async_writer_instance().submit(path, payload, indent)

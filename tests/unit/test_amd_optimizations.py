@@ -398,7 +398,7 @@ class TestROCMEnvironment(unittest.TestCase):
         configure_rocm_environment()
 
         # Check values are set
-        assert os.environ.get("HSA_OVERRIDE_GFX_VERSION") == "11.0.2"
+        assert os.environ.get("HSA_OVERRIDE_GFX_VERSION") == "11.0.0"
         assert os.environ.get("MIOPEN_FIND_MODE") == "1"
 
 

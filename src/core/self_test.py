@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Startup Self-Test.
 =================
-Runs before FIX sessions are created.  Every check is isolated: one failure
+Runs at hub startup.  Every check is isolated: one failure
 never crashes the others.
 
 Severity levels
@@ -129,20 +129,6 @@ def _chk_env_vars() -> tuple[Sev, str]:
     return Sev.PASS, ""
 
 
-def _chk_fix_configs() -> tuple[Sev, str]:
-    cfg_q = os.environ.get("CTRADER_CFG_QUOTE", "ctrader_quote.cfg")
-    cfg_t = os.environ.get("CTRADER_CFG_TRADE", "ctrader_trade.cfg")
-    missing = [p for p in (cfg_q, cfg_t) if not Path(p).exists()]
-    if missing:
-        return Sev.CRITICAL, f"not found: {missing}"
-    # Make sure they are non-empty and contain [DEFAULT] or [SESSION]
-    for p in (cfg_q, cfg_t):
-        txt = Path(p).read_text()
-        if not any(tok in txt for tok in ("[DEFAULT]", "[SESSION]", "BeginString")):
-            return Sev.CRITICAL, f"{p} looks corrupt (no FIX session markers)"
-    return Sev.PASS, f"{cfg_q}, {cfg_t}"
-
-
 def _chk_data_dir() -> tuple[Sev, str]:
     data_dir = _data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -266,14 +252,14 @@ def _chk_current_position() -> tuple[Sev, str]:
         age = time.time() - (data.get("timestamp") or 0)
         if pos != 0 and age > _STALE_POSITION_SECS:
             return Sev.WARNING, (
-                f"stale position data ({age / 3600:.1f}h old): pos={pos} entry={price} — verify via FIX"
+                f"stale position data ({age / 3600:.1f}h old): pos={pos} entry={price} — verify via Open API"
             )
         if pos != 0:
             side = "LONG" if pos > 0 else "SHORT"
             return Sev.INFO, f"recovering {side} qty={abs(pos)} entry={price}"
         return Sev.PASS, "flat"
     except Exception as e:
-        return Sev.WARNING, f"corrupt ({e}) — will recover from FIX"
+        return Sev.WARNING, f"corrupt ({e}) — will recover from Open API"
 
 
 def _chk_per_buffer() -> tuple[Sev, str]:
@@ -370,22 +356,6 @@ def _chk_platt_sanity() -> tuple[Sev, str]:
         return Sev.WARNING, f"could not read: {e}"
 
 
-def _chk_quickfix_importable() -> tuple[Sev, str]:
-    """Verify QuickFIX Python bindings are importable.
-
-    QuickFIX is not on PyPI and must be installed manually from the
-    vendor source tree.  If import fails the bot cannot create FIX
-    sessions at all, so this is CRITICAL.
-    """
-    try:
-        import quickfix
-
-        version = getattr(quickfix, "__version__", "unknown")
-        return Sev.PASS, f"quickfix {version}"
-    except ImportError as e:
-        return Sev.CRITICAL, (f"quickfix not importable: {e} — run: cd ../quickfix && pip install -e .")
-
-
 def _chk_numpy_sanity() -> tuple[Sev, str]:
     """Quick sanity: numpy basic ops work and give finite results."""
     x = np.array([1.0, 2.0, 3.0])
@@ -420,8 +390,6 @@ def _chk_symbol_specs() -> tuple[Sev, str]:
 _CHECKS: list[tuple[str, Callable[[], tuple[Sev, str]], bool]] = [
     # ── Hard requirements ─────────────────────────────────────────────────
     ("Environment variables", _chk_env_vars, True),
-    ("QuickFIX importable", _chk_quickfix_importable, True),
-    ("FIX config files", _chk_fix_configs, True),
     ("Data directory writable", _chk_data_dir, True),
     ("Log directories", _chk_log_dir, True),
     ("Position size (qty)", _chk_qty, True),

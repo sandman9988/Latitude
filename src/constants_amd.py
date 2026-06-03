@@ -144,7 +144,7 @@ AMD_MEMORY_POOL_SIZE_MB: int = 6144
 
 AMD_ROCM_ENV_VARS: dict[str, str] = {
     # Architecture
-    "HSA_OVERRIDE_GFX_VERSION": "11.0.2",  # gfx1102 mapping
+    "HSA_OVERRIDE_GFX_VERSION": "11.0.0",  # override gfx1102 → gfx1100 (rocBLAS has no gfx1102 lib)
     # Memory optimization
     "HSA_ENABLE_SDMA": "1",
     "HSA_ENABLE_FINE_GRAINED_MEMORY": "1",
