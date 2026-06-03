@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""Trade Analyzer - Comprehensive analysis of trading performance
+Analyzes CSV exports from TradeExporter with detailed metrics and visualizations.
+"""
+
+import argparse
+import contextlib
+import json
+import os
+import sys
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+CAPTURE_EFFICIENCY_THRESHOLD = 0.5
+
+
+class TradeAnalyzer:
+    """Analyze trade history from CSV exports."""
+
+    def __init__(self, csv_path: str) -> None:
+        """Load trades from CSV file."""
+        self.csv_path = Path(csv_path)
+        if not self.csv_path.exists():
+            msg = f"CSV file not found: {csv_path}"
+            raise FileNotFoundError(msg)
+
+        self.df = pd.read_csv(csv_path)
+        self._validate_data()
+        self._prepare_data()
+
+    def _validate_data(self) -> None:
+        """Validate required columns exist."""
+        required = ["trade_num", "entry_time", "exit_time", "pnl", "result"]
+        missing = [col for col in required if col not in self.df.columns]
+        if missing:
+            msg = f"Missing required columns: {missing}"
+            raise ValueError(msg)
+
+    def _prepare_data(self) -> None:
+        """Prepare data for analysis."""
+        # Convert timestamps
+        self.df["entry_time"] = pd.to_datetime(self.df["entry_time"], format="ISO8601")
+        self.df["exit_time"] = pd.to_datetime(self.df["exit_time"], format="ISO8601")
+
+        # Convert numeric columns
+        numeric_cols = [
+            "pnl",
+            "mfe",
+            "mae",
+            "entry_price",
+            "exit_price",
+            "capture_efficiency",
+            "equity_after",
+            "duration_seconds",
+        ]
+        for col in numeric_cols:
+            if col in self.df.columns:
+                self.df[col] = pd.to_numeric(self.df[col], errors="coerce")
+
+        # Add derived columns
+        self.df["is_win"] = self.df["pnl"] > 0
+        self.df["hour"] = self.df["entry_time"].dt.hour
+        self.df["day_of_week"] = self.df["entry_time"].dt.dayofweek
+        self.df["cumulative_pnl"] = self.df["pnl"].cumsum()
+
+        # Calculate running max and drawdown
+        self.df["running_max"] = self.df["cumulative_pnl"].cummax()
+        self.df["drawdown"] = self.df["cumulative_pnl"] - self.df["running_max"]
+        self.df["drawdown_pct"] = (self.df["drawdown"] / self.df["running_max"].replace(0, np.nan)) * 100
+        self.df["drawdown_pct"] = self.df["drawdown_pct"].fillna(0.0)
+
+    def get_summary_stats(self) -> dict:
+        """Get comprehensive summary statistics."""
+        total_trades, wins, losses = self._split_trades()
+        pnl_stats = self._calc_pnl_stats(total_trades, wins, losses)
+        risk_stats = self._calc_risk_metrics()
+        drawdown_stats = self._calc_drawdown_stats()
+        streak_stats = self._calc_streaks()
+        mfe_stats = self._calc_mfe_mae_stats()
+        duration_stats = self._calc_duration_stats()
+
+        return {
+            **pnl_stats,
+            **risk_stats,
+            **drawdown_stats,
+            **streak_stats,
+            **mfe_stats,
+            **duration_stats,
+            "first_trade": self.df["entry_time"].min(),
+            "last_trade": self.df["entry_time"].max(),
+        }
+
+    def _split_trades(self) -> tuple[int, pd.DataFrame, pd.DataFrame]:
+        total_trades = len(self.df)
+        wins = self.df[self.df["is_win"]]
+        losses = self.df[~self.df["is_win"]]
+        return total_trades, wins, losses
+
+    def _calc_pnl_stats(self, total_trades: int, wins: pd.DataFrame, losses: pd.DataFrame) -> dict:
+        total_pnl = self.df["pnl"].sum()
+        win_rate = len(wins) / total_trades if total_trades > 0 else 0
+
+        avg_win = wins["pnl"].mean() if len(wins) > 0 else 0
+        avg_loss = losses["pnl"].mean() if len(losses) > 0 else 0
+
+        gross_profit = wins["pnl"].sum() if len(wins) > 0 else 0
+        gross_loss = abs(losses["pnl"].sum()) if len(losses) > 0 else 0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else np.inf
+
+        returns = self.df["pnl"].values
+        expectancy = returns.mean() if len(returns) > 0 else 0
+
+        return {
+            "total_trades": total_trades,
+            "winning_trades": len(wins),
+            "losing_trades": len(losses),
+            "win_rate": win_rate,
+            "total_pnl": total_pnl,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "profit_factor": profit_factor,
+            "expectancy": expectancy,
+        }
+
+    def _calc_risk_metrics(self) -> dict:
+        returns = self.df["pnl"].values
+        if len(returns) > 1:
+            _std = returns.std()
+            sharpe = (returns.mean() / _std) * np.sqrt(252) if _std > 0 else 0.0
+        else:
+            sharpe = 0
+
+        downside_returns = returns[returns < 0]
+        if len(downside_returns) > 1:
+            _down_std = downside_returns.std()
+            sortino = (returns.mean() / _down_std) * np.sqrt(252) if _down_std > 0 else 0.0
+        else:
+            sortino = 0
+
+        return {
+            "sharpe_ratio": sharpe,
+            "sortino_ratio": sortino,
+        }
+
+    def _calc_drawdown_stats(self) -> dict:
+        return {
+            "max_drawdown": self.df["drawdown"].min(),
+            "max_drawdown_pct": self.df["drawdown_pct"].min(),
+        }
+
+    def _calc_streaks(self) -> dict:
+        self.df["win_streak"] = (self.df["is_win"] != self.df["is_win"].shift()).cumsum()
+        win_streaks = self.df[self.df["is_win"]].groupby("win_streak").size()
+        loss_streaks = self.df[~self.df["is_win"]].groupby("win_streak").size()
+
+        max_win_streak = win_streaks.max() if len(win_streaks) > 0 else 0
+        max_loss_streak = loss_streaks.max() if len(loss_streaks) > 0 else 0
+
+        return {
+            "max_win_streak": max_win_streak,
+            "max_loss_streak": max_loss_streak,
+        }
+
+    def _calc_mfe_mae_stats(self) -> dict:
+        if "mfe" in self.df.columns and "mae" in self.df.columns:
+            avg_mfe = self.df["mfe"].mean()
+            avg_mae = self.df["mae"].mean()
+            avg_capture = self.df["capture_efficiency"].mean() if "capture_efficiency" in self.df.columns else 0
+        else:
+            avg_mfe = avg_mae = avg_capture = None
+
+        return {
+            "avg_mfe": avg_mfe,
+            "avg_mae": avg_mae,
+            "avg_capture_efficiency": avg_capture,
+        }
+
+    def _calc_duration_stats(self) -> dict:
+        if "duration_seconds" in self.df.columns:
+            avg_duration = self.df["duration_seconds"].mean()
+            median_duration = self.df["duration_seconds"].median()
+        else:
+            avg_duration = median_duration = None
+
+        return {
+            "avg_duration_seconds": avg_duration,
+            "median_duration_seconds": median_duration,
+        }
+
+    def analyze_by_hour(self) -> pd.DataFrame:
+        """Analyze performance by hour of day."""
+        hourly = self.df.groupby("hour").agg({"pnl": ["sum", "mean", "count"], "is_win": "mean"}).round(4)
+        hourly.columns = ["total_pnl", "avg_pnl", "num_trades", "win_rate"]
+        return hourly.sort_values("total_pnl", ascending=False)
+
+    def analyze_by_day(self) -> pd.DataFrame:
+        """Analyze performance by day of week."""
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        daily = self.df.groupby("day_of_week").agg({"pnl": ["sum", "mean", "count"], "is_win": "mean"}).round(4)
+        daily.columns = ["total_pnl", "avg_pnl", "num_trades", "win_rate"]
+        daily.index = [days[i] for i in daily.index]
+        return daily.sort_values("total_pnl", ascending=False)
+
+    def analyze_dual_agents(self) -> dict:
+        """Analyze dual-agent performance (TriggerAgent + HarvesterAgent)."""
+        if "trigger_quality" not in self.df.columns or "harvester_quality" not in self.df.columns:
+            return {"error": "Dual-agent metrics not available in this dataset"}
+
+        trigger_counts = self.df["trigger_quality"].value_counts()
+        harvester_counts = self.df["harvester_quality"].value_counts()
+
+        # Analyze runway predictions
+        if "predicted_runway" in self.df.columns and "mfe" in self.df.columns:
+            df_valid = self.df[self.df["predicted_runway"] > 0].copy()
+            if len(df_valid) > 0:
+                df_valid["runway_error"] = abs(df_valid["predicted_runway"] - df_valid["mfe"])
+                avg_runway_error = df_valid["runway_error"].mean()
+                avg_runway_error_pct = (df_valid["runway_error"] / df_valid["mfe"]).mean() * 100
+            else:
+                avg_runway_error = avg_runway_error_pct = None
+        else:
+            avg_runway_error = avg_runway_error_pct = None
+
+        # Analyze capture efficiency by harvester quality
+        if "capture_efficiency" in self.df.columns:
+            capture_by_harvester = self.df.groupby("harvester_quality")["capture_efficiency"].mean()
+        else:
+            capture_by_harvester = None
+
+        return {
+            "trigger_quality_distribution": trigger_counts.to_dict(),
+            "harvester_quality_distribution": harvester_counts.to_dict(),
+            "avg_runway_error": avg_runway_error,
+            "avg_runway_error_pct": avg_runway_error_pct,
+            "capture_by_harvester_quality": (
+                capture_by_harvester.to_dict() if capture_by_harvester is not None else None
+            ),
+        }
+
+    def find_best_trades(self, n: int = 10) -> pd.DataFrame:
+        """Find top N most profitable trades."""
+        return self.df.nlargest(n, "pnl")[["trade_num", "entry_time", "direction", "pnl", "mfe", "capture_efficiency"]]
+
+    def find_worst_trades(self, n: int = 10) -> pd.DataFrame:
+        """Find top N worst trades."""
+        return self.df.nsmallest(n, "pnl")[["trade_num", "entry_time", "direction", "pnl", "mae"]]
+
+    def analyze_capture_efficiency(self) -> dict:
+        """Analyze MFE capture efficiency."""
+        if "capture_efficiency" not in self.df.columns:
+            return {"error": "Capture efficiency metrics not available"}
+
+        wins = self.df[self.df["is_win"]]["capture_efficiency"]
+        losses = self.df[~self.df["is_win"]]["capture_efficiency"]
+
+        return {
+            "overall_avg": self.df["capture_efficiency"].mean(),
+            "overall_median": self.df["capture_efficiency"].median(),
+            "wins_avg": wins.mean() if len(wins) > 0 else None,
+            "wins_median": wins.median() if len(wins) > 0 else None,
+            "losses_avg": losses.mean() if len(losses) > 0 else None,
+            "losses_median": losses.median() if len(losses) > 0 else None,
+            "pct_above_50": (self.df["capture_efficiency"] > CAPTURE_EFFICIENCY_THRESHOLD).sum() / len(self.df) * 100,
+        }
+
+    def export_analysis(self, output_path: str | None = None) -> str:
+        """Export comprehensive analysis to JSON."""
+        if output_path is None:
+            timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+            output_path = f"analysis_{timestamp}.json"
+
+        analysis = {
+            "metadata": {
+                "source_file": str(self.csv_path),
+                "analysis_date": datetime.now(UTC).isoformat(),
+                "total_trades": len(self.df),
+            },
+            "summary": self.get_summary_stats(),
+            "by_hour": self.analyze_by_hour().to_dict(),
+            "by_day": self.analyze_by_day().to_dict(),
+            "dual_agents": self.analyze_dual_agents(),
+            "capture_efficiency": self.analyze_capture_efficiency(),
+            "best_trades": self.find_best_trades(5).to_dict("records"),
+            "worst_trades": self.find_worst_trades(5).to_dict("records"),
+        }
+
+        # Convert numpy/pandas types to Python native for JSON serialization
+        analysis = self._convert_types(analysis)
+
+        out = Path(output_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=str(out.parent), prefix=f".{out.name}_", suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                json.dump(analysis, f, indent=2, default=str)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, out)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+        return output_path
+
+    def _convert_types(self, obj):
+        """Convert numpy/pandas types to Python native types for JSON."""
+        if isinstance(obj, dict):
+            return {k: self._convert_types(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._convert_types(item) for item in obj]
+        if isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        if isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        if pd.isna(obj):
+            return None
+        return obj
+
+    def _print_mfe_mae_section(self, stats: dict) -> None:
+        if stats["avg_mfe"] is not None:
+            print("\n── MFE/MAE ANALYSIS ──────────────────────────────────")
+            print(f"  Avg MFE:              {stats['avg_mfe']:.2f}")
+            print(f"  Avg MAE:              {stats['avg_mae']:.2f}")
+            if stats.get("avg_capture_efficiency") is not None:
+                print(f"  Avg capture:          {stats['avg_capture_efficiency']:.3f}")
+
+        if stats["avg_duration_seconds"] is not None:
+            print("\n── DURATION ANALYSIS ─────────────────────────────────")
+            avg_min = stats["avg_duration_seconds"] / 60
+            med_min = stats["median_duration_seconds"] / 60
+            print(f"  Avg duration:         {avg_min:.1f} min")
+            print(f"  Median duration:      {med_min:.1f} min")
+
+    def _print_dual_agent_section(self, dual: dict) -> None:
+        if "error" in dual:
+            return
+        print("\n── DUAL-AGENT ANALYSIS ───────────────────────────────")
+        if dual.get("trigger_quality_distribution"):
+            print("  Trigger quality:")
+            for quality, count in sorted(dual["trigger_quality_distribution"].items()):
+                print(f"    {quality:<12} {count}")
+        if dual.get("harvester_quality_distribution"):
+            print("  Harvester quality:")
+            for quality, count in sorted(dual["harvester_quality_distribution"].items()):
+                print(f"    {quality:<12} {count}")
+        if dual.get("avg_runway_error_pct") is not None:
+            print(f"  Avg runway error:     {dual['avg_runway_error_pct']:.1f}%")
+
+    def print_report(self) -> None:
+        """Print comprehensive analysis report to console."""
+        stats = self.get_summary_stats()
+
+        print("\n══════════════════════════════════════════════════════")
+        print("  TRADE ANALYSIS REPORT")
+        print(f"  Source: {self.csv_path.name}  |  Trades: {stats['total_trades']}")
+        print("══════════════════════════════════════════════════════")
+
+        print("\n── OVERALL PERFORMANCE ───────────────────────────────")
+        print(f"  Win rate:             {stats['win_rate']:.1%}")
+        print(f"  Total PnL:            {stats['total_pnl']:.2f}")
+        print(f"  Avg win:              {stats['avg_win']:.2f}")
+        print(f"  Avg loss:             {stats['avg_loss']:.2f}")
+        print(f"  Profit factor:        {stats['profit_factor']:.2f}")
+        print(f"  Expectancy:           {stats['expectancy']:.2f}")
+
+        print("\n── RISK METRICS ──────────────────────────────────────")
+        print(f"  Sharpe ratio:         {stats['sharpe_ratio']:.3f}")
+        print(f"  Sortino ratio:        {stats['sortino_ratio']:.3f}")
+        print(f"  Max drawdown:         {stats['max_drawdown']:.2f}")
+        print(f"  Max win streak:       {stats['max_win_streak']}")
+        print(f"  Max loss streak:      {stats['max_loss_streak']}")
+
+        self._print_mfe_mae_section(stats)
+
+        hourly = self.analyze_by_hour().head(5)
+        print("\n── BEST HOURS ────────────────────────────────────────")
+        for hour, row in hourly.iterrows():
+            print(
+                f"  {hour:02d}:00  PnL={row['total_pnl']:>8.2f}  "
+                f"WR={row['win_rate']:.1%}  n={int(row['num_trades'])}",
+            )
+
+        daily = self.analyze_by_day()
+        print("\n── BEST DAYS ─────────────────────────────────────────")
+        for day, row in daily.iterrows():
+            print(f"  {day:<12} PnL={row['total_pnl']:>8.2f}  WR={row['win_rate']:.1%}  n={int(row['num_trades'])}")
+
+        self._print_dual_agent_section(self.analyze_dual_agents())
+
+        best = self.find_best_trades(5)
+        print("\n── BEST TRADES ───────────────────────────────────────")
+        for _, trade in best.iterrows():
+            print(f"  #{int(trade['trade_num'])}  {trade['direction']:<5}  PnL={trade['pnl']:>8.2f}")
+
+        worst = self.find_worst_trades(5)
+        print("\n── WORST TRADES ──────────────────────────────────────")
+        for _, trade in worst.iterrows():
+            print(f"  #{int(trade['trade_num'])}  {trade['direction']:<5}  PnL={trade['pnl']:>8.2f}")
+
+
+
+def main() -> int:
+    """CLI entry point."""
+    parser = argparse.ArgumentParser(description="Analyze trading performance from CSV exports")
+    parser.add_argument("csv_file", help="Path to trades CSV file")
+    parser.add_argument("--export", "-e", help="Export analysis to JSON file")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress console output")
+
+    args = parser.parse_args()
+
+    try:
+        analyzer = TradeAnalyzer(args.csv_file)
+
+        if not args.quiet:
+            analyzer.print_report()
+
+        if args.export:
+            analyzer.export_analysis(args.export)
+        elif not args.quiet:
+            # Auto-export if not suppressed
+            analyzer.export_analysis()
+
+    except Exception:
+        return 1
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

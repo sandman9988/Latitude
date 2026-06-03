@@ -1,0 +1,1348 @@
+#!/usr/bin/env python3
+"""Trigger Agent - Entry Specialist (Phase 3).
+==========================================
+Dual-agent architecture component for trade entry decisions.
+
+Responsibilities:
+- Identify high-quality entry opportunities
+- Predict runway (expected MFE)
+- Output: entry signal (LONG/SHORT/NONE) + confidence + predicted runway
+
+Reward Function:
+- Runway utilization: actual_MFE / predicted_runway
+- Entry quality bonus: Did trade achieve meaningful MFE?
+- False signal penalty: No MFE achieved after entry
+
+From MASTER_HANDBOOK.md Section 2.2: Dual-Agent Architecture
+
+Phase 3.5: Online Learning
+- ExperienceBuffer integration for continuous improvement
+- train_step() for DDQN updates
+"""
+
+import logging
+import os
+import random
+from typing import Any, NamedTuple
+
+import numpy as np
+
+from src.agents.agent_training_mixin import AgentTrainingMixin, compute_confidence
+from src.agents.runway_forecaster import RunwayForecaster, extract_features
+from src.constants import (
+    GAMMA,
+    GRAD_CLIP_NORM,
+    L2_WEIGHT,
+    LEARNING_RATE,
+    LIVE_EPSILON_DECAY,
+    LIVE_EPSILON_END,
+    LIVE_EPSILON_START,
+    PAPER_EPSILON_DECAY,
+    PAPER_EPSILON_END,
+    PAPER_EPSILON_START,
+    PAPER_FORCE_EXPLORATION,
+    STATE_WINDOW_SIZE,
+    TAU,
+    TRIGGER_BUFFER_CAPACITY,
+)
+from src.persistence.learned_parameters import LearnedParametersManager
+from src.utils.safe_math import SafeMath
+
+LOG = logging.getLogger(__name__)
+
+
+MIN_FEATURE_COLS = 3
+IMBALANCE_INDEX = 4
+VOL_Z_INDEX = 3  # state array column index for vol_z
+VPIN_Z_INDEX = 5  # state array column index for vpin_z
+TILT_SCALE = 0.1
+PAPER_EPSILON = 0.15
+PAPER_BASE_THRESHOLD = 0.15
+LIVE_BASE_THRESHOLD = 0.3
+_UTILIZATION_BAD_THRESHOLD: float = 0.3  # utilization below this is a bad entry
+_UTILIZATION_OUTLIER_LOW: float = 0.2  # below this is an outlier (too poor)
+_UTILIZATION_OUTLIER_HIGH: float = 2.0  # above this is an outlier (excessive)
+_RUNWAY_ERROR_HUBER_K: float = 1.0
+_ZERO_MFE_FLOOR_FRAC: float = 1e-7
+PREDICTED_RUNWAY_FALLBACK = 0.0015
+RUNWAY_FORECAST_FLOOR = 0.0002
+RUNWAY_FORECAST_CEIL = 0.05
+RUNWAY_FORECAST_MIN_BARS = 36
+Q_RUNWAY_MIN = 0.0010
+Q_RUNWAY_MAX = 0.0050
+Q_RUNWAY_MAX_Q = 3.0
+FALLBACK_VOL_SCALE_QUIET: float = 0.70  # Runway scale during below-average volatility
+FALLBACK_VOL_SCALE_HOT: float = 1.50  # Runway scale during above-average volatility
+
+# ── EWMA runway calibration constants ──────────────────────────────────
+RUNWAY_CAL_N_BUCKETS: int = 5  # Q-value buckets for calibration
+RUNWAY_CAL_Q_EDGES: list[float] = [0.0, 0.6, 1.2, 1.8, 2.4, 3.0]  # Bucket boundaries
+RUNWAY_CAL_ALPHA: float = 0.15  # EWMA smoothing factor (higher = faster adaptation)
+RUNWAY_CAL_MIN_SAMPLES: int = 3  # Minimum samples before using calibrated value
+RUNWAY_GATING_MIN_TOTAL_SAMPLES: int = 20
+RUNWAY_GATING_MIN_ACTIVE_BUCKETS: int = 2
+RUNWAY_CAL_ALPHA_MIN: float = 0.05
+RUNWAY_CAL_ALPHA_MAX: float = 0.60
+
+
+class _EconomicsGateParams(NamedTuple):
+    expected_gain: float
+    expected_loss: float
+    friction_cost: float
+    breakeven_prob: float
+
+
+class TriggerAgent(AgentTrainingMixin):
+    """Entry specialist agent - decides WHEN and WHICH DIRECTION to enter.
+
+    Philosophy: "Find trades with runway to harvest"
+
+    Action Space:
+        0 = NO_ENTRY (stay flat)
+        1 = LONG (buy)
+        2 = SHORT (sell)
+
+    State: Market features (7-dim by default)
+        - ret1: 1-bar return
+        - ret5: 5-bar return
+        - ma_diff: MA fast/slow difference
+        - vol: 20-bar volatility
+        - imbalance: Order book imbalance [-1, 1]
+        - vpin_z: VPIN z-score
+        - depth_ratio: Bid+ask depth relative to median
+
+    Output:
+        - action: 0/1/2 (NO_ENTRY/LONG/SHORT)
+        - confidence: [0, 1] from softmax probabilities
+        - predicted_runway: Expected MFE in price units
+    """
+
+    _AGENT_TAG = "TRIGGER"
+
+    def __init__(
+        self,
+        window: int = STATE_WINDOW_SIZE,
+        n_features: int = 7,
+        enable_training: bool = False,
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
+        timeframe: str = "M15",
+        broker: str = "default",
+        param_manager: LearnedParametersManager | None = None,
+        timeframe_minutes: int = 5,
+        buffer_capacity: int = TRIGGER_BUFFER_CAPACITY,
+    ) -> None:
+        """Initialize Trigger Agent.
+
+        Args:
+            window: Lookback window for state
+            n_features: Number of input features
+            enable_training: Enable online learning (Phase 3.5)
+
+        """
+        self._init_agent_state(
+            window=window,
+            n_features=n_features,
+            symbol=symbol,
+            timeframe=timeframe,
+            timeframe_minutes=timeframe_minutes,
+            broker=broker,
+            param_manager=param_manager,
+        )
+
+        # Paper mode settings - NO GATING in training
+        self.paper_mode = os.environ.get("PAPER_MODE", "0") == "1"
+        self.disable_gates = os.environ.get("DISABLE_GATES", "0") == "1"
+
+        # Epsilon-greedy exploration for training
+        self.epsilon = float(
+            os.environ.get("EPSILON_START", str(PAPER_EPSILON_START if self.paper_mode else LIVE_EPSILON_START)),
+        )
+        self.epsilon_end = float(
+            os.environ.get("EPSILON_END", str(PAPER_EPSILON_END if self.paper_mode else LIVE_EPSILON_END)),
+        )
+        self.epsilon_decay = float(
+            os.environ.get("EPSILON_DECAY", str(PAPER_EPSILON_DECAY if self.paper_mode else LIVE_EPSILON_DECAY)),
+        )
+        self.exploration_boost = float(os.environ.get("EXPLORATION_BOOST", "0.5" if self.paper_mode else "0.0"))
+        force_default = "1" if self.paper_mode and PAPER_FORCE_EXPLORATION else "0"
+        self.force_exploration = os.environ.get("FORCE_EXPLORATION", force_default) == "1"
+        self.bars_since_trade = 0
+        self.max_bars_inactive = int(os.environ.get("MAX_BARS_INACTIVE", "10" if self.paper_mode else "1000"))
+
+        # Phase 3.5: Experience replay buffer
+        # Capacity sized to ~20 days at ~100 trades/day (staleness halflife = 1 day,
+        # so >2,000 entries are already near-zero weight and waste memory/diversity).
+        self._init_training_components(
+            enable_training=enable_training,
+            buffer_capacity=buffer_capacity,
+            min_experiences=32,
+            batch_size=64,
+            state_dim=window * n_features,
+            n_actions=3,
+            learning_rate=LEARNING_RATE,
+            gamma=GAMMA,
+            tau=TAU,
+            l2_weight=L2_WEIGHT,
+            grad_clip_norm=GRAD_CLIP_NORM,
+        )
+        self.last_action = None
+
+        # Phase 2: Platt calibration for probability estimates (online learning)
+        # Converts raw scores to calibrated probabilities: p = 1/(1 + exp(A*score + B))
+        self.platt_a = 1.0  # Slope parameter (learned online)
+        self.platt_b = 0.0  # Intercept parameter (learned online)
+        self.platt_lr = 0.01  # Learning rate for Platt updates
+        self._last_raw_confidence: float = 0.5  # Pre-Platt confidence (for gradient update)
+        self._last_q_spread: float = 0.0  # Q-value advantage (best - second-best)
+        self.last_predicted_runway_gross: float = 0.0
+        self.last_predicted_runway_net: float = 0.0
+        self._current_zeta: float = 0.5  # Regime damping ratio, updated each decide()
+        self.last_shadow_gates: dict = {}  # Shadow-gate verdicts from last decide()
+
+        # Phase 2: Gating strategy
+        # Paper mode is the exploration baseline: model confidence/risk gates are
+        # audit signals there, not execution blockers. Hard market-safety gates
+        # are enforced by the hub before order placement.
+        # Live threshold values are always resolved (even in paper) so the shadow-gate
+        # recorder can report what the live gates *would* have decided.
+        self._live_feasibility_threshold, _ = self._resolve_gate_value(
+            env_key="FEAS_THRESHOLD", param_name="feasibility_threshold", fallback=0.5,
+        )
+        self._live_confidence_floor, _ = self._resolve_gate_value(
+            env_key="CONFIDENCE_FLOOR", param_name="confidence_floor", fallback=0.55,
+        )
+        if self.disable_gates or self.paper_mode:
+            self.feasibility_threshold = 0.0
+            self.confidence_floor = 0.0
+        else:
+            self.feasibility_threshold = self._live_feasibility_threshold
+            self.confidence_floor = self._live_confidence_floor
+
+        self.entry_conf_deadzone_low, _ = self._resolve_gate_value(
+            env_key="ENTRY_CONF_DEADZONE_LOW", param_name="entry_conf_deadzone_low", fallback=0.45,
+        )
+        self.entry_conf_deadzone_high, _ = self._resolve_gate_value(
+            env_key="ENTRY_CONF_DEADZONE_HIGH", param_name="entry_conf_deadzone_high", fallback=0.55,
+        )
+        self.high_conf_risk_low, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_RISK_LOW", param_name="high_conf_risk_low", fallback=0.80,
+        )
+        self.high_conf_risk_high, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_RISK_HIGH", param_name="high_conf_risk_high", fallback=0.90,
+        )
+        self.high_conf_vol_z_gate, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_VOL_Z_GATE", param_name="high_conf_vol_z_gate", fallback=1.0,
+        )
+        self.high_conf_vpin_z_gate, _ = self._resolve_gate_value(
+            env_key="HIGH_CONF_VPIN_Z_GATE", param_name="high_conf_vpin_z_gate", fallback=2.0,
+        )
+
+        # ── EWMA runway calibration ──────────────────────────────────────────
+        # Tracks actual MFE outcomes per Q-value bucket so _q_to_runway()
+        # adapts from empirical data rather than a static linear mapping.
+        # Each bucket stores: (ewma_mfe, sample_count)
+        self._runway_cal_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_cal_counts: list[int] = [0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_resid_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_err_abs_ewma: list[float] = [0.0] * RUNWAY_CAL_N_BUCKETS
+        self._runway_step_alpha: list[float] = [RUNWAY_CAL_ALPHA] * RUNWAY_CAL_N_BUCKETS
+        self._last_entry_q: float | None = None  # Q-value at most recent entry
+
+        # Log consolidated initialization
+        mode_str = "TRAINING" if (self.disable_gates or self.paper_mode) else "LIVE"
+        training_str = f"online_learn={enable_training}" if enable_training else "no_training"
+        LOG.info(
+            "[TRIGGER] Init: %s ε=%.2f→%.2f decay=%.4f | %s",
+            mode_str,
+            self.epsilon,
+            self.epsilon_end,
+            self.epsilon_decay,
+            training_str,
+        )
+
+        # Try to load model if path specified
+        model_path = os.environ.get("DDQN_TRIGGER_MODEL", "").strip()
+        if model_path:
+            self._load_model(model_path)
+
+        # Decoupled runway forecaster (ATR-anchored quantile model). Replaces the
+        # legacy Q→runway mapping when a fitted model is available for this
+        # (symbol, timeframe). Falls back to _q_to_runway() otherwise.
+        self._current_bars: Any = None
+        self.runway_forecaster: RunwayForecaster | None = None
+        self._load_runway_forecaster()
+
+    def _load_runway_forecaster(self) -> None:
+        """Load the persisted RunwayForecaster for this (symbol, timeframe)."""
+        from pathlib import Path
+
+        override = os.environ.get("RUNWAY_FORECASTER_MODEL", "").strip()
+        if override:
+            candidates = [Path(override)]
+        else:
+            data_dir = Path(os.environ.get("CTRADER_DATA_DIR", "data"))
+            candidates = [
+                data_dir / f"paper_{self.symbol}_{self.timeframe}" / "runway_forecaster.json",
+            ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            try:
+                self.runway_forecaster = RunwayForecaster.load(path)
+                LOG.info("[TRIGGER] Loaded runway forecaster: %s", path)
+                return
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("[TRIGGER] Failed to load runway forecaster %s: %s", path, exc)
+        LOG.info(
+            "[TRIGGER] No runway forecaster for %s_%s; using Q→runway fallback",
+            self.symbol,
+            self.timeframe,
+        )
+
+    def _forecast_runway(self, action: int) -> float | None:
+        """Forecast GROSS runway as a price fraction from raw bars.
+
+        Returns None when the forecaster is unavailable, bars are insufficient,
+        or the feature window cannot be built — caller falls back to legacy
+        Q→runway mapping.
+        """
+        forecaster = self.runway_forecaster
+        bars = self._current_bars
+        if forecaster is None or not getattr(forecaster, "fitted", False):
+            return None
+        if action not in (1, 2) or bars is None or len(bars) < RUNWAY_FORECAST_MIN_BARS:
+            return None
+        try:
+            from src.features.runway_labels import wilder_atr
+
+            opens = np.asarray([b[1] for b in bars], dtype=np.float64)
+            highs = np.asarray([b[2] for b in bars], dtype=np.float64)
+            lows = np.asarray([b[3] for b in bars], dtype=np.float64)
+            closes = np.asarray([b[4] for b in bars], dtype=np.float64)
+        except (IndexError, TypeError, ValueError):
+            return None
+        atr = wilder_atr(highs, lows, closes)
+        idx = len(closes) - 1
+        if atr[idx] <= 0 or closes[idx] <= 0:
+            return None
+        side = 1 if action == 1 else -1
+        feat = extract_features(opens, highs, lows, closes, atr, idx, side=side)
+        if feat is None:
+            return None
+        runway_price = forecaster.predict_runway(feat, float(atr[idx]), quantile=0.5)
+        if not np.isfinite(runway_price) or runway_price <= 0:
+            return None
+        gross = float(runway_price) / float(closes[idx])
+        return float(np.clip(gross, RUNWAY_FORECAST_FLOOR, RUNWAY_FORECAST_CEIL))
+
+    def _predict_gross_runway(self, action: int, q_value: float | None) -> float:
+        """Predict gross runway, preferring the forecaster over the Q→runway map."""
+        forecast = self._forecast_runway(action)
+        if forecast is not None:
+            return forecast
+        if q_value is not None:
+            return self._q_to_runway(q_value)
+        return PREDICTED_RUNWAY_FALLBACK
+
+    def _resolve_gate_value(self, env_key: str, param_name: str, fallback: float) -> tuple[float, str]:
+        """Resolve gate thresholds via env override → learned params → fallback."""
+        env_val = os.environ.get(env_key)
+        if env_val is not None and env_val != "":
+            try:
+                return float(env_val), "ENV"
+            except ValueError:
+                LOG.warning("[TRIGGER] Invalid %s env value '%s' - falling back", env_key, env_val)
+        value = self._get_param(param_name, fallback)
+        source = "LP" if self.param_manager else "DEFAULT"
+        return value, source
+
+    def _get_param(self, name: str, default: float) -> float:
+        return super()._get_param(name, default)
+
+    def _load_model(self, model_path: str) -> None:
+        """Load PyTorch DDQN model for trigger agent."""
+        self._load_torch_model(model_path, n_actions=3, tag="TRIGGER")
+
+    def _try_training_decision(self) -> tuple[int, float, float] | None:
+        """Attempt an epsilon-greedy or forced-exploration decision (training / paper mode).
+
+        Returns the action tuple when a training decision is made, or None when
+        the caller should continue to the live-mode logic.
+        """
+        # Epsilon-greedy: randomly explore with probability ε
+        # Include NO_ENTRY (action=0) with 50% weight so the agent learns when
+        # NOT to enter — without this, exploration never discovers staying flat
+        # and the replay buffer is 100% entry samples (severe class imbalance).
+        if random.random() < self.epsilon:
+            action = random.choices([0, 1, 2], weights=[2, 1, 1])[0]
+            LOG.info(
+                "[TRIGGER] EXPLORE: random action=%d (ε=%.3f, bars_flat=%d)",
+                action,
+                self.epsilon,
+                self.bars_since_trade,
+            )
+            self._decay_epsilon()
+            if action != 0:
+                self.bars_since_trade = 0
+            self.last_action = action
+            if action == 0:
+                return 0, 0.0, 0.0
+            return action, 0.5, self._predict_gross_runway(action, None)
+
+        # Forced entry when idle for too many bars
+        if self.force_exploration and self.bars_since_trade >= self.max_bars_inactive:
+            action = random.choice([1, 2])
+            LOG.debug("[TRIGGER] FORCED ENTRY after %d bars flat: action=%d", self.bars_since_trade, action)
+            self.bars_since_trade = 0
+            self.last_action = action
+            return action, 0.5, self._predict_gross_runway(action, None)
+
+        return None  # Carry on to normal model decision
+
+    def _decide_numpy_path(
+        self, state: np.ndarray, regime_threshold_adj: float, friction_cost: float,
+    ) -> tuple[int, float, float]:
+        """決 Decision path for the numpy-based DDQN or MA-crossover fallback."""
+        if self.ddqn is not None and self.enable_training and self.training_steps > 0:
+            flat_state = state.reshape(1, -1).astype(np.float64)
+            q_values = self.ddqn.predict(flat_state).flatten()
+            action = int(np.argmax(q_values))
+            confidence = compute_confidence(q_values, self.training_steps)
+            sorted_q = np.sort(q_values)[::-1]
+            self._last_q_spread = float(sorted_q[0] - sorted_q[1]) if len(sorted_q) >= 2 else 0.0
+            gross_runway = self._predict_gross_runway(action, float(q_values[action]))
+            predicted_runway = max(0.0, gross_runway - friction_cost)
+            self.last_predicted_runway_gross = float(gross_runway)
+            self.last_predicted_runway_net = float(predicted_runway)
+            LOG.debug(
+                "[TRIGGER] DDQN decision: Q=%s, action=%d, conf=%.3f, gross=%.4f, net=%.4f",
+                q_values,
+                action,
+                confidence,
+                gross_runway,
+                predicted_runway,
+            )
+        else:
+            action, confidence, gross_runway = self._fallback_decide(state, regime_threshold_adj)
+            if action == 0:
+                self.last_predicted_runway_gross = 0.0
+                self.last_predicted_runway_net = 0.0
+                return 0, 0.0, 0.0
+            forecast = self._forecast_runway(action)
+            if forecast is not None:
+                gross_runway = forecast
+            predicted_runway = max(0.0, gross_runway - friction_cost)
+            self.last_predicted_runway_gross = float(gross_runway)
+            self.last_predicted_runway_net = float(predicted_runway)
+
+        self.last_action = action
+
+        if confidence < self.confidence_floor:
+            LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", confidence, self.confidence_floor)
+            return 0, confidence, 0.0
+        if self._entry_risk_gate_blocked(action, confidence, state):
+            return 0, confidence, 0.0
+        if self._runway_length_gate_blocked(predicted_runway):
+            return 0, confidence, 0.0
+
+        self._decay_epsilon()
+        return action, confidence, predicted_runway
+
+    def decide(
+        self,
+        state: np.ndarray,
+        current_position: int = 0,
+        regime_threshold_adj: float = 0.0,  # Phase 3.4: Regime-based adjustment
+        feasibility: float = 1.0,  # Phase 2: Path geometry feasibility [0, 1]
+        expected_gain: float = 0.002,  # Phase 2: Expected gain (G)
+        expected_loss: float = 0.001,  # Phase 2: Expected loss (L)
+        friction_cost: float = 0.0002,  # Phase 2: Friction costs (K) - spread + slippage
+        zeta: float = 0.5,  # Regime damping ratio for adaptive epsilon
+        bars: Any = None,  # Raw (t,o,h,l,c) closed bars for runway forecasting
+    ) -> tuple[int, float, float]:
+        """Decide entry action based on current market state.
+
+        Args:
+            state: Normalized state features (window, n_features)
+            current_position: Current position (-1/0/+1 for SHORT/FLAT/LONG)
+            regime_threshold_adj: Phase 3.4 adjustment from RegimeDetector
+            feasibility: Phase 2 path geometry feasibility score [0, 1]
+            expected_gain: Expected gain (G) for economics threshold
+            expected_loss: Expected loss (L) for economics threshold
+            friction_cost: Friction costs (K) - spread, slippage, commissions
+            zeta: Regime damping ratio from RegimeDetector (lower = trending)
+
+        Returns:
+            (action, confidence, predicted_runway)
+            - action: 0=NO_ENTRY, 1=LONG, 2=SHORT
+            - confidence: [0, 1] Platt-calibrated probability
+            - predicted_runway: Expected MFE as percentage (e.g., 0.002 = 0.2% of entry price)
+
+        """
+        self.bars_since_trade += 1
+        self._current_zeta = zeta  # Store for regime-aware epsilon decay
+        self._current_bars = bars  # Raw bars for the runway forecaster
+
+        # Always record the state we see — needed for experience replay
+        # regardless of which gate or decision path fires.
+        self.last_state = state.copy()
+        LOG.debug(
+            "[TRIGGER-DIAG] decide() called: state_shape=%s, setting last_state for experience buffers",
+            state.shape if hasattr(state, "shape") else "unknown",
+        )
+
+        if self._should_block_for_position(current_position):
+            self.bars_since_trade = 0
+            self.last_shadow_gates = {}
+            return 0, 0.0, 0.0
+
+        result = self._maybe_training_decision()
+        if result is None:
+            if self._feasibility_gate_blocked(feasibility):
+                result = (0, 0.0, 0.0)
+            elif not self._use_torch_inference():
+                result = self._decide_numpy_path(state, regime_threshold_adj, friction_cost)
+            else:
+                result = self._decide_torch_path(state, expected_gain, expected_loss, friction_cost)
+
+        self._record_shadow_gates(result, state, feasibility, expected_gain, expected_loss, friction_cost)
+        return result
+
+    def _record_shadow_gates(
+        self,
+        result: tuple[int, float, float],
+        state: np.ndarray,
+        feasibility: float,
+        expected_gain: float,
+        expected_loss: float,
+        friction_cost: float,
+    ) -> None:
+        """Evaluate every live entry gate against the decision and record verdicts.
+
+        Shadow-gate observability: paper mode executes all trades (preserving RL
+        exploration), but every live gate is still evaluated here and the
+        ``would_block`` verdicts are stored on ``last_shadow_gates`` so the
+        paper/live execution gap is recorded for telemetry and learning. This
+        does not change what paper executes nor live enforcement.
+        """
+        try:
+            action, confidence, predicted_runway = result
+            breakeven_prob = self._calc_breakeven_prob(expected_gain, expected_loss, friction_cost)
+            econ_params = _EconomicsGateParams(
+                expected_gain=expected_gain,
+                expected_loss=expected_loss,
+                friction_cost=friction_cost,
+                breakeven_prob=breakeven_prob,
+            )
+            verdicts = {
+                "feasibility": self._feasibility_would_block(feasibility),
+                "confidence": self._confidence_would_block(confidence),
+                "entry_risk": self._entry_risk_would_block(action, confidence, state),
+                "runway_length": self._runway_length_would_block(predicted_runway),
+                "economics": self._economics_would_block(action, confidence, econ_params),
+            }
+            reasons = [name for name, blocked in verdicts.items() if blocked]
+            self.last_shadow_gates = {
+                **verdicts,
+                "would_block_any": bool(reasons),
+                "reasons": reasons,
+                "action": int(action),
+                "decided_confidence": float(confidence),
+                "decided_runway": float(predicted_runway),
+                "decided_feasibility": float(feasibility),
+                "breakeven_prob": float(breakeven_prob),
+            }
+        except Exception:
+            LOG.debug("[TRIGGER] shadow-gate recording failed", exc_info=True)
+            self.last_shadow_gates = {}
+
+    def _should_block_for_position(self, current_position: int) -> bool:
+        """Return True if a position is already open."""
+        return current_position != 0
+
+    def _maybe_training_decision(self) -> tuple[int, float, float] | None:
+        """Return a training-mode decision when applicable."""
+        if self.paper_mode or self.disable_gates:
+            return self._try_training_decision()
+        return None
+
+    def _feasibility_gate_blocked(self, feasibility: float) -> bool:
+        """Return True if the feasibility gate blocks entry."""
+        if self.disable_gates or feasibility >= self.feasibility_threshold:
+            return False
+        LOG.debug("[TRIGGER] BLOCKED by feasibility gate: %.3f < %.3f", feasibility, self.feasibility_threshold)
+        return True
+
+    def _feasibility_would_block(self, feasibility: float) -> bool:
+        """Pure predicate: would the live feasibility threshold block this entry?"""
+        return feasibility < self._live_feasibility_threshold
+
+    def _use_torch_inference(self) -> bool:
+        """Return True when torch inference is available and enabled."""
+        return bool(self.use_torch and self.torch is not None and self.model is not None)
+
+    def _decide_torch_path(
+        self,
+        state: np.ndarray,
+        expected_gain: float,
+        expected_loss: float,
+        friction_cost: float,
+    ) -> tuple[int, float, float]:
+        """Decision path when torch inference is enabled."""
+        torch = self.torch
+        model = self.model
+        if torch is None or model is None:
+            return self._decide_numpy_path(state, 0.0, friction_cost)
+
+        with torch.no_grad():
+            t = torch.from_numpy(state).unsqueeze(0).float()
+            q_values = model(t).squeeze(0).numpy()
+            action = int(q_values.argmax())
+            raw_prob = compute_confidence(q_values, self.training_steps)
+            self._last_raw_confidence = raw_prob
+            sorted_q = q_values.copy()
+            sorted_q.sort()
+            self._last_q_spread = float(sorted_q[-1] - sorted_q[-2]) if len(sorted_q) >= 2 else 0.0
+            calibrated_prob = self._platt_calibrate(raw_prob)
+
+            if self._confidence_gate_blocked(calibrated_prob):
+                return 0, calibrated_prob, 0.0
+            if self._entry_risk_gate_blocked(action, calibrated_prob, state):
+                return 0, calibrated_prob, 0.0
+
+            breakeven_prob = self._calc_breakeven_prob(expected_gain, expected_loss, friction_cost)
+            econ_params = _EconomicsGateParams(
+                expected_gain=expected_gain,
+                expected_loss=expected_loss,
+                friction_cost=friction_cost,
+                breakeven_prob=breakeven_prob,
+            )
+            if self._economics_gate_blocked(action, calibrated_prob, econ_params):
+                return 0, 0.0, 0.0
+
+            q_max = q_values[action]
+            gross_runway = self._predict_gross_runway(action, float(q_max))
+            predicted_runway = max(0.0, gross_runway - friction_cost)
+            if self._runway_length_gate_blocked(predicted_runway):
+                return 0, calibrated_prob, 0.0
+            self.last_predicted_runway_gross = float(gross_runway)
+            self.last_predicted_runway_net = float(predicted_runway)
+
+            LOG.debug(
+                "[TRIGGER] Q=%s action=%d raw_p=%.3f calib_p=%.3f be=%.3f gross=%.4f K=%.4f net=%.4f",
+                q_values,
+                action,
+                raw_prob,
+                calibrated_prob,
+                breakeven_prob,
+                gross_runway,
+                friction_cost,
+                predicted_runway,
+            )
+
+            self._decay_epsilon()
+            return action, calibrated_prob, predicted_runway
+
+    def _confidence_gate_blocked(self, calibrated_prob: float) -> bool:
+        """Return True if confidence floor blocks entry (live enforcement)."""
+        if self.disable_gates or self.paper_mode:
+            return False
+        if not self._is_runway_predictor_reliable():
+            LOG.debug(
+                "[TRIGGER] Confidence gate bypassed: runway predictor still warming (samples=%d active_buckets=%d)",
+                self._runway_cal_total_samples(),
+                self._runway_cal_active_buckets(),
+            )
+            return False
+        blocked = self._confidence_would_block(calibrated_prob)
+        if blocked:
+            LOG.debug("[TRIGGER] BLOCKED by confidence floor: %.3f < %.3f", calibrated_prob, self._live_confidence_floor)
+        return blocked
+
+    def _confidence_would_block(self, calibrated_prob: float) -> bool:
+        """Pure predicate: would the live confidence floor block this entry?
+
+        Mode-independent; uses the resolved live floor so paper/live parity
+        can be measured even when the active floor is relaxed to 0.0.
+        """
+        if not self._is_runway_predictor_reliable():
+            return False
+        return calibrated_prob < self._live_confidence_floor
+
+
+    def _entry_risk_gate_blocked(self, action: int, confidence: float, state: np.ndarray) -> bool:
+        """Return True when adaptive confidence/risk pockets should block entry (live)."""
+        if self.disable_gates or self.paper_mode or action == 0:
+            return False
+        return self._entry_risk_would_block(action, confidence, state)
+
+    def _entry_risk_would_block(self, action: int, confidence: float, state: np.ndarray) -> bool:
+        """Pure predicate: would adaptive confidence/risk pockets block this entry?
+
+        Mode-independent dead-zone + high-confidence risk-pocket logic.
+        """
+        if action == 0:
+            return False
+        dead_low = min(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
+        dead_high = max(self.entry_conf_deadzone_low, self.entry_conf_deadzone_high)
+        if dead_low <= confidence <= dead_high:
+            LOG.debug(
+                "[TRIGGER] BLOCKED by confidence dead-zone: p=%.3f in [%.3f, %.3f]",
+                confidence,
+                dead_low,
+                dead_high,
+            )
+            return True
+        high_low = min(self.high_conf_risk_low, self.high_conf_risk_high)
+        high_high = max(self.high_conf_risk_low, self.high_conf_risk_high)
+        if not (high_low <= confidence <= high_high):
+            return False
+        vol_z = float(state[-1, VOL_Z_INDEX]) if state.shape[1] > VOL_Z_INDEX else 0.0
+        vpin_z = float(state[-1, VPIN_Z_INDEX]) if state.shape[1] > VPIN_Z_INDEX else 0.0
+        if abs(vol_z) >= self.high_conf_vol_z_gate or abs(vpin_z) >= self.high_conf_vpin_z_gate:
+            LOG.debug(
+                "[TRIGGER] BLOCKED high-conf risk pocket: p=%.3f in [%.3f, %.3f], vol_z=%.2f, vpin_z=%.2f",
+                confidence,
+                high_low,
+                high_high,
+                vol_z,
+                vpin_z,
+            )
+            return True
+        return False
+
+    def _calc_breakeven_prob(self, expected_gain: float, expected_loss: float, friction_cost: float) -> float:
+        """Calculate probability required for breakeven: P(win) >= this for EV > 0.
+
+        Formula: P_be = (L + K) / (G + L)
+        where G = expected gain, L = expected loss, K = friction.
+
+        Returns neutral 0.5 when the economics model is degenerate (sum ~0).
+        """
+        denom = expected_gain + expected_loss
+        if abs(denom) < 1e-9:
+            LOG.debug("[TRIGGER] Degenerate economics: G=%.6f L=%.6f sum=%.6f — returning neutral 0.5",
+                      expected_gain, expected_loss, denom)
+            return 0.5
+        return SafeMath.safe_div(expected_loss + friction_cost, denom, 0.5)
+
+    def _runway_length_gate_blocked(self, predicted_runway: float) -> bool:
+        """Return True when predicted runway is too short for live entry."""
+        if self.paper_mode or self.disable_gates:
+            return False
+        return self._runway_length_would_block(predicted_runway)
+
+    def _runway_length_would_block(self, predicted_runway: float) -> bool:
+        """Pure predicate: would the runway-length gate block this entry?"""
+        if not self._is_runway_predictor_reliable():
+            return False
+        min_runway_frac = self._get_param("runway_gate_min_fraction", 0.40)
+        min_runway_frac = max(0.0, min(1.0, float(min_runway_frac)))
+        min_runway = Q_RUNWAY_MIN * min_runway_frac
+        # Strict blocking: predicted_runway must STRICTLY exceed min_runway
+        if predicted_runway > min_runway:
+            return False
+        LOG.debug(
+            "[TRIGGER] BLOCKED by runway-length gate: runway=%.6f <= min=%.6f (fraction=%.2f)",
+            predicted_runway,
+            min_runway,
+            min_runway_frac,
+        )
+        return True
+
+    def _economics_gate_blocked(
+        self,
+        action: int,
+        calibrated_prob: float,
+        params: _EconomicsGateParams,
+    ) -> bool:
+        """Return True if economics gate blocks entry (live enforcement)."""
+        if self.paper_mode:
+            return False
+        return self._economics_would_block(action, calibrated_prob, params)
+
+    def _economics_would_block(
+        self,
+        action: int,
+        calibrated_prob: float,
+        params: _EconomicsGateParams,
+    ) -> bool:
+        """Pure predicate: would the economics gate block this entry?"""
+        if action == 0 or calibrated_prob >= params.breakeven_prob:
+            return False
+        LOG.debug(
+            "[TRIGGER] BLOCKED by economics: p=%.3f < breakeven=%.3f (G=%.4f, L=%.4f, K=%.4f)",
+            calibrated_prob,
+            params.breakeven_prob,
+            params.expected_gain,
+            params.expected_loss,
+            params.friction_cost,
+        )
+        return True
+
+    def _decay_epsilon(self) -> None:
+        """Decay epsilon with regime-aware scheduling.
+
+        In trending regimes (ζ < 0.7) the learned policy is most reliable,
+        so decay proceeds at the normal rate.  In uncertain/mean-reverting
+        regimes (ζ ≥ 0.7) the policy is less reliable and more exploration
+        is beneficial — decay is slowed proportionally to ζ.
+        """
+        zeta = getattr(self, "_current_zeta", 0.5)
+        # regime_factor: 1.0 in trending, ramps to 0.5 as ζ rises above 0.7
+        regime_factor = 1.0 if zeta < 0.7 else max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
+        # Slow the per-step decay: effective_decay approaches 1.0 (no decay)
+        # when regime_factor is small (uncertain regime).
+        effective_decay = 1.0 - (1.0 - self.epsilon_decay) * regime_factor
+        self.epsilon = max(self.epsilon_end, self.epsilon * effective_decay)
+
+    def _fallback_decide(self, state: np.ndarray, regime_threshold_adj: float = 0.0) -> tuple[int, float, float]:
+        """Multi-factor fallback entry decision with dynamic confidence and vol-scaled runway.
+
+        Improvements over the legacy single-factor MA-diff crossover:
+        1. CONFIRM  — at least one of ret1/ret5 must align with direction.
+                      Prevents entries on brief MA-diff spikes with no momentum.
+        2. FILTER   — strong opposing VPIN z-score (> ±2σ) vetoes the entry.
+                      Protects against entering into toxic institutional flow.
+        3. DYN CONF — 0.55 base + 0.10 per momentum factor + 0.05 if VPIN agrees.
+                      Range [0.55, 0.85]; previously a flat 0.6.
+        4. VOL RWWY — PREDICTED_RUNWAY_FALLBACK × vol-regime multiplier.
+                      Quiet markets → tighter runway; volatile → wider.
+
+        Returns:
+            (action, confidence, predicted_runway)
+
+        """
+        state = self._normalize_fallback_state(state)
+        if self._fallback_state_invalid(state):
+            return 0, 0.0, 0.0
+
+        ma_diff, ret1, ret5, vol_z, imbalance, vpin_z = self._extract_fallback_features(state)
+        adjusted_threshold, tilt = self._resolve_fallback_threshold(imbalance, regime_threshold_adj)
+        direction = self._resolve_fallback_direction(ma_diff, adjusted_threshold, tilt)
+        if direction == 0:
+            return 0, 0.0, 0.0
+
+        ret1_ok, ret5_ok = self._momentum_flags(direction, ret1, ret5)
+        if not (ret1_ok or ret5_ok):
+            return 0, 0.0, 0.0
+
+        if not self._vpin_allows(direction, vpin_z):
+            return 0, 0.0, 0.0
+
+        confidence = self._fallback_confidence(direction, ret1_ok, ret5_ok, vpin_z)
+        predicted_runway = self._fallback_runway(vol_z)
+        action = 1 if direction == 1 else 2
+        return action, confidence, predicted_runway
+
+    def _normalize_fallback_state(self, state: np.ndarray) -> np.ndarray:
+        """Ensure fallback state is a numpy array."""
+        if isinstance(state, np.ndarray):
+            return state
+        return np.array(state)
+
+    def _fallback_state_invalid(self, state: np.ndarray) -> bool:
+        """Return True if fallback state is missing required columns."""
+        return state.shape[0] == 0 or state.shape[1] < MIN_FEATURE_COLS
+
+    def _extract_fallback_features(self, state: np.ndarray) -> tuple[float, float, float, float, float, float]:
+        """Extract normalized features from the latest bar."""
+        ma_diff = float(state[-1, 2])
+        ret1 = float(state[-1, 0])
+        ret5 = float(state[-1, 1])
+        vol_z = float(state[-1, VOL_Z_INDEX]) if state.shape[1] > VOL_Z_INDEX else 0.0
+        imbalance = float(state[-1, IMBALANCE_INDEX]) if state.shape[1] > IMBALANCE_INDEX else 0.0
+        vpin_z = float(state[-1, VPIN_Z_INDEX]) if state.shape[1] > VPIN_Z_INDEX else 0.0
+        return ma_diff, ret1, ret5, vol_z, imbalance, vpin_z
+
+    def _resolve_fallback_threshold(self, imbalance: float, regime_threshold_adj: float) -> tuple[float, float]:
+        """Return (adjusted_threshold, tilt) for fallback decision."""
+        paper_mode = os.environ.get("PAPER_MODE") == "1"
+        seed_threshold = PAPER_BASE_THRESHOLD if paper_mode else LIVE_BASE_THRESHOLD
+        base_threshold, _ = self._resolve_gate_value(
+            env_key="FALLBACK_THRESHOLD",
+            param_name="fallback_base_threshold",
+            fallback=seed_threshold,
+        )
+        tilt = imbalance * TILT_SCALE
+        adjusted_threshold = max(base_threshold * (1.0 + regime_threshold_adj), 0.0)
+        return adjusted_threshold, tilt
+
+    def _resolve_fallback_direction(self, ma_diff: float, threshold: float, tilt: float) -> int:
+        """Return 1 for LONG, -1 for SHORT, or 0 for no signal."""
+        ma_long = ma_diff > (threshold - tilt)
+        ma_short = ma_diff < -(threshold + tilt)
+        if not ma_long and not ma_short:
+            return 0
+        return 1 if ma_long else -1
+
+    def _momentum_flags(self, direction: int, ret1: float, ret5: float) -> tuple[bool, bool]:
+        """Return momentum alignment flags for ret1 and ret5."""
+        momentum_min = 0.05
+        ret1_ok = (direction == 1 and ret1 > momentum_min) or (direction == -1 and ret1 < -momentum_min)
+        ret5_ok = (direction == 1 and ret5 > momentum_min) or (direction == -1 and ret5 < -momentum_min)
+        return ret1_ok, ret5_ok
+
+    def _vpin_allows(self, direction: int, vpin_z: float) -> bool:
+        """Return True if VPIN does not veto the fallback entry."""
+        vpin_veto = 2.0
+        return not ((direction == 1 and vpin_z < -vpin_veto) or (direction == -1 and vpin_z > vpin_veto))
+
+    def _fallback_confidence(self, direction: int, ret1_ok: bool, ret5_ok: bool, vpin_z: float) -> float:
+        """Compute fallback confidence based on confirmation factors."""
+        vpin_agrees = (direction == 1 and vpin_z > 0.0) or (direction == -1 and vpin_z < 0.0)
+        confidence = 0.55 + 0.10 * int(ret1_ok) + 0.10 * int(ret5_ok) + 0.05 * int(vpin_agrees)
+        return min(confidence, 0.85)
+
+    def _fallback_runway(self, vol_z: float) -> float:
+        """Compute volatility-scaled fallback runway."""
+        if vol_z < -1.0:
+            vol_scale = FALLBACK_VOL_SCALE_QUIET
+        elif vol_z > 1.0:
+            vol_scale = FALLBACK_VOL_SCALE_HOT
+        else:
+            vol_scale = FALLBACK_VOL_SCALE_QUIET + (
+                (FALLBACK_VOL_SCALE_HOT - FALLBACK_VOL_SCALE_QUIET) * (vol_z + 1.0) / 2.0
+            )
+        return float(np.clip(PREDICTED_RUNWAY_FALLBACK * vol_scale, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
+
+    def _fallback_strategy(self, state: np.ndarray, regime_threshold_adj: float = 0.0) -> int:
+        """Action-only shim for backward compatibility. Delegates to _fallback_decide()."""
+        action, _, _ = self._fallback_decide(state, regime_threshold_adj)
+        return action
+
+    def _platt_calibrate(self, raw_prob: float) -> float:
+        """Apply Platt scaling to calibrate probability estimates.
+
+        Phase 2: Converts raw model output to calibrated probability.
+        Formula: p = 1 / (1 + exp(A*score + B))
+
+        Args:
+            raw_prob: Raw probability from model softmax
+
+        Returns:
+            Calibrated probability [0, 1]
+
+        """
+        # Convert probability to logit score
+        if raw_prob <= 0:
+            raw_prob = 1e-9
+        if raw_prob >= 1:
+            raw_prob = 1 - 1e-9
+
+        logit = np.log(raw_prob / (1 - raw_prob))
+
+        # Apply Platt transformation
+        calibrated_logit = self.platt_a * logit + self.platt_b
+        calibrated_prob = 1.0 / (1.0 + np.exp(-calibrated_logit))
+
+        return float(calibrated_prob)
+
+    def update_platt_params(self, predicted_prob: float, actual_outcome: float, raw_prob: float | None = None) -> None:
+        """Online update of Platt calibration parameters.
+
+        Phase 2: Gradient descent on log-loss to improve calibration.
+        Uses proper gradients: dL/da = (p-y)*logit(raw), dL/db = (p-y).
+
+        Args:
+            predicted_prob: Predicted probability (calibrated)
+            actual_outcome: Actual outcome (1.0 for success, 0.0 for failure)
+            raw_prob: Pre-Platt probability (needed for correct a-gradient)
+
+        """
+        if not self.enable_training:
+            return
+
+        # Clip probabilities for numerical stability
+        p = np.clip(predicted_prob, 1e-9, 1 - 1e-9)
+        error = p - actual_outcome
+
+        # Proper Platt gradient: dL/da needs logit of the raw score
+        if raw_prob is not None:
+            raw_clipped = np.clip(raw_prob, 1e-9, 1 - 1e-9)
+            raw_logit = float(np.log(raw_clipped / (1 - raw_clipped)))
+        else:
+            raw_logit = 1.0  # Fallback: degenerate to old behaviour
+
+        # Platt scaling gradients: dL/da = (p - y) * logit(raw_prob)
+        self.platt_a -= self.platt_lr * error * raw_logit
+        # dL/db = (p - y)
+        self.platt_b -= self.platt_lr * error
+
+        LOG.debug(
+            "[TRIGGER|PLATT] Updated: A=%.4f, B=%.4f (p_pred=%.3f, raw=%.3f, outcome=%.1f)",
+            self.platt_a,
+            self.platt_b,
+            predicted_prob,
+            raw_prob if raw_prob is not None else -1.0,
+            actual_outcome,
+        )
+
+    def _q_to_runway(self, q_value: float) -> float:
+        """Convert Q-value to predicted GROSS runway (expected MFE before friction).
+
+        NOTE: This returns GROSS runway. Caller must subtract friction_cost to get NET runway.
+
+        Uses EWMA-calibrated mapping when sufficient samples exist for the
+        Q-value bucket; otherwise falls back to the static linear heuristic.
+
+        Example: For entry at $4600, 0.20% runway = $9.20 expected MFE
+        """
+        # Record Q for post-trade EWMA update
+        self._last_entry_q = q_value
+
+        clamped_q = max(0.0, min(Q_RUNWAY_MAX_Q, q_value))
+
+        # Try calibrated value first
+        cal_runway = self._calibrated_runway(clamped_q)
+        if cal_runway is not None:
+            return float(np.clip(cal_runway, Q_RUNWAY_MIN, Q_RUNWAY_MAX))
+
+        # Fallback: static linear interpolation
+        if q_value <= 0:
+            return Q_RUNWAY_MIN
+        if q_value >= Q_RUNWAY_MAX_Q:
+            return Q_RUNWAY_MAX
+        return Q_RUNWAY_MIN + (q_value / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
+
+    def _calibrated_runway(self, q_value: float) -> float | None:
+        """Return EWMA-calibrated runway for *q_value*, or None if insufficient data."""
+        bucket = self._q_bucket(q_value)
+        if self._runway_cal_counts[bucket] < RUNWAY_CAL_MIN_SAMPLES:
+            return None
+        base = self._runway_cal_ewma[bucket]
+        resid = self._runway_resid_ewma[bucket]
+        corrected = base + resid
+        return max(0.0, corrected)
+
+    def _runway_cal_total_samples(self) -> int:
+        return int(sum(self._runway_cal_counts))
+
+    def _runway_cal_active_buckets(self) -> int:
+        return int(sum(1 for c in self._runway_cal_counts if c >= RUNWAY_CAL_MIN_SAMPLES))
+
+    def _is_runway_predictor_reliable(self) -> bool:
+        return (
+            self._runway_cal_total_samples() >= RUNWAY_GATING_MIN_TOTAL_SAMPLES
+            and self._runway_cal_active_buckets() >= RUNWAY_GATING_MIN_ACTIVE_BUCKETS
+        )
+
+    @staticmethod
+    def _q_bucket(q_value: float) -> int:
+        """Map a Q-value to its calibration bucket index."""
+        for i in range(RUNWAY_CAL_N_BUCKETS):
+            if q_value < RUNWAY_CAL_Q_EDGES[i + 1]:
+                return i
+        return RUNWAY_CAL_N_BUCKETS - 1
+
+    def _update_runway_calibration(self, actual_mfe_frac: float, predicted_runway: float = 0.0) -> None:
+        """Update the EWMA calibration bucket with the observed MFE (fractional)."""
+        q_val = self._last_entry_q
+        if q_val is None:
+            return
+        bucket = self._q_bucket(max(0.0, min(Q_RUNWAY_MAX_Q, q_val)))
+        count = self._runway_cal_counts[bucket]
+
+        base_alpha = self._get_param("runway_cal_alpha", RUNWAY_CAL_ALPHA)
+        base_alpha = max(RUNWAY_CAL_ALPHA_MIN, min(RUNWAY_CAL_ALPHA_MAX, float(base_alpha)))
+
+        if count == 0:
+            self._runway_cal_ewma[bucket] = actual_mfe_frac
+            self._runway_step_alpha[bucket] = base_alpha
+        else:
+            alpha = self._runway_step_alpha[bucket]
+            self._runway_cal_ewma[bucket] = alpha * actual_mfe_frac + (1 - alpha) * self._runway_cal_ewma[bucket]
+
+        if predicted_runway > 0:
+            error = actual_mfe_frac - predicted_runway
+            huber_k = self._get_param("runway_huber_k", _RUNWAY_ERROR_HUBER_K)
+            k = max(1e-6, float(huber_k))
+            abs_error = abs(error)
+            robust_residual = error if abs_error <= k else np.sign(error) * k
+
+            prev_abs = self._runway_err_abs_ewma[bucket]
+            abs_alpha = self._get_param("runway_error_abs_alpha", 0.25)
+            abs_alpha = max(0.05, min(0.8, float(abs_alpha)))
+            curr_abs = abs_error
+            self._runway_err_abs_ewma[bucket] = abs_alpha * curr_abs + (1 - abs_alpha) * prev_abs
+
+            adapt_gain = self._get_param("runway_adapt_gain", 0.8)
+            adapt_gain = max(0.0, float(adapt_gain))
+            rel = curr_abs / max(k, 1e-6)
+            dynamic_alpha = base_alpha * (1.0 + adapt_gain * min(3.0, rel))
+            self._runway_step_alpha[bucket] = max(RUNWAY_CAL_ALPHA_MIN, min(RUNWAY_CAL_ALPHA_MAX, dynamic_alpha))
+
+            resid_alpha = self._runway_step_alpha[bucket]
+            prev_resid = self._runway_resid_ewma[bucket]
+            self._runway_resid_ewma[bucket] = resid_alpha * robust_residual + (1 - resid_alpha) * prev_resid
+
+        self._runway_cal_counts[bucket] += 1
+        LOG.debug(
+            "[TRIGGER] Runway EWMA update: bucket=%d q=%.2f mfe_frac=%.5f ewma=%.5f "
+            "resid=%.5f abs_err=%.5f alpha=%.3f n=%d",
+            bucket,
+            q_val,
+            actual_mfe_frac,
+            self._runway_cal_ewma[bucket],
+            self._runway_resid_ewma[bucket],
+            self._runway_err_abs_ewma[bucket],
+            self._runway_step_alpha[bucket],
+            self._runway_cal_counts[bucket],
+        )
+        self._last_entry_q = None
+
+    def get_calibration_state(self) -> dict[str, Any]:
+        """Export runway calibration + Platt params for checkpoint persistence."""
+        return {
+            "runway_cal_ewma": list(self._runway_cal_ewma),
+            "runway_cal_counts": list(self._runway_cal_counts),
+            "runway_resid_ewma": list(self._runway_resid_ewma),
+            "runway_err_abs_ewma": list(self._runway_err_abs_ewma),
+            "runway_step_alpha": list(self._runway_step_alpha),
+            "platt_a": self.platt_a,
+            "platt_b": self.platt_b,
+        }
+
+    def load_calibration_state(self, state: dict[str, Any]) -> bool:
+        """Restore runway calibration + Platt params from checkpoint."""
+        ewma = state.get("runway_cal_ewma")
+        counts = state.get("runway_cal_counts")
+        if ewma and counts and len(ewma) == RUNWAY_CAL_N_BUCKETS and len(counts) == RUNWAY_CAL_N_BUCKETS:
+            self._runway_cal_ewma = [float(v) for v in ewma]
+            self._runway_cal_counts = [int(c) for c in counts]
+            resid = state.get("runway_resid_ewma")
+            if resid and len(resid) == RUNWAY_CAL_N_BUCKETS:
+                self._runway_resid_ewma = [float(v) for v in resid]
+            abs_err = state.get("runway_err_abs_ewma")
+            if abs_err and len(abs_err) == RUNWAY_CAL_N_BUCKETS:
+                self._runway_err_abs_ewma = [float(v) for v in abs_err]
+            step_alpha = state.get("runway_step_alpha")
+            if step_alpha and len(step_alpha) == RUNWAY_CAL_N_BUCKETS:
+                self._runway_step_alpha = [float(v) for v in step_alpha]
+            total = sum(self._runway_cal_counts)
+            LOG.info(
+                "[TRIGGER] Restored runway calibration: %d total samples across %d buckets",
+                total,
+                sum(1 for c in self._runway_cal_counts if c > 0),
+            )
+        if "platt_a" in state:
+            self.platt_a = float(state["platt_a"])
+            self.platt_b = float(state.get("platt_b", 0.0))
+            LOG.info("[TRIGGER] Restored Platt params: a=%.4f b=%.4f", self.platt_a, self.platt_b)
+        return True
+
+    def update_from_trade(
+        self,
+        actual_mfe: float,
+        predicted_runway: float,
+        entry_confidence: float = 0.5,
+        entry_price: float = 0.0,
+        raw_confidence: float | None = None,
+        predicted_runway_gross: float = 0.0,
+    ) -> None:
+        """Update trigger agent based on trade outcome.
+
+        Phase 3.5: Online learning updates:
+        1. Log prediction error
+        2. Update EWMA runway calibration with actual MFE
+        3. Update Platt calibration with actual trade outcome
+        4. Update entry confidence threshold based on prediction accuracy
+        5. Update confidence_floor via LearnedParameters
+
+        Args:
+            actual_mfe: Actual MFE achieved during trade (absolute price points)
+            predicted_runway: What trigger predicted (fractional)
+            entry_confidence: Calibrated probability at entry
+            entry_price: Entry price for MFE→fractional conversion
+            raw_confidence: Pre-Platt probability (for correct gradient)
+            predicted_runway_gross: Gross predicted runway before friction subtraction
+
+        """
+        if predicted_runway <= 0 and predicted_runway_gross <= 0:
+            return
+
+        # EWMA runway calibration: convert absolute MFE to fractional
+        if entry_price > 0 and actual_mfe >= 0:
+            actual_mfe_frac = actual_mfe / entry_price
+            calibration_target = predicted_runway_gross if predicted_runway_gross > 0 else predicted_runway
+            self._update_runway_calibration(actual_mfe_frac, calibration_target)
+
+        scored_runway = predicted_runway if predicted_runway > 0 else predicted_runway_gross
+        utilization = self._log_runway_error(actual_mfe, scored_runway, entry_price=entry_price)
+        outcome = self._trade_outcome(actual_mfe, scored_runway, entry_price=entry_price)
+        self._update_platt_from_trade(entry_confidence, outcome, raw_confidence=raw_confidence)
+        self._update_confidence_from_trade(utilization, actual_mfe=actual_mfe, entry_price=entry_price)
+
+    def _log_runway_error(self, actual_mfe: float, predicted_runway: float, entry_price: float = 0.0) -> float:
+        """Log runway prediction error and return utilization."""
+        actual_mfe_frac = actual_mfe / entry_price if entry_price > 0 else actual_mfe
+        if predicted_runway <= 0:
+            LOG.debug(
+                "[TRIGGER] Runway prediction unavailable: predicted=%.6f actual_frac=%.6f",
+                predicted_runway,
+                actual_mfe_frac,
+            )
+            return 0.0
+        error = actual_mfe_frac - predicted_runway
+        error_pct = (error / predicted_runway) * 100
+        LOG.debug(
+            "[TRIGGER] Runway prediction: %.6f vs actual_frac: %.6f (error: %.1f%%)",
+            predicted_runway,
+            actual_mfe_frac,
+            error_pct,
+        )
+        return actual_mfe_frac / predicted_runway if predicted_runway > 0 else 0.0
+
+    def _trade_outcome(self, actual_mfe: float, predicted_runway: float, entry_price: float = 0.0) -> float:
+        """Return 1.0 for success, 0.0 for failure based on runway utilization."""
+        actual_mfe_frac = actual_mfe / entry_price if entry_price > 0 else actual_mfe
+        trade_success = actual_mfe_frac >= (predicted_runway * 0.5)
+        return 1.0 if trade_success else 0.0
+
+    def _update_platt_from_trade(
+        self, entry_confidence: float, outcome: float, raw_confidence: float | None = None,
+    ) -> None:
+        """Update Platt calibration parameters from trade outcome."""
+        if not (self.enable_training and hasattr(self, "platt_a")):
+            return
+        predicted_prob = float(entry_confidence)
+        self.update_platt_params(predicted_prob, outcome, raw_prob=raw_confidence)
+
+    def _update_confidence_from_trade(
+        self, utilization: float, actual_mfe: float = 0.0, entry_price: float = 0.0,
+    ) -> None:
+        """Update confidence_floor and related parameters using utilization."""
+        if self.param_manager is None:
+            return
+        try:
+            zero_mfe_frac = self._get_param("zero_mfe_floor_frac", _ZERO_MFE_FLOOR_FRAC)
+            zero_mfe_trade = (entry_price > 0) and ((actual_mfe / entry_price) <= zero_mfe_frac)
+            gradient = self._confidence_gradient_from_utilization(utilization)
+            if zero_mfe_trade:
+                zero_mfe_boost = self._get_param("zero_mfe_conf_boost", 0.08)
+                gradient += max(0.0, float(zero_mfe_boost))
+            new_floor = self.param_manager.update(
+                self.symbol,
+                "confidence_floor",
+                gradient,
+                timeframe=self.timeframe,
+                broker=self.broker,
+            )
+            self.confidence_floor = float(new_floor)
+
+            self.param_manager.update(
+                self.symbol,
+                "fallback_base_threshold",
+                gradient * 0.5,
+                timeframe=self.timeframe,
+                broker=self.broker,
+            )
+
+            if zero_mfe_trade:
+                feas_step = self._get_param("zero_mfe_feasibility_step", 0.02)
+                self.param_manager.update(
+                    self.symbol,
+                    "feasibility_threshold",
+                    max(0.0, float(feas_step)),
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
+            else:
+                feas_decay = self._get_param("feasibility_decay_step", 0.01)
+                self.param_manager.update(
+                    self.symbol,
+                    "feasibility_threshold",
+                    -max(0.0, float(feas_decay)),
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
+
+            if utilization < _UTILIZATION_OUTLIER_LOW or utilization > _UTILIZATION_OUTLIER_HIGH:
+                self.param_manager.update(
+                    self.symbol,
+                    "regime_adj_scale",
+                    -0.001,
+                    timeframe=self.timeframe,
+                    broker=self.broker,
+                )
+
+            self.param_manager.save()
+            LOG.debug(
+                "[TRIGGER] Updated confidence_floor: %.3f (gradient=%.3f, utilization=%.2f zero_mfe=%s)",
+                self.confidence_floor,
+                gradient,
+                utilization,
+                zero_mfe_trade,
+            )
+        except Exception as exc:
+            LOG.warning("[TRIGGER] Failed to update confidence_floor: %s", exc)
+
+    def _confidence_gradient_from_utilization(self, utilization: float) -> float:
+        """Return gradient adjustment from utilization metrics."""
+        if utilization < _UTILIZATION_BAD_THRESHOLD:
+            return 0.05
+        if utilization > 1.0:
+            return -0.02
+        return (0.6 - utilization) * 0.03
+
+    # add_experience, train_step, _train_step_torch, get_training_stats
+    # are inherited from AgentTrainingMixin.
+
+    def _extra_training_stats(self) -> dict[str, Any]:
+        """Trigger-specific stats appended by the mixin."""
+        zeta = getattr(self, "_current_zeta", 0.5)
+        regime_factor = 1.0 if zeta < 0.7 else max(0.5, 1.0 - 0.5 * min(1.0, zeta - 0.7))
+        runway_total_samples = self._runway_cal_total_samples()
+        runway_active_buckets = self._runway_cal_active_buckets()
+        runway_predictor_reliable = self._is_runway_predictor_reliable()
+        return {
+            "epsilon": self.epsilon,
+            "epsilon_end": self.epsilon_end,
+            "current_zeta": zeta,
+            "epsilon_regime_factor": regime_factor,
+            "runway_cal_total_samples": runway_total_samples,
+            "runway_cal_active_buckets": runway_active_buckets,
+            "runway_predictor_reliable": runway_predictor_reliable,
+            "runway_mean_abs_error": float(np.mean(self._runway_err_abs_ewma)) if self._runway_err_abs_ewma else 0.0,
+            "runway_alpha_mean": float(np.mean(self._runway_step_alpha))
+            if self._runway_step_alpha
+            else RUNWAY_CAL_ALPHA,
+            "last_predicted_runway_gross": float(getattr(self, "last_predicted_runway_gross", 0.0)),
+            "last_predicted_runway_net": float(getattr(self, "last_predicted_runway_net", 0.0)),
+        }
+
+
+# ============================================================================
+# Self-Test
+# ============================================================================
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    rng = np.random.default_rng(42)
+
+    # Test 1: Initialize without model (fallback)
+    trigger = TriggerAgent(window=STATE_WINDOW_SIZE, n_features=7)
+    assert not trigger.use_torch
+
+    # Test 2: Decide with synthetic state (flat position)
+    state = rng.standard_normal((STATE_WINDOW_SIZE, 7)).astype(np.float32)
+    state[:, 2] = 0.35  # Strong positive MA diff → should signal LONG
+    action, conf, runway = trigger.decide(state, current_position=0)
+    assert action in [0, 1, 2]
+    assert 0 <= conf <= 1
+    assert runway >= 0
+
+    # Test 3: Decide with existing position (should return NO_ENTRY)
+    action, conf, runway = trigger.decide(state, current_position=1)
+    assert action == 0  # NO_ENTRY
+    assert SafeMath.is_zero(conf)
+    assert SafeMath.is_zero(runway)
+
+    # Test 4: Update from trade (logging only)
+    trigger.update_from_trade(actual_mfe=0.0025, predicted_runway=0.0020)
+
+    # Test 5: Q-to-runway mapping
+    assert abs(trigger._q_to_runway(0.0) - Q_RUNWAY_MIN) < 1e-9
+    expected_mid_runway = Q_RUNWAY_MIN + (1.5 / Q_RUNWAY_MAX_Q) * (Q_RUNWAY_MAX - Q_RUNWAY_MIN)
+    assert abs(trigger._q_to_runway(1.5) - expected_mid_runway) < 1e-9
+    assert abs(trigger._q_to_runway(3.0) - Q_RUNWAY_MAX) < 1e-9

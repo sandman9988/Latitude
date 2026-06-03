@@ -1,0 +1,861 @@
+"""
+Tests for run_universe.py
+Covers: universe I/O, dotenv loader, process helpers, all cmd_* functions,
+launch_paper_bots logic, CLI arg wiring.
+All subprocess/os.kill calls are mocked — no real processes are spawned.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT))
+
+import run_universe as ru
+from src.constants import PAPER_EPSILON_DECAY, PAPER_EPSILON_END, PAPER_EPSILON_START
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _write_universe(path: Path, instruments: object) -> None:
+    path.write_text(json.dumps({"version": 1, "instruments": instruments}))
+
+
+def _read_universe(path: Path) -> dict:
+    return json.loads(path.read_text())
+
+
+def _entry(instruments: list[dict], symbol: str, tf: int | None = None) -> dict | None:
+    for item in instruments:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("symbol", "")).upper() != symbol.upper():
+            continue
+        if tf is not None and int(item.get("timeframe_minutes", 0) or 0) != int(tf):
+            continue
+        return item
+    return None
+
+
+def _patch_universe(monkeypatch, path: Path) -> None:
+    monkeypatch.setattr(ru, "_UNIVERSE_PATH", path)
+
+
+# ---------------------------------------------------------------------------
+# _load_universe / _save_universe
+# ---------------------------------------------------------------------------
+
+
+class TestUniverseIO:
+    def test_load_returns_empty_when_missing(self, tmp_path, monkeypatch):
+        _patch_universe(monkeypatch, tmp_path / "universe.json")
+        result = ru._load_universe()
+        assert result == {"version": 1, "instruments": []}
+
+    def test_load_returns_contents(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _write_universe(uni, {"XAUUSD": {"stage": "PAPER"}})
+        _patch_universe(monkeypatch, uni)
+        result = ru._load_universe()
+        assert _entry(result["instruments"], "XAUUSD")["stage"] == "PAPER"
+
+    def test_load_returns_empty_on_corrupt_json(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        uni.write_text("not valid json{{{")
+        _patch_universe(monkeypatch, uni)
+        result = ru._load_universe()
+        assert result == {"version": 1, "instruments": []}
+
+    def test_save_writes_and_renames_atomically(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        ru._save_universe({"version": 1, "instruments": [{"symbol": "EURUSD", "stage": "MICRO"}]})
+        assert uni.exists()
+        assert not uni.with_suffix(".tmp").exists()
+        data = _read_universe(uni)
+        assert _entry(data["instruments"], "EURUSD")["stage"] == "MICRO"
+
+    def test_round_trip(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        original = {"version": 1, "instruments": [{"symbol": "BTCUSD", "stage": "PAPER", "timeframe_minutes": 15}]}
+        ru._save_universe(original)
+        loaded = ru._load_universe()
+        assert _entry(loaded["instruments"], "BTCUSD", 15)["timeframe_minutes"] == 15
+
+
+# ---------------------------------------------------------------------------
+# _load_dotenv
+# ---------------------------------------------------------------------------
+
+
+class TestLoadDotenv:
+    def test_parses_key_value(self, tmp_path, monkeypatch):
+        env = tmp_path / ".env"
+        env.write_text("SYMBOL=XAUUSD\nTIMEFRAME_MINUTES=240\n")
+        monkeypatch.setattr(ru, "_ENV_PATH", env)
+        result = ru._load_dotenv()
+        assert result["SYMBOL"] == "XAUUSD"
+        assert result["TIMEFRAME_MINUTES"] == "240"
+
+    def test_strips_quotes(self, tmp_path, monkeypatch):
+        env = tmp_path / ".env"
+        env.write_text("KEY=\"quoted value\"\nKEY2='single'\n")
+        monkeypatch.setattr(ru, "_ENV_PATH", env)
+        result = ru._load_dotenv()
+        assert result["KEY"] == "quoted value"
+        assert result["KEY2"] == "single"
+
+    def test_ignores_comments_and_blanks(self, tmp_path, monkeypatch):
+        env = tmp_path / ".env"
+        env.write_text("# comment\n\nVALID=yes\n")
+        monkeypatch.setattr(ru, "_ENV_PATH", env)
+        result = ru._load_dotenv()
+        assert result == {"VALID": "yes"}
+
+    def test_returns_empty_when_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ru, "_ENV_PATH", tmp_path / "no_such_file")
+        result = ru._load_dotenv()
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# _pid_alive
+# ---------------------------------------------------------------------------
+
+
+class TestPidAlive:
+    def test_none_returns_false(self):
+        assert ru._pid_alive(None) is False
+
+    def test_zero_returns_false(self):
+        assert ru._pid_alive(0) is False
+
+    def test_live_pid_returns_true(self):
+        assert ru._pid_alive(os.getpid()) is True
+
+    def test_dead_pid_returns_false(self):
+        with patch("os.kill", side_effect=OSError):
+            assert ru._pid_alive(999999) is False
+
+
+class TestWatchLock:
+    def test_acquire_watch_lock_blocks_second_owner(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ru, "_WATCH_LOCK_PATH", tmp_path / "run_universe.watch.lock")
+
+        first = ru._acquire_watch_lock()
+        assert first is not None
+        try:
+            second = ru._acquire_watch_lock()
+            assert second is None
+        finally:
+            first.close()
+
+    def test_acquire_watch_lock_reusable_after_close(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(ru, "_WATCH_LOCK_PATH", tmp_path / "run_universe.watch.lock")
+
+        first = ru._acquire_watch_lock()
+        assert first is not None
+        first.close()
+
+        second = ru._acquire_watch_lock()
+        assert second is not None
+        second.close()
+
+
+class TestOfflineTrainingSupervisor:
+    def test_offline_status_active_detects_unfinished_queue(self):
+        status = {"status": "running", "results": [{"status": "done"}, {"status": "queued"}]}
+        assert ru._offline_status_active(status)
+
+    def test_offline_status_active_ignores_complete_status(self):
+        status = {"status": "complete", "results": [{"status": "queued"}]}
+        assert not ru._offline_status_active(status)
+
+    def test_reconcile_restarts_dead_unfinished_training(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        status_path = tmp_path / "data" / "offline_training_status.json"
+        log_path = tmp_path / "logs" / "train_offline_supervisor.log"
+        monkeypatch.setattr(ru, "_OFFLINE_STATUS_PATH", status_path)
+        monkeypatch.setattr(ru, "_OFFLINE_SUPERVISOR_LOG", log_path)
+
+        script = tmp_path / "train_offline.py"
+        script.write_text("#!/usr/bin/env python3\n")
+        python = sys.executable
+        status_path.parent.mkdir(parents=True)
+        status_path.write_text(json.dumps({
+            "status": "running",
+            "supervisor": {
+                "pid": 987654,
+                "python": python,
+                "argv": [str(script), "data/history", "--workers", "2"],
+                "cwd": str(tmp_path),
+                "restart_count": 0,
+            },
+            "results": [
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "done"},
+                {"symbol": "XAUUSD", "timeframe_minutes": 1, "status": "queued"},
+            ],
+        }))
+
+        captured = {}
+
+        def _fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["cwd"] = kwargs.get("cwd")
+            captured["env"] = kwargs.get("env", {})
+            proc = MagicMock()
+            proc.pid = 24680
+            return proc
+
+        monkeypatch.setattr(ru, "_pid_is_train_offline", lambda _pid: False)
+        monkeypatch.setattr(ru, "_find_train_offline_pid", lambda _cwd=None: None)
+        monkeypatch.setattr(ru.subprocess, "Popen", _fake_popen)
+
+        ru._reconcile_offline_training({})
+
+        assert captured["cmd"] == [python, str(script), "data/history", "--workers", "2"]
+        assert captured["cwd"] == str(tmp_path)
+        assert captured["env"]["CTRADER_OFFLINE_RESUME_STATUS"] == "1"
+        assert captured["env"]["CTRADER_OFFLINE_RESTART_COUNT"] == "1"
+        updated = json.loads(status_path.read_text())
+        assert updated["supervisor"]["pid"] == 24680
+        assert updated["supervisor"]["restart_count"] == 1
+
+    def test_reconcile_does_not_duplicate_live_training(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        status_path = tmp_path / "data" / "offline_training_status.json"
+        monkeypatch.setattr(ru, "_OFFLINE_STATUS_PATH", status_path)
+        status_path.parent.mkdir(parents=True)
+        status_path.write_text(json.dumps({
+            "status": "running",
+            "supervisor": {"pid": 123, "argv": ["train_offline.py"], "cwd": str(tmp_path)},
+            "results": [{"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "running"}],
+        }))
+        popen = MagicMock()
+        monkeypatch.setattr(ru, "_pid_is_train_offline", lambda _pid: True)
+        monkeypatch.setattr(ru, "_offline_training_stalled", lambda _env: False)
+        monkeypatch.setattr(ru.subprocess, "Popen", popen)
+
+        ru._reconcile_offline_training({})
+
+        popen.assert_not_called()
+
+    def test_legacy_offline_restart_command_rebuilds_from_status(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(ru, "_PROJECT_ROOT", tmp_path)
+        cache = tmp_path / "data" / "training_cache_XAUUSD_M5.jsonl"
+        cache.parent.mkdir(parents=True)
+        cache.write_text("{}\n")
+        status = {
+            "status": "running",
+            "results": [
+                {"symbol": "XAUUSD", "timeframe_minutes": 5, "status": "done"},
+                {"symbol": "XAUUSD", "timeframe_minutes": 1, "status": "queued"},
+            ],
+        }
+
+        command_info = ru._legacy_offline_restart_command(status, {"WEEKEND_TRAIN_WORKERS": "3"})
+
+        assert command_info is not None
+        cmd, cwd = command_info
+        assert cwd == str(tmp_path)
+        assert cmd[:2] == [ru._resolve_python_executable({}), "train_offline.py"]
+        assert "data/training_cache_XAUUSD_M5.jsonl" in cmd
+        assert cmd[cmd.index("--symbols") + 1] == "XAUUSD"
+        timeframe_start = cmd.index("--timeframes") + 1
+        timeframe_end = cmd.index("--workers")
+        assert cmd[timeframe_start:timeframe_end] == ["M1", "M5"]
+        assert cmd[cmd.index("--workers") + 1] == "3"
+
+
+class TestRuntimeIsolation:
+    def test_resolve_python_executable_prefers_project_venv(self, tmp_path, monkeypatch):
+        venv_python = tmp_path / ".venv/bin/python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("#!/usr/bin/env python3\n")
+        venv_python.chmod(0o755)
+
+        monkeypatch.setattr(ru, "_PROJECT_VENV_PYTHONS", (venv_python,))
+
+        result = ru._resolve_python_executable({})
+        assert result == str(venv_python.resolve())
+
+    def test_resolve_python_executable_uses_virtual_env_when_project_missing(self, tmp_path, monkeypatch):
+        venv_root = tmp_path / "runtime_venv"
+        env_python = venv_root / "bin/python"
+        env_python.parent.mkdir(parents=True)
+        env_python.write_text("#!/usr/bin/env python3\n")
+        env_python.chmod(0o755)
+
+        monkeypatch.setattr(ru, "_PROJECT_VENV_PYTHONS", ())
+
+        result = ru._resolve_python_executable({"VIRTUAL_ENV": str(venv_root)})
+        assert result == str(env_python)
+
+    def test_bot_slug_normalizes_symbol(self):
+        assert ru._bot_slug("xau/usd", 240) == "paper_XAU_USD_M240"
+
+    def test_prepare_bot_runtime_writes_isolated_cfg(self, tmp_path, monkeypatch):
+        quote_tpl = tmp_path / "ctrader_quote.cfg"
+        trade_tpl = tmp_path / "ctrader_trade.cfg"
+        quote_tpl.write_text("FileStorePath=store/QUOTE\nFileLogPath=logs/fix/QUOTE\nSenderCompID=demo\n")
+        trade_tpl.write_text("FileStorePath=store/TRADE\nFileLogPath=logs/fix/TRADE\nSenderCompID=demo\n")
+
+        monkeypatch.setattr(ru, "_CFG_QUOTE_TEMPLATE", quote_tpl)
+        monkeypatch.setattr(ru, "_CFG_TRADE_TEMPLATE", trade_tpl)
+        monkeypatch.setattr(ru, "_RUNTIME_ROOT", tmp_path / "paper_runtime")
+
+        env = ru._prepare_bot_runtime("XAUUSD", 240)
+
+        assert env["CTRADER_DATA_DIR"].endswith("data/paper_XAUUSD_M240")
+        quote_out = Path(env["CTRADER_CFG_QUOTE"])
+        trade_out = Path(env["CTRADER_CFG_TRADE"])
+        assert quote_out.exists()
+        assert trade_out.exists()
+        quote_text = quote_out.read_text()
+        trade_text = trade_out.read_text()
+        assert "FileStorePath=store/paper_XAUUSD_M240/QUOTE" in quote_text
+        assert "FileLogPath=logs/fix/paper_XAUUSD_M240/QUOTE" in quote_text
+        assert "FileStorePath=store/paper_XAUUSD_M240/TRADE" in trade_text
+        assert "FileLogPath=logs/fix/paper_XAUUSD_M240/TRADE" in trade_text
+        assert "SenderCompID=demo" in quote_text
+        assert "SenderCompID=demo" in trade_text
+
+    def test_sync_promoted_weights_to_runtime(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "data" / "checkpoints" / "XAUUSD_M5"
+        source.mkdir(parents=True)
+        trigger = source / "trigger_ddqn_weights.pt"
+        harvester = source / "harvester_ddqn_weights.pt"
+        trigger.write_bytes(b"trigger-new")
+        harvester.write_bytes(b"harvester-new")
+        runtime = tmp_path / "data" / "paper_XAUUSD_M5" / "checkpoints" / "XAUUSD_M5"
+        runtime.mkdir(parents=True)
+        (runtime / "trigger_ddqn_weights.pt").write_bytes(b"trigger-old")
+
+        entry = {"weights_path": f"{trigger};{harvester}"}
+
+        assert ru._runtime_weights_stale(entry, "XAUUSD", 5)
+        assert ru._sync_promoted_weights_to_runtime(entry, "XAUUSD", 5)
+        assert (runtime / "trigger_ddqn_weights.pt").read_bytes() == b"trigger-new"
+        assert (runtime / "harvester_ddqn_weights.pt").read_bytes() == b"harvester-new"
+        assert not ru._runtime_weights_stale(entry, "XAUUSD", 5)
+
+    def test_launch_paper_bot_includes_runtime_env(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        def _runtime_env(symbol, timeframe_minutes):
+            return {
+                "CTRADER_CFG_QUOTE": "x/quote.cfg",
+                "CTRADER_CFG_TRADE": "x/trade.cfg",
+                "CTRADER_DATA_DIR": "data/paper_XAUUSD_M240",
+            }
+
+        monkeypatch.setattr(ru, "_prepare_bot_runtime", _runtime_env)
+
+        captured = {}
+
+        def _fake_popen(*args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            proc = MagicMock()
+            proc.pid = 4321
+            return proc
+
+        monkeypatch.setattr(ru.subprocess, "Popen", _fake_popen)
+
+        pid = ru._launch_paper_bot("XAUUSD", 240, 41, 0.01, {"BASE": "1"}, None)
+
+        assert pid == 4321
+        assert captured["env"]["CTRADER_CFG_QUOTE"] == "x/quote.cfg"
+        assert captured["env"]["CTRADER_CFG_TRADE"] == "x/trade.cfg"
+        assert captured["env"]["CTRADER_DATA_DIR"] == "data/paper_XAUUSD_M240"
+        assert captured["env"]["EPSILON_START"] == str(PAPER_EPSILON_START)
+        assert captured["env"]["EPSILON_END"] == str(PAPER_EPSILON_END)
+        assert captured["env"]["EPSILON_DECAY"] == str(PAPER_EPSILON_DECAY)
+        assert captured["env"]["FORCE_EXPLORATION"] == "1"
+
+    def test_launch_hub_includes_paper_exploration_env(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        captured = {}
+
+        def _fake_popen(*args, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            proc = MagicMock()
+            proc.pid = 6789
+            return proc
+
+        monkeypatch.setattr(ru.subprocess, "Popen", _fake_popen)
+
+        pid = ru._launch_hub("XAUUSD", 41, [1, 5, 240], 0.01, {"BASE": "1"}, None)
+
+        assert pid == 6789
+        assert captured["env"]["OPENAPI_TIMEFRAMES"] == "1,5,240"
+        assert captured["env"]["EPSILON_START"] == str(PAPER_EPSILON_START)
+        assert captured["env"]["EPSILON_END"] == str(PAPER_EPSILON_END)
+        assert captured["env"]["EPSILON_DECAY"] == str(PAPER_EPSILON_DECAY)
+        assert captured["env"]["FORCE_EXPLORATION"] == "1"
+
+
+# ---------------------------------------------------------------------------
+# cmd_promote
+# ---------------------------------------------------------------------------
+
+
+class TestCmdPromote:
+    def test_promotes_new_symbol(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": []}
+
+        result = ru.cmd_promote(registry, "GBPUSD", 30)
+
+        assert _entry(result["instruments"], "GBPUSD", 30)["stage"] == "PAPER"
+        assert _entry(result["instruments"], "GBPUSD", 30)["timeframe_minutes"] == 30
+
+    def test_promotes_preserves_existing_fields(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "USDJPY", "stage": "OFFLINE_TRAINING", "timeframe_minutes": 1440, "z_omega": 2.0},
+            ],
+        }
+
+        result = ru.cmd_promote(registry, "USDJPY", 1440)
+
+        assert _entry(result["instruments"], "USDJPY", 1440)["z_omega"] == pytest.approx(2.0)
+        assert _entry(result["instruments"], "USDJPY", 1440)["stage"] == "PAPER"
+
+    def test_promotes_with_optional_symbol_id(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": []}
+
+        result = ru.cmd_promote(registry, "EURUSD", 60, symbol_id=1)
+
+        assert _entry(result["instruments"], "EURUSD", 60)["symbol_id"] == 1
+
+    def test_saves_universe_file(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": []}
+
+        ru.cmd_promote(registry, "AUDCAD", 60)
+
+        assert uni.exists()
+        data = _read_universe(uni)
+        assert _entry(data["instruments"], "AUDCAD", 60) is not None
+
+
+# ---------------------------------------------------------------------------
+# cmd_demote
+# ---------------------------------------------------------------------------
+
+
+class TestCmdDemote:
+    def test_sets_stage_to_untrained(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": None}]}
+
+        result = ru.cmd_demote(registry, "XAUUSD")
+
+        assert _entry(result["instruments"], "XAUUSD")["stage"] == "UNTRAINED"
+
+    def test_clears_pid_field(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": 12345}]}
+
+        with patch.object(ru, "_pid_alive", return_value=False):
+            result = ru.cmd_demote(registry, "XAUUSD")
+
+        assert _entry(result["instruments"], "XAUUSD")["paper_pid"] is None
+
+    def test_stops_running_bot(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [{"symbol": "BTCUSD", "stage": "PAPER", "paper_pid": 9999, "timeframe_minutes": 240}],
+        }
+
+        with patch.object(ru, "_pid_alive", return_value=True), patch.object(ru, "_stop_pid") as mock_stop:
+            ru.cmd_demote(registry, "BTCUSD")
+            mock_stop.assert_called_once_with(9999, "BTCUSD M240 paper bot")
+
+    def test_noop_for_unknown_symbol(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": []}
+
+        result = ru.cmd_demote(registry, "NONEXISTENT")
+
+        assert result == {"version": 1, "instruments": []}
+
+    def test_saves_universe_file(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": [{"symbol": "EURUSD", "stage": "PAPER", "paper_pid": None}]}
+
+        ru.cmd_demote(registry, "EURUSD")
+
+        data = _read_universe(uni)
+        assert _entry(data["instruments"], "EURUSD")["stage"] == "UNTRAINED"
+
+
+# ---------------------------------------------------------------------------
+# cmd_stop_all
+# ---------------------------------------------------------------------------
+
+
+class TestCmdStopAll:
+    def test_stops_all_alive_bots(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": 111},
+                {"symbol": "BTCUSD", "stage": "PAPER", "paper_pid": 222},
+            ],
+        }
+        stopped: list[int] = []
+
+        def fake_pid_alive(pid):
+            return pid in (111, 222)
+
+        def fake_stop(pid, label=""):
+            stopped.append(pid)
+
+        with (
+            patch.object(ru, "_pid_alive", side_effect=fake_pid_alive),
+            patch.object(ru, "_stop_pid", side_effect=fake_stop),
+        ):
+            ru.cmd_stop_all(registry)
+
+        assert sorted(stopped) == [111, 222]
+
+    def test_clears_pids_in_registry(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": 111}]}
+
+        with patch.object(ru, "_pid_alive", return_value=True), patch.object(ru, "_stop_pid"):
+            result = ru.cmd_stop_all(registry)
+
+        assert _entry(result["instruments"], "XAUUSD")["paper_pid"] is None
+
+    def test_skips_dead_pids(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": [{"symbol": "USDJPY", "stage": "PAPER", "paper_pid": 777}]}
+
+        with patch.object(ru, "_pid_alive", return_value=False), patch.object(ru, "_stop_pid") as mock_stop:
+            ru.cmd_stop_all(registry)
+            mock_stop.assert_not_called()
+
+    def test_skips_orphan_scan_for_alternate_universe(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": []}
+
+        with patch.object(ru, "_iter_managed_paper_bot_pids") as mock_iter:
+            ru.cmd_stop_all(registry)
+
+        mock_iter.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# launch_paper_bots
+# ---------------------------------------------------------------------------
+
+
+class TestLaunchPaperBots:
+    def _registry_with(self, symbol: str, stage: str, pid=None, tf=240) -> dict:
+        return {
+            "version": 1,
+            "instruments": [
+                {"symbol": symbol, "stage": stage, "timeframe_minutes": tf, "paper_pid": pid},
+            ],
+        }
+
+    def test_launches_for_paper_stage(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("XAUUSD", "PAPER", tf=240)
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+        base_env: dict = {}
+
+        with (
+            patch.object(ru, "_pid_alive", return_value=False),
+            patch.object(ru, "_launch_paper_bot", return_value=5555) as mock_launch,
+        ):
+            result = ru.launch_paper_bots(registry, specs, base_env)
+
+        mock_launch.assert_called_once_with("XAUUSD", 240, 41, 0.01, base_env, None)
+        assert _entry(result["instruments"], "XAUUSD", 240)["paper_pid"] == 5555
+
+    def test_skips_non_paper_stages(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("BTCUSD", "MICRO", tf=15)
+        specs = {"BTCUSD": {"symbol_id": 10028, "min_volume": 0.01}}
+
+        with patch.object(ru, "_pid_alive", return_value=False), patch.object(ru, "_launch_paper_bot") as mock_launch:
+            ru.launch_paper_bots(registry, specs, {})
+
+        mock_launch.assert_not_called()
+
+    def test_skips_already_running_bot(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("EURUSD", "PAPER", pid=9999, tf=60)
+        specs = {"EURUSD": {"symbol_id": 1, "min_volume": 0.01}}
+
+        with patch.object(ru, "_pid_alive", return_value=True), patch.object(ru, "_launch_paper_bot") as mock_launch:
+            ru.launch_paper_bots(registry, specs, {})
+
+        mock_launch.assert_not_called()
+
+    def test_restarts_running_bot_when_promoted_weights_are_stale(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("XAUUSD", "PAPER", pid=9999, tf=5)
+        registry["instruments"][0]["weights_path"] = "data/checkpoints/XAUUSD_M5/trigger_ddqn_weights.pt"
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+
+        with (
+            patch.object(ru, "_pid_alive", return_value=True),
+            patch.object(ru, "_runtime_weights_stale", return_value=True),
+            patch.object(ru, "_stop_pid") as mock_stop,
+            patch.object(ru, "_sync_promoted_weights_to_runtime") as mock_sync,
+            patch.object(ru, "_launch_paper_bot", return_value=5555) as mock_launch,
+        ):
+            result = ru.launch_paper_bots(registry, specs, {})
+
+        mock_stop.assert_called_once_with(9999, "XAUUSD M5 paper bot")
+        mock_sync.assert_called_once()
+        mock_launch.assert_called_once()
+        assert _entry(result["instruments"], "XAUUSD", 5)["paper_pid"] == 5555
+
+    def test_skips_missing_symbol_id(self, tmp_path, monkeypatch, caplog):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("UNKNOWN_SYM", "PAPER", tf=5)
+        specs: dict = {}  # no spec for this symbol
+
+        with patch.object(ru, "_pid_alive", return_value=False), patch.object(ru, "_launch_paper_bot") as mock_launch:
+            import logging
+
+            with caplog.at_level(logging.WARNING):
+                ru.launch_paper_bots(registry, specs, {})
+
+        mock_launch.assert_not_called()
+        assert any("symbol_id" in msg for msg in caplog.messages)
+
+    def test_skips_missing_timeframe(self, tmp_path, monkeypatch, caplog):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {"version": 1, "instruments": [{"symbol": "XAUUSD", "stage": "PAPER", "paper_pid": None}]}
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+
+        with patch.object(ru, "_pid_alive", return_value=False), patch.object(ru, "_launch_paper_bot") as mock_launch:
+            import logging
+
+            with caplog.at_level(logging.WARNING):
+                ru.launch_paper_bots(registry, specs, {})
+
+        mock_launch.assert_not_called()
+
+    def test_saves_updated_registry_after_launch(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("GBPUSD", "PAPER", tf=30)
+        specs = {"GBPUSD": {"symbol_id": 3, "min_volume": 0.01}}
+
+        with (
+            patch.object(ru, "_pid_alive", return_value=False),
+            patch.object(ru, "_launch_paper_bot", return_value=1234),
+        ):
+            ru.launch_paper_bots(registry, specs, {})
+
+        data = _read_universe(uni)
+        assert _entry(data["instruments"], "GBPUSD", 30)["paper_pid"] == 1234
+
+    def test_clears_stale_pid_before_relaunch(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = self._registry_with("XAUUSD", "PAPER", pid=9876, tf=30)
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+
+        with (
+            patch.object(ru, "_pid_alive", return_value=False),
+            patch.object(ru, "_launch_paper_bot", return_value=2468),
+        ):
+            result = ru.launch_paper_bots(registry, specs, {})
+
+        entry = _entry(result["instruments"], "XAUUSD", 30)
+        assert entry["paper_pid"] == 2468
+        assert entry["paper_started_at"] is not None
+
+    def test_shared_symbol_topology_launches_only_shortest_timeframe_owner(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 5, "paper_pid": None},
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 1, "paper_pid": None},
+            ],
+        }
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+        base_env = {ru._BROKER_TOPOLOGY_ENV: ru._TOPOLOGY_SHARED_SYMBOL}
+
+        with (
+            patch.object(ru, "_pid_alive", return_value=False),
+            patch.object(ru, "_launch_paper_bot", return_value=1111) as mock_launch,
+        ):
+            result = ru.launch_paper_bots(registry, specs, base_env)
+
+        mock_launch.assert_called_once_with("XAUUSD", 1, 41, 0.01, base_env, None)
+        owner = _entry(result["instruments"], "XAUUSD", 1)
+        waiting = _entry(result["instruments"], "XAUUSD", 5)
+        assert owner["fix_session_owner"] is True
+        assert owner["paper_pid"] == 1111
+        assert waiting["fix_session_owner"] is False
+        assert waiting["fix_owner_timeframe_minutes"] == 1
+        assert waiting["direct_fix_disabled_reason"] == "shared_fix_gateway_pending"
+        assert waiting["paper_pid"] is None
+
+    def test_shared_symbol_topology_honours_explicit_fix_owner(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 1, "paper_pid": None},
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 5, "paper_pid": None, "fix_owner": True},
+            ],
+        }
+        specs = {"XAUUSD": {"symbol_id": 41, "min_volume": 0.01}}
+        base_env = {ru._BROKER_TOPOLOGY_ENV: ru._TOPOLOGY_SHARED_SYMBOL}
+
+        with (
+            patch.object(ru, "_pid_alive", return_value=False),
+            patch.object(ru, "_launch_paper_bot", return_value=5555) as mock_launch,
+        ):
+            result = ru.launch_paper_bots(registry, specs, base_env)
+
+        mock_launch.assert_called_once_with("XAUUSD", 5, 41, 0.01, base_env, None)
+        assert _entry(result["instruments"], "XAUUSD", 5)["fix_session_owner"] is True
+        assert _entry(result["instruments"], "XAUUSD", 1)["fix_owner_timeframe_minutes"] == 5
+
+    def test_shared_account_topology_launches_only_one_broker_owner(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _patch_universe(monkeypatch, uni)
+        registry = {
+            "version": 1,
+            "instruments": [
+                {"symbol": "EURUSD", "stage": "PAPER", "timeframe_minutes": 5, "paper_pid": None},
+                {"symbol": "XAUUSD", "stage": "PAPER", "timeframe_minutes": 1, "paper_pid": None},
+            ],
+        }
+        specs = {
+            "EURUSD": {"symbol_id": 1, "min_volume": 0.01},
+            "XAUUSD": {"symbol_id": 41, "min_volume": 0.01},
+        }
+        base_env = {ru._BROKER_TOPOLOGY_ENV: ru._TOPOLOGY_SHARED_ACCOUNT}
+
+        with (
+            patch.object(ru, "_pid_alive", return_value=False),
+            patch.object(ru, "_launch_paper_bot", return_value=2222) as mock_launch,
+        ):
+            result = ru.launch_paper_bots(registry, specs, base_env)
+
+        mock_launch.assert_called_once_with("XAUUSD", 1, 41, 0.01, base_env, None)
+        assert _entry(result["instruments"], "XAUUSD", 1)["fix_session_owner"] is True
+        waiting = _entry(result["instruments"], "EURUSD", 5)
+        assert waiting["fix_session_owner"] is False
+        assert waiting["fix_owner_symbol"] == "XAUUSD"
+        assert waiting["direct_fix_disabled_reason"] == "shared_fix_gateway_pending"
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring (main)
+# ---------------------------------------------------------------------------
+
+
+class TestCLI:
+    def test_list_exits_zero(self, tmp_path, monkeypatch, capsys):
+        uni = tmp_path / "universe.json"
+        _write_universe(uni, {})
+        monkeypatch.setattr(ru, "_UNIVERSE_PATH", uni)
+        monkeypatch.setattr(ru, "_load_dotenv", dict)
+        monkeypatch.setattr(ru, "_load_symbol_specs", dict)
+
+        ret = ru.main(["--list", "--universe", str(uni)])
+        assert ret == 0
+        out = capsys.readouterr().out
+        assert "Universe is empty" in out or "Symbol" in out
+
+    def test_promote_then_list(self, tmp_path, monkeypatch, capsys):
+        uni = tmp_path / "universe.json"
+        monkeypatch.setattr(ru, "_UNIVERSE_PATH", uni)
+        monkeypatch.setattr(ru, "_load_dotenv", dict)
+        monkeypatch.setattr(ru, "_load_symbol_specs", dict)
+
+        # Promote creates universe entry; then one-shot launch pass runs but
+        # launch_paper_bots will warn about missing symbol_id and skip —
+        # that's fine, we just verify the CLI doesn't crash.
+        with patch.object(ru, "launch_paper_bots", side_effect=lambda reg, *a, **kw: reg):
+            ret = ru.main(["--promote", "AUDUSD", "--timeframe", "60", "--universe", str(uni)])
+
+        assert ret == 0
+        data = _read_universe(uni)
+        assert _entry(data["instruments"], "AUDUSD", 60)["stage"] == "PAPER"
+
+    def test_demote_cli(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _write_universe(uni, {"XAUUSD": {"stage": "PAPER", "paper_pid": None}})
+        monkeypatch.setattr(ru, "_UNIVERSE_PATH", uni)
+        monkeypatch.setattr(ru, "_load_dotenv", dict)
+        monkeypatch.setattr(ru, "_load_symbol_specs", dict)
+
+        ret = ru.main(["--demote", "XAUUSD", "--universe", str(uni)])
+
+        assert ret == 0
+        data = _read_universe(uni)
+        assert _entry(data["instruments"], "XAUUSD")["stage"] == "UNTRAINED"
+
+    def test_stop_all_cli(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        _write_universe(uni, {"BTCUSD": {"stage": "PAPER", "paper_pid": None}})
+        monkeypatch.setattr(ru, "_UNIVERSE_PATH", uni)
+        monkeypatch.setattr(ru, "_load_dotenv", dict)
+        monkeypatch.setattr(ru, "_load_symbol_specs", dict)
+
+        ret = ru.main(["--stop-all", "--universe", str(uni)])
+        assert ret == 0
+
+    def test_promote_requires_timeframe(self, tmp_path, monkeypatch):
+        uni = tmp_path / "universe.json"
+        monkeypatch.setattr(ru, "_UNIVERSE_PATH", uni)
+        monkeypatch.setattr(ru, "_load_dotenv", dict)
+        monkeypatch.setattr(ru, "_load_symbol_specs", dict)
+
+        with pytest.raises(SystemExit) as exc_info:
+            ru.main(["--promote", "EURUSD", "--universe", str(uni)])
+        assert exc_info.value.code != 0

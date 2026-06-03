@@ -1,0 +1,508 @@
+"""Enhanced DDQN Neural Network with Prioritized Experience Replay.
+
+Backend: PyTorch with AMD ROCm / CUDA GPU acceleration (CPU fallback).
+
+AMD ROCm Optimizations (gfx1102/Navi 33):
+- Native FP16/BF16 support detection via MIOpen
+- Memory-optimized batch sizes for 8GB VRAM constraint
+- ROCm-aware gradient accumulation for optimal throughput
+- AMD-friendly kernel selection (MIOpen vs cuDNN)
+
+Features:
+- GPU acceleration (ROCm gfx1100/gfx1102 / CUDA) with transparent CPU fallback
+- Proper Adam optimizer with bias correction
+- Gradient clipping by norm
+- L2 weight decay
+- He initialization for ReLU networks
+- Soft target network updates (τ parameter)
+- Double DQN target calculation
+- Network persistence — saves torch .pt format;
+  also loads legacy NumPy .npz checkpoints transparently
+"""
+
+import logging
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch import nn
+
+from src.constants import GAMMA, GRAD_CLIP_NORM, L2_WEIGHT, LEARNING_RATE, TAU
+
+LOG = logging.getLogger(__name__)
+
+
+# ── AMD ROCm / Device Selection ──────────────────────────────────────────────────
+def _select_device() -> torch.device:
+    """Select best available device with AMD ROCm optimization.
+
+    Detects AMD gfx architecture (gfx1100/gfx1102) and configures
+    optimal settings for Navi 31/33 GPUs.
+    """
+    if not torch.cuda.is_available():
+        LOG.info("[DDQN] GPU not available — falling back to CPU")
+        return torch.device("cpu")
+
+    dev = torch.device("cuda")
+    name = torch.cuda.get_device_name(0)
+    props = torch.cuda.get_device_properties(0)
+    vram_gb = props.total_memory / 1024**3
+
+    # Detect AMD gfx architecture via device name
+    is_amd = any(x in name.upper() for x in ["AMD", "RADEON", "RX", "NAVI", "GFX"])
+    gfx_arch = "unknown"
+
+    if is_amd:
+        # Try to detect specific architecture
+        if "GFX110" in name.upper() or "7600" in name or "7900" in name:
+            gfx_arch = "gfx1100_series"
+        elif "GFX103" in name.upper() or "6800" in name or "6900" in name:
+            gfx_arch = "gfx1030_series"
+        elif "GFX10" in name.upper():
+            gfx_arch = "gfx10_series"
+
+    LOG.info(
+        "[DDQN] GPU: %s (%.1f GB VRAM) — %s backend, arch=%s", name, vram_gb, "ROCm" if is_amd else "CUDA", gfx_arch,
+    )
+
+    return dev
+
+
+def _get_amd_optimizations() -> dict:
+    """Return AMD-specific optimization hints based on detected hardware.
+
+    Navi 33 (gfx1102) specifics:
+    - 8-16GB VRAM: Conservative batch sizes
+    - 32 CUs: Good for small-batch inference
+    - RDNA 3: FP16 dual-issue, BF16 native support
+    """
+    if not torch.cuda.is_available():
+        return {"fp16_enabled": False, "bf16_enabled": False, "optimal_batch": 64}
+
+    name = torch.cuda.get_device_name(0).upper()
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024**3
+
+    is_navi33 = "7600" in name or "GFX1102" in name
+    is_navi31 = "7900" in name or "GFX1100" in name
+    is_amd = any(x in name for x in ["AMD", "RADEON", "RX", "GFX"])
+
+    # FP16: AMD RDNA 3 has dual-issue FP32 (2x FP16 throughput)
+    # BF16: Native support on RDNA 3 for better numerical stability
+    fp16_capable = is_amd  # All modern AMD GPUs support FP16
+    bf16_capable = is_navi31 or is_navi33  # RDNA 3 has native BF16
+
+    # Optimal batch size based on VRAM
+    if vram_gb < 10:
+        optimal_batch = 32  # Conservative for 8GB cards
+    elif vram_gb < 20:
+        optimal_batch = 64  # 16GB sweet spot
+    else:
+        optimal_batch = 128  # 24GB+ cards
+
+    return {
+        "fp16_enabled": fp16_capable,
+        "bf16_enabled": bf16_capable,
+        "optimal_batch": optimal_batch,
+        "is_navi33": is_navi33,
+        "is_navi31": is_navi31,
+        "is_amd": is_amd,
+        "vram_gb": vram_gb,
+    }
+
+
+# Global device selection
+DEVICE: torch.device = _select_device()
+AMD_OPTS: dict = _get_amd_optimizations()
+
+
+# ── Conv1d Q-Network (shared by Trigger / Harvester / Policy agents) ─────────
+class Conv1dQNet(nn.Module):
+    """Conv1d Q-Network for agents operating on (batch, window, features) inputs.
+
+    Architecture (temporal_pool_size=4, the new default):
+        Conv1d(n_features, 64, k=5, pad=2) → ReLU
+        Conv1d(64, 64, k=5, pad=2) → ReLU
+        AdaptiveAvgPool1d(temporal_pool_size) → Flatten
+        Linear(64 * temporal_pool_size, 128) → ReLU
+        Linear(128, n_actions)
+
+    With temporal_pool_size=4 the pooled output retains 4 coarse time-steps
+    (early / mid / late / final quarter of the window), giving the linear
+    head temporal context that AdaptiveAvgPool1d(1) discarded entirely.
+
+    Backward compatibility: pass temporal_pool_size=1 to reproduce the old
+    architecture exactly (required when loading pre-trained weights that were
+    saved with the pool-to-1 architecture).
+
+    Input shape:  (B, T, F)  – batch, time/window, features
+    Output shape: (B, n_actions)
+    """
+
+    def __init__(self, n_features: int, n_actions: int = 3, temporal_pool_size: int = 4) -> None:
+        super().__init__()
+        fc_in = 64 * temporal_pool_size
+        self.net = nn.Sequential(
+            nn.Conv1d(n_features, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(64, 64, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(temporal_pool_size),
+            nn.Flatten(),
+            nn.Linear(fc_in, 128),
+            nn.ReLU(),
+            nn.Linear(128, n_actions),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, F) → (B, F, T)
+        return self.net(x.transpose(1, 2))
+
+
+# ── Internal MLP module (used by DDQNNetwork) ────────────────────────────────
+class _QNet(nn.Module):
+    """3-layer MLP: state_dim → hidden1 → hidden2 → n_actions (linear out)."""
+
+    def __init__(self, state_dim: int, hidden1: int, hidden2: int, n_actions: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(state_dim, hidden1),
+            nn.ReLU(),
+            nn.Linear(hidden1, hidden2),
+            nn.ReLU(),
+            nn.Linear(hidden2, n_actions),
+        )
+        self._he_init()
+
+    def _he_init(self) -> None:
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, nonlinearity="relu")
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+class DDQNNetwork:
+    """Double Deep Q-Network with online and target networks.
+
+    Architecture:
+        Input (state_dim) → Hidden1 (128) → Hidden2 (64) → Output (n_actions)
+
+    All public methods accept / return NumPy arrays for drop-in compatibility
+    with the existing agent code. GPU transfers are handled internally.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        n_actions: int,
+        hidden1_size: int = 128,
+        hidden2_size: int = 64,
+        learning_rate: float = LEARNING_RATE,
+        gamma: float = GAMMA,
+        tau: float = TAU,
+        l2_weight: float = L2_WEIGHT,
+        grad_clip_norm: float = GRAD_CLIP_NORM,
+        seed: int | None = None,
+        use_bf16: bool | None = None,  # None = auto-detect from AMD_OPTS
+    ) -> None:
+        self.state_dim = state_dim
+        self.n_actions = n_actions
+        self.gamma = gamma
+        self.tau = tau
+        self.l2_weight = l2_weight
+        self.grad_clip_norm = grad_clip_norm
+        self.device = DEVICE
+
+        # BF16 training for AMD RDNA 3 (native support) / NVIDIA Ampere+
+        # Auto-detect from AMD_OPTS if not specified
+        if use_bf16 is None:
+            self._use_bf16 = AMD_OPTS.get("bf16_enabled", False)
+        else:
+            self._use_bf16 = use_bf16
+
+        # Log BF16 status
+        if self._use_bf16 and self.device.type == "cuda":
+            LOG.info("[DDQN] BF16 training enabled (native on RDNA 3 / Ampere+)")
+
+        if seed is not None:
+            torch.manual_seed(seed)
+
+        self.online = _QNet(state_dim, hidden1_size, hidden2_size, n_actions).to(self.device)
+        self.target = _QNet(state_dim, hidden1_size, hidden2_size, n_actions).to(self.device)
+        self.target.load_state_dict(self.online.state_dict())
+        self.target.eval()
+
+        self.optimizer = torch.optim.Adam(
+            self.online.parameters(),
+            lr=learning_rate,
+            weight_decay=l2_weight,
+        )
+
+        self.training_steps: int = 0
+        self.total_grad_norm: float = 0.0
+
+        # Loss-adaptive tau: track loss EMA and volatility to scale τ dynamically.
+        # When loss is volatile (early training), slow τ stabilises the target.
+        # When loss is stable (converged), faster τ tracks the online net better.
+        self._loss_ema: float = 0.0
+        self._loss_var_ema: float = 0.0
+        self._adaptive_tau_min: float = 0.1  # floor: never drop below 10% of base τ
+
+        LOG.info(
+            "[DDQN] Initialized: state_dim=%d, actions=%d, hidden=[%d,%d], lr=%.4f, tau=%.4f, device=%s, bf16=%s",
+            state_dim,
+            n_actions,
+            hidden1_size,
+            hidden2_size,
+            learning_rate,
+            tau,
+            self.device,
+            self._use_bf16,
+        )
+
+    # ── helpers ────────────────────────────────────────────────────────────
+
+    def _to_tensor(self, arr: np.ndarray, dtype=torch.float32) -> torch.Tensor:
+        return torch.as_tensor(arr, dtype=dtype, device=self.device)
+
+    # ── inference ──────────────────────────────────────────────────────────
+
+    def predict(self, state: np.ndarray, use_target: bool = False) -> np.ndarray:
+        """Return Q-values for *state* as a NumPy array (no grad)."""
+        net = self.target if use_target else self.online
+        single = state.ndim == 1
+        s = self._to_tensor(state)
+        if single:
+            s = s.unsqueeze(0)
+        with torch.no_grad():
+            q = net(s)
+        out = q.cpu().numpy()
+        return out[0] if single else out
+
+    def forward(self, state: np.ndarray, use_target: bool = False):
+        """Legacy shim — returns (q_values_numpy, {}).
+
+        Cache is empty because backprop is handled by PyTorch autograd.
+        """
+        return self.predict(state, use_target=use_target), {}
+
+    # ── training ───────────────────────────────────────────────────────────
+
+    def train_batch(
+        self,
+        states: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_states: np.ndarray,
+        dones: np.ndarray,
+        weights: np.ndarray,
+    ) -> dict:
+        """Train one batch; returns loss stats and per-sample td_errors.
+
+        BF16 Training:
+            On AMD RDNA 3 (gfx1100/gfx1102) and NVIDIA Ampere+, BF16 provides
+            native hardware acceleration with better numerical stability than FP16.
+            The autocast context automatically converts FP32 operations to BF16.
+        """
+        # Convert to tensors (FP32 by default, autocast handles BF16 conversion)
+        s = self._to_tensor(states)
+        ns = self._to_tensor(next_states)
+        a = self._to_tensor(actions, dtype=torch.long)
+        r = self._to_tensor(rewards)
+        d = self._to_tensor(dones)
+        w = self._to_tensor(weights)
+
+        # Online Q-values for taken actions
+        self.online.train()
+
+        # Use autocast for BF16 training on supported hardware
+        autocast_enabled = self._use_bf16 and self.device.type == "cuda"
+
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=autocast_enabled):
+            q_online = self.online(s)  # (B, A)
+            q_current = q_online.gather(1, a.unsqueeze(1)).squeeze(1)  # (B,)
+
+            # Double DQN: online selects next action, target evaluates it
+            with torch.no_grad():
+                next_actions = self.online(ns).argmax(dim=1)  # (B,)
+                q_next_max = self.target(ns).gather(1, next_actions.unsqueeze(1)).squeeze(1)  # (B,)
+
+            td_targets = r + self.gamma * q_next_max * (1.0 - d)
+            td_errors_t = (td_targets - q_current).detach()  # no grad
+
+            # Importance-sampling weighted MSE
+            loss = (w * td_errors_t**2).mean()
+
+            # Separate forward for the backward pass (avoid double-graph issue)
+            q_bp = self.online(s).gather(1, a.unsqueeze(1)).squeeze(1)
+            loss_bp = (w * (td_targets - q_bp) ** 2).mean()
+
+        self.optimizer.zero_grad()
+        loss_bp.backward()
+
+        total_norm = nn.utils.clip_grad_norm_(self.online.parameters(), self.grad_clip_norm)
+        self.total_grad_norm = float(total_norm)
+        self.optimizer.step()
+
+        # Soft update target with adaptive tau
+        self._update_loss_tracking(float(loss))
+        self._soft_update_target()
+        self.online.eval()
+        self.training_steps += 1
+
+        td_np = td_errors_t.cpu().numpy()
+        adaptive_tau = self._adaptive_tau()
+        return {
+            "loss": float(loss),
+            "l2_loss": 0.0,  # absorbed into Adam weight_decay
+            "total_loss": float(loss),
+            "mean_q": float(q_online.detach().mean()),
+            "mean_td_error": float(np.mean(np.abs(td_np))),
+            "max_td_error": float(np.max(np.abs(td_np))),
+            "grad_norm": self.total_grad_norm,
+            "td_errors": td_np,
+            "adaptive_tau": adaptive_tau,
+            "bf16_enabled": autocast_enabled,
+        }
+
+    # ── target network ─────────────────────────────────────────────────────
+
+    def _update_loss_tracking(self, loss: float) -> None:
+        """Update EMA of loss and loss variance for adaptive tau."""
+        alpha = 0.05
+        self._loss_ema = (1 - alpha) * self._loss_ema + alpha * loss
+        deviation = abs(loss - self._loss_ema)
+        self._loss_var_ema = (1 - alpha) * self._loss_var_ema + alpha * deviation
+
+    def _adaptive_tau(self) -> float:
+        """Compute tau scaled by loss stability.
+
+        Returns base tau when loss is stable; reduces tau (slower target
+        updates) when loss is volatile.
+        """
+        # Normalise volatility relative to loss magnitude to get a scale-free ratio.
+        # Use relative epsilon: require absolute ema > 1e-8 AND relative guard to
+        # prevent extreme cv ( > 1e3 ) from silently degrading tau to the floor.
+        if abs(self._loss_ema) > 1e-8:
+            cv = self._loss_var_ema / self._loss_ema
+            cv = min(cv, 1e3)  # clamp extreme cv so 1.0 - cv does not underflow
+        else:
+            cv = 0.0
+        # Scale: cv=0 → factor=1.0 (full tau), cv=1+ → factor clamps at min
+        factor = max(self._adaptive_tau_min, 1.0 - min(cv, 1.0))
+        return self.tau * factor
+
+    def _soft_update_target(self) -> None:
+        """θ_target ← τ·θ_online + (1−τ)·θ_target.
+
+        Uses adaptive tau that scales inversely with loss volatility.
+        """
+        adaptive_tau = self._adaptive_tau()
+        with torch.no_grad():
+            for p_on, p_tgt in zip(self.online.parameters(), self.target.parameters(), strict=False):
+                p_tgt.data.mul_(1.0 - adaptive_tau)
+                p_tgt.data.add_(adaptive_tau * p_on.data)
+
+    def hard_update_target(self) -> None:
+        """Copy online → target (τ = 1)."""
+        self.target.load_state_dict(self.online.state_dict())
+        LOG.info("[DDQN] Hard update: copied online → target")
+
+    # ── persistence ────────────────────────────────────────────────────────
+
+    def save_weights(self, filepath: str) -> None:
+        """Save to *filepath* (torch .pt format, .pt suffix auto-added)."""
+        path = Path(filepath)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pt_path = path.with_suffix(".pt") if path.suffix != ".pt" else path
+        torch.save(
+            {
+                "online": self.online.state_dict(),
+                "target": self.target.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+                "training_steps": self.training_steps,
+            },
+            pt_path,
+        )
+        LOG.info("[DDQN] Saved weights → %s (step %d)", pt_path, self.training_steps)
+
+    def load_weights(self, filepath: str) -> None:
+        """Load weights from *filepath*.
+
+        Supports:
+        - New torch .pt checkpoint
+        - Legacy NumPy .npz checkpoint (migrates weight layout automatically)
+        """
+        path = Path(filepath)
+        pt_path = path.with_suffix(".pt") if path.suffix != ".pt" else path
+
+        # Prefer .pt, fall back to the exact path, then .npz
+        candidates = [pt_path, path, path.with_suffix(".npz")]
+        found = next((p for p in candidates if p.exists()), None)
+        if found is None:
+            LOG.warning("[DDQN] Weight file not found: %s", filepath)
+            return
+
+        if found.suffix in (".pt", ".pth"):
+            ckpt = torch.load(found, map_location=self.device, weights_only=True)
+            self.online.load_state_dict(ckpt["online"])
+            self.target.load_state_dict(ckpt["target"])
+            if "optimizer" in ckpt:
+                try:
+                    self.optimizer.load_state_dict(ckpt["optimizer"])
+                except Exception as exc:
+                    LOG.warning("[DDQN] Skipping optimizer state load (shape mismatch?): %s", exc)
+            self.training_steps = int(ckpt.get("training_steps", 0))
+            LOG.info("[DDQN] Loaded %s (step %d)", found, self.training_steps)
+        else:
+            self._load_npz(found)
+
+    def _load_npz(self, path: Path) -> None:
+        """Migrate a legacy NumPy .npz checkpoint into the torch model.
+
+        NumPy layout: w1 (fan_in × fan_out) → torch expects (fan_out × fan_in).
+        Shape validation prevents silent weight corruption when checkpoint architecture
+        does not match the current model.
+        """
+        data = np.load(path)
+        # (torch_key, npz_key, transpose?)
+        mapping = [
+            ("net.0.weight", "w1", True),
+            ("net.0.bias", "b1", False),
+            ("net.2.weight", "w2", True),
+            ("net.2.bias", "b2", False),
+            ("net.4.weight", "w3", True),
+            ("net.4.bias", "b3", False),
+        ]
+
+        def _apply(module: _QNet, npz_prefix: str) -> None:
+            sd = module.state_dict()
+            for torch_key, npz_key, transpose in mapping:
+                full_key = npz_prefix + npz_key
+                if full_key not in data:
+                    LOG.warning("[DDQN] NPZ key %s not found in %s — skipping", full_key, path)
+                    continue
+                arr = data[full_key]
+                migrated = arr.T if transpose else arr
+                expected = sd[torch_key].shape
+                if migrated.shape != expected:
+                    LOG.error(
+                        "[DDQN] Shape mismatch for %s: expected %s, got %s (npz key %s) — skipping",
+                        torch_key, expected, migrated.shape, full_key)
+                    continue
+                sd[torch_key] = torch.as_tensor(migrated, dtype=torch.float32)
+            try:
+                module.load_state_dict(sd)
+            except Exception as exc:
+                LOG.exception("[DDQN] load_state_dict failed for %s%s: %s", npz_prefix, type(module).__name__, exc)
+
+        _apply(self.online, "")
+        _apply(self.target, "target_")
+
+        if "training_steps" in data:
+            self.training_steps = int(data["training_steps"])
+
+        LOG.info("[DDQN] Migrated NumPy checkpoint %s → torch (step %d)", path, self.training_steps)

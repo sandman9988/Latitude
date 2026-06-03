@@ -1,0 +1,900 @@
+#!/usr/bin/env python3
+"""Reward Shaper - Asymmetric component-based reward calculation
+Python port of MASTER_HANDBOOK.md Section 4.6 - Reward Shaping.
+
+Implements three reward components:
+1. Capture Efficiency: Rewards capturing high % of MFE
+2. Winner-to-Loser Penalty: Punishes giving back profits
+3. Opportunity Cost: Penalizes missing potential profits
+4. Activity Bonus: Rewards action when stagnant (NEW)
+5. Counterfactual Adjustment: Penalty for early exits (NEW)
+6. Ensemble Disagreement: Rewards exploration in uncertain states (NEW)
+
+All weights are adaptive per instrument (NO MAGIC NUMBERS principle).
+Uses LearnedParametersManager for DRY compliance.
+"""
+
+import math
+from datetime import UTC, datetime
+from typing import Any
+
+from src.monitoring.activity_monitor import ActivityMonitor, CounterfactualAnalyzer
+from src.persistence.learned_parameters import LearnedParametersManager
+from src.utils.safe_math import SafeMath
+
+TARGET_CAPTURE_RATIO: float = 0.7
+WTL_THRESHOLD: float = 1.0  # Relative: penalize WTL on any scale
+# BASELINE_MFE and OPPORTUNITY_THRESHOLD were formerly hardcoded (100.0, 50.0).
+# They are now learned per-instrument via LearnedParametersManager so the
+# reward shaper is instrument-agnostic (works on XAUUSD, EURUSD, BTC, etc.).
+# The values below are used only during the very first trades before live data
+# has been observed. After ~20 trades they will have fully self-calibrated.
+BASELINE_MFE_SEED: float = 10.0  # Neutral seed — updated by first real trades
+OPPORTUNITY_THRESHOLD_SEED: float = 15.0  # Neutral seed
+OPPORTUNITY_SIGNAL_MIN: float = 0.5
+OPPORTUNITY_SCALE: float = 0.3
+WEIGHT_CAPTURE: float = 1.0
+WEIGHT_WTL: float = 1.0
+WEIGHT_OPPORTUNITY: float = 0.5
+WEIGHT_ACTIVITY: float = 0.2
+WEIGHT_COUNTERFACTUAL: float = 0.6
+WEIGHT_ENSEMBLE: float = 0.4
+WEIGHT_PNL_ALIGNMENT: float = 1.2
+RUNWAY_MULT_DEFAULT: float = 2.0
+RUNWAY_PENALTY_INVALID: float = -2.0
+RUNWAY_LOG_PENALTY: float = -5.0
+RUNWAY_CLAMP_ABS: float = 3.0
+OPPORTUNITY_BONUS_DEFAULT: float = 0.0
+RUNWAY_EXCELLENT_MIN: float = 0.8
+RUNWAY_GOOD_MIN: float = 0.6
+RUNWAY_FAIR_MIN: float = 0.4
+WTL_MULT_DEFAULT: float = 3.0
+WTL_NEGATIVE_EXIT_MULT: float = 1.35
+WTL_REVERSAL_SEVERITY_MULT: float = 0.75
+CAPTURE_MULT_FALLBACK: float = 2.0
+TIMING_PENALTY_SCALE: float = -1.5  # Increased from -0.5 for stronger late-exit penalty
+RUNWAY_EXPECTED_GAIN_MULT: float = 2.0
+RUNWAY_EXPECTED_LOSS_MULT: float = 1.0
+FRICTION_COST_MULT: float = 0.1
+PNL_ALIGNMENT_MULT_DEFAULT: float = 1.5
+
+# Undeveloped-MFE penalty: rewards based on how much of MFE was realised
+# (timeframe-agnostic — no bar counts).  Fires when MFE existed but most
+# of the move was surrendered (high MAE relative to MFE).
+UNDEVELOPED_MFE_PENALTY_SCALE: float = -0.4  # max penalty at full giveback
+ZERO_MFE_PENALTY: float = -0.3  # flat penalty when MFE ≤ 0
+ZERO_MFE_EPSILON: float = 1e-8
+ZERO_MFE_LOSS_MULT: float = 3.0
+ZERO_MFE_LOSS_BASELINE_SCALE: float = 0.5
+ZERO_MFE_LOSS_CAP_MULT: float = 5.0
+
+# Session quality multiplier: MFE during high-liquidity sessions is "worth
+# more" because the signal is cleaner and slippage lower.  Pure results
+# weighting — no bar counting.
+SESSION_BONUS_OVERLAP: float = 1.3  # London/NY overlap
+SESSION_BONUS_LONDON: float = 1.15  # London session
+SESSION_BONUS_NY: float = 1.15  # New York session
+SESSION_BONUS_OFFPEAK: float = 0.85  # Asian/overnight
+
+# Runway quality thresholds (for trigger reward calculation)
+RUNWAY_EXCELLENT_MAX: float = 1.2
+RUNWAY_GOOD_MAX: float = 1.5
+RUNWAY_OVERPREDICT_THRESHOLD: float = 0.5
+
+# Capture quality thresholds (for harvester reward quality assessment)
+CAPTURE_QUALITY_EXCELLENT: float = 0.8
+CAPTURE_QUALITY_GOOD: float = 0.6
+CAPTURE_QUALITY_FAIR: float = 0.4
+
+
+class RewardShaper:
+    """Asymmetric reward shaper for DDQN training.
+    Implements component-based rewards with adaptive weights.
+
+    Now uses LearnedParametersManager (DRY - single source of truth)
+    Includes activity monitoring and counterfactual analysis
+    """
+
+    def __init__(
+        self,
+        symbol: str = "XAUUSD",  # Instrument-agnostic: default for tests/demos
+        timeframe: str = "M15",
+        broker: str = "default",
+        param_manager: LearnedParametersManager | None = None,
+        activity_monitor: ActivityMonitor | None = None,
+    ) -> None:
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.broker = broker
+
+        # Use shared parameter manager (DRY)
+        if param_manager is None:
+            self.param_manager = LearnedParametersManager()
+            self.param_manager.load()  # Load existing parameters if available
+        else:
+            self.param_manager = param_manager
+
+        self._param_cache = {
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "broker": self.broker,
+        }
+
+        # Activity monitoring (prevent learned helplessness)
+        self.activity_monitor = activity_monitor or ActivityMonitor()
+
+        # Counterfactual analysis (optimal vs actual exit)
+        self.counterfactual = CounterfactualAnalyzer()
+
+        # Adaptive component weights: stored in LearnedParametersManager so
+        # they persist and self-calibrate.  Bounded to [0.2, 2.0] so no
+        # component can be zeroed out or dominate entirely.
+        self._weight_names = [
+            ("reward_weight_capture", WEIGHT_CAPTURE),
+            ("reward_weight_wtl", WEIGHT_WTL),
+            ("reward_weight_opportunity", WEIGHT_OPPORTUNITY),
+            ("reward_weight_activity", WEIGHT_ACTIVITY),
+            ("reward_weight_counterfactual", WEIGHT_COUNTERFACTUAL),
+            ("reward_weight_ensemble", WEIGHT_ENSEMBLE),
+            ("reward_weight_pnl_alignment", WEIGHT_PNL_ALIGNMENT),
+        ]
+
+        # Session quality engine (optional — used to weight MFE value by session)
+        self._event_engine: Any | None = None
+
+        # Statistics for monitoring
+        self.total_rewards_calculated = 0
+        self.component_stats = {
+            "capture": {"sum": 0.0, "count": 0},
+            "wtl": {"sum": 0.0, "count": 0},
+            "opportunity": {"sum": 0.0, "count": 0},
+            "activity": {"sum": 0.0, "count": 0},
+            "counterfactual": {"sum": 0.0, "count": 0},
+            "ensemble": {"sum": 0.0, "count": 0},  # NEW: Ensemble disagreement bonus
+            "pnl_alignment": {"sum": 0.0, "count": 0},
+        }
+
+    def _get_weight(self, param_name: str, default: float) -> float:
+        """Get adaptive weight, bounded to [0.2, 2.0]."""
+        raw = self._get_param(param_name, default)
+        if raw is None:
+            return default
+        return max(0.2, min(2.0, float(raw)))
+
+    def _get_param(self, name: str, default: float | None = None) -> float:
+        return self.param_manager.get(self.symbol, name, timeframe=self.timeframe, broker=self.broker, default=default)
+
+    def set_event_engine(self, engine: Any) -> None:
+        """Inject an EventTimeFeatureEngine for session-aware MFE weighting."""
+        self._event_engine = engine
+
+    def _get_session_quality(self, exit_time: str) -> float:
+        """Return a multiplier reflecting session liquidity quality.
+
+        London/NY overlap → highest quality (cleaner MFE, lower slippage).
+        London or NY solo → above-average.
+        Off-peak (Asian/overnight) → below-average.
+
+        Returns 1.0 when no event engine is available or timestamp is empty.
+        """
+        if not exit_time or self._event_engine is None:
+            return 1.0
+        try:
+            dt = datetime.fromisoformat(exit_time) if isinstance(exit_time, str) else exit_time
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+
+            feats = self._event_engine.compute(dt)
+            # feats is a dict with keys like london_active, ny_active, london_ny_overlap...
+            if feats.get("london_ny_overlap", 0.0) > 0.5:
+                return SESSION_BONUS_OVERLAP
+            if feats.get("london_active", 0.0) > 0.5:
+                return SESSION_BONUS_LONDON
+            if feats.get("ny_active", 0.0) > 0.5:
+                return SESSION_BONUS_NY
+            return SESSION_BONUS_OFFPEAK
+        except Exception:
+            return 1.0
+
+    def calculate_capture_efficiency_reward(self, exit_pnl: float, mfe: float) -> float:
+        """Reward based on how much of MFE was captured at exit.
+
+        Formula from handbook:
+        capture_ratio = exit_pnl / mfe
+        r_capture = (capture_ratio - target_capture) * multiplier
+
+        Args:
+            exit_pnl: Final P&L at trade exit
+            mfe: Maximum favorable excursion during trade
+
+        Returns:
+            Capture efficiency reward (positive if above target, negative if below)
+
+        """
+        if mfe <= 0:
+            return 0.0
+
+        # Get adaptive parameters
+        capture_mult = self._get_param("capture_multiplier")
+        target_capture = TARGET_CAPTURE_RATIO  # Principled default from handbook: aim for 70% MFE capture
+
+        # Clamp ratio to prevent explosion when mfe is tiny or pnl/mfe have different scales.
+        # A ratio outside [-5, 5] carries no additional discriminative signal for the DDQN
+        # (both -5 and -355 mean "catastrophic loss relative to MFE").
+        raw_ratio = exit_pnl / mfe
+        capture_ratio = max(-5.0, min(5.0, raw_ratio))
+
+        # Reward = difference from target × multiplier, bounded for DDQN stability
+        reward = max(-3.0, min(3.0, (capture_ratio - target_capture) * capture_mult))
+
+        # Track statistics
+        self.component_stats["capture"]["sum"] += reward
+        self.component_stats["capture"]["count"] += 1
+
+        return reward
+
+    def calculate_wtl_penalty(
+        self, was_wtl: bool, mfe: float, exit_pnl: float, bars_from_mfe_to_exit: int = 0,
+    ) -> float:
+        """Penalty for Winner-to-Loser trades (had profit, ended in loss).
+
+        Formula from handbook:
+        if was_winner_to_loser AND mfe > threshold:
+            mfe_normalized = mfe / baseline_mfe
+            giveback_ratio = (mfe - exit_pnl) / mfe
+            time_penalty = 1 + (bars_from_mfe_to_exit / 10)
+            r_wtl = -mfe_normalized * giveback_ratio * penalty_mult * time_penalty
+
+        Args:
+            was_wtl: Boolean flag from MFEMAETracker
+            mfe: Maximum favorable excursion
+            exit_pnl: Final P&L (negative for WTL)
+            bars_from_mfe_to_exit: Time elapsed from MFE peak to exit
+
+        Returns:
+            Penalty (negative reward) for WTL, 0 otherwise
+
+        """
+        # Get adaptive parameters
+        wtl_penalty_mult = self._get_param("wtl_penalty_multiplier")
+        wtl_threshold = WTL_THRESHOLD  # Relative: independent of instrument scale
+        # Self-calibrating baseline: median MFE observed on this instrument.
+        # Starts at BASELINE_MFE_SEED and updates each trade via update_baselines().
+        baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 1.0)
+
+        if not was_wtl or mfe <= 0 or mfe < wtl_threshold:
+            return 0.0
+
+        # Normalize MFE by baseline
+        mfe_normalized = SafeMath.safe_div(mfe, baseline_mfe, 0.0)
+
+        # Calculate how much profit was given back
+        giveback_ratio = (mfe - exit_pnl) / mfe
+
+        # Time penalty: longer hold after MFE = worse
+        time_penalty = 1.0 + (bars_from_mfe_to_exit / 10.0)
+
+        # Final penalty (negative reward)
+        penalty = -mfe_normalized * giveback_ratio * wtl_penalty_mult * time_penalty
+
+        # Track statistics
+        self.component_stats["wtl"]["sum"] += penalty
+        self.component_stats["wtl"]["count"] += 1
+
+        return penalty
+
+    def calculate_opportunity_cost(self, potential_mfe: float, signal_strength: float = 1.0) -> float:
+        """Penalty for missed opportunities (didn't enter when signal was strong).
+
+        Formula from handbook:
+        if potential_mfe > threshold AND signal_strength > 0.5:
+            opportunity_normalized = potential_mfe / baseline_mfe
+            r_opportunity = -opportunity_normalized * signal_strength * weight * 0.3
+
+        Args:
+            potential_mfe: Estimated profit if had entered (from backtesting)
+            signal_strength: Confidence of entry signal (0 to 1)
+
+        Returns:
+            Opportunity cost penalty (negative reward)
+
+        """
+        # Get adaptive parameters
+        opportunity_mult = self._get_param("opportunity_multiplier")
+        # Self-calibrating threshold: p75 of MFE seen on this instrument.
+        # Ensures "missed opportunity" only fires when the move is large
+        # relative to what this instrument typically produces.
+        opportunity_threshold = self._get_param("opportunity_p75_baseline", OPPORTUNITY_THRESHOLD_SEED)
+        baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 1.0)
+
+        if potential_mfe < opportunity_threshold or signal_strength < OPPORTUNITY_SIGNAL_MIN:
+            return 0.0
+
+        # Normalize opportunity by baseline
+        opportunity_normalized = SafeMath.safe_div(potential_mfe, baseline_mfe, 0.0)
+
+        # Penalty scaled by signal strength and weight
+        penalty = -opportunity_normalized * signal_strength * opportunity_mult * OPPORTUNITY_SCALE
+
+        # Track statistics
+        self.component_stats["opportunity"]["sum"] += penalty
+        self.component_stats["opportunity"]["count"] += 1
+
+        return penalty
+
+    def calculate_pnl_alignment_reward(self, exit_pnl: float, mfe: float = 0.0) -> float:
+        """Reward realized net PnL, not just high capture of a tiny move.
+
+        Capture ratio can look excellent when the move is too small to matter.
+        This bounded component pushes both agents toward trades whose realized
+        PnL is meaningful relative to this symbol/timeframe's usual MFE.
+        """
+        try:
+            pnl_mult = float(self._get_param("pnl_alignment_multiplier", PNL_ALIGNMENT_MULT_DEFAULT))
+        except (KeyError, TypeError, ValueError):
+            pnl_mult = PNL_ALIGNMENT_MULT_DEFAULT
+        try:
+            baseline_mfe = max(float(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED)), 0.01)
+        except (KeyError, TypeError, ValueError):
+            baseline_mfe = max(BASELINE_MFE_SEED, 0.01)
+        scale = max(baseline_mfe, abs(float(mfe or 0.0)) * 0.5, 0.01)
+        reward = math.tanh(float(exit_pnl or 0.0) / scale) * pnl_mult
+        self.component_stats["pnl_alignment"]["sum"] += reward
+        self.component_stats["pnl_alignment"]["count"] += 1
+        return reward
+
+    def calculate_total_reward(self, trade_data: dict) -> dict[str, float]:
+        """Calculate total reward from all components.
+
+        Args:
+            trade_data: Dictionary with keys:
+                - exit_pnl: Final P&L
+                - mfe: Maximum favorable excursion
+                - mae: Maximum adverse excursion
+                - winner_to_loser: WTL flag
+                - bars_from_mfe: Time from MFE to exit (optional)
+                - potential_mfe: Missed opportunity (optional)
+                - signal_strength: Entry signal confidence (optional)
+                - ensemble_bonus: Exploration bonus from disagreement (optional, NEW)
+
+        Returns:
+            Dictionary with component rewards and total (6 components)
+
+        """
+        # Extract trade data
+        exit_pnl = trade_data.get("exit_pnl", 0.0)
+        net_exit_pnl = trade_data.get("net_exit_pnl", exit_pnl)
+        mfe = trade_data.get("mfe", 0.0)
+        was_wtl = trade_data.get("winner_to_loser", False)
+        bars_from_mfe = trade_data.get("bars_from_mfe", 0)
+        potential_mfe = trade_data.get("potential_mfe", 0.0)
+        signal_strength = trade_data.get("signal_strength", 1.0)
+
+        # NEW: Counterfactual analysis (optimal vs actual exit)
+        entry_price = trade_data.get("entry_price", 0.0)
+        exit_price = trade_data.get("exit_price", 0.0)
+        direction = trade_data.get("direction", 1)
+        mfe_bar_offset = trade_data.get("mfe_bar_offset", 0)
+
+        # Calculate components
+        r_capture = self.calculate_capture_efficiency_reward(exit_pnl, mfe)
+        r_wtl = self.calculate_wtl_penalty(was_wtl, mfe, exit_pnl, bars_from_mfe)
+        r_opportunity = self.calculate_opportunity_cost(potential_mfe, signal_strength)
+        r_pnl = self.calculate_pnl_alignment_reward(net_exit_pnl, mfe)
+
+        # NEW: Activity bonus (exploration when stagnant)
+        r_activity = self.activity_monitor.get_exploration_bonus()
+        if r_activity > 0:
+            self.component_stats["activity"]["sum"] += r_activity
+            self.component_stats["activity"]["count"] += 1
+
+        # NEW: Counterfactual reward (penalty for early exits)
+        r_counterfactual = 0.0
+        if entry_price > 0 and exit_price > 0 and mfe > 0:
+            r_counterfactual, _ = self.counterfactual.analyze_exit(
+                entry_price, exit_price, mfe, mfe_bar_offset, direction,
+            )
+            self.component_stats["counterfactual"]["sum"] += r_counterfactual
+            self.component_stats["counterfactual"]["count"] += 1
+
+        # NEW: Ensemble disagreement bonus (epistemic uncertainty reward)
+        r_ensemble = trade_data.get("ensemble_bonus", 0.0)
+        if r_ensemble > 0:
+            self.component_stats["ensemble"]["sum"] += r_ensemble
+            self.component_stats["ensemble"]["count"] += 1
+
+        # Weighted total (6 components with adaptive weights)
+        weight_capture = self._get_weight("reward_weight_capture", WEIGHT_CAPTURE)
+        weight_wtl = self._get_weight("reward_weight_wtl", WEIGHT_WTL)
+        weight_opportunity = self._get_weight("reward_weight_opportunity", WEIGHT_OPPORTUNITY)
+        weight_activity = self._get_weight("reward_weight_activity", WEIGHT_ACTIVITY)
+        weight_counterfactual = self._get_weight("reward_weight_counterfactual", WEIGHT_COUNTERFACTUAL)
+        weight_ensemble = self._get_weight("reward_weight_ensemble", WEIGHT_ENSEMBLE)
+        weight_pnl = self._get_weight("reward_weight_pnl_alignment", WEIGHT_PNL_ALIGNMENT)
+
+        total_reward = (
+            weight_capture * r_capture
+            + weight_wtl * r_wtl
+            + weight_opportunity * r_opportunity
+            + weight_activity * r_activity
+            + weight_counterfactual * r_counterfactual
+            + weight_ensemble * r_ensemble
+            + weight_pnl * r_pnl
+        )
+
+        self.total_rewards_calculated += 1
+
+        # After each closed trade, soft-update the MFE baselines so they
+        # stay calibrated to this instrument's typical move size.
+        if mfe > 0:
+            self.update_baselines(mfe)
+
+        return {
+            "capture_efficiency": r_capture,
+            "wtl_penalty": r_wtl,
+            "opportunity_cost": r_opportunity,
+            "activity_bonus": r_activity,
+            "counterfactual_adjustment": r_counterfactual,
+            "ensemble_bonus": r_ensemble,  # NEW: 6th component
+            "pnl_alignment": r_pnl,
+            "total_reward": total_reward,
+            "components_active": sum(
+                [
+                    1 if r_capture != 0 else 0,
+                    1 if r_wtl != 0 else 0,
+                    1 if r_opportunity != 0 else 0,
+                    1 if r_activity != 0 else 0,
+                    1 if r_counterfactual != 0 else 0,
+                    1 if r_ensemble != 0 else 0,
+                    1 if r_pnl != 0 else 0,
+                ],
+            ),
+        }
+
+    def update_baselines(self, mfe: float) -> None:
+        """Soft-update the per-instrument MFE baselines after each trade.
+
+        Uses an exponential moving average with alpha=0.05 (slow decay so the
+        baseline tracks the instrument's typical move scale without overreacting
+        to individual outliers).
+
+        Uses `set_value()` (direct assignment) rather than the gradient/momentum
+        `update()` path because the tanh sigmoid in AdaptiveParam is designed for
+        gradient descent and produces distorted results when used to write absolute
+        EMA values with wide bounds like [0.01, 100000].
+
+        This is the mechanism that makes the reward shaper instrument-agnostic:
+        after ~20 trades on a new instrument the baselines will have converged
+        to the right scale and no manual tuning is required.
+
+        Args:
+            mfe: Actual Maximum Favorable Excursion for the closed trade
+
+        """
+        if mfe <= 0:
+            return
+
+        alpha = 0.05  # EMA smoothing — slow enough to avoid single-trade whiplash
+
+        # p50 baseline (median proxy via EMA)
+        current_p50 = self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED)
+        new_p50 = (1 - alpha) * current_p50 + alpha * mfe
+        self.param_manager.set_value(
+            self.symbol, "mfe_p50_baseline", new_p50, timeframe=self.timeframe, broker=self.broker,
+        )
+
+        # p75 baseline (high-end proxy: EMA with upward bias on large moves)
+        # Large MFEs pull the baseline up faster than small ones pull it down,
+        # giving an approximate upper-quartile tracker.
+        current_p75 = self._get_param("opportunity_p75_baseline", OPPORTUNITY_THRESHOLD_SEED)
+        p75_alpha = 0.10 if mfe > current_p75 else 0.03
+        new_p75 = (1 - p75_alpha) * current_p75 + p75_alpha * mfe
+        self.param_manager.set_value(
+            self.symbol, "opportunity_p75_baseline", new_p75, timeframe=self.timeframe, broker=self.broker,
+        )
+
+    def adapt_weights(self, performance_delta: float) -> None:
+        """Adjust reward component weights based on trade outcome feedback.
+
+        Uses component-outcome correlation: if a component's recent average
+        reward correlates with positive trade outcomes (performance_delta > 0),
+        that component's weight is nudged up.  Conversely, components whose
+        signals correlate with losses get nudged down.
+
+        Weights are bounded to [0.2, 2.0] via _get_weight() so no component
+        can be eliminated or dominate entirely.
+
+        Args:
+            performance_delta: Trade outcome proxy (positive = profitable trade,
+                negative = losing trade). Typically exit_pnl or capture_ratio.
+
+        """
+        if not self.param_manager:
+            return
+
+        alpha = 0.02  # Very slow adaptation to prevent whiplash
+        direction = 1.0 if performance_delta > 0 else -1.0
+
+        for param_name, default in self._weight_names:
+            component_key = param_name.replace("reward_weight_", "")
+            stats = self.component_stats.get(component_key, {})
+            count = stats.get("count", 0)
+            if count == 0:
+                continue
+
+            # Component's recent average: positive avg on a winning trade
+            # means this component correctly identified a good trade.
+            avg = stats["sum"] / count
+            # Nudge: strengthen components aligned with outcome,
+            # weaken those anti-aligned.
+            gradient = alpha * direction * (1.0 if avg * direction > 0 else -0.5)
+
+            current = self._get_weight(param_name, default)
+            new_val = max(0.2, min(2.0, current + gradient))
+            self.param_manager.set_value(self.symbol, param_name, new_val, timeframe=self.timeframe, broker=self.broker)
+
+    def get_statistics(self) -> dict:
+        """Return statistics about reward components."""
+        stats = {
+            "total_rewards_calculated": self.total_rewards_calculated,
+            "parameters": {
+                "capture_multiplier": self._get_param("capture_multiplier"),
+                "wtl_penalty_multiplier": self._get_param("wtl_penalty_multiplier"),
+                "opportunity_multiplier": self._get_param("opportunity_multiplier"),
+                "pnl_alignment_multiplier": self._get_param("pnl_alignment_multiplier", PNL_ALIGNMENT_MULT_DEFAULT),
+            },
+            "weights": {
+                name.replace("reward_weight_", ""): self._get_weight(name, default)
+                for name, default in self._weight_names
+            },
+        }
+
+        # Calculate averages
+        for component in ["capture", "wtl", "opportunity", "pnl_alignment"]:
+            count = self.component_stats[component]["count"]
+            if count > 0:
+                avg = self.component_stats[component]["sum"] / count
+                stats[f"avg_{component}_reward"] = avg
+            else:
+                stats[f"avg_{component}_reward"] = 0.0
+
+        return stats
+
+    def print_summary(self) -> str:
+        """Generate human-readable summary of reward shaper state."""
+        stats = self.get_statistics()
+        context = f"{self.symbol}_{self.timeframe}_{self.broker}"
+
+        return f"""
+╔══════════════════════════════════════════════════════════════════╗
+    ║               REWARD SHAPER SUMMARY - {context:^20}          ║
+╚══════════════════════════════════════════════════════════════════╝
+
+📊 REWARD STATISTICS
+   Total Rewards Calculated: {stats["total_rewards_calculated"]}
+
+⚙️  ADAPTIVE MULTIPLIERS (from LearnedParametersManager)
+   Capture Multiplier:       {stats["parameters"]["capture_multiplier"]:.2f}
+   WTL Penalty Multiplier:   {stats["parameters"]["wtl_penalty_multiplier"]:.2f}
+   Opportunity Multiplier:   {stats["parameters"]["opportunity_multiplier"]:.2f}
+
+🎚️  COMPONENT WEIGHTS (Adaptive)
+   Capture Efficiency:       {stats["weights"]["capture"]:.1f}
+   WTL Penalty:              {stats["weights"]["wtl"]:.1f}
+   Opportunity Cost:         {stats["weights"]["opportunity"]:.1f}
+   PnL Alignment:            {stats["weights"]["pnl_alignment"]:.1f}
+
+📈 AVERAGE COMPONENT REWARDS
+   Capture Efficiency:       {stats["avg_capture_reward"]:+.4f}
+   WTL Penalty:              {stats["avg_wtl_reward"]:+.4f}
+   Opportunity Cost:         {stats["avg_opportunity_reward"]:+.4f}
+   PnL Alignment:            {stats["avg_pnl_alignment_reward"]:+.4f}
+"""
+
+    # ========================================================================
+    # Phase 3.2: Specialized Dual-Agent Rewards
+    # ========================================================================
+
+    def calculate_trigger_reward(
+        self,
+        actual_mfe: float,
+        predicted_runway: float,
+        direction: int = 1,  # NOSONAR
+        entry_price: float = 0.0,  # NOSONAR
+        exit_pnl: float | None = None,
+    ) -> dict[str, float]:
+        """Calculate reward for TriggerAgent (entry specialist).
+
+        Measures runway utilization: How well did we predict MFE?
+
+        Formula:
+            runway_utilization = actual_MFE / predicted_runway
+            reward = log(runway_utilization) if runway > 0 else large_penalty
+
+        Asymmetric:
+            - Underprediction (actual > predicted): Small positive reward
+            - Good prediction (actual ≈ predicted): Maximum reward
+            - Overprediction (actual < predicted): Larger penalty
+
+        Args:
+            actual_mfe: Actual maximum favorable excursion achieved
+            predicted_runway: Predicted MFE from TriggerAgent
+
+        Returns:
+            Dict with 'runway_reward', 'utilization', 'error_pct'
+
+        """
+        if predicted_runway <= 0:
+            # Invalid prediction - large penalty
+            return {
+                "runway_reward": RUNWAY_PENALTY_INVALID,
+                "utilization": 0.0,
+                "error_pct": 100.0,
+                "prediction_quality": "INVALID",
+            }
+
+        # Runway utilization ratio
+        utilization = actual_mfe / predicted_runway
+
+        # Logarithmic reward (symmetric around 1.0): >0 → log(util); =0 → floor penalty
+        # - utilization = 1.0 → 0.0 (perfect); > 1.0 → positive; < 1.0 → negative
+        base_reward = math.log(utilization) if utilization > 0 else RUNWAY_LOG_PENALTY
+
+        # Scale reward
+        try:
+            runway_mult = self._get_param("runway_multiplier")
+        except KeyError:
+            runway_mult = RUNWAY_MULT_DEFAULT  # Default multiplier for runway prediction
+        runway_reward = base_reward * runway_mult
+
+        # Clip extreme values
+        runway_reward = max(min(runway_reward, RUNWAY_CLAMP_ABS), -RUNWAY_CLAMP_ABS)
+        pnl_alignment = self.calculate_pnl_alignment_reward(exit_pnl, actual_mfe) if exit_pnl is not None else 0.0
+        runway_reward = max(min(runway_reward + pnl_alignment, RUNWAY_CLAMP_ABS), -RUNWAY_CLAMP_ABS)
+
+        # Calculate error percentage
+        error_pct = abs(actual_mfe - predicted_runway) / predicted_runway * 100
+
+        # Quality assessment
+        if RUNWAY_EXCELLENT_MIN <= utilization <= RUNWAY_EXCELLENT_MAX:
+            quality = "EXCELLENT"  # Within 20%
+        elif RUNWAY_GOOD_MIN <= utilization <= RUNWAY_GOOD_MAX:
+            quality = "GOOD"  # Within 50%
+        elif utilization < RUNWAY_OVERPREDICT_THRESHOLD:
+            quality = "OVERPREDICTED"  # Predicted too high
+        else:
+            quality = "UNDERPREDICTED"  # Predicted too low
+
+        return {
+            "runway_reward": runway_reward,
+            "pnl_alignment": pnl_alignment,
+            "utilization": utilization,
+            "error_pct": error_pct,
+            "prediction_quality": quality,
+            "actual_mfe": actual_mfe,
+            "predicted_runway": predicted_runway,
+        }
+
+    def _harvester_capture_reward(self, reward_pnl: float, mfe: float) -> tuple[float, float]:
+        if mfe > 0:
+            raw_ratio = reward_pnl / mfe
+            capture_ratio = max(-5.0, min(5.0, raw_ratio))
+            try:
+                capture_mult = self._get_param("capture_multiplier")
+            except KeyError:
+                capture_mult = CAPTURE_MULT_FALLBACK
+            try:
+                baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
+            except (KeyError, TypeError):
+                baseline_mfe = max(BASELINE_MFE_SEED, 0.01)
+            magnitude_scale = max(min(mfe / baseline_mfe, 2.0), 0.3)
+            reward = max(-3.0, min(3.0, (capture_ratio - TARGET_CAPTURE_RATIO) * capture_mult * magnitude_scale))
+            return reward, capture_ratio
+
+        capture_ratio = 0.0
+        zero_mfe_epsilon = max(float(self._get_param("zero_mfe_epsilon", ZERO_MFE_EPSILON)), 1e-12)
+        if mfe > zero_mfe_epsilon or reward_pnl >= 0:
+            return ZERO_MFE_PENALTY, capture_ratio
+        loss_mult = max(float(self._get_param("zero_mfe_loss_multiplier", ZERO_MFE_LOSS_MULT)), 1.0)
+        baseline_mfe = max(self._get_param("mfe_p50_baseline", BASELINE_MFE_SEED), 0.01)
+        baseline_scale = max(
+            float(self._get_param("zero_mfe_loss_baseline_scale", ZERO_MFE_LOSS_BASELINE_SCALE)),
+            1e-6,
+        )
+        cap_mult = max(float(self._get_param("zero_mfe_loss_cap_multiplier", ZERO_MFE_LOSS_CAP_MULT)), 1.0)
+        loss_scale = min(abs(reward_pnl) / (baseline_mfe * baseline_scale), cap_mult)
+        return ZERO_MFE_PENALTY * loss_mult * (1.0 + loss_scale), capture_ratio
+
+    def _harvester_wtl_penalty(self, reward_pnl: float, mfe: float, was_wtl: bool) -> float:
+        try:
+            wtl_mult = self._get_param("wtl_multiplier")
+        except KeyError:
+            wtl_mult = WTL_MULT_DEFAULT
+        if not was_wtl:
+            return 0.0
+        if mfe > 0:
+            giveback_ratio = max(0.5, min(1.0 - (reward_pnl / mfe), 2.0))
+        else:
+            giveback_ratio = 1.0
+        negative_exit_mult = WTL_NEGATIVE_EXIT_MULT if reward_pnl < 0 else 1.0
+        reversal_severity = max(0.0, min(1.0, -reward_pnl / mfe)) if mfe > 0 and reward_pnl < 0 else 0.0
+        severity_mult = 1.0 + (reversal_severity * WTL_REVERSAL_SEVERITY_MULT)
+        return max(-5.0, -wtl_mult * giveback_ratio * negative_exit_mult * severity_mult)
+
+    @staticmethod
+    def _harvester_timing_penalty(mfe: float, mae: float) -> float:
+        if mfe <= 0 or mae <= 0:
+            return 0.0
+        drawdown_ratio = min(mae / mfe, 3.0)
+        if drawdown_ratio <= 0.3:
+            return 0.0
+        return UNDEVELOPED_MFE_PENALTY_SCALE * (drawdown_ratio - 0.3)
+
+    def calculate_harvester_reward(
+        self,
+        exit_pnl: float,
+        mfe: float,
+        net_exit_pnl: float | None = None,
+        was_wtl: bool = False,
+        _bars_held: int = 0,
+        _bars_from_mfe_to_exit: int = 0,
+        mae: float = 0.0,
+        exit_time: str = "",
+    ) -> dict[str, float]:
+        """Calculate reward for HarvesterAgent (exit specialist).
+
+        Combines:
+        1. Capture efficiency (how much of MFE captured, magnitude-scaled)
+        2. WTL penalty (winner-to-loser prevention, proportional)
+        3. Undeveloped-MFE penalty (MAE/MFE ratio — result-based, not bar-based)
+        4. Session quality multiplier (London/NY overlap > overnight)
+
+        All components are timeframe-agnostic: no bar counts in reward signal.
+        _bars_held / _bars_from_mfe_to_exit accepted for backward compat but
+        not used in reward calculation.
+
+        Args:
+            exit_pnl: Final P&L at exit
+            mfe: Maximum favorable excursion
+            was_wtl: Winner-to-loser flag
+            bars_held: (compat) Total bars position was held
+            bars_from_mfe_to_exit: (compat) Bars between MFE and exit
+            mae: Maximum adverse excursion (absolute, positive)
+            exit_time: ISO timestamp of exit (for session quality weighting)
+
+        Returns:
+            Dict with component rewards and total
+
+        """
+        reward_pnl = float(exit_pnl if net_exit_pnl is None else net_exit_pnl)
+        r_capture, capture_ratio = self._harvester_capture_reward(reward_pnl, mfe)
+        r_wtl = self._harvester_wtl_penalty(reward_pnl, mfe, was_wtl)
+        r_timing = self._harvester_timing_penalty(mfe, mae)
+        session_mult = self._get_session_quality(exit_time)
+        r_pnl = self.calculate_pnl_alignment_reward(reward_pnl, mfe)
+        total_reward = (r_capture + r_wtl + r_timing + r_pnl) * session_mult
+        quality = self._harvest_quality(capture_ratio)
+
+        return {
+            "harvester_reward": total_reward,
+            "capture_efficiency": r_capture,
+            "wtl_penalty": r_wtl,
+            "timing_penalty": r_timing,
+            "pnl_alignment": r_pnl,
+            "capture_ratio": capture_ratio,
+            "quality": quality,
+            "was_wtl": was_wtl,
+            "session_quality": session_mult,
+        }
+
+    @staticmethod
+    def _harvest_quality(capture_ratio: float) -> str:
+        """Classify harvest capture quality from the capture ratio."""
+        if capture_ratio >= CAPTURE_QUALITY_EXCELLENT:
+            return "EXCELLENT"
+        if capture_ratio >= CAPTURE_QUALITY_GOOD:
+            return "GOOD"
+        if capture_ratio >= CAPTURE_QUALITY_FAIR:
+            return "FAIR"
+        return "POOR"
+
+    def calculate_dual_agent_rewards(
+        self,
+        # Trigger data
+        actual_mfe: float,
+        predicted_runway: float,
+        direction: int = 1,
+        entry_price: float = 0.0,
+        # Harvester data
+        exit_pnl: float = 0.0,
+        net_exit_pnl: float | None = None,
+        mae: float = 0.0,
+        was_wtl: bool = False,
+        bars_held: int = 0,
+        bars_from_mfe_to_exit: int = 0,
+        exit_time: str = "",
+    ) -> dict[str, float]:
+        """Calculate rewards for both trigger and harvester agents.
+
+        This is the main reward method for dual-agent mode.
+
+        Returns:
+            Dict with:
+                - trigger_reward: TriggerAgent reward
+                - harvester_reward: HarvesterAgent reward
+                - total_reward: Combined reward for overall performance
+                - All component breakdowns
+
+        """
+        # Calculate individual agent rewards
+        reward_pnl = float(exit_pnl if net_exit_pnl is None else net_exit_pnl)
+        trigger_result = self.calculate_trigger_reward(
+            actual_mfe,
+            predicted_runway,
+            direction,
+            entry_price,
+            exit_pnl=reward_pnl,
+        )
+        harvester_result = self.calculate_harvester_reward(
+            exit_pnl=exit_pnl,
+            mfe=actual_mfe,
+            net_exit_pnl=net_exit_pnl,
+            was_wtl=was_wtl,
+            _bars_held=bars_held,
+            _bars_from_mfe_to_exit=bars_from_mfe_to_exit,
+            mae=mae,
+            exit_time=exit_time,
+        )
+        # Trigger: 40% weight (entry quality)
+        # Harvester: 60% weight (exit execution is harder)
+        total_reward = 0.4 * trigger_result["runway_reward"] + 0.6 * harvester_result["harvester_reward"]
+
+        return {
+            "total_reward": total_reward,
+            "trigger_reward": trigger_result["runway_reward"],
+            "harvester_reward": harvester_result["harvester_reward"],
+            "trigger_breakdown": trigger_result,
+            "harvester_breakdown": harvester_result,
+        }
+
+
+# Example usage and testing
+if __name__ == "__main__":
+
+    shaper = RewardShaper(symbol="BTCUSD", timeframe="M15")
+
+    shaper.calculate_total_reward({"exit_pnl": 80.0, "mfe": 100.0, "mae": 20.0, "winner_to_loser": False})
+    shaper.calculate_total_reward(
+        {"exit_pnl": -30.0, "mfe": 150.0, "mae": 50.0, "winner_to_loser": True, "bars_from_mfe": 20},
+    )
+    shaper.calculate_total_reward(
+        {
+            "exit_pnl": 0.0,
+            "mfe": 0.0,
+            "mae": 0.0,
+            "winner_to_loser": False,
+            "potential_mfe": 200.0,
+            "signal_strength": 0.8,
+        },
+    )
+    shaper.calculate_trigger_reward(actual_mfe=0.0025, predicted_runway=0.0025)
+    shaper.calculate_trigger_reward(actual_mfe=0.0040, predicted_runway=0.0025)
+    shaper.calculate_trigger_reward(actual_mfe=0.0010, predicted_runway=0.0025)
+    shaper.calculate_harvester_reward(
+        exit_pnl=0.0034,
+        mfe=0.0040,
+        was_wtl=False,
+        _bars_held=15,
+        _bars_from_mfe_to_exit=3,
+    )
+    shaper.calculate_harvester_reward(
+        exit_pnl=-0.0010,
+        mfe=0.0040,
+        was_wtl=True,
+        _bars_held=30,
+        _bars_from_mfe_to_exit=25,
+    )
+    shaper.calculate_dual_agent_rewards(
+        actual_mfe=0.0030, predicted_runway=0.0025,
+        exit_pnl=0.0022, was_wtl=False, bars_held=20, bars_from_mfe_to_exit=5,
+    )
