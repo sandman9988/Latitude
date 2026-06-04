@@ -1506,15 +1506,21 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         dyn_floor = 0.0
         if action == 0:
             return action, dyn_floor
-        base_floor = float(
-            self._param_manager.get(
-                self.symbol,
-                "entry_confidence_threshold",
-                timeframe=self.tf_label,
-                broker="default",
-                default=0.55,
-            ) or 0.55,
-        )
+        base_floor = float(min(
+            max(
+                float(
+                    self._param_manager.get(
+                        self.symbol,
+                        "entry_confidence_threshold",
+                        timeframe=self.tf_label,
+                        broker="default",
+                        default=0.55,
+                    ) or 0.55,
+                ),
+                self._RISK_TUNER_BASE_MIN,
+            ),
+            self._RISK_TUNER_BASE_MAX,
+        ))
         dyn_floor, floor_dbg = self._compute_dynamic_entry_floor(base_floor)
         if conf >= dyn_floor:
             return action, dyn_floor
@@ -2500,7 +2506,10 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
             self._param_manager.save()
         except Exception:
             pass
-        runway_net = max(0.0, runway_gross - (2.0 * self.last_half_spread / price_ref))
+        entry_half_spread = float(
+            (self._entry_trigger_data or {}).get("entry_half_spread", self.last_half_spread) or self.last_half_spread,
+        )
+        runway_net = max(0.0, runway_gross - (2.0 * entry_half_spread / price_ref))
         return runway_gross, runway_net
 
     def _initial_close_rewards(
@@ -2583,12 +2592,14 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
                 exit_time=ts.isoformat() if hasattr(ts, "isoformat") else "",
             )
             shaped_trigger = float(shaped.get("trigger_reward", trigger_reward))
-            # Only override 4-component trigger reward when log-based reward is not
-            # saturated at the clamp (±3.0).  When saturated the runway predictor is
-            # uncalibrated and log(∞) gives a constant gradient — useless for learning.
-            # The 4-component reward from _calculate_trigger_reward() is always
-            # informative regardless of runway calibration.
-            if abs(shaped_trigger) < 2.99:
+            # Only override the 4-component trigger reward when the log-based runway
+            # signal is not saturated at the clamp (±3.0).  A saturated log gives a
+            # constant gradient — useless for learning — even when pnl_alignment has
+            # shifted the combined value back inside ±2.99.  Use the explicit
+            # log_saturated flag from the shaper to detect the pre-pnl_alignment state.
+            trigger_breakdown = shaped.get("trigger_breakdown", {})
+            log_saturated = bool(trigger_breakdown.get("log_saturated", False))
+            if not log_saturated and abs(shaped_trigger) < 2.99:
                 trigger_reward = shaped_trigger
             capture_reward = float(shaped.get("harvester_reward", capture_reward))
             return (
@@ -3015,6 +3026,8 @@ class OpenAPIHub:
 
         # Gap-fill: record when we lost the connection so we can fetch missed bars on reconnect
         self._disconnect_time: float | None = None
+        # Set during token auto-refresh so _handle_subscribe_res skips initial backfill
+        self._token_refresh_in_progress: bool = False
 
         # Order-book write rate limit (write at most once per second)
         self._last_ob_write: float = 0.0
@@ -3395,7 +3408,11 @@ class OpenAPIHub:
         self._state = _S_READY
         self._write_bot_config()
         self._subscribe_depth()
-        if self._disconnect_time is not None:
+        if self._token_refresh_in_progress:
+            # Token refresh: the TCP stream was never interrupted, bars are current.
+            # Skip backfill entirely to avoid injecting duplicates into bar deques.
+            self._token_refresh_in_progress = False
+        elif self._disconnect_time is not None:
             gap = time.time() - self._disconnect_time
             if gap > _GAP_FILL_MIN_SECONDS:
                 self._request_gap_fill(self._disconnect_time)
@@ -3771,6 +3788,7 @@ class OpenAPIHub:
         LOG.info("[HUB] Access token refreshed (expires in %dd) — replaying account auth",
                  expires_in // 86400 if expires_in else 30)
         self._persist_refreshed_tokens(new_access, new_refresh)
+        self._token_refresh_in_progress = True
         self._state = _S_ACC_AUTH
         self._send_acc_auth()
 

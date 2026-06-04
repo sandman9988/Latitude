@@ -127,9 +127,12 @@ Credentials live in `.env.openapi` (project root) — this is the **authoritativ
 **Auto-refresh (built-in):** When the hub receives `CH_ACCESS_TOKEN_INVALID` or any error
 in `_AUTH_ERROR_CODES`, it sends `ProtoOARefreshTokenReq` over the live TCP connection,
 updates `self.creds`, persists the new tokens back to `.env.openapi`, then replays account
-auth — all without reconnecting. Refresh tokens do not expire.
+auth — all without reconnecting. Refresh tokens do not expire. The `_token_refresh_in_progress`
+flag prevents `_handle_subscribe_res` from running `_request_initial_backfill()` during the
+re-auth state machine (TCP was never interrupted, so no duplicate bars are injected).
 
 **Manual refresh** (only needed after a very long outage or first-time setup):
+
 ```bash
 python3 scripts/ctrader_oauth_bootstrap.py   # opens browser, writes tokens to .env.openapi
 bash run.sh universe                          # restart hubs to pick up the new token
@@ -191,21 +194,34 @@ PNL_ALIGNMENT_MULT_DEFAULT: float = 1.5 # was 0.35 — effective PnL weight: 0.2
 UNDEVELOPED_MFE_PENALTY_SCALE: float = -0.4  # was -1.0 — timing penalty softened
 ```
 
-Trigger reward saturation fix (openapi_hub.py `_close_position`): the log-based runway
-shaped reward is only applied when `abs(shaped_tr) < 2.99`; otherwise falls back to the
-4-component reward (`accuracy + magnitude − false_positive − toxic_flow`). This prevents
-73%-at-rail gradient collapse when the runway predictor is uncalibrated.
+**Reward shaper unit contract (as of 2026-06-04):** `calculate_trigger_reward` receives
+`actual_mfe` in **price points** and `predicted_runway` as a **price fraction** (e.g. 0.0015).
+When `entry_price > 0` the shaper converts: `predicted_runway_pts = predicted_runway × entry_price`
+before computing `utilization = actual_mfe_pts / predicted_runway_pts`. Legacy callers that pass
+both values in the same unit must omit `entry_price` (defaults to 0 → no conversion).
 
-## Runway Forecaster (as of 2026-06-02 — full cutover, legacy Q→runway retired)
+Trigger reward saturation fix (openapi_hub.py `_close_position`): the log-based runway
+shaped reward is only applied when the log component was **not saturated at the ±3.0 clamp**
+AND `abs(shaped_tr) < 2.99`. The `log_saturated` flag returned by `calculate_trigger_reward`
+is checked first — this prevents `pnl_alignment` from masking saturation on losing trades.
+Falls back to the 4-component reward (`accuracy + magnitude − false_positive − toxic_flow`).
+This prevents 73%-at-rail gradient collapse when the runway predictor is uncalibrated.
+
+## Runway Forecaster (as of 2026-06-04 — bug-fix pass applied)
 
 Runway is now predicted by a dedicated quantile model, not the Q-value heuristic.
 
 - `src/features/runway_labels.py` — ATR-normalized forward favorable-excursion labels
   (Wilder ATR, per-TF horizon `DEFAULT_HORIZON_BARS={1:60,5:36,15:24,30:16,60:12,240:6}`).
+  `wilder_atr` uses `abs(h−l)` for bar 0 to guard against corrupted delta-decoded bars.
 - `src/agents/runway_forecaster.py` — `RunwayForecaster` quantile model (q=0.1/0.5/0.9)
   anchored on ATR, 9 market-state features via `extract_features(...)`. `predict_runway`
   returns **price units** (`quantile_multiple × ATR`). All 12 bots train `use_residual=False`
   (volatility dominates; pure ATR-anchor wins). Saved/loaded as JSON.
+  - `prob_exceed`: below-envelope returns `1.0` (certain); above-envelope returns
+    `1.0 − p[-1]` (was `0.0` due to a stray `* 0.0`).
+  - `load()` now restores `n_features` from the artifact so future feature expansions
+    cannot cause silent shape-mismatch crashes at inference time.
 - Trained per `(symbol, timeframe)` by `scripts/training/train_runway.py` →
   `data/paper_{SYMBOL}_{TF}/runway_forecaster.json` (artifact, **not committed**).
 - Integration (`trigger_agent.py`): forecaster is **primary** on numpy+torch+fallback paths.
@@ -213,6 +229,10 @@ Runway is now predicted by a dedicated quantile model, not the Q-value heuristic
   returns a gross price **fraction** (`predict_runway/close`), clipped
   `[RUNWAY_FORECAST_FLOOR=0.0002, RUNWAY_FORECAST_CEIL=0.05]`; needs ≥`RUNWAY_FORECAST_MIN_BARS=36`.
   Legacy `_q_to_runway` retained ONLY as degraded no-model fallback.
+  - Calibration gate (`_is_runway_predictor_reliable`): when the forecaster is active,
+    `_update_runway_calibration` derives a synthetic Q-equivalent from `predicted_runway`
+    instead of requiring `_last_entry_q` (set only on the legacy path). Calibration
+    buckets now accumulate and the live confidence/runway gates activate correctly.
 - Validation (`scripts/analysis/runway_eval.py`): mean corr 0.30 vs legacy 0.19, zero
   negative corrs, utilization 0.93–1.01 (legacy ≈0.1). No reward-constant changes needed —
   bands were already calibrated for util≈1.0.
@@ -498,6 +518,9 @@ consecutive_losses counter, drawdown peak) so the very next `check_all()` finds 
 `entry_confidence_threshold` (per-bot learned_parameters). The cap is `_base_floor + 0.10`
 but `_base_floor` is re-read from the *already-saved* value each call — so each save raises
 the next cap. Observed: 0.6 → 0.9 within one losing session. Persists across restarts.
+**In-code guard (2026-06-04):** `_apply_entry_dynamic_floor` now clamps the persisted value
+to `[_RISK_TUNER_BASE_MIN, _RISK_TUNER_BASE_MAX]` before using it as `base_floor`, so a
+runaway persisted threshold cannot block entries after restart without `fix_cb_lockout.py`.
 
 **Root cause 3 — `feasibility_threshold` runaway.**
 Zero-MFE step increments feasibility_threshold per loss. Can silently reach 0.80–0.90+,

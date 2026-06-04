@@ -1039,7 +1039,17 @@ class TriggerAgent(AgentTrainingMixin):
         """Update the EWMA calibration bucket with the observed MFE (fractional)."""
         q_val = self._last_entry_q
         if q_val is None:
-            return
+            # Forecaster path: _last_entry_q is never set by the RunwayForecaster.
+            # Derive a synthetic Q-equivalent from predicted_runway so calibration
+            # buckets accumulate and _is_runway_predictor_reliable() can return True.
+            if predicted_runway <= 0:
+                return
+            rng = Q_RUNWAY_MAX - Q_RUNWAY_MIN
+            q_val = float(np.clip(
+                (predicted_runway - Q_RUNWAY_MIN) / rng * Q_RUNWAY_MAX_Q if rng > 1e-12 else 0.0,
+                0.0,
+                Q_RUNWAY_MAX_Q,
+            ))
         bucket = self._q_bucket(max(0.0, min(Q_RUNWAY_MAX_Q, q_val)))
         count = self._runway_cal_counts[bucket]
 
