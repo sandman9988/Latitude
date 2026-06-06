@@ -512,6 +512,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         self._er_cache: tuple[int, float] = (-1, 0.0)           # (bar_count, value)
         self._returns_cache: tuple[int, tuple] = (-1, (0.0, 0.0, 0.0))
         self._energy_bar_cache: tuple = (-1, 0.0, 0)            # (bar_count, rs_vol, result)
+        self._bars_list_cache: tuple[int, list] = (-1, [])      # (bar_count, materialised deque)
 
         from src.persistence.trade_log_reader import CachedTradeLogReader
         self._trade_log_reader = CachedTradeLogReader()
@@ -873,13 +874,27 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
 
     # ---- market state helpers --------------------------------------------
 
+    def _bars_snapshot(self) -> list:
+        """Return a materialised list of self.bars, cached for the current bar_count.
+
+        All per-bar compute helpers share this single deque→list copy instead of
+        each calling list(self.bars) independently. The cache is invalidated by
+        bar_count so callers always see the bars for the current bar.
+        """
+        bc = self.bar_count
+        if self._bars_list_cache[0] == bc:
+            return self._bars_list_cache[1]
+        bl = list(self.bars)
+        self._bars_list_cache = (bc, bl)
+        return bl
+
     def _realized_vol(self) -> float:
         """Rolling std of log-returns over last 20 bars; falls back to 0.005."""
         if self.bar_count == self._vol_bar_count:
             return self._cached_vol
         if len(self.bars) < 5:
             return 0.005
-        closes = [b[4] for b in list(self.bars)[-20:]]
+        closes = [b[4] for b in self._bars_snapshot()[-20:]]
         try:
             rets = np.diff(np.log(np.array(closes, dtype=float)))
             v = float(np.std(rets))
@@ -974,7 +989,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         cached = self._rs_vol_cache.get(n)
         if cached is not None and cached[0] == self.bar_count:
             return cached[1]
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         window = bars_list[-n:] if len(bars_list) >= n else bars_list
         if len(window) < 2:
             return 0.0
@@ -1001,7 +1016,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         """Kaufman Efficiency Ratio: |net move| / sum(|bar moves|) over n bars."""
         if self._er_cache[0] == self.bar_count:
             return self._er_cache[1]
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         if len(bars_list) < n + 1:
             result = 0.0
         else:
@@ -1016,7 +1031,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         """(ret1, ret5, ret20) fractional price changes from bar buffer."""
         if self._returns_cache[0] == self.bar_count:
             return self._returns_cache[1]  # type: ignore[return-value]
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         n = len(bars_list)
         c = bars_list[-1][4] if n >= 1 else 0.0
         c1 = bars_list[-2][4] if n >= 2 else c
@@ -1043,7 +1058,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
             return cached_result
         if rs_vol <= 0:
             return 0
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         threshold = 1.5 * rs_vol
         result = len(bars_list)
         for i in range(len(bars_list) - 1, -1, -1):
@@ -1147,7 +1162,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         ret1, ret5, ret20 = self._compute_returns()
 
         _ts_b, _o_b, _h_b, _l_b, _c_b = entry_bar
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         prev_c = bars_list[-2][4] if len(bars_list) >= 2 else _o_b
         gap_pts = float(_o_b - prev_c)
         gap_rs = (gap_pts / prev_c / rs_vol_s) if rs_vol_s > 0 and prev_c > 0 else 0.0
@@ -1660,7 +1675,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         rs_vol_l = self._compute_rs_vol(50)
         er10 = self._compute_er(10)
         ret1, ret5, ret20 = self._compute_returns()
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         prev_close = bars_list[-2][4] if len(bars_list) >= 2 else bar_close
         gap_pts = float(bar_open - prev_close)
         gap_rs = gap_pts / prev_close / rs_vol_s if rs_vol_s > 0 and prev_close > 0 else 0.0
