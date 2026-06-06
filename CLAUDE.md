@@ -139,7 +139,7 @@ bash run.sh universe                          # restart hubs to pick up the new 
 ```
 
 `scripts/ctrader_oauth_bootstrap.py` reads and writes `.env.openapi` in this project.
-Never point it at the Kinetra directory — the project is self-contained.
+The project is fully self-contained — all credentials load from the local `.env.openapi`.
 
 ## Architecture Rules
 
@@ -409,7 +409,6 @@ HSA_OVERRIDE_GFX_VERSION=11.0.0 python3 train_offline.py \
 - Studies persist across restarts — Optuna resumes from completed trials
 - Objective: ZΩ + val PF + val net PnL, with trade-shortfall penalty for under-sampled runs
 - Promotion still routes through the incumbent/champion acceptance guard unchanged
-- `scripts/optuna_then_tournament.sh` runs Optuna search then tournament promotion in sequence
 
 ## ExperienceBuffer Save Robustness (src/utils/experience_buffer.py)
 

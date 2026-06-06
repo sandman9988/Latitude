@@ -82,6 +82,9 @@ AMD_USE_BF16: bool = True  # Enable BF16 training
 # FP16 fallback (dual-issue, less stable than BF16)
 AMD_USE_FP16: bool = False  # Disabled in favor of BF16
 
+# Store experience-buffer states in float16 (50% memory savings on 8GB VRAM)
+AMD_USE_FLOAT16_STATES: bool = True
+
 # Mixed precision policy
 AMD_AMP_ENABLED: bool = True  # Automatic Mixed Precision
 

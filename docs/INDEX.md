@@ -105,6 +105,20 @@
 1. [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) — full offline→paper pipeline
 2. [CURRENT_STATE.md](CURRENT_STATE.md) — current ZΩ scores and champion status
 
+### "I want to scale up position sizing"
+
+1. Accumulate 500+ closed trades
+2. Verify metrics: Sharpe > 1.5, Win Rate > 45%, WTL < 15%
+3. Update `QTY` in environment and restart
+
+### "I want to improve models over the weekend"
+
+1. Read [TRAINING_TO_PRODUCTION_GUIDE.md](TRAINING_TO_PRODUCTION_GUIDE.md) — weekend offline champion workflow
+2. Install cron: `./run.sh weekend-train-setup`
+3. Run manually: `./run.sh weekend-train` (exits if market is open)
+4. Verify accepted candidates in `data/checkpoints/offline_champions.json` and `data/universe.json`
+5. If interrupted, keep `run_universe.py --watch` running — it restarts unfinished queued/running offline jobs from `data/offline_training_status.json`
+
 ### "I want to understand per-symbol/timeframe scoping"
 
 > Every metric, parameter, checkpoint, decision log, cache, reward monitor output,
@@ -113,6 +127,24 @@
 
 - See `AGENTS.md` § "Source-of-Truth Constraints" for the full rule set.
 - See `CURRENT_STATE.md` § "Offline Champion Source Of Truth" for the April 25 fix.
+
+---
+
+## Execution Scripts
+
+| Script | Purpose |
+| ------ | ------- |
+| `run.sh` | Main bot launcher — all workflows route through this |
+| `run_universe.py --watch` | Universe supervisor and offline-training autorestart |
+| `scripts/weekend_offline_training.sh` | Guarded per-timeframe offline tournament training |
+| `scripts/setup_weekend_training.sh` | Install/update weekend training cron entry |
+
+```bash
+./run.sh weekend-train-setup     # install cron entry
+./run.sh weekend-train           # run manually (market-closed guard)
+./run.sh --hud-only              # open HUD against running bots
+python run_universe.py --watch   # start universe supervisor
+```
 
 ---
 

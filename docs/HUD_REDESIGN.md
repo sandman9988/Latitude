@@ -395,40 +395,39 @@ Tab 7 (Trades) remains the reference implementation.
 
 ---
 
-## Regression / Omission Flags (from Cross-Project Review)
+## Future RL/Reward Improvement Backlog
 
-These are **not** in scope for the current HUD implementation sprint but must be tracked
-as future RL/reward improvements.
+These are tracked as future improvements — not in scope for current sprints.
 
 ### RL Architecture
-| Flag | Current State | Reference | Priority |
-|------|--------------|-----------|----------|
-| Dueling DQN (Value + Advantage streams) | Single Conv1d head | Kinetra `drl_dueling_dqn.py:47-92` | High |
-| Prioritized Experience Replay | Uniform sampling | Kinetra PER + constraint violation boost (+3.0) | High |
-| Continual learning / drift detection | Missing | Kinetra ContinualLearningManager — retroactive labeling, >30% poor trades triggers policy update | High |
-| MFE/MAE efficiency in experience priority | Missing | Kinetra `experience_replay.py:103-114` (-2 to +1 scoring) | Medium |
-| Phase-aware reward shaping | Basic timing penalty | Supra `phase_action_shaping()` (pre_entry→entry→hold→exit→post_exit) | High |
-| Time-in-trade penalty in reward | Missing | Kinetra `R_t = PnL/E_t + α·MFE/ATR − β·MAE/ATR − γ·Time` | Medium |
-| Regime-adaptive reward weights | Static multipliers | Kinetra: dynamic α,β per regime | Medium |
+| Flag | Current State | Priority |
+|------|--------------|----------|
+| Dueling DQN (Value + Advantage streams) | Single Conv1d head | High |
+| Prioritized Experience Replay | Uniform sampling | High |
+| Continual learning / drift detection | Missing | High |
+| MFE/MAE efficiency in experience priority | Missing | Medium |
+| Phase-aware reward shaping | Basic timing penalty | High |
+| Time-in-trade penalty in reward (`R_t = PnL/E_t + α·MFE/ATR − β·MAE/ATR − γ·Time`) | Missing | Medium |
+| Regime-adaptive reward weights | Static multipliers | Medium |
 
 ### State Features
-| Flag | Current State | Reference | Priority |
-|------|--------------|-----------|----------|
-| ATR-normalized features | 18 features, not ATR-normalized | Supra: 65-feature ATR-normalized vector | High |
-| FFT dominant period detection | Missing | Kinetra `rl_gpu_trainer.py:120-199` — dominant_short/long_period, period_ratio | Medium |
-| Physics features (Torque, Reynolds, etc.) | Missing | Kinetra `rl_gpu_trainer.py:275-337` — Torque, Market Reynolds, Phase Compression, Suppression Ratio, Spring Stiffness, Entropy Proxy | Low |
-| Candle/Energy magnitude percentile | Missing | Kinetra `rl_gpu_trainer.py:378-392` | Low |
-| VOL regime ratio (short/long vol baseline) | Missing | Kinetra `rl_gpu_trainer.py:413-422` | Medium |
-| MFE/MAE in ATR units | Only USD and points | Supra ExcursionStats | Medium |
+| Flag | Current State | Priority |
+|------|--------------|----------|
+| ATR-normalized features | 18 features, not ATR-normalized | High |
+| FFT dominant period detection | Missing | Medium |
+| Physics features (Torque, Reynolds, etc.) | Missing | Low |
+| Candle/Energy magnitude percentile | Missing | Low |
+| VOL regime ratio (short/long vol baseline) | Missing | Medium |
+| MFE/MAE in ATR units | Only USD and points | Medium |
 
 ### Metrics / Analysis
-| Flag | Current State | Reference | Priority |
-|------|--------------|-----------|----------|
-| Omega ratio | Missing | Supra `metrics.compute_omega()` | Low |
-| Giveback-focused harvest analysis | Partial | Supra `harvest.py` (GOOD/BAD_HARVEST by hold bars + MFE deciles) | Medium |
-| Hold risk lookup (harvest classifier) | Missing | Supra `build_hold_risk_lookup.py` | Low |
-| Calmar ratio | Missing | Supra metrics | Low |
-| Phase-specific accuracy tracking | Missing | Supra per-phase entry/hold/exit accuracy | Medium |
+| Flag | Current State | Priority |
+|------|--------------|----------|
+| Omega ratio | Missing | Low |
+| Giveback-focused harvest analysis | Partial | Medium |
+| Hold risk lookup (harvest classifier) | Missing | Low |
+| Calmar ratio | Missing | Low |
+| Phase-specific accuracy tracking | Missing | Medium |
 
 ---
 

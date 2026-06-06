@@ -18,19 +18,9 @@ RETURN_LAG_SHORT: int = 2
 RETURN_LAG_MEDIUM: int = 6
 STATE_WINDOW_SIZE: int = 64
 
-# Action IDs — Trigger
-ACTION_NO_ENTRY: int = 0
-ACTION_LONG: int = 1
-ACTION_SHORT: int = 2
-
-# Action IDs — Harvester
-ACTION_HOLD: int = 0
-ACTION_CLOSE: int = 1
-
 # Volatility / friction defaults
 DEFAULT_VOLATILITY: float = 0.005
 DEFAULT_FRICTION_PCT: float = 0.0015
-DEFAULT_QUANTITY: float = 0.10
 
 # ── TRAINING ──────────────────────────────────────────────────────────────────
 
@@ -45,29 +35,6 @@ TD_ERROR_CAP: float = 10.0
 # Experience replay buffer capacities
 TRIGGER_BUFFER_CAPACITY: int = 2_000
 HARVESTER_BUFFER_CAPACITY: int = 10_000
-
-# ── AMD GPU OPTIMIZATIONS ─────────────────────────────────────────────────────
-# AMD RDNA 3 (gfx1100/gfx1102) specific optimizations for 8GB VRAM
-# These are auto-detected and applied when AMD_OPTS is loaded
-
-# Memory-optimized buffer sizes for AMD 8GB VRAM (reduces memory by ~50%)
-AMD_TRIGGER_BUFFER_CAPACITY: int = 50_000  # Increased from 2K with float16 storage
-AMD_HARVESTER_BUFFER_CAPACITY: int = 50_000  # Increased from 10K with float16 storage
-
-# Optimal batch sizes for Navi 33 (8GB VRAM, 32 CUs)
-AMD_BATCH_SIZE_SMALL: int = 32  # Conservative for large state_dim
-AMD_BATCH_SIZE_MEDIUM: int = 64  # Optimal for state_dim ~128
-AMD_BATCH_SIZE_LARGE: int = 128  # Only for small state_dim (<64)
-
-# Gradient accumulation to simulate larger batches
-AMD_GRADIENT_ACCUMULATION_STEPS: int = 2  # Effective batch = batch_size * 2
-
-# BF16 training (native on RDNA 3)
-AMD_USE_BF16: bool = True  # Native BF16 support on gfx1100 series
-AMD_USE_FP16: bool = False  # BF16 preferred for numerical stability
-
-# Memory-efficient storage
-AMD_USE_FLOAT16_STATES: bool = True  # Store states in float16 (50% memory savings)
 
 # Batch / training thresholds
 MIN_EXPERIENCES: int = 32
@@ -150,14 +117,6 @@ DEFAULT_COOLDOWN_MINUTES: int = 60
 SORTINO_THRESHOLD: float = 0.5
 CONSEC_LOSSES_MAX: int = 5
 
-# Timer-based HUD export (Change A)
-HUD_EXPORT_INTERVAL_CYCLES: int = 3  # Health-monitor cycles between HUD exports (3 × 10s = 30s)
-HUD_EXPORT_MIN_INTERVAL_S: float = 2.0  # Global rate-limit: skip export if called within this window
-
-# Tick-level drawdown circuit breaker (Change B)
-TICK_DRAWDOWN_CHECK_INTERVAL_S: float = 1.0  # Min seconds between tick-level drawdown checks
-BREAKER_RESET_GRACE_SECONDS: int = 120  # Delay breaker checks briefly after manual reset
-
 # ── HARVESTER EXIT THRESHOLDS ─────────────────────────────────────────────────
 # Cold-start defaults only — overridden at runtime by LearnedParametersManager.
 # harvester_agent._get_param() pulls from learned_parameters.json first;
@@ -195,7 +154,6 @@ MICRO_WINNER_GIVEBACK_PCT: float = 0.40  # Exit if giving back > this fraction o
 MAX_LOSS_MULT_PER_TRADE: float = 5.0   # Hard cap = 5× the position's expected stop loss
 MIN_CAP_USD: float = 2.0               # Absolute minimum cap (prevents near-zero on tiny lots)
 MAX_CAP_USD: float = 200.0             # Absolute maximum cap (prevents runaway on large lots)
-GHOST_RECONCILE_COOLDOWN_BARS: int = 3  # Bars to skip entry after ghost reconcile
 
 # ── CAPTURE HEALTH MONITORING ─────────────────────────────────────────────────
 # Two-tier reactive system:

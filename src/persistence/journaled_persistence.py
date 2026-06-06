@@ -385,31 +385,4 @@ class Journal:
         self.close()
 
 
-# Self-test
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-    # Test journal
-    with Journal("data/test_journal.log", checkpoint_interval=5) as journal:
-        # Log some operations
-        for i in range(12):
-            journal.log_operation(f"test_op_{i}", {"index": i, "value": i * 10})
-
-        # Test trade logging
-        journal.log_trade_open("ORDER123", "BUY", 0.01, 2000.0)
-        journal.log_trade_close("ORDER123", 2010.0, 10.0, 15.0, -5.0, False)
-
-        # Test parameter update
-        journal.log_parameter_update("stop_loss", 0.002, 0.0025)
-
-        # Test circuit breaker
-        journal.log_circuit_breaker_trip("sortino", 0.5, 0.3)
-
-    # Test replay
-    with Journal("data/test_journal.log") as journal:
-
-        def replay_callback(op: str, data: dict) -> bool:
-            return True
-
-        replayed = journal.replay_from_checkpoint(replay_callback)
 

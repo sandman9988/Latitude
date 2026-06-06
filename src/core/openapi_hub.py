@@ -45,7 +45,6 @@ import os
 import signal
 import socket
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -136,13 +135,12 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _load_creds() -> dict[str, str]:
-    """Load Open API credentials from env vars, local config, then Kinetra fallback.
+    """Load Open API credentials from env vars and local config.
 
     Resolution order (later wins):
     1. config/cTraderAppTokens (project-local)
     2. .env.openapi (project-local, cTrader-specific overrides)
-    3. ../Kinetra/.env.openapi (shared cTrader credentials across projects)
-    4. os.environ (highest priority)
+    3. os.environ (highest priority)
     """
     merged: dict[str, str] = {}
     _root = Path(__file__).resolve().parent.parent.parent
@@ -150,7 +148,6 @@ def _load_creds() -> dict[str, str]:
     for p in [
         _root / "config" / "cTraderAppTokens",
         _root / ".env.openapi",
-        _root.parent / "Kinetra" / ".env.openapi",
     ]:
         if p.exists():
             merged.update(_parse_env_file(p))

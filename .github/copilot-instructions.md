@@ -595,7 +595,6 @@ ______________________________________________________________________
 Credentials in `.env.openapi` lack `export` — must load with `set -a`:
 
 ```bash
-cd /home/renierdejager/Projects/Kinetra && set -a && source .env.openapi && set +a
 cd /home/renierdejager/Projects/ctrader_trading_bot
 python3 scripts/download_ctrader_history.py \
   --symbol XAUUSD --start-date 2024-01-01 \

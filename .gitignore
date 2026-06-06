@@ -36,6 +36,9 @@ store/
 
 # Environment
 .env
+.env.production
+.env.training
+.env.local
 
 # Archives
 archive/
@@ -45,6 +48,9 @@ archive/
 *.bak
 *.pid
 *.pyc
+.coverage
+.coverage.*
+htmlcov/
 check_positions.py
 close_all_hedged_positions.py
 emergency_close_all.py

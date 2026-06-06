@@ -324,7 +324,7 @@ class TestAMDConstants(unittest.TestCase):
 
     def test_amd_constants_exist(self):
         """Test that AMD constants are defined."""
-        from src.constants import (
+        from src.constants_amd import (
             AMD_BATCH_SIZE_LARGE,
             AMD_BATCH_SIZE_MEDIUM,
             AMD_BATCH_SIZE_SMALL,
