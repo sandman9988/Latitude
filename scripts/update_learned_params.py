@@ -20,6 +20,17 @@ from src.persistence.learned_parameters import LearnedParametersManager
 
 INSTRUMENT_KEY_PARTS = 3
 
+# Known parameter bounds — prevents threshold runaway via CLI (entry_conf ≥ 1.0 → full lockout)
+_PARAM_BOUNDS: dict[str, tuple[float, float]] = {
+    "entry_confidence_threshold": (0.0, 0.95),
+    "exit_confidence_threshold": (0.0, 0.95),
+    "feasibility_threshold": (0.0, 0.95),
+    "confidence_floor": (0.0, 0.95),
+    "wtl_penalty_multiplier": (0.0, 5.0),
+    "runway_cal_alpha": (0.0, 1.0),
+    "pnl_alignment_multiplier": (0.0, 10.0),
+}
+
 
 def _split_instrument_key(key: str) -> tuple[str, str, str]:
     parts = str(key or "").rsplit("_", 2)
@@ -58,8 +69,13 @@ def update_parameter(path: Path, instrument_key: str, param_name: str, value: fl
     if param_name not in instrument.params:
         return 1
 
+    if param_name in _PARAM_BOUNDS:
+        lo, hi = _PARAM_BOUNDS[param_name]
+        if not (lo <= value <= hi):
+            print(f"ERROR: {param_name}={value} is outside allowed range [{lo}, {hi}]", file=sys.stderr)
+            return 2
+
     symbol, timeframe, broker = _split_instrument_key(instrument_key)
-    instrument.params[param_name].value
     manager.set_value(symbol, param_name, value, timeframe=timeframe, broker=broker)
     manager.save()
     return 0

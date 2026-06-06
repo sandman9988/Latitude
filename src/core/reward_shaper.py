@@ -647,7 +647,16 @@ class RewardShaper:
                 "prediction_quality": "INVALID",
             }
 
-        # Runway utilization ratio
+        # Runway utilization ratio — guard against NaN actual_mfe before division
+        if not SafeMath.is_valid(actual_mfe):
+            LOG.warning("calculate_trigger_reward: non-finite actual_mfe=%.6g, returning penalty", actual_mfe)
+            return {
+                "runway_reward": RUNWAY_LOG_PENALTY,
+                "utilization": 0.0,
+                "error_pct": 100.0,
+                "prediction_quality": "INVALID",
+                "log_saturated": False,
+            }
         utilization = actual_mfe / predicted_runway_pts
 
         # Logarithmic reward (symmetric around 1.0): >0 → log(util); =0 → floor penalty

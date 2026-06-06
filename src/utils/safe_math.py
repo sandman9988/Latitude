@@ -238,6 +238,7 @@ class SafeMath:
             LOG.debug("safe_exp: input %.4f above upper guard, returning default", x)
             return default
         if x < EXP_LOWER_GUARD:
+            LOG.debug("safe_exp: input %.4f below lower guard, returning 0.0", x)
             return 0.0
         result = math.exp(x)
         if not SafeMath.is_valid(result):
