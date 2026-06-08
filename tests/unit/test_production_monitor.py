@@ -36,7 +36,7 @@ class TestDataclasses:
             error_count_1h=1,
             timestamp=time.time())
         assert m.realized_pnl_day == pytest.approx(100.0)
-        assert not hasattr(m, "fix_connected")
+        assert m.fix_connected is True  # default: connected
 
     def test_alert_fields(self):
         a = Alert(

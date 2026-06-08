@@ -185,7 +185,8 @@ class TestTriggerRewardKeyError:
             actual_mfe=100.0,
             predicted_runway=100.0,
             direction=1,
-            entry_price=50000.0,
+            # entry_price omitted → both values treated as same unit (legacy path),
+            # so utilization = 100/100 = 1.0 and log(1.0) = 0.0
         )
 
         # utilization = 100/100 = 1.0, log(1.0) = 0.0

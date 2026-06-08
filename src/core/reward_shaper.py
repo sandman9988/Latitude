@@ -633,8 +633,31 @@ class RewardShaper:
                 "prediction_quality": "INVALID",
             }
 
-        # Runway utilization ratio
-        utilization = actual_mfe / predicted_runway
+        # predicted_runway is a price fraction (e.g. 0.0015); actual_mfe is in price
+        # points.  Convert fraction → points when entry_price is available so that
+        # utilization = actual_pts / predicted_pts is dimensionless.  When
+        # entry_price is absent (legacy callers, unit tests) both values are treated
+        # as the same unit (no conversion).
+        predicted_runway_pts = predicted_runway * entry_price if entry_price > 0 else predicted_runway
+        if predicted_runway_pts <= 0:
+            return {
+                "runway_reward": RUNWAY_PENALTY_INVALID,
+                "utilization": 0.0,
+                "error_pct": 100.0,
+                "prediction_quality": "INVALID",
+            }
+
+        # Runway utilization ratio — guard against NaN actual_mfe before division
+        if not SafeMath.is_valid(actual_mfe):
+            LOG.warning("calculate_trigger_reward: non-finite actual_mfe=%.6g, returning penalty", actual_mfe)
+            return {
+                "runway_reward": RUNWAY_LOG_PENALTY,
+                "utilization": 0.0,
+                "error_pct": 100.0,
+                "prediction_quality": "INVALID",
+                "log_saturated": False,
+            }
+        utilization = actual_mfe / predicted_runway_pts
 
         # Logarithmic reward (symmetric around 1.0): >0 → log(util); =0 → floor penalty
         # - utilization = 1.0 → 0.0 (perfect); > 1.0 → positive; < 1.0 → negative
@@ -649,11 +672,14 @@ class RewardShaper:
 
         # Clip extreme values
         runway_reward = max(min(runway_reward, RUNWAY_CLAMP_ABS), -RUNWAY_CLAMP_ABS)
+        # Track whether the log component alone was saturated at the clamp boundary.
+        # Callers use this to decide whether the log-based reward is informative.
+        log_saturated = abs(runway_reward) >= RUNWAY_CLAMP_ABS
         pnl_alignment = self.calculate_pnl_alignment_reward(exit_pnl, actual_mfe) if exit_pnl is not None else 0.0
         runway_reward = max(min(runway_reward + pnl_alignment, RUNWAY_CLAMP_ABS), -RUNWAY_CLAMP_ABS)
 
         # Calculate error percentage
-        error_pct = abs(actual_mfe - predicted_runway) / predicted_runway * 100
+        error_pct = abs(actual_mfe - predicted_runway_pts) / predicted_runway_pts * 100
 
         # Quality assessment
         if RUNWAY_EXCELLENT_MIN <= utilization <= RUNWAY_EXCELLENT_MAX:
@@ -673,6 +699,7 @@ class RewardShaper:
             "prediction_quality": quality,
             "actual_mfe": actual_mfe,
             "predicted_runway": predicted_runway,
+            "log_saturated": log_saturated,
         }
 
     def _harvester_capture_reward(self, reward_pnl: float, mfe: float) -> tuple[float, float]:

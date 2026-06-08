@@ -179,30 +179,37 @@ class TestHarvesterQuality:
 # Trigger reward – quality labels
 # ---------------------------------------------------------------------------
 class TestTriggerQuality:
+    # predicted_runway is a price fraction; actual_mfe is price points.
+    # predicted_runway_pts = predicted_runway * entry_price (entry_price=95000).
+
     def test_excellent_prediction(self, shaper):
-        r = shaper.calculate_trigger_reward(0.0025, 0.0025, 1, 95000.0)
+        # predicted_runway_pts = 0.0025 * 95000 = 237.5 → util=1.0 → EXCELLENT
+        r = shaper.calculate_trigger_reward(237.5, 0.0025, 1, 95000.0)
         assert r["prediction_quality"] == "EXCELLENT"
 
     def test_underpredicted(self, shaper):
-        r = shaper.calculate_trigger_reward(0.010, 0.002, 1, 95000.0)
+        # predicted_runway_pts = 0.002 * 95000 = 190 → util=1000/190≈5.26 → UNDERPREDICTED
+        r = shaper.calculate_trigger_reward(1000.0, 0.002, 1, 95000.0)
         assert r["prediction_quality"] == "UNDERPREDICTED"
 
     def test_overpredicted(self, shaper):
-        r = shaper.calculate_trigger_reward(0.0005, 0.005, 1, 95000.0)
+        # predicted_runway_pts = 0.005 * 95000 = 475 → util=23.75/475=0.05 → OVERPREDICTED
+        r = shaper.calculate_trigger_reward(23.75, 0.005, 1, 95000.0)
         assert r["prediction_quality"] == "OVERPREDICTED"
 
     def test_good_prediction(self, shaper):
-        # utilization ~0.6 → GOOD
-        r = shaper.calculate_trigger_reward(0.003, 0.005, 1, 95000.0)
+        # predicted_runway_pts = 0.005 * 95000 = 475 → util=285/475=0.6 → GOOD
+        r = shaper.calculate_trigger_reward(285.0, 0.005, 1, 95000.0)
         assert r["prediction_quality"] == "GOOD"
 
     def test_zero_actual_mfe_severe_penalty(self, shaper):
+        # predicted_runway_pts = 0.003 * 95000 = 285 → util=0 → log penalty
         r = shaper.calculate_trigger_reward(0.0, 0.003, 1, 95000.0)
         assert r["runway_reward"] <= -3.0
 
     def test_reward_clamped(self, shaper):
-        # Very extreme ratio to test clamping
-        r = shaper.calculate_trigger_reward(100.0, 0.001, 1, 95000.0)
+        # Very extreme ratio: util=95000/95=1000 → clamped to ≤3.0
+        r = shaper.calculate_trigger_reward(95000.0, 0.001, 1, 95000.0)
         assert r["runway_reward"] <= 3.0
 
 

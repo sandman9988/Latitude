@@ -23,6 +23,22 @@ from src.persistence.json_io import append_jsonl_durable as _append_jsonl_durabl
 
 LOG = logging.getLogger(__name__)
 
+# Rotate when the active log exceeds this size; keep one .1 backup.
+_LOG_MAX_BYTES: int = 50 * 1024 * 1024   # 50 MB
+# Check file size every N successful writes (cheap stat() call).
+_LOG_ROTATE_CHECK_EVERY: int = 500
+
+
+def _rotate_log_if_needed(path: Path, max_bytes: int = _LOG_MAX_BYTES) -> None:
+    """Rename path → path.1 when the file exceeds max_bytes. No-op on error."""
+    try:
+        if path.exists() and path.stat().st_size >= max_bytes:
+            backup = path.with_name(path.name + ".1")
+            path.rename(backup)
+            LOG.info("Rotated %s → %s (%.1f MB freed)", path.name, backup.name, backup.stat().st_size / 1e6)
+    except Exception as e:
+        LOG.warning("Log rotation failed for %s: %s", path, e)
+
 
 def append_jsonl_durable(path: Path, entry: dict[str, Any], *, default: Any = str) -> None:
     """Append one JSONL record as a single durable O_APPEND write."""
@@ -55,6 +71,8 @@ class TransactionLogger:
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
         self._sequence = 0
+        self._write_count = 0
+        _rotate_log_if_needed(self.log_file)
 
         # Log session start
         self.log_event("SESSION_START", {"session_id": self.session_id})
@@ -79,6 +97,9 @@ class TransactionLogger:
                     "data": data,
                 }
                 append_jsonl_durable(self.log_file, entry)
+                self._write_count += 1
+                if self._write_count % _LOG_ROTATE_CHECK_EVERY == 0:
+                    _rotate_log_if_needed(self.log_file)
         except Exception as e:
             LOG.exception("[AUDIT] Failed to write transaction log: %s", e)
 
@@ -219,6 +240,8 @@ class DecisionLogger:
         self.timeframe = timeframe
         self.timeframe_minutes = timeframe_minutes
         self._sequence = 0
+        self._write_count = 0
+        _rotate_log_if_needed(self.log_file)
 
     def log_decision(
         self,
@@ -271,6 +294,9 @@ class DecisionLogger:
             # Serialize once, write once (atomic from perspective of other threads)
             try:
                 append_jsonl_durable(self.log_file, entry)
+                self._write_count += 1
+                if self._write_count % _LOG_ROTATE_CHECK_EVERY == 0:
+                    _rotate_log_if_needed(self.log_file)
             except Exception as e:
                 LOG.exception("[DECISION] Failed to write decision log: %s", e)
 

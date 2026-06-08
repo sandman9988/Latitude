@@ -39,6 +39,19 @@ from typing import Any
 
 LOG = logging.getLogger(__name__)
 
+_LOG_MAX_BYTES: int = 50 * 1024 * 1024
+_LOG_ROTATE_CHECK_EVERY: int = 500
+
+
+def _rotate_log_if_needed(path: Path, max_bytes: int = _LOG_MAX_BYTES) -> None:
+    try:
+        if path.exists() and path.stat().st_size >= max_bytes:
+            backup = path.with_name(path.name + ".1")
+            path.rename(backup)
+            LOG.info("Rotated %s → %s (%.1f MB freed)", path.name, backup.name, backup.stat().st_size / 1e6)
+    except Exception as e:
+        LOG.warning("Log rotation failed for %s: %s", path, e)
+
 
 class TradeAuditLogger:
     """Central immutable audit log for all trade-related actions.
@@ -69,7 +82,9 @@ class TradeAuditLogger:
         self.log_file = self.log_dir / filename
         self.lock = threading.Lock()
         self.session_id = f"session_{int(time.time())}"
-        self.sequence = 0  # Monotonic sequence number within session
+        self.sequence = 0
+        self._write_count = 0
+        _rotate_log_if_needed(self.log_file)
 
         # Log session start
         self._write_entry("SESSION_START", {"session_id": self.session_id}, "INFO")
@@ -112,8 +127,11 @@ class TradeAuditLogger:
                     f.write(json.dumps(entry, default=str) + "\n")
                     f.flush()
                     os.fsync(f.fileno())
+                self._write_count += 1
+                if self._write_count % _LOG_ROTATE_CHECK_EVERY == 0:
+                    _rotate_log_if_needed(self.log_file)
             except Exception as e:
-                LOG.error("[TRADE_AUDIT] ⚠️ Failed to write audit log: %s", e, exc_info=True)
+                LOG.error("[TRADE_AUDIT] Failed to write audit log: %s", e, exc_info=True)
 
     # ==========================================================================
     # ORDER LIFECYCLE

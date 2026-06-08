@@ -78,16 +78,9 @@ if [[ -f .env ]]; then
     set +a
 fi
 
-# Load OAuth credentials — try Kinetra first, then local .env.openapi
-KINETRA_ENV="/home/renierdejager/Projects/Kinetra/.env.openapi"
+# Load OAuth credentials from local .env.openapi
 LOCAL_ENV=".env.openapi"
-if [[ -f "$KINETRA_ENV" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    source "$KINETRA_ENV"
-    set +a
-    log "Credentials loaded from $KINETRA_ENV"
-elif [[ -f "$LOCAL_ENV" ]]; then
+if [[ -f "$LOCAL_ENV" ]]; then
     set -a
     # shellcheck disable=SC1091
     source "$LOCAL_ENV"

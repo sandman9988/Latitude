@@ -398,25 +398,16 @@ class HarvesterAgent(AgentTrainingMixin):
         )
         return action, confidence
 
-    def _decide_with_torch(
-        self, market_state: np.ndarray, mfe: float, mae: float, ticks_held: int, entry_price: float,
-    ) -> tuple[int, float]:
+    def _decide_with_torch(self, full_state: np.ndarray) -> tuple[int, float]:
         """Make decision using PyTorch model.
 
         Args:
-            market_state: Normalized market features (window, 7)
-            mfe: Maximum favorable excursion
-            mae: Maximum adverse excursion
-            ticks_held: Ticks held in position
-            entry_price: Position entry price
+            full_state: Pre-built full state array (already assembled by caller).
 
         Returns:
             (action, confidence)
 
         """
-        # Delegate to the single source of truth for state construction
-        full_state = self._build_full_state(market_state, mfe, mae, ticks_held, entry_price)
-
         # Model-based decision - assert torch and model are initialized
         assert self.torch is not None, "PyTorch must be initialized for _decide_with_torch"
         assert self.model is not None, "Model must be loaded for _decide_with_torch"
@@ -629,7 +620,7 @@ class HarvesterAgent(AgentTrainingMixin):
             return action, CONFIDENCE_FALLBACK
 
         # Use PyTorch model
-        action, confidence = self._decide_with_torch(market_state, mfe, mae, ticks_held, entry_price)
+        action, confidence = self._decide_with_torch(full_state)
         if action == 1:
             self.last_close_reason = "torch_model"
         return action, confidence

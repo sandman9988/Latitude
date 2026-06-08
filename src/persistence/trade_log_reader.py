@@ -66,67 +66,6 @@ def read_all_trades(path: Path | str = _DEFAULT_PATH) -> list[dict[str, Any]]:
     return trades
 
 
-def read_recent_trades(
-    path: Path | str = _DEFAULT_PATH,
-    max_lines: int = 50,
-    buf_size: int = 64 * 1024,
-) -> list[dict[str, Any]]:
-    """Read up to *max_lines* completed trades from the tail of the log.
-
-    Uses a seek-from-end strategy to avoid reading the entire file.
-    Only returns records that have both ``entry_time`` and ``exit_time``.
-    Uses robust error handling for encoding issues.
-
-    Args:
-        path: Path to the JSONL file.
-        max_lines: Maximum number of trade records to return.
-        buf_size: How many bytes to read from the end of the file.
-
-    Returns:
-        List of completed trade dicts (oldest-first within the window).
-
-    """
-    path = Path(path)
-    if not path.exists():
-        return []
-    try:
-        with open(path, "rb") as fh:
-            _ = fh.seek(0, 2)
-            file_size = fh.tell()
-            if file_size == 0:
-                return []
-            read_bytes = min(file_size, buf_size)
-            _ = fh.seek(-read_bytes, 2)
-            raw_bytes = fh.read(read_bytes)
-
-            # Decode with proper error handling
-            try:
-                raw = raw_bytes.decode("utf-8")
-            except UnicodeDecodeError as e:
-                LOG.warning("[TRADE_LOG] Unicode decode error in tail-read %s: %s (skipping)", path, e)
-                return []
-
-    except OSError as exc:
-        LOG.warning("[TRADE_LOG] Could not tail-read %s: %s", path, exc)
-        return []
-
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()][-max_lines:]
-    trades: list[dict[str, Any]] = []
-    for line_no, line in enumerate(lines, 1):
-        try:
-            rec = json.loads(line)
-            # Validate record structure
-            if not isinstance(rec, dict):
-                LOG.debug("[TRADE_LOG] Non-dict record in tail: type=%s", type(rec))
-                continue
-            if rec.get("exit_time") and rec.get("entry_time"):
-                trades.append(rec)
-        except json.JSONDecodeError as e:
-            LOG.debug("[TRADE_LOG] Corrupt JSON in tail-read line %d: %s", line_no, e)
-            continue
-    return trades
-
-
 class CachedTradeLogReader:
     """Trade log reader with mtime-based caching.
 

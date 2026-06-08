@@ -45,7 +45,6 @@ import os
 import signal
 import socket
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -136,13 +135,12 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _load_creds() -> dict[str, str]:
-    """Load Open API credentials from env vars, local config, then Kinetra fallback.
+    """Load Open API credentials from env vars and local config.
 
     Resolution order (later wins):
     1. config/cTraderAppTokens (project-local)
     2. .env.openapi (project-local, cTrader-specific overrides)
-    3. ../Kinetra/.env.openapi (shared cTrader credentials across projects)
-    4. os.environ (highest priority)
+    3. os.environ (highest priority)
     """
     merged: dict[str, str] = {}
     _root = Path(__file__).resolve().parent.parent.parent
@@ -150,7 +148,6 @@ def _load_creds() -> dict[str, str]:
     for p in [
         _root / "config" / "cTraderAppTokens",
         _root / ".env.openapi",
-        _root.parent / "Kinetra" / ".env.openapi",
     ]:
         if p.exists():
             merged.update(_parse_env_file(p))
@@ -178,8 +175,10 @@ def _load_symbol_spec(symbol: str) -> dict:
         for k, v in specs.items():
             if k.upper() == symbol.upper() and isinstance(v, dict):
                 return v
-    except Exception:
+    except FileNotFoundError:
         pass
+    except Exception as e:
+        LOG.warning("Failed to load symbol spec for %s: %s", symbol, e)
     return {}
 
 
@@ -498,12 +497,22 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         self._trade_sequence_lock = threading.Lock()  # guard for concurrent TF bar closes
         self._epoch_ts: int = int(time.time())  # epoch at startup for ticket generation
         self._current_trade_id: str | None = None  # links entry → hold(s) → close in audit log
+        self._param_manager_save_counter: int = 0
 
     def _init_latest_metric_state(self) -> None:
         # Last computed geometry and event features — updated each bar close
         self._last_event_feats: dict = {}
         self._last_var_95: float = 0.0
         self._last_kurtosis: float = 0.0
+
+        # Per-bar feature caches — keyed by bar_count, invalidated automatically on each new bar.
+        self._cached_vol: float = 0.005
+        self._vol_bar_count: int = -1
+        self._rs_vol_cache: dict[int, tuple[int, float]] = {}   # n → (bar_count, value)
+        self._er_cache: tuple[int, float] = (-1, 0.0)           # (bar_count, value)
+        self._returns_cache: tuple[int, tuple] = (-1, (0.0, 0.0, 0.0))
+        self._energy_bar_cache: tuple = (-1, 0.0, 0)            # (bar_count, rs_vol, result)
+        self._bars_list_cache: tuple[int, list] = (-1, [])      # (bar_count, materialised deque)
 
         from src.persistence.trade_log_reader import CachedTradeLogReader
         self._trade_log_reader = CachedTradeLogReader()
@@ -733,16 +742,17 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         try:
             _bar_dt = _ts if isinstance(_ts, dt.datetime) else dt.datetime.fromtimestamp(float(_ts), tz=dt.UTC)
             self._last_event_feats = self.event_time_engine.calculate_features(_bar_dt)
-        except Exception:
-            pass
+        except Exception as e:
+            LOG.warning("[%s %s] Event-time feature update failed: %s", self.symbol, self.tf_label, e)
+            self._last_event_feats = self.event_time_engine.calculate_features(dt.datetime.now(dt.UTC))
         if len(self.bars) >= 2:
             _prev_c = self.bars[-2][4]
             if _prev_c > 0 and _c > 0:
                 try:
                     self.var_estimator.update_return(math.log(_c / _prev_c))
                     self.var_estimator.set_reference_vol(_vol)
-                except Exception:
-                    pass
+                except Exception as e:
+                    LOG.warning("[%s %s] VaR update failed: %s", self.symbol, self.tf_label, e)
         self._last_var_95, self._last_kurtosis = self._get_var_kurtosis()
 
         if len(self.bars) < _MIN_BARS_BEFORE_TRADE:
@@ -771,8 +781,8 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
             _am.on_bar_close()
             if hasattr(_am, "get_exploration_bonus"):
                 _am.get_exploration_bonus()
-        except Exception:
-            pass
+        except Exception as e:
+            LOG.warning("[%s %s] Activity monitor update failed: %s", self.symbol, self.tf_label, e)
 
         # Exit is now tick-level (_handle_exit_on_tick). Bar close only handles entry.
         if self.position is None:
@@ -800,16 +810,17 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         try:
             _bar_dt = _ts if isinstance(_ts, dt.datetime) else dt.datetime.fromtimestamp(float(_ts), tz=dt.UTC)
             self._last_event_feats = self.event_time_engine.calculate_features(_bar_dt)
-        except Exception:
-            pass
+        except Exception as e:
+            LOG.warning("[%s %s] Event-time feature update failed: %s", self.symbol, self.tf_label, e)
+            self._last_event_feats = self.event_time_engine.calculate_features(dt.datetime.now(dt.UTC))
         if len(self.bars) >= 2:
             _prev_c = self.bars[-2][4]
             if _prev_c > 0 and _c > 0:
                 try:
                     self.var_estimator.update_return(math.log(_c / _prev_c))
                     self.var_estimator.set_reference_vol(_vol)
-                except Exception:
-                    pass
+                except Exception as e:
+                    LOG.warning("[%s %s] VaR update failed: %s", self.symbol, self.tf_label, e)
         self._last_var_95, self._last_kurtosis = self._get_var_kurtosis()
         self._maybe_train()
         self._maybe_checkpoint_and_telemetry()
@@ -863,17 +874,36 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
 
     # ---- market state helpers --------------------------------------------
 
+    def _bars_snapshot(self) -> list:
+        """Return a materialised list of self.bars, cached for the current bar_count.
+
+        All per-bar compute helpers share this single deque→list copy instead of
+        each calling list(self.bars) independently. The cache is invalidated by
+        bar_count so callers always see the bars for the current bar.
+        """
+        bc = self.bar_count
+        if self._bars_list_cache[0] == bc:
+            return self._bars_list_cache[1]
+        bl = list(self.bars)
+        self._bars_list_cache = (bc, bl)
+        return bl
+
     def _realized_vol(self) -> float:
         """Rolling std of log-returns over last 20 bars; falls back to 0.005."""
+        if self.bar_count == self._vol_bar_count:
+            return self._cached_vol
         if len(self.bars) < 5:
             return 0.005
-        closes = [b[4] for b in list(self.bars)[-20:]]
+        closes = [b[4] for b in self._bars_snapshot()[-20:]]
         try:
             rets = np.diff(np.log(np.array(closes, dtype=float)))
             v = float(np.std(rets))
-            return v if v > 0 else 0.005
+            result = v if v > 0 else 0.005
         except Exception:
-            return 0.005
+            result = 0.005
+        self._cached_vol = result
+        self._vol_bar_count = self.bar_count
+        return result
 
     def _depth_ratio(self) -> float:
         return (self._last_depth_bid / self._last_depth_ask
@@ -956,7 +986,10 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         RS² = ln(H/C)·ln(H/O) + ln(L/C)·ln(L/O); return sqrt(mean(RS²)).
         Result is in fractional (log-price) units, comparable to pct_change std.
         """
-        bars_list = list(self.bars)
+        cached = self._rs_vol_cache.get(n)
+        if cached is not None and cached[0] == self.bar_count:
+            return cached[1]
+        bars_list = self._bars_snapshot()
         window = bars_list[-n:] if len(bars_list) >= n else bars_list
         if len(window) < 2:
             return 0.0
@@ -973,22 +1006,32 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
                 continue
             rs2_vals.append(rs2)
         if not rs2_vals:
-            return 0.0
-        return float(math.sqrt(max(sum(rs2_vals) / len(rs2_vals), 0.0)))
+            result = 0.0
+        else:
+            result = float(math.sqrt(max(sum(rs2_vals) / len(rs2_vals), 0.0)))
+        self._rs_vol_cache[n] = (self.bar_count, result)
+        return result
 
     def _compute_er(self, n: int = 10) -> float:
         """Kaufman Efficiency Ratio: |net move| / sum(|bar moves|) over n bars."""
-        bars_list = list(self.bars)
+        if self._er_cache[0] == self.bar_count:
+            return self._er_cache[1]
+        bars_list = self._bars_snapshot()
         if len(bars_list) < n + 1:
-            return 0.0
-        closes = [b[4] for b in bars_list[-(n + 1):]]
-        net = abs(closes[-1] - closes[0])
-        path = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
-        return float(net / path) if path > 0 else 0.0
+            result = 0.0
+        else:
+            closes = [b[4] for b in bars_list[-(n + 1):]]
+            net = abs(closes[-1] - closes[0])
+            path = sum(abs(closes[i] - closes[i - 1]) for i in range(1, len(closes)))
+            result = float(net / path) if path > 0 else 0.0
+        self._er_cache = (self.bar_count, result)
+        return result
 
     def _compute_returns(self) -> tuple[float, float, float]:
         """(ret1, ret5, ret20) fractional price changes from bar buffer."""
-        bars_list = list(self.bars)
+        if self._returns_cache[0] == self.bar_count:
+            return self._returns_cache[1]  # type: ignore[return-value]
+        bars_list = self._bars_snapshot()
         n = len(bars_list)
         c = bars_list[-1][4] if n >= 1 else 0.0
         c1 = bars_list[-2][4] if n >= 2 else c
@@ -997,7 +1040,9 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         r1 = (c - c1) / c1 if c1 > 0 else 0.0
         r5 = (c - c5) / c5 if c5 > 0 else 0.0
         r20 = (c - c20) / c20 if c20 > 0 else 0.0
-        return float(r1), float(r5), float(r20)
+        result = (float(r1), float(r5), float(r20))
+        self._returns_cache = (self.bar_count, result)
+        return result
 
     def _alignment_score(self, action: int, ret1: float, ret5: float, ret20: float) -> int:
         """Count how many of ret1/ret5/ret20 align with the entry direction (1=LONG, 2=SHORT)."""
@@ -1008,15 +1053,21 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
 
     def _bars_since_energy_bar(self, rs_vol: float) -> int:
         """Bars since the last bar whose fractional range exceeded 1.5× RS volatility."""
+        cached_bc, cached_rv, cached_result = self._energy_bar_cache
+        if cached_bc == self.bar_count and cached_rv == rs_vol:
+            return cached_result
         if rs_vol <= 0:
             return 0
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         threshold = 1.5 * rs_vol
+        result = len(bars_list)
         for i in range(len(bars_list) - 1, -1, -1):
             _, _, h, low, c = bars_list[i]
             if c > 0 and (h - low) / c > threshold:
-                return len(bars_list) - 1 - i
-        return len(bars_list)
+                result = len(bars_list) - 1 - i
+                break
+        self._energy_bar_cache = (self.bar_count, rs_vol, result)
+        return result
 
     def _compute_dynamic_entry_floor(self, base_floor: float) -> tuple[float, dict]:
         """Raise minimum entry confidence based on calibration error and runway accuracy.
@@ -1111,7 +1162,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         ret1, ret5, ret20 = self._compute_returns()
 
         _ts_b, _o_b, _h_b, _l_b, _c_b = entry_bar
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         prev_c = bars_list[-2][4] if len(bars_list) >= 2 else _o_b
         gap_pts = float(_o_b - prev_c)
         gap_rs = (gap_pts / prev_c / rs_vol_s) if rs_vol_s > 0 and prev_c > 0 else 0.0
@@ -1314,7 +1365,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
                 if isinstance(ts_val, dt.datetime):
                     ts_val = ts_val.isoformat()
                 serialized.append([ts_val, float(b[1]), float(b[2]), float(b[3]), float(b[4])])
-            _write_json_atomic(
+            _write_json_async(
                 self.data_dir / "bars_cache.json",
                 {"symbol": self.symbol, "tf": self.tf_label, "bars": serialized},
             )
@@ -1341,6 +1392,11 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
                     ts_val = row[0]
                     if isinstance(ts_val, str):
                         ts_val = dt.datetime.fromisoformat(ts_val)
+                    elif not isinstance(ts_val, dt.datetime):
+                        # Numeric seconds-since-epoch (legacy cache format)
+                        LOG.warning("[%s %s] bars_cache: non-datetime ts_val=%r, interpreting as epoch seconds",
+                                    self.symbol, self.tf_label, ts_val)
+                        ts_val = dt.datetime.fromtimestamp(float(ts_val), tz=dt.UTC)
                     cur_close = float(row[4])
                     b = (ts_val, float(row[1]), float(row[2]), float(row[3]), cur_close)
                     self.bars.append(b)
@@ -1506,15 +1562,21 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         dyn_floor = 0.0
         if action == 0:
             return action, dyn_floor
-        base_floor = float(
-            self._param_manager.get(
-                self.symbol,
-                "entry_confidence_threshold",
-                timeframe=self.tf_label,
-                broker="default",
-                default=0.55,
-            ) or 0.55,
-        )
+        base_floor = float(min(
+            max(
+                float(
+                    self._param_manager.get(
+                        self.symbol,
+                        "entry_confidence_threshold",
+                        timeframe=self.tf_label,
+                        broker="default",
+                        default=0.55,
+                    ) or 0.55,
+                ),
+                self._RISK_TUNER_BASE_MIN,
+            ),
+            self._RISK_TUNER_BASE_MAX,
+        ))
         dyn_floor, floor_dbg = self._compute_dynamic_entry_floor(base_floor)
         if conf >= dyn_floor:
             return action, dyn_floor
@@ -1613,7 +1675,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         rs_vol_l = self._compute_rs_vol(50)
         er10 = self._compute_er(10)
         ret1, ret5, ret20 = self._compute_returns()
-        bars_list = list(self.bars)
+        bars_list = self._bars_snapshot()
         prev_close = bars_list[-2][4] if len(bars_list) >= 2 else bar_close
         gap_pts = float(bar_open - prev_close)
         gap_rs = gap_pts / prev_close / rs_vol_s if rs_vol_s > 0 and prev_close > 0 else 0.0
@@ -2383,7 +2445,7 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
             grad = float(np.clip(pnl_usd / max(abs(self.starting_equity) * 0.01, 1.0), -1.0, 1.0))
             for _pname in ("sortino_threshold", "kurtosis_threshold", "max_drawdown_pct"):
                 self._param_manager.update(self.symbol, _pname, grad, timeframe=self.tf_label, broker="default")
-            self._param_manager.save()
+            # save() deferred to _post_close_learning (batched every 5 trades)
         except Exception as e:
             LOG.debug("[%s %s] param_manager.update error: %s", self.symbol, self.tf_label, e)
 
@@ -2500,7 +2562,10 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
             self._param_manager.save()
         except Exception:
             pass
-        runway_net = max(0.0, runway_gross - (2.0 * self.last_half_spread / price_ref))
+        entry_half_spread = float(
+            (self._entry_trigger_data or {}).get("entry_half_spread", self.last_half_spread) or self.last_half_spread,
+        )
+        runway_net = max(0.0, runway_gross - (2.0 * entry_half_spread / price_ref))
         return runway_gross, runway_net
 
     def _initial_close_rewards(
@@ -2583,12 +2648,14 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
                 exit_time=ts.isoformat() if hasattr(ts, "isoformat") else "",
             )
             shaped_trigger = float(shaped.get("trigger_reward", trigger_reward))
-            # Only override 4-component trigger reward when log-based reward is not
-            # saturated at the clamp (±3.0).  When saturated the runway predictor is
-            # uncalibrated and log(∞) gives a constant gradient — useless for learning.
-            # The 4-component reward from _calculate_trigger_reward() is always
-            # informative regardless of runway calibration.
-            if abs(shaped_trigger) < 2.99:
+            # Only override the 4-component trigger reward when the log-based runway
+            # signal is not saturated at the clamp (±3.0).  A saturated log gives a
+            # constant gradient — useless for learning — even when pnl_alignment has
+            # shifted the combined value back inside ±2.99.  Use the explicit
+            # log_saturated flag from the shaper to detect the pre-pnl_alignment state.
+            trigger_breakdown = shaped.get("trigger_breakdown", {})
+            log_saturated = bool(trigger_breakdown.get("log_saturated", False))
+            if not log_saturated and abs(shaped_trigger) < 2.99:
                 trigger_reward = shaped_trigger
             capture_reward = float(shaped.get("harvester_reward", capture_reward))
             return (
@@ -2639,6 +2706,13 @@ class TFAgent(TFAgentPreseedMixin, TFAgentCaptureHealthMixin, TFAgentTradeLogMix
         self._add_replay_experiences(trigger_reward, capture_reward)
         self._update_learned_params(pnl_usd)
         self._update_risk_feedback_thresholds(pnl_usd)
+        # Batch learned-parameter saves: every 5 trades instead of every trade.
+        # _update_risk_feedback_thresholds already has its own _RISK_TUNER_SAVE_INTERVAL guard.
+        self._param_manager_save_counter += 1
+        if self._param_manager_save_counter >= 5:
+            with contextlib.suppress(Exception):
+                self._param_manager.save()
+            self._param_manager_save_counter = 0
         return regime
 
     def _close_cb_snapshot(self) -> tuple[list[str], float, float, str]:
@@ -3015,6 +3089,8 @@ class OpenAPIHub:
 
         # Gap-fill: record when we lost the connection so we can fetch missed bars on reconnect
         self._disconnect_time: float | None = None
+        # Set during token auto-refresh so _handle_subscribe_res skips initial backfill
+        self._token_refresh_in_progress: bool = False
 
         # Order-book write rate limit (write at most once per second)
         self._last_ob_write: float = 0.0
@@ -3395,7 +3471,11 @@ class OpenAPIHub:
         self._state = _S_READY
         self._write_bot_config()
         self._subscribe_depth()
-        if self._disconnect_time is not None:
+        if self._token_refresh_in_progress:
+            # Token refresh: the TCP stream was never interrupted, bars are current.
+            # Skip backfill entirely to avoid injecting duplicates into bar deques.
+            self._token_refresh_in_progress = False
+        elif self._disconnect_time is not None:
             gap = time.time() - self._disconnect_time
             if gap > _GAP_FILL_MIN_SECONDS:
                 self._request_gap_fill(self._disconnect_time)
@@ -3771,6 +3851,7 @@ class OpenAPIHub:
         LOG.info("[HUB] Access token refreshed (expires in %dd) — replaying account auth",
                  expires_in // 86400 if expires_in else 30)
         self._persist_refreshed_tokens(new_access, new_refresh)
+        self._token_refresh_in_progress = True
         self._state = _S_ACC_AUTH
         self._send_acc_auth()
 

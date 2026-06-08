@@ -86,6 +86,9 @@ class TradingMetrics:
     platt_b: float = 0.0
     current_regime: str = "UNKNOWN"
 
+    # Connection health
+    fix_connected: bool = True
+
 
 @dataclass
 class Alert:
@@ -191,6 +194,7 @@ class ProductionMonitor:
             timeframe_minutes=timeframe_minutes,
             broker=str(kwargs.get("broker", "default") or "default"),
             trading_mode=str(kwargs.get("trading_mode", "") or ""),
+            fix_connected=bool(kwargs.get("fix_connected", True)),
         )
 
         # Check for alerts
@@ -255,6 +259,19 @@ class ProductionMonitor:
                     ),
                     metric_value=self.metrics.circuit_breakers_tripped,
                     threshold=0,
+                    timestamp=time.time(),
+                ),
+            )
+
+        # Alert: FIX/OpenAPI connection lost
+        if not self.metrics.fix_connected:
+            new_alerts.append(
+                Alert(
+                    severity="critical",
+                    category="connection",
+                    message="FIX/OpenAPI connection lost",
+                    metric_value=0.0,
+                    threshold=1.0,
                     timestamp=time.time(),
                 ),
             )

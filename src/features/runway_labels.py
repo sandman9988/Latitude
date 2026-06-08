@@ -87,7 +87,7 @@ def wilder_atr(
         return np.empty(0, dtype=np.float64)
 
     tr = np.empty(n, dtype=np.float64)
-    tr[0] = highs[0] - lows[0]
+    tr[0] = abs(highs[0] - lows[0])
     if n > 1:
         hl = highs[1:] - lows[1:]
         hc = np.abs(highs[1:] - closes[:-1])
@@ -158,8 +158,7 @@ def build_labels(
         ``label_short`` mfe_short / atr
         ``valid``       boolean mask: forward window complete and atr > 0
     """
-    o, h, l, c = bars_to_arrays(bars)
-    n = len(c)
+    _, h, l, c = bars_to_arrays(bars)
     if horizon is None:
         horizon = horizon_for_timeframe(timeframe_minutes)
 

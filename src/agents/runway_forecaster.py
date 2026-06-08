@@ -308,9 +308,9 @@ class RunwayForecaster:
         qs = self.predict_quantiles(feature_vec)
         probs = np.asarray(self.quantiles)
         if norm_thr <= qs[0]:
-            return float(1.0 - probs[0])
+            return 1.0
         if norm_thr >= qs[-1]:
-            return float(1.0 - probs[-1]) * 0.0
+            return float(1.0 - probs[-1])
         cdf = np.interp(norm_thr, qs, probs)
         return float(max(0.0, min(1.0, 1.0 - cdf)))
 
@@ -348,6 +348,7 @@ class RunwayForecaster:
             1: np.asarray(payload.get("base_q_long", np.zeros(len(obj.quantiles))), dtype=np.float64),
             -1: np.asarray(payload.get("base_q_short", np.zeros(len(obj.quantiles))), dtype=np.float64),
         }
+        obj.n_features = int(payload.get("n_features", obj.n_features))
         obj.use_residual = bool(payload.get("use_residual", False))
         obj.fitted = bool(payload["fitted"])
         return obj

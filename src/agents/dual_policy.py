@@ -237,6 +237,11 @@ class DualPolicy:
         self.current_zeta = 1.0
         self.current_regime_enum = RegimeSampling.UNKNOWN
 
+        # H4: bar-level state cache — keyed by (n_bars, last_ts, realized_vol).
+        # Bar-level features (returns, MA, vol, geometry) are constant within a bar;
+        # only tick-level scalars (imb, vpz, dpr, event) change per SpotEvent.
+        self._build_state_bar_cache: tuple | None = None
+
     # ── MFE / MAE properties (delegate to _mfe_calc) ──────────────────────
 
     @property
@@ -664,97 +669,105 @@ class DualPolicy:
         if self.enable_event_features:
             n_features += self.event_feature_count  # Event time (always counted when enabled)
 
-        if len(bars) < self.min_bars_for_features:
+        n_bars = len(bars)
+        if n_bars < self.min_bars_for_features:
             return np.zeros((self.window, n_features), dtype=np.float32)
 
-        closes = [b[4] for b in bars]
-        c = np.array(closes, dtype=np.float64)
+        # Bar-level features (returns, MA, vol, geometry) are constant within a bar —
+        # only the tick-level scalars (imb, vpz, dpr, event) change per SpotEvent.
+        # Cache by (bar_count, last_bar_timestamp, realized_vol) so the expensive
+        # rolling computations are paid once per bar close, not once per tick.
+        _bar_key = (n_bars, bars[-1][0], realized_vol)
+        _cached = self._build_state_bar_cache
 
-        # Calculate returns
-        ret1 = np.zeros_like(c)
-        if len(c) >= RETURN_LAG_SHORT:
-            ret1[1:] = np.divide(c[1:], c[:-1], out=np.ones_like(c[1:]), where=c[:-1] != 0) - 1.0
+        if _cached is not None and _cached[0] == _bar_key:
+            feats = _cached[1].copy()
+        else:
+            closes = [b[4] for b in bars]
+            c = np.array(closes, dtype=np.float64)
 
-        ret5 = np.zeros_like(c)
-        if len(c) >= RETURN_LAG_MEDIUM:
-            ret5[5:] = np.divide(c[5:], c[:-5], out=np.ones_like(c[5:]), where=c[:-5] != 0) - 1.0
+            # Calculate returns
+            ret1 = np.zeros_like(c)
+            if n_bars >= RETURN_LAG_SHORT:
+                ret1[1:] = np.divide(c[1:], c[:-1], out=np.ones_like(c[1:]), where=c[:-1] != 0) - 1.0
 
-        ma_fast = _dp_rolling_mean(c, 10)
-        ma_slow = _dp_rolling_mean(c, 30)
-        ma_diff = np.divide(ma_fast, ma_slow, out=np.ones_like(ma_fast), where=ma_slow != 0) - 1.0
-        vol = _dp_rolling_std(ret1, 20)
+            ret5 = np.zeros_like(c)
+            if n_bars >= RETURN_LAG_MEDIUM:
+                ret5[5:] = np.divide(c[5:], c[:-5], out=np.ones_like(c[5:]), where=c[:-5] != 0) - 1.0
 
-        # Microstructure features (broadcast to window).
-        # Clip to instrument-agnostic bounds before broadcasting so the DDQN
-        # never sees extreme outliers in these scalar context signals.
-        imb = np.full(len(c), np.clip(imbalance, -1.0, 1.0), dtype=np.float64)
-        vpz = np.full(len(c), np.clip(vpin_z, -4.0, 4.0), dtype=np.float64)
-        dpr = np.full(len(c), np.clip(depth_ratio, 0.1, 10.0), dtype=np.float64)
+            ma_fast = _dp_rolling_mean(c, 10)
+            ma_slow = _dp_rolling_mean(c, 30)
+            ma_diff = np.divide(ma_fast, ma_slow, out=np.ones_like(ma_fast), where=ma_slow != 0) - 1.0
+            vol = _dp_rolling_std(ret1, 20)
 
-        # Base features (7-dim)
-        base_feats = [
-            np.nan_to_num(ret1, nan=0.0, posinf=0.0, neginf=0.0),
-            np.nan_to_num(ret5, nan=0.0, posinf=0.0, neginf=0.0),
-            np.nan_to_num(ma_diff, nan=0.0, posinf=0.0, neginf=0.0),
-            np.nan_to_num(vol, nan=0.0, posinf=0.0, neginf=0.0),
-            np.nan_to_num(imb, nan=0.0, posinf=0.0, neginf=0.0),
-            np.nan_to_num(vpz, nan=0.0, posinf=0.0, neginf=0.0),
-            np.nan_to_num(dpr, nan=1.0, posinf=1.0, neginf=1.0),
-        ]
+            # Tick-level column placeholders (zeros; overwritten after cache lookup)
+            _zero_col = np.zeros(n_bars, dtype=np.float64)
 
-        # Add path geometry features if available (5-dim)
-        if self.path_geometry:
-            # Compute long-term vol for multi-horizon ratio (50-bar std of returns)
-            sigma_long = float(_dp_rolling_std(ret1, 50)[-1]) if len(ret1) >= 50 else 0.0
-            # Update geometry with current bars and volatility
-            geom = self.path_geometry.update(bars, realized_vol, sigma_long=sigma_long)  # type: ignore[union-attr]
+            # Base features (7-dim): cols 0-3 variable, cols 4-6 tick-level placeholders
+            base_feats: list[np.ndarray] = [
+                np.nan_to_num(ret1, nan=0.0, posinf=0.0, neginf=0.0),
+                np.nan_to_num(ret5, nan=0.0, posinf=0.0, neginf=0.0),
+                np.nan_to_num(ma_diff, nan=0.0, posinf=0.0, neginf=0.0),
+                np.nan_to_num(vol, nan=0.0, posinf=0.0, neginf=0.0),
+                _zero_col,  # imb placeholder — filled per-tick below
+                _zero_col,  # vpz placeholder — filled per-tick below
+                _zero_col,  # dpr placeholder — filled per-tick below
+            ]
 
-            # Broadcast geometry features to window length
-            eff = np.full(len(c), geom["efficiency"], dtype=np.float64)
-            gamma = np.full(len(c), geom["gamma"], dtype=np.float64)
-            jerk = np.full(len(c), geom["jerk"], dtype=np.float64)
-            runway = np.full(len(c), geom["runway"], dtype=np.float64)
-            feasibility = np.full(len(c), geom["feasibility"], dtype=np.float64)
+            # Add path geometry features if available (5-dim)
+            if self.path_geometry:
+                # Compute long-term vol for multi-horizon ratio (50-bar std of returns)
+                sigma_long = float(_dp_rolling_std(ret1, 50)[-1]) if n_bars >= 50 else 0.0
+                # Update geometry with current bars and volatility
+                geom = self.path_geometry.update(bars, realized_vol, sigma_long=sigma_long)  # type: ignore[union-attr]
+                n = n_bars
+                base_feats.extend(
+                    [
+                        np.nan_to_num(np.full(n, geom["efficiency"], dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0),
+                        np.nan_to_num(np.full(n, geom["gamma"], dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0),
+                        np.nan_to_num(np.full(n, geom["jerk"], dtype=np.float64), nan=0.0, posinf=0.0, neginf=0.0),
+                        np.nan_to_num(np.full(n, geom["runway"], dtype=np.float64), nan=0.5, posinf=0.5, neginf=0.5),
+                        np.nan_to_num(np.full(n, geom["feasibility"], dtype=np.float64), nan=0.5, posinf=0.5, neginf=0.5),
+                    ],
+                )
 
-            base_feats.extend(
-                [
-                    np.nan_to_num(eff, nan=0.0, posinf=0.0, neginf=0.0),
-                    np.nan_to_num(gamma, nan=0.0, posinf=0.0, neginf=0.0),
-                    np.nan_to_num(jerk, nan=0.0, posinf=0.0, neginf=0.0),
-                    np.nan_to_num(runway, nan=0.5, posinf=0.5, neginf=0.5),
-                    np.nan_to_num(feasibility, nan=0.5, posinf=0.5, neginf=0.5),
-                ],
+            # Add event time feature placeholders (zeros; overwritten per-tick below)
+            if self.enable_event_features:
+                base_feats.extend([np.zeros(n_bars, dtype=np.float64) for _ in range(self.event_feature_count)])
+
+            # Stack features (7, 12, or 18-dim depending on modules enabled)
+            feats = np.vstack(base_feats).T[-self.window :].astype(np.float32)
+
+            # Normalize only variable columns (ret1, ret5, ma_diff, vol — cols 0-3).
+            # Broadcast columns (tick-level placeholders, geometry, event) have std=0
+            # and are excluded by variable_mask, preserving their raw signal.
+            mu = feats.mean(axis=0, keepdims=True)
+            sd = feats.std(axis=0, keepdims=True)
+            variable_mask = sd.flatten() > _FEATURE_VARIANCE_FLOOR
+            feats[:, variable_mask] = np.clip(
+                (feats[:, variable_mask] - mu[:, variable_mask]) / sd[:, variable_mask],
+                -5.0,
+                5.0,
             )
 
-        # Add event time features if enabled (6 key features) — always include
-        # when self.enable_event_features is True, defaulting to zeros so the
-        # feature count stays consistent with the DDQN's fixed state_dim.
+            self._build_state_bar_cache = (_bar_key, feats)
+            feats = feats.copy()
+
+        # Fill tick-level columns with current per-tick values.
+        # Clip to instrument-agnostic bounds; guard against NaN/inf from upstream.
+        feats[:, 4] = 0.0 if not np.isfinite(imbalance) else float(np.clip(imbalance, -1.0, 1.0))
+        feats[:, 5] = 0.0 if not np.isfinite(vpin_z) else float(np.clip(vpin_z, -4.0, 4.0))
+        feats[:, 6] = 1.0 if not np.isfinite(depth_ratio) else float(np.clip(depth_ratio, 0.1, 10.0))
+
         if self.enable_event_features:
-            base_feats.extend(_build_event_feature_columns(event_features, len(c)))
-
-        # Stack features (7, 12, 13, or 18-dim depending on modules enabled)
-        feats = np.vstack(base_feats).T
-
-        # Take last window bars
-        feats = feats[-self.window :].astype(np.float32)
-
-        # Normalize: z-score per feature, but SKIP constant columns (broadcast features)
-        # Constant columns (std=0) like imbalance, vpin_z, geometry, event features
-        # would get zeroed out by (x-mean)/0 = 0, destroying their signal.
-        # Instead, preserve their raw values for the DDQN to learn from.
-        mu = feats.mean(axis=0, keepdims=True)
-        sd = feats.std(axis=0, keepdims=True)
-        variable_mask = sd.flatten() > _FEATURE_VARIANCE_FLOOR  # True for columns with actual variance
-        # Only normalize variable columns; leave constant columns as-is.
-        # Clip to ±5σ after z-scoring to contain market-shock spikes without
-        # discarding the signal (features beyond ±5σ carry no extra gradient signal).
-        # Note: variable_mask guarantees sd > _FEATURE_VARIANCE_FLOOR, so
-        # division is safe.  SafeMath.safe_div is scalar-only; use numpy ops.
-        feats[:, variable_mask] = np.clip(
-            (feats[:, variable_mask] - mu[:, variable_mask]) / sd[:, variable_mask],
-            -5.0,
-            5.0,
-        )
+            ef = event_features or {}
+            _ec = 7 + (5 if self.path_geometry else 0)  # event column start index
+            feats[:, _ec    ] = ef.get("london_active", 0.0)
+            feats[:, _ec + 1] = ef.get("ny_active", 0.0)
+            feats[:, _ec + 2] = ef.get("tokyo_active", 0.0)
+            feats[:, _ec + 3] = ef.get("london_ny_overlap", 0.0)
+            feats[:, _ec + 4] = ef.get("rollover_proximity_norm", 0.0)
+            feats[:, _ec + 5] = ef.get("week_progress", 0.5)
 
         return feats
 

@@ -999,15 +999,14 @@ print(' '.join(tfs) if tfs else '')
     fi
     timeframes="${timeframes:-${TIMEFRAMES:-M1 M5 M15 M30 M60 M240}}"
 
-    # Build input list: downloaded CSVs + Kinetra master history + live JSONL caches
+    # Build input list: downloaded CSVs + supplemental history dir + live JSONL caches
     local -a inputs=()
     if [[ -d "data/history" ]] && compgen -G "data/history/*.csv" >/dev/null 2>&1; then
         mapfile -t _csvs < <(find data/history -name '*.csv' | sort)
         inputs+=("${_csvs[@]}")
     fi
-    local kinetra_dir="${HISTORY_DIR:-/home/renierdejager/Projects/Kinetra/data/master_standardized}"
-    if [[ -d "$kinetra_dir" ]]; then
-        inputs+=("$kinetra_dir")
+    if [[ -n "${HISTORY_DIR:-}" ]] && [[ -d "$HISTORY_DIR" ]]; then
+        inputs+=("$HISTORY_DIR")
     fi
     mapfile -t _caches < <(find data -maxdepth 2 -name 'training_cache_*_M*.jsonl' 2>/dev/null | sort)
     inputs+=("${_caches[@]}")

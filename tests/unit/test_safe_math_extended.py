@@ -185,7 +185,7 @@ class TestSafeOperations:
         assert abs(SafeMath.safe_exp(0.0) - 1.0) < 1e-10
 
     def test_safe_exp_overflow(self):
-        assert SafeMath.safe_exp(200.0) == pytest.approx(0.0)
+        assert SafeMath.safe_exp(200.0) == pytest.approx(1.0)  # default=1.0 (multiplicative identity)
 
     def test_safe_exp_underflow(self):
         assert SafeMath.safe_exp(-200.0) == pytest.approx(0.0)

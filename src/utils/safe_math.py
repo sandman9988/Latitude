@@ -112,10 +112,13 @@ class SafeMath:
 
     @staticmethod
     def is_valid(x: float | np.ndarray) -> bool:
-        """Check if value is valid (not NaN or Inf)."""
+        """Check if value is valid (not NaN, Inf, None, or non-numeric)."""
         if isinstance(x, np.ndarray):
             return bool(np.all(np.isfinite(x)))
-        return math.isfinite(x)
+        try:
+            return math.isfinite(float(x))
+        except (TypeError, ValueError, OverflowError):
+            return False
 
     @staticmethod
     def is_nan(x: float | np.ndarray) -> bool:
@@ -161,12 +164,15 @@ class SafeMath:
     @staticmethod
     def safe_div(a: float, b: float, default: float = 0.0) -> float:
         """Division with zero protection and logging."""
-        if abs(b) < SAFE_DIV_MIN:
+        if abs(b) <= SAFE_DIV_MIN:
             LOG.debug("safe_div: denominator %.2e below threshold, returning default", b)
             return default
-        result = a / b
+        try:
+            result = a / b
+        except (ZeroDivisionError, TypeError, OverflowError):
+            return default
         if not SafeMath.is_valid(result):
-            LOG.warning("Non-finite result from div(%.4f, %.4f)", a, b)
+            LOG.debug("safe_div: non-finite result from div(%.6g, %.6g), returning default", a, b)
             return default
         return result
 
@@ -224,12 +230,15 @@ class SafeMath:
             return default
 
     @staticmethod
-    def safe_exp(x: float, default: float = 0.0) -> float:
-        """Exponential with overflow protection and logging."""
-        if x > EXP_UPPER_GUARD:  # e^100 is huge
+    def safe_exp(x: float, default: float = 1.0) -> float:
+        """Exponential with overflow/NaN protection and logging."""
+        if not SafeMath.is_valid(x):
+            return default
+        if x > EXP_UPPER_GUARD:
             LOG.debug("safe_exp: input %.4f above upper guard, returning default", x)
             return default
-        if x < EXP_LOWER_GUARD:  # e^-100 is tiny
+        if x < EXP_LOWER_GUARD:
+            LOG.debug("safe_exp: input %.4f below lower guard, returning 0.0", x)
             return 0.0
         result = math.exp(x)
         if not SafeMath.is_valid(result):
@@ -239,8 +248,15 @@ class SafeMath:
 
     @staticmethod
     def clamp(x: float, min_val: float, max_val: float) -> float:
-        """Hard clamp to range [min_val, max_val]."""
+        """Clamp to [min_val, max_val]; returns midpoint for NaN/Inf inputs."""
+        if not SafeMath.is_valid(x):
+            return (min_val + max_val) / 2.0
         return max(min_val, min(max_val, x))
+
+    @staticmethod
+    def sanitize(value: float, default: float = 0.0) -> float:
+        """Replace NaN/Inf/None with default."""
+        return value if SafeMath.is_valid(value) else default
 
     @staticmethod
     def soft_clamp(x: float, min_val: float, max_val: float) -> float:

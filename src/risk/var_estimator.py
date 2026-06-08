@@ -11,7 +11,8 @@ from enum import Enum
 import numpy as np
 
 from src.constants import KURTOSIS_ALERT_THRESHOLD, KURTOSIS_MIN_SAMPLES
-from src.utils.safe_utils import SafeMath, safe_percentile, safe_std
+from src.utils.safe_math import SafeMath
+from src.utils.safe_utils import safe_percentile, safe_std
 
 MIN_KURTOSIS_SAMPLE = KURTOSIS_MIN_SAMPLES
 MIN_KURTOSIS_STATS = 4

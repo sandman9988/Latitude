@@ -8,7 +8,7 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 
-from src.utils.safe_utils import SafeMath
+from src.utils.safe_math import SafeMath
 
 PAPER_MAX_BARS_INACTIVE: int = 30
 LIVE_MAX_BARS_INACTIVE: int = 100

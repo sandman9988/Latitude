@@ -59,14 +59,6 @@ load_environment() {
         set +a
     fi
 
-    # OAuth credentials for history download
-    if [[ -f /home/renierdejager/Projects/Kinetra/.env.openapi ]]; then
-        set -a
-        # shellcheck disable=SC1091
-        source /home/renierdejager/Projects/Kinetra/.env.openapi
-        set +a
-    fi
-
     # cTrader access token (contains CTRADER_ACCESS_TOKEN required by download script)
     if [[ -f config/cTraderAppTokens ]]; then
         set -a

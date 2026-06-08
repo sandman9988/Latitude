@@ -124,18 +124,22 @@ class TestTotalReward:
 
 
 class TestTriggerReward:
+    # predicted_runway is a price fraction (e.g. 0.002 = 0.2%); actual_mfe is price
+    # points.  predicted_runway_pts = predicted_runway * entry_price.
+    # entry_price=50000 → predicted_runway_pts = 0.002 * 50000 = 100 pts.
+
     def test_perfect_prediction(self, shaper):
-        r = shaper.calculate_trigger_reward(actual_mfe=100.0, predicted_runway=100.0, direction=1, entry_price=50000.0)
+        r = shaper.calculate_trigger_reward(actual_mfe=100.0, predicted_runway=0.002, direction=1, entry_price=50000.0)
         assert r["runway_reward"] == pytest.approx(0.0, abs=0.01)
         assert r["prediction_quality"] == "EXCELLENT"
 
     def test_exceeded_prediction(self, shaper):
-        r = shaper.calculate_trigger_reward(actual_mfe=200.0, predicted_runway=100.0, direction=1, entry_price=50000.0)
+        r = shaper.calculate_trigger_reward(actual_mfe=200.0, predicted_runway=0.002, direction=1, entry_price=50000.0)
         assert r["runway_reward"] > 0
         assert r["utilization"] == pytest.approx(2.0)
 
     def test_fell_short(self, shaper):
-        r = shaper.calculate_trigger_reward(actual_mfe=30.0, predicted_runway=100.0, direction=1, entry_price=50000.0)
+        r = shaper.calculate_trigger_reward(actual_mfe=30.0, predicted_runway=0.002, direction=1, entry_price=50000.0)
         assert r["runway_reward"] < 0
         assert r["prediction_quality"] == "OVERPREDICTED"
 
@@ -145,20 +149,20 @@ class TestTriggerReward:
         assert r["runway_reward"] < 0
 
     def test_zero_actual_mfe(self, shaper):
-        r = shaper.calculate_trigger_reward(actual_mfe=0.0, predicted_runway=100.0, direction=1, entry_price=50000.0)
+        r = shaper.calculate_trigger_reward(actual_mfe=0.0, predicted_runway=0.002, direction=1, entry_price=50000.0)
         assert r["runway_reward"] < 0  # log penalty
 
     def test_trigger_reward_penalizes_negative_net_pnl(self, shaper):
         neutral = shaper.calculate_trigger_reward(
             actual_mfe=100.0,
-            predicted_runway=100.0,
+            predicted_runway=0.002,
             direction=1,
             entry_price=50000.0,
             exit_pnl=0.0,
         )
         loss = shaper.calculate_trigger_reward(
             actual_mfe=100.0,
-            predicted_runway=100.0,
+            predicted_runway=0.002,
             direction=1,
             entry_price=50000.0,
             exit_pnl=-10.0,

@@ -6072,7 +6072,7 @@ class TabbedHUD:
         upnl = self._dec_float(context.get("unrealized_pnl"))
         pnl_color = _ANSI_G if upnl >= 0 else _ANSI_R
         return (
-            f"bars:{int(self._dec_float(reasoning.get('ticks_held')))} "
+            f"ticks:{int(self._dec_float(reasoning.get('ticks_held')))} "
             f"cap:{self._dec_float(reasoning.get('capture_ratio')):+.2f} "
             f"uPnL:{pnl_color}{upnl:+.1f}{_ANSI_RST}"
         )
@@ -7844,7 +7844,7 @@ class TabbedHUD:
             "cap_color": cap_c,
             "mfe": _fmt_compact(mfe, cols["mfe"]),
             "mae": _fmt_compact(-abs(mae), cols["mae"]),
-            "bars": int(trade.get("bars_held") or trade.get("ticks_held") or 0),
+            "bars": self._compute_bars_held(trade),
             "reason": self._trade_close_reason(trade, cols["rsn"]),
         }
 
@@ -7958,13 +7958,28 @@ class TabbedHUD:
             "pnl": float(trade.get("pnl") or 0.0),
             "mfe": self._excursion_usd_for_trade(trade, "mfe_points", "mfe"),
             "mae": self._excursion_usd_for_trade(trade, "mae_points", "mae"),
-            "bars": int(trade.get("bars_held") or trade.get("ticks_held") or 0),
+            "bars": self._compute_bars_held(trade),
             "reason": self._trade_close_reason(trade, 9999),
             "entry_str": entry_str,
             "exit_str": exit_str,
             "duration": duration_str,
             "price_decimals": self._price_decimals(max(entry, exit_price, 0.0)),
         }
+
+    @staticmethod
+    def _compute_bars_held(trade: dict) -> int:
+        tf_min = int(trade.get("timeframe_minutes") or 1)
+        hold_secs = float(trade.get("hold_seconds") or 0.0)
+        if hold_secs > 0:
+            return int(hold_secs / 60 / tf_min)
+        try:
+            secs = (
+                datetime.fromisoformat(trade.get("exit_time", ""))
+                - datetime.fromisoformat(trade.get("entry_time", ""))
+            ).total_seconds()
+            return int(secs / 60 / tf_min)
+        except Exception:
+            return int(trade.get("bars_held") or 0)
 
     @staticmethod
     def _trade_detail_times(trade: dict) -> tuple[str, str, str]:

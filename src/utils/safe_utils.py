@@ -1,124 +1,26 @@
 #!/usr/bin/env python3
-"""Defensive Programming Utilities
-Implements SafeMath and SafeArray patterns from Master Handbook
-Prevents NaN/Inf propagation, division by zero, and array bounds errors.
+"""Defensive Programming Utilities — SafeArray, SafeDeque, and safe statistics.
+
+SafeMath is the canonical safe-math implementation in safe_math.py.
+Re-exported here for backwards compatibility with existing importers.
 """
 
-import contextlib
-import json
 import logging
 import math
-import os
-import tempfile
 from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.persistence.json_io import save_json_atomic as save_json_atomic_impl
+from src.utils.safe_math import SafeMath  # canonical source — do not duplicate
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
-# Safe math constants
-MIN_VALUES_FOR_STD: int = 2  # Minimum values needed to calculate standard deviation
-
-
-class SafeMath:
-    """Safe mathematical operations with NaN/Inf protection."""
-
-    EPSILON = 1e-12  # Minimum divisor threshold
-
-    @staticmethod
-    def is_valid(value: float) -> bool:
-        """Check if value is finite and not NaN."""
-        try:
-            return math.isfinite(float(value)) and not math.isnan(float(value))
-        except (ValueError, TypeError, OverflowError):
-            return False
-
-    @staticmethod
-    def safe_div(numerator: float, denominator: float, default: float = 0.0) -> float:
-        """Safe division with NaN/Inf protection.
-
-        Args:
-            numerator: Dividend
-            denominator: Divisor
-            default: Value to return if division is invalid
-
-        Returns:
-            numerator / denominator if valid, else default
-
-        """
-        if not SafeMath.is_valid(numerator):
-            logger.debug("safe_div: Invalid numerator %s, returning %s", numerator, default)
-            return default
-
-        if not SafeMath.is_valid(denominator) or abs(denominator) < SafeMath.EPSILON:
-            logger.debug("safe_div: Invalid/zero denominator %s, returning %s", denominator, default)
-            return default
-
-        result = numerator / denominator
-
-        if not SafeMath.is_valid(result):
-            logger.debug("safe_div: Result %s invalid, returning %s", result, default)
-            return default
-
-        return result
-
-    @staticmethod
-    def clamp(value: float, lower: float, upper: float) -> float:
-        """Clamp value to [lower, upper] range with NaN protection.
-
-        Args:
-            value: Value to clamp
-            lower: Lower bound
-            upper: Upper bound
-
-        Returns:
-            Clamped value, or midpoint if value is invalid
-
-        """
-        if not SafeMath.is_valid(value):
-            midpoint = (lower + upper) / 2.0
-            logger.debug("clamp: Invalid value %s, returning midpoint %s", value, midpoint)
-            return midpoint
-
-        return max(lower, min(upper, value))
-
-    @staticmethod
-    def safe_sqrt(value: float, default: float = 0.0) -> float:
-        """Square root with negative protection."""
-        if not SafeMath.is_valid(value) or value < 0:
-            return default
-        return math.sqrt(value)
-
-    @staticmethod
-    def safe_log(value: float, default: float = 0.0) -> float:
-        """Natural log with non-positive protection."""
-        if not SafeMath.is_valid(value) or value <= 0:
-            return default
-        result = math.log(value)
-        return result if SafeMath.is_valid(result) else default
-
-    @staticmethod
-    def safe_exp(value: float, default: float = 1.0) -> float:
-        """Exponential with overflow protection."""
-        if not SafeMath.is_valid(value):
-            return default
-        try:
-            result = math.exp(value)
-            return result if SafeMath.is_valid(result) else default
-        except OverflowError:
-            logger.debug("safe_exp: Overflow on %s, returning %s", value, default)
-            return default
-
-    @staticmethod
-    def sanitize(value: float, default: float = 0.0) -> float:
-        """Replace NaN/Inf with default."""
-        return value if SafeMath.is_valid(value) else default
+MIN_VALUES_FOR_STD: int = 2
 
 
 class SafeArray:
@@ -318,19 +220,6 @@ def safe_percentile(values: list[float], percentile: float, default: float = 0.0
     d0 = valid_values[int(f)] * (c - k)
     d1 = valid_values[int(c)] * (k - f)
     return d0 + d1
-
-
-if __name__ == "__main__":
-    # Self-test
-
-    arr = [1, 2, 3, 4, 5]
-
-    sd = SafeDeque(maxlen=3, name="test")
-    sd.append(1)
-    sd.append(2)
-    sd.append(3)
-    sd.append(4)  # Should evict 1
-
 
 
 # ----------------------------
